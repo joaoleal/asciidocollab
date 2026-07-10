@@ -1,0 +1,27 @@
+{
+  "projectId": "5fb9ab6c-45a8-4812-80ed-a39750386c01",
+  "shape": "package",
+  "pkg": "@asciidocollab/web",
+  "globalName": "AsciidocollabUI",
+  "srcDir": "src/components/ui",
+  "tsconfig": "tsconfig.json",
+  "cssEntry": "ds-compiled.css",
+  "readmeHeader": ".design-sync/conventions.md",
+  "componentSrcMap": {
+    "Button": "src/components/ui/button.tsx",
+    "Badge": "src/components/ui/badge.tsx",
+    "Card": "src/components/ui/card.tsx",
+    "DropdownMenu": "src/components/ui/dropdown-menu.tsx",
+    "Input": "src/components/ui/input.tsx",
+    "Label": "src/components/ui/label.tsx",
+    "Progress": "src/components/ui/progress.tsx",
+    "ResizeHandle": "src/components/ui/resize-handle.tsx",
+    "Skeleton": "src/components/ui/skeleton.tsx",
+    "Spinner": "src/components/ui/skeleton.tsx",
+    "PageSkeleton": "src/components/ui/skeleton.tsx"
+  },
+  "overrides": {
+    "DropdownMenu": { "cardMode": "single", "viewport": "480x360" },
+    "Card": { "cardMode": "column" }
+  }
+}

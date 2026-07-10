@@ -57,4 +57,12 @@ apps/web/public/vendor/
 /.claude/worktrees/
 playwright-report/
 
-test-results/
+test-results/# design-sync (claude.ai/design) — generated/staged, not committed
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules/
+.design-sync/.upload-manifest.txt
+apps/web/ds-compiled.css
+apps/web/ds-tailwind-input.css
