@@ -8,7 +8,7 @@ const security = require('eslint-plugin-security');
 const globals = require('globals');
 
 module.exports = tseslint.config(
-  { ignores: ['**/dist/**', 'node_modules/**', '**/coverage/**', '**/*.js', '**/*.cjs', '**/*.d.ts', '**/specs/**', '**/.next/**', '**/next-env.d.ts', '**/prisma.config.ts', '**/scripts/**', '.claude/**'] },
+  { ignores: ['**/dist/**', 'node_modules/**', '**/coverage/**', '**/*.js', '**/*.cjs', '**/*.d.ts', '**/specs/**', '**/.next/**', '**/next-env.d.ts', '**/prisma.config.ts', '**/scripts/**', '.claude/**', 'ds-bundle/**', '.ds-sync/**', '.design-sync/**', 'apps/web/.ds-entry.ts', 'apps/web/ds-compile-css.mjs'] },
 
   eslint.configs.recommended,
 
