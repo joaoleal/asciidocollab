@@ -54,7 +54,7 @@ function isPlainTextFile(nodeName: string): boolean {
  * unrecognised falls back to the generic file icon.
  */
 function iconForName(nodeName: string): { Icon: ComponentType<{ className?: string }>; className: string } {
-  if (isAsciiDocumentFile(nodeName)) return { Icon: AsciiDocIcon, className: 'text-sky-500' };
+  if (isAsciiDocumentFile(nodeName)) return { Icon: AsciiDocIcon, className: 'text-primary' };
   if (isImageFile(nodeName)) return { Icon: FileImage, className: 'text-violet-500' };
   if (isCsvFile(nodeName)) return { Icon: FileSpreadsheet, className: 'text-emerald-500' };
   if (isPlainTextFile(nodeName)) return { Icon: FileText, className: 'text-muted-foreground' };
