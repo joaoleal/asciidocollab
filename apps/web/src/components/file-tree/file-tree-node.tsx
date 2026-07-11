@@ -1,7 +1,8 @@
 'use client';
 import { useState } from 'react';
-import { ChevronRight, ChevronDown, File, Folder, ArchiveIcon } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, ArchiveIcon } from 'lucide-react';
 import { cn } from '@/lib/utilities';
+import { FileIcon } from './file-icon';
 import { DragDropZone } from './drag-drop-zone';
 import { FileTreeActions } from './file-tree-actions';
 import { OpenByOthersMarker } from './open-by-others-marker';
@@ -109,7 +110,7 @@ export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, 
       ) : (
         <>
           <span className="w-4" />
-          <File className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <FileIcon name={node.name} />
         </>
       )}
       <span className="truncate text-sm flex-1">{node.name}</span>
