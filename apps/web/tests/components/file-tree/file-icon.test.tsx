@@ -10,9 +10,9 @@ function glyph(name: string): string {
 
 describe('FileIcon', () => {
   test.each(['guide.adoc', 'README.asciidoc', 'notes.asc', 'x.ad'])(
-    'renders the type glyph for AsciiDoc file %s',
+    'renders the "A" document glyph for AsciiDoc file %s',
     (name) => {
-      expect(glyph(name)).toBe('lucide-file-type');
+      expect(glyph(name)).toBe('lucide-file-a');
     },
   );
 
