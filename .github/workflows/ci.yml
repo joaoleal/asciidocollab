@@ -158,12 +158,16 @@ jobs:
           name: asciidoctor-pdf-wasm
           path: packages/asciidoc-pdf/ruby/
 
-      - name: Restore the PDF wasm engine from cache (when pdf-wasm didn't run)
-        if: needs.pdf-wasm.result != 'success'
+      # Only when pdf-wasm was SKIPPED (no wasm-input change) — deliberately NOT on 'failure': if the
+      # build failed we must not run the live-PDF specs against a stale cached engine (a green e2e
+      # would mask the broken build). On failure this step is skipped, the engine is absent, and the
+      # specs skip exactly as they do on a cold cache.
+      - name: Restore the PDF wasm engine from cache (when pdf-wasm was skipped)
+        if: needs.pdf-wasm.result == 'skipped'
         uses: actions/cache/restore@v4
         with:
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
-          key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh') }}
+          key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
 
       - name: Build shared packages (Prisma client + declaration files)
         run: pnpm --filter '!@asciidocollab/web' -r build
@@ -325,9 +329,15 @@ jobs:
             echo "wasm=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # A directory pathspec matches every file under it recursively.
-          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
-            packages/asciidoc-pdf/ruby scripts/ci/wasm.sh)"
+          # A directory pathspec matches every file under it recursively. If the diff itself errors
+          # (unexpected repo state the base-reachability check above didn't catch), fail safe to
+          # "changed" rather than letting `set -e` abort the step and silently skip the build.
+          if ! changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+            packages/asciidoc-pdf/ruby scripts/ci/wasm.sh)"; then
+            echo "git diff failed — assuming wasm inputs changed"
+            echo "wasm=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -n "$changed" ]; then
             echo "wasm inputs changed:"; echo "$changed" | sed 's/^/  /'
             echo "wasm=true" >> "$GITHUB_OUTPUT"
@@ -357,18 +367,33 @@ jobs:
           ruby-version: '3.3'
 
       # Cache the expensive part — rbwasm's downloaded wasi-sdk + compiled CRuby (./build, ./rubies) —
-      # keyed on the gem lockfile + build script, so a re-run that didn't change the closure skips the
-      # ~15-25 min compile. (Docker named volumes couldn't do this: CI runners are ephemeral.)
-      - name: Cache the CRuby→wasm build (wasi-sdk + compiled CRuby)
-        uses: actions/cache@v4
+      # keyed on the full set of inputs the compile is a pure function of, so a re-run that didn't
+      # change any of them skips the ~15-25 min compile. (Docker named volumes couldn't do this: CI
+      # runners are ephemeral.) Restore + a *gated* save (not the combined actions/cache) so a FAILED
+      # or partial build never persists a corrupt ./build under the key — a poisoned cache would
+      # otherwise keep breaking every later run until an input changed to bust the key.
+      - name: Restore the CRuby→wasm build cache (wasi-sdk + compiled CRuby)
+        id: build-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             packages/asciidoc-pdf/ruby/build
             packages/asciidoc-pdf/ruby/rubies
-          key: rbwasm-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh') }}
+          key: rbwasm-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
 
       - name: Build asciidoctor-pdf.wasm (ruby.wasm toolchain)
         run: bash scripts/ci/wasm.sh
+
+      # Save only after a SUCCESSFUL build and only when the restore missed — never persist a partial
+      # compile tree, and don't re-save an identical key.
+      - name: Save the CRuby→wasm build cache
+        if: ${{ success() && steps.build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            packages/asciidoc-pdf/ruby/build
+            packages/asciidoc-pdf/ruby/rubies
+          key: rbwasm-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
 
       - name: Upload wasm engine artifact
         uses: actions/upload-artifact@v7
@@ -377,13 +402,15 @@ jobs:
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
           retention-days: 7
 
-      # Persist the engine under a stable, closure-keyed cache so the e2e job can restore it on runs
-      # where pdf-wasm itself doesn't run (no wasm-input change). Same key the e2e restore uses.
+      # Persist the engine under a stable cache so the e2e job can restore it on runs where pdf-wasm
+      # itself doesn't run (no wasm-input change). Runs only on success (a failed build skips this
+      # step), so a broken engine is never cached. The key covers EVERY input the engine is a pure
+      # function of — matching the e2e restore key — so a restored engine is never stale.
       - name: Cache the built engine for the e2e job
         uses: actions/cache/save@v4
         with:
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
-          key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh') }}
+          key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
 
   # ── Security scanning: SAST · secrets · dependency CVEs · workflow hardening ─
   security:

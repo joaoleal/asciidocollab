@@ -61,7 +61,7 @@ not hand-edit it — it is fully re-syncable from its pinned inputs.
   survives the `wasm32-wasip1` closure), because the engine runs in the WASI sandbox with no
   subprocess, no socket, and no native extension loading. To change the closure, edit the `Gemfile`
   and re-resolve the lockfile — never edit the `.wasm`.
-- **`ruby/build-wasm.sh`** pins the toolchain versions (`RUBY_WASM_VERSION`, `RUBY_VERSION`, the
+- **`ruby/build-wasm.sh`** pins the toolchain versions (`RUBY_WASM_VERSION`, `RBWASM_RUBY_VERSION`, the
   `wasm32-wasip1` target) and a fixed `SOURCE_DATE_EPOCH` so identical inputs produce a stable
   artifact. Bump the pins deliberately and re-run.
 
