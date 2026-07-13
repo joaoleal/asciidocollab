@@ -164,7 +164,7 @@ jobs:
       # specs skip exactly as they do on a cold cache.
       - name: Restore the PDF wasm engine from cache (when pdf-wasm was skipped)
         if: needs.pdf-wasm.result == 'skipped'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
           key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
@@ -374,7 +374,7 @@ jobs:
       # otherwise keep breaking every later run until an input changed to bust the key.
       - name: Restore the CRuby→wasm build cache (wasi-sdk + compiled CRuby)
         id: build-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             packages/asciidoc-pdf/ruby/build
@@ -388,7 +388,7 @@ jobs:
       # compile tree, and don't re-save an identical key.
       - name: Save the CRuby→wasm build cache
         if: ${{ success() && steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             packages/asciidoc-pdf/ruby/build
@@ -407,7 +407,7 @@ jobs:
       # step), so a broken engine is never cached. The key covers EVERY input the engine is a pure
       # function of — matching the e2e restore key — so a restored engine is never stale.
       - name: Cache the built engine for the e2e job
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
           key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
