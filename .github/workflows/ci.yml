@@ -41,44 +41,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build packages (generate declaration files)
-        run: pnpm -r build
-
-      - name: Lint
-        run: npx eslint .
-
-      - name: Type-check — shared
-        run: npx tsc -p packages/shared/tsconfig.json --noEmit
-
-      - name: Type-check — domain
-        run: npx tsc -p packages/domain/tsconfig.json --noEmit
-
-      - name: Type-check — infrastructure
-        run: npx tsc -p packages/infrastructure/tsconfig.json --noEmit
-
-      - name: Type-check — API
-        run: npx tsc -p apps/api/tsconfig.json --noEmit
-
-      - name: Type-check — collab
-        run: npx tsc -p apps/collab/tsconfig.json --noEmit
-
-      - name: Type-check — web
-        run: npx tsc -p apps/web/tsconfig.json --noEmit
-
-      - name: Architecture guard (fresh-onion)
-        run: npx fresh-onion
-
-      - name: Security audit (high+ severity)
-        run: pnpm audit --audit-level=high
-
-      # Dead-code / unused-dependency report. Non-gating for now: this monorepo's built-package
-      # (dist entry) layout and dynamic (build-time) deps produce known false positives that need
-      # curation before knip can block. Tracked as a follow-up.
-      # `|| true` keeps the report informational AND exits 0, so knip's normal "found issues" exit 1
-      # does not surface a misleading "Process completed with exit code 1" failure annotation on the
-      # otherwise-green Quality job (which is what `continue-on-error` alone left behind).
-      - name: Dead-code report (knip, non-gating)
-        run: npx knip || echo "::notice::knip reported findings (non-gating — see log for details)"
+      # SINGLE SOURCE OF TRUTH: the exact same script `pnpm gate` runs locally (scripts/ci/gate.sh →
+      # quality.sh). Inlining these steps here previously let CI and the local gate drift (e.g. a
+      # type-check target present in one but not the other). Keep this a thin wrapper so a green local
+      # gate always means a green CI Quality job.
+      - name: Quality gate (build · lint · types · architecture · audit · dead-code)
+        run: bash scripts/ci/quality.sh
 
   # ── Domain unit tests with coverage ────────────────────────────────────────
   unit:
@@ -102,36 +70,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build packages (generate Prisma client + declaration files)
-        run: pnpm -r build
-
-      - name: Asciidoc-core unit tests with coverage
-        working-directory: packages/asciidoc-core
-        run: npx jest --coverage --coverageReporters=text lcov
-
-      - name: Shared unit tests with coverage
-        working-directory: packages/shared
-        run: npx jest --coverage --coverageReporters=text lcov
-
-      - name: Domain unit tests with coverage
-        working-directory: packages/domain
-        run: npx jest --coverage --coverageReporters=text lcov
-
-      - name: API unit tests with coverage
-        working-directory: apps/api
-        run: npx jest --coverage --coverageReporters=text lcov
-
-      - name: Collab unit tests with coverage
-        working-directory: apps/collab
-        # The collab suite runs under ESM (ts-jest emits ESM; `jest.unstable_mockModule` + top-level
-        # `await import()` need it), so it requires --experimental-vm-modules — exactly what the
-        # package's own `test` script sets. Without it the ESM specs silently fail to run and drag
-        # coverage under threshold.
-        run: NODE_OPTIONS=--experimental-vm-modules npx jest --coverage --coverageReporters=text lcov
-
-      - name: Web unit tests with coverage
-        working-directory: apps/web
-        run: npx jest --coverage --coverageReporters=text lcov
+      # SINGLE SOURCE OF TRUTH: identical to the local `pnpm gate` (scripts/ci/gate.sh → unit.sh),
+      # which runs coverage for EVERY package. Inlining per-package steps here let a package (e.g.
+      # asciidoc-core) be enforced in CI but missing from the local gate, so a coverage regression
+      # passed `pnpm gate` and only failed in CI. The script now owns the package list for both.
+      - name: Unit tests + coverage (every package)
+        run: bash scripts/ci/unit.sh
 
       - name: Upload coverage reports
         uses: actions/upload-artifact@v7
@@ -169,14 +113,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build packages
-        run: pnpm -r build
-
-      - name: Infrastructure integration tests
-        run: pnpm --filter @asciidocollab/infrastructure test
-        env:
-          # Testcontainers uses Docker — make sure it's available and doesn't time out
-          TESTCONTAINERS_RYUK_DISABLED: 'true'
+      # SINGLE SOURCE OF TRUTH: identical to the local `pnpm gate` (scripts/ci/gate.sh →
+      # integration.sh). The script builds and runs the infra suite with Testcontainers' Ryuk
+      # reaper disabled (as CI needs).
+      - name: Integration tests (Testcontainers)
+        run: bash scripts/ci/integration.sh
 
   # ── End-to-end tests (full stack) ──────────────────────────────────────────
   e2e:
@@ -321,31 +262,56 @@ jobs:
           # `if: always()` the upload still runs, so don't warn when there is genuinely nothing.
           if-no-files-found: ignore
 
+  # ── Detect whether the wasm engine inputs changed ──────────────────────────
+  # The CRuby→wasm compile below is heavy (~15-25 min), so it must NOT run on every push/PR. This
+  # job reports whether the pinned gem closure or the build script changed; pdf-wasm is gated on it.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      # A job-level permissions block REPLACES the workflow default, so contents:read must be
+      # restated here or actions/checkout loses repo-read access (breaks if the repo goes private).
+      contents: read
+      pull-requests: read      # dorny/paths-filter reads the PR's changed-file list via the API
+    outputs:
+      wasm: ${{ steps.filter.outputs.wasm }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          # Full history so dorny/paths-filter can diff `before..after` on PUSH events (main is
+          # pushed to directly). With a shallow clone it can't find the base commit and falls back to
+          # "everything changed", which would run the heavy wasm build on every push. PRs use the API
+          # and don't need this, but it's harmless for them.
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            wasm:
+              - 'packages/asciidoc-pdf/ruby/**'
+              - 'scripts/ci/wasm.sh'
+
   # ── Build the client-side Asciidoctor-PDF WebAssembly engine ───────────────
+  # Runs ONLY when the wasm inputs changed (see `changes`). The engine is gitignored and re-synced
+  # from the pinned Gemfile.lock via the ruby.wasm Docker toolchain — the runner has Docker but no
+  # host ruby, so scripts/ci/wasm.sh (the same script `pnpm wasm` runs locally) builds inside the
+  # pinned container. No node/pnpm needed: the compile is fully self-contained in Docker.
   pdf-wasm:
     name: PDF wasm engine build
     runs-on: ubuntu-latest
-    needs: quality
+    needs: [quality, changes]
+    if: ${{ needs.changes.outputs.wasm == 'true' }}
 
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Compiles CRuby + the pinned pure-Ruby gem closure to wasm32-wasip1 and bakes stdlib + gems
-      # under /usr. The script fails closed if any native extension enters the closure.
-      - name: Build asciidoctor-pdf.wasm
-        run: pnpm --filter @asciidocollab/asciidoc-pdf build:wasm
+      - name: Build asciidoctor-pdf.wasm (pinned ruby.wasm Docker toolchain)
+        run: bash scripts/ci/wasm.sh
 
       - name: Upload wasm engine artifact
         uses: actions/upload-artifact@v7

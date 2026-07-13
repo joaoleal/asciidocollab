@@ -16,6 +16,9 @@ pnpm -r build
 # threshold per package). Running fewer here — or without coverage — lets a per-package coverage
 # regression pass locally and only fail in CI, which is what previously slipped through.
 
+step "Asciidoc-core unit tests with coverage …"
+(cd packages/asciidoc-core && npx jest --coverage --coverageReporters=text lcov)
+
 step "Shared unit tests with coverage …"
 (cd packages/shared && npx jest --coverage --coverageReporters=text lcov)
 

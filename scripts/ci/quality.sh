@@ -27,6 +27,9 @@ npx tsc -p packages/infrastructure/tsconfig.json --noEmit
 step "Type-checking API …"
 npx tsc -p apps/api/tsconfig.json --noEmit
 
+step "Type-checking collab …"
+npx tsc -p apps/collab/tsconfig.json --noEmit
+
 step "Type-checking web …"
 npx tsc -p apps/web/tsconfig.json --noEmit
 
@@ -35,5 +38,12 @@ npx fresh-onion
 
 step "Security audit (high+ severity) …"
 pnpm audit --audit-level=high
+
+# Dead-code / unused-dependency report. NON-GATING (matches ci.yml): the dist-entry package layout +
+# dynamic deps produce known false positives pending curation, so knip's findings never fail the gate.
+step "Dead-code report (knip) — non-gating …"
+# `::notice::` surfaces findings as a CI annotation (a no-op string locally); `|| echo` keeps knip's
+# normal non-empty exit from failing the gate.
+npx knip || echo "::notice::knip reported findings (non-gating — see log for details)"
 
 ok "All quality checks passed."

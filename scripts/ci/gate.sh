@@ -23,19 +23,30 @@ cd "$ROOT"
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; RESET='\033[0m'
 gate() { echo -e "\n${CYAN}━━━ $* ━━━${RESET}"; }
 
-gate "Job 1/5 — Quality (build · lint · types · architecture · audit)"
+gate "Job 1/6 — Quality (build · lint · types · architecture · audit)"
 "$ROOT/scripts/ci/quality.sh"
 
-gate "Job 2/5 — Unit tests + coverage"
+gate "Job 2/6 — Unit tests + coverage"
 "$ROOT/scripts/ci/unit.sh"
 
-gate "Job 3/5 — Integration tests (Testcontainers)"
+gate "Job 3/6 — Integration tests (Testcontainers)"
 "$ROOT/scripts/ci/integration.sh"
 
-gate "Job 4/5 — Security scan (SAST · secrets · dep CVEs · workflows · dead code)"
+gate "Job 4/6 — Security scan (SAST · secrets · dep CVEs · workflows · dead code)"
 "$ROOT/scripts/ci/security.sh"
 
-gate "Job 5/5 — E2E (isolated stack — safe alongside scripts/dev.sh)"
+gate "Job 5/6 — E2E (isolated stack — safe alongside scripts/dev.sh)"
 "$ROOT/scripts/ci/e2e-local.sh"
+
+# Job 6 — the client-side PDF wasm engine. In CI this job is gated to run ONLY when the wasm inputs
+# (packages/asciidoc-pdf/ruby/**) change, because the CRuby→wasm compile is heavy (~15-25 min). The
+# local gate mirrors that: it is OPT-IN so a routine `pnpm gate` stays fast. Run it (RUN_WASM=1 pnpm
+# gate, or `pnpm wasm`) whenever you touch the gem closure or the build toolchain.
+if [ "${RUN_WASM:-}" = "1" ]; then
+  gate "Job 6/6 — PDF wasm engine build (RUN_WASM=1)"
+  "$ROOT/scripts/ci/wasm.sh"
+else
+  gate "Job 6/6 — PDF wasm engine build — SKIPPED (set RUN_WASM=1 to build; CI runs it on ruby/** changes)"
+fi
 
 echo -e "\n${GREEN}✓ All pre-merge gates passed.${RESET}"
