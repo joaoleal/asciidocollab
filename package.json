@@ -17,6 +17,7 @@
     "semgrep": "semgrep --config p/security-audit --config p/owasp-top-ten --config .semgrep.yml --error --quiet .",
     "audit": "pnpm audit --audit-level=high",
     "e2e:local": "scripts/ci/e2e-local.sh",
+    "wasm": "scripts/ci/wasm.sh",
     "gate": "scripts/ci/gate.sh"
   },
   "devDependencies": {
