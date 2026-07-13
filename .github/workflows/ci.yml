@@ -175,6 +175,13 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm --filter @asciidocollab/web exec playwright install --with-deps chromium
 
+      # The live-PDF specs inspect the exported PDF via poppler's CLI: pdf-image-embed reads its text
+      # with `pdftotext`, and the pdf-parity harness (once reference fixtures land) rasterizes pages
+      # with `pdftoppm`. Without poppler those specs error with "spawnSync pdftotext ENOENT" instead
+      # of running. This is the "parity host has poppler" assumption the harness documents.
+      - name: Install poppler-utils (PDF text/raster inspection for the live-PDF specs)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
       - name: Start PostgreSQL and Mailpit
         run: docker compose -f docker-compose.dev.yml up -d postgres mailpit --wait
 
