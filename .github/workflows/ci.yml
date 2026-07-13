@@ -296,7 +296,6 @@ jobs:
       # A job-level permissions block REPLACES the workflow default, so contents:read must be
       # restated here or actions/checkout loses repo-read access (breaks if the repo goes private).
       contents: read
-      pull-requests: read      # dorny/paths-filter reads the PR's changed-file list via the API
     outputs:
       wasm: ${{ steps.filter.outputs.wasm }}
 
@@ -304,19 +303,38 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          # Full history so dorny/paths-filter can diff `before..after` on PUSH events (main is
-          # pushed to directly). With a shallow clone it can't find the base commit and falls back to
-          # "everything changed", which would run the heavy wasm build on every push. PRs use the API
-          # and don't need this, but it's harmless for them.
+          # Full history so the diff below can reach the base commit on both PR (base..head) and
+          # PUSH (before..after) events — main is pushed to directly. With a shallow clone the base
+          # commit is unreachable and we fail safe to "changed", running the heavy wasm build anyway.
           fetch-depth: 0
 
-      - uses: dorny/paths-filter@v3
+      # Native path filter (no third-party action): diff the wasm inputs against the event's base.
+      - name: Detect changed wasm inputs
         id: filter
-        with:
-          filters: |
-            wasm:
-              - 'packages/asciidoc-pdf/ruby/**'
-              - 'scripts/ci/wasm.sh'
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # Missing/zero/unreachable base (first push of a branch, force-push, shallow clone) → fail
+          # safe: assume the inputs changed so the engine is always rebuilt when we can't be sure.
+          if [ -z "${BASE_SHA:-}" ] \
+             || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "base commit unavailable — assuming wasm inputs changed"
+            echo "wasm=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A directory pathspec matches every file under it recursively.
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+            packages/asciidoc-pdf/ruby scripts/ci/wasm.sh)"
+          if [ -n "$changed" ]; then
+            echo "wasm inputs changed:"; echo "$changed" | sed 's/^/  /'
+            echo "wasm=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no wasm input changes"
+            echo "wasm=false" >> "$GITHUB_OUTPUT"
+          fi
 
   # ── Build the client-side Asciidoctor-PDF WebAssembly engine ───────────────
   # Runs ONLY when the wasm inputs changed (see `changes`). The engine is gitignored and re-synced
