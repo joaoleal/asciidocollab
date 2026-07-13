@@ -43,6 +43,11 @@ RUBY_DIR="$HERE"
 GEM_VENDOR_DIR="${GEM_VENDOR_DIR:-$RUBY_DIR/.wasm-build/vendor/bundle}"
 OUTPUT_WASM="${OUTPUT_WASM:-$RUBY_DIR/asciidoctor-pdf.wasm}"
 
+# Run from RUBY_DIR: rbwasm writes its CRuby/wasi-sdk build cache to ./build and ./rubies RELATIVE TO
+# CWD, so anchoring here keeps those caches next to the Gemfile (matching the actions/cache paths and
+# the .gitignore entries) regardless of where this script was invoked from.
+cd "$RUBY_DIR"
+
 echo "==> Building Asciidoctor-PDF wasm engine"
 echo "    ruby.wasm      : $RUBY_WASM_VERSION (CRuby $RBWASM_RUBY_VERSION, target $WASI_TARGET)"
 echo "    lockfile       : $RUBY_DIR/Gemfile.lock"
@@ -60,9 +65,15 @@ if ! command -v ruby >/dev/null 2>&1 || ! command -v gem >/dev/null 2>&1; then
 fi
 if ! command -v rbwasm >/dev/null 2>&1; then
   echo "==> Installing the ruby.wasm builder (ruby_wasm $RUBY_WASM_VERSION → rbwasm CLI)"
-  gem install ruby_wasm -v "$RUBY_WASM_VERSION" --no-document
-  # Make freshly-installed gem executables discoverable if the gem bindir isn't already on PATH.
-  command -v rbwasm >/dev/null 2>&1 || { PATH="$(ruby -e 'print Gem.bindir'):$PATH"; export PATH; }
+  # --user-install so this NEVER needs root/sudo — even against a system Ruby whose gem dir is
+  # root-owned, it installs into the user's gem home instead. (No sudo is required anywhere in this
+  # build.)
+  gem install ruby_wasm -v "$RUBY_WASM_VERSION" --no-document --user-install
+  # Make the freshly-installed rbwasm discoverable — the user-install bindir (and the default gem
+  # bindir) may not be on PATH yet.
+  command -v rbwasm >/dev/null 2>&1 || {
+    PATH="$(ruby -e 'print Gem.user_dir')/bin:$(ruby -e 'print Gem.bindir'):$PATH"; export PATH
+  }
 fi
 for tool in rbwasm bundle; do
   command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found after setup." >&2; exit 1; }
