@@ -296,9 +296,9 @@ jobs:
 
   # ── Build the client-side Asciidoctor-PDF WebAssembly engine ───────────────
   # Runs ONLY when the wasm inputs changed (see `changes`). The engine is gitignored and re-synced
-  # from the pinned Gemfile.lock via the ruby.wasm Docker toolchain — the runner has Docker but no
-  # host ruby, so scripts/ci/wasm.sh (the same script `pnpm wasm` runs locally) builds inside the
-  # pinned container. No node/pnpm needed: the compile is fully self-contained in Docker.
+  # from the pinned Gemfile.lock via the ruby.wasm toolchain (rbwasm) running directly on the runner —
+  # no container. setup-ruby provides Ruby 3.3; scripts/ci/wasm.sh (the same script `pnpm wasm` runs
+  # locally) installs the pinned rbwasm and builds. No node/pnpm needed.
   pdf-wasm:
     name: PDF wasm engine build
     runs-on: ubuntu-latest
@@ -310,7 +310,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build asciidoctor-pdf.wasm (pinned ruby.wasm Docker toolchain)
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      # Cache the expensive part — rbwasm's downloaded wasi-sdk + compiled CRuby (./build, ./rubies) —
+      # keyed on the gem lockfile + build script, so a re-run that didn't change the closure skips the
+      # ~15-25 min compile. (Docker named volumes couldn't do this: CI runners are ephemeral.)
+      - name: Cache the CRuby→wasm build (wasi-sdk + compiled CRuby)
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/asciidoc-pdf/ruby/build
+            packages/asciidoc-pdf/ruby/rubies
+          key: rbwasm-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh') }}
+
+      - name: Build asciidoctor-pdf.wasm (ruby.wasm toolchain)
         run: bash scripts/ci/wasm.sh
 
       - name: Upload wasm engine artifact

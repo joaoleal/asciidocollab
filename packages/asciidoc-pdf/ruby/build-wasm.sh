@@ -15,9 +15,10 @@
 # Reproducibility: a fixed SOURCE_DATE_EPOCH and pinned tool/ruby versions keep the output stable for
 # identical inputs. Bump the pins deliberately and re-run; do not edit the artifact.
 #
-# Prerequisites: a POSIX shell with the ruby.wasm toolchain available — either the `ruby_wasm`
-# builder gem (providing the `rbwasm` CLI) plus `wasi-vfs`, or the equivalent ruby.wasm builder
-# container image. Override the pins and paths below via the environment if needed.
+# Prerequisites: a host Ruby 3.3 toolchain (with RubyGems/Bundler) on PATH — CI provides it via
+# ruby/setup-ruby; locally use your Ruby version manager (rbenv/asdf/rvm) or system Ruby. The pinned
+# `ruby_wasm` builder gem (which provides the `rbwasm` CLI and bundles its own wasi-vfs) is installed
+# automatically below if absent. Runs directly on the host — no container. Override pins/paths via env.
 
 set -euo pipefail
 
@@ -37,7 +38,8 @@ export SOURCE_DATE_EPOCH
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUBY_DIR="$HERE"
 # Bundler vendors the pinned gem closure here; rbwasm's own CRuby/wasi-sdk build cache lives under
-# ./build and ./rubies (both relative to RUBY_DIR — override via BUNDLE_PATH / the Docker cache mount).
+# ./build and ./rubies (both relative to RUBY_DIR — override via BUNDLE_PATH; in CI these two dirs are
+# restored/saved by actions/cache so the slow CRuby→wasm compile only runs once per lockfile change).
 GEM_VENDOR_DIR="${GEM_VENDOR_DIR:-$RUBY_DIR/.wasm-build/vendor/bundle}"
 OUTPUT_WASM="${OUTPUT_WASM:-$RUBY_DIR/asciidoctor-pdf.wasm}"
 
@@ -48,15 +50,22 @@ echo "    output         : $OUTPUT_WASM"
 echo "    SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
 
 # The ruby.wasm builder gem (`ruby_wasm`) provides the `rbwasm` CLI and carries its own bundled
-# wasi-vfs; `bundle` vendors the pinned gem closure. An external `wasi-vfs` binary is not required —
-# rbwasm links wasi-vfs into the engine and bakes the stdlib + gems itself.
+# wasi-vfs; Bundler (ships with Ruby) vendors the pinned gem closure. Ruby itself must come from the
+# environment; the pinned builder is installed here if missing, so RUBY_WASM_VERSION is the single
+# source of truth for the builder version (CI does not need to restate it).
+if ! command -v ruby >/dev/null 2>&1 || ! command -v gem >/dev/null 2>&1; then
+  echo "ERROR: a host Ruby $RBWASM_RUBY_VERSION toolchain (ruby + gem) was not found on PATH." >&2
+  echo "       CI installs it with ruby/setup-ruby; locally use rbenv/asdf/rvm or your system Ruby." >&2
+  exit 1
+fi
+if ! command -v rbwasm >/dev/null 2>&1; then
+  echo "==> Installing the ruby.wasm builder (ruby_wasm $RUBY_WASM_VERSION → rbwasm CLI)"
+  gem install ruby_wasm -v "$RUBY_WASM_VERSION" --no-document
+  # Make freshly-installed gem executables discoverable if the gem bindir isn't already on PATH.
+  command -v rbwasm >/dev/null 2>&1 || { PATH="$(ruby -e 'print Gem.bindir'):$PATH"; export PATH; }
+fi
 for tool in rbwasm bundle; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "ERROR: required tool '$tool' not found on PATH." >&2
-    echo "       Run this inside the ruby.wasm builder toolchain (the ruby_wasm gem provides rbwasm)." >&2
-    echo "       Use ./build-wasm.docker.sh to run it inside the pinned toolchain container." >&2
-    exit 1
-  fi
+  command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: required tool '$tool' not found after setup." >&2; exit 1; }
 done
 
 # ── 1. Vendor the pinned gem closure (frozen lockfile, pure-Ruby platform) ────────────────────────
@@ -88,6 +97,34 @@ if [ -n "$native_hits" ]; then
   exit 2
 fi
 echo "    OK — no host-loaded native extensions found."
+
+# ── 2b. Drop the host CRuby headers so the wasm compile below uses the wasm headers ───────────────
+# LOAD-BEARING (verified by experiment) — do not drop. The js host bridge is the one gem with a C
+# extension, and it is compiled TWICE against different Ruby headers: for the host during the
+# `bundle install` above (Bundler compiles native extensions as it vendors, and mkmf needs the host
+# Ruby's headers — a clean vendor FAILS without them), then for wasm by rbwasm below. If the host
+# headers stay visible to the wasm compile, it grabs the host ruby.h and dies:
+#     js/ext/js/js-core.c → <host rubyhdrdir>/ruby/internal/config.h:
+#       fatal error: 'ruby/config.h' file not found
+# (the host header pulls in a wasm config.h that isn't on that path). So drop the host header dir now —
+# after vendoring, before rbwasm. This DELETES the runner's Ruby dev headers, so it is gated to CI (an
+# ephemeral runner) or an explicit opt-in — we never silently mutate a developer's machine. Nothing
+# compiles a host extension after this point, so the removal is otherwise a no-op. The dir is resolved
+# from the running Ruby's own RbConfig, so it is correct for any install prefix (ruby/setup-ruby's
+# /opt/hostedtoolcache, a system /usr, an rbenv shim, …) — not tied to any one layout.
+if [ -n "${CI:-}" ] || [ "${WASM_STRIP_HOST_HEADERS:-}" = "1" ]; then
+  echo "==> Removing host CRuby headers so they can't shadow the wasm headers"
+  for hdr_var in rubyhdrdir rubyarchhdrdir; do
+    host_hdr="$(ruby -e "print RbConfig::CONFIG['$hdr_var']" 2>/dev/null || true)"
+    if [ -n "$host_hdr" ] && [ -d "$host_hdr" ]; then
+      echo "    removing $host_hdr"
+      rm -rf "$host_hdr"
+    fi
+  done
+else
+  echo "==> Keeping host CRuby headers (local run). If the js wasm compile fails with"
+  echo "    \"'ruby/config.h' file not found\", re-run with WASM_STRIP_HOST_HEADERS=1."
+fi
 
 # ── 3. Compile CRuby + bake stdlib and the gem closure into the final artifact ────────────────────
 # rbwasm compiles CRuby (and the js host-bridge extension) to $WASI_TARGET, then bakes the full stdlib
