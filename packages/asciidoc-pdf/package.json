@@ -9,6 +9,7 @@
     "build": "tsc",
     "build:wasm": "bash ruby/build-wasm.sh",
     "test": "jest --passWithNoTests",
+    "test:ci": "jest --coverage --coverageReporters=text lcov",
     "test:integration": "node tests/integration/engine-smoke.mjs"
   },
   "dependencies": {

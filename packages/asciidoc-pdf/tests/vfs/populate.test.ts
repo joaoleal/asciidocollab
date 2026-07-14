@@ -142,6 +142,33 @@ describe('populateProject', () => {
     expect([...vfs.files.keys()]).toEqual([`${PROJECT_ROOT}/main.adoc`]);
   });
 
+  it('rejects an empty snapshot key as "empty" without writing it', () => {
+    const vfs = new FakeVfs();
+    const snapshot = makeSnapshot({
+      files: { '': 'orphan', 'main.adoc': '= Ok\n' },
+      rootPath: 'main.adoc',
+    });
+
+    const result = populateProject(vfs, snapshot);
+
+    expect(reasonFor(result, '')).toBe('empty');
+    expect([...vfs.files.keys()]).toEqual([`${PROJECT_ROOT}/main.adoc`]);
+  });
+
+  it('reports an invalid root path as a rejected "root" entry', () => {
+    const vfs = new FakeVfs();
+    const snapshot = makeSnapshot({
+      files: { 'main.adoc': '= Ok\n' },
+      rootPath: '../escape.adoc',
+    });
+
+    const result = populateProject(vfs, snapshot);
+
+    const rootReject = result.rejected.find((r) => r.kind === 'root');
+    expect(rootReject).toEqual({ path: '../escape.adoc', reason: 'traversal', kind: 'root' });
+    expect(result.rootPresent).toBe(false);
+  });
+
   it('reports rootPresent=false when the root path never lands under /project', () => {
     const vfs = new FakeVfs();
     const snapshot = makeSnapshot({
@@ -216,5 +243,12 @@ describe('readOutput / clearOutput', () => {
     expect(vfs.exists(`${OUT_ROOT}/b.pdf`)).toBe(false);
     expect(vfs.readdir(OUT_ROOT)).toHaveLength(0);
     expect(vfs.exists(`${PROJECT_ROOT}/keep.adoc`)).toBe(true);
+  });
+
+  it('clearOutput is a no-op when /out is absent', () => {
+    const vfs = new FakeVfs();
+    // Nothing under /out exists yet — clearOutput must return without touching the VFS.
+    expect(() => clearOutput(vfs)).not.toThrow();
+    expect(vfs.files.size).toBe(0);
   });
 });

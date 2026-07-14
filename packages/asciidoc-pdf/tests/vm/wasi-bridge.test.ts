@@ -326,6 +326,84 @@ describe('createWasiBridge', () => {
       const bridge = createWasiBridge({ module: MODULE }, deps);
       expect(() => bridge.writeFile('/project/x', new Uint8Array())).toThrow(WasiBridgeError);
     });
+
+    it('refuses to overwrite a directory with file bytes', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+
+      // Writing a nested file makes /project/dir a directory node.
+      bridge.writeFile('/project/dir/child', new Uint8Array([1]));
+      try {
+        bridge.writeFile('/project/dir', new Uint8Array([2]));
+        throw new Error('should have thrown');
+      } catch (error) {
+        expect((error as WasiBridgeError).code).toBe(WASI_BRIDGE_ERROR.INVALID_PATH);
+      }
+    });
+
+    it('refuses to write through a path whose intermediate segment is a file', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+
+      bridge.writeFile('/project/note', new Uint8Array([1]));
+      try {
+        bridge.writeFile('/project/note/child', new Uint8Array([2]));
+        throw new Error('should have thrown');
+      } catch (error) {
+        expect((error as WasiBridgeError).code).toBe(WASI_BRIDGE_ERROR.INVALID_PATH);
+      }
+    });
+
+    it('rejects a mount-root path with no file name on write', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+      expect(() => bridge.writeFile('/project', new Uint8Array())).toThrow(WasiBridgeError);
+    });
+
+    it('throws NOT_FOUND when listing a non-directory path', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+
+      bridge.writeFile('/project/file.adoc', new Uint8Array([1]));
+      try {
+        bridge.readdir('/project/file.adoc');
+        throw new Error('should have thrown');
+      } catch (error) {
+        expect((error as WasiBridgeError).code).toBe(WASI_BRIDGE_ERROR.NOT_FOUND);
+      }
+    });
+
+    it('reports a mount root as existing and treats descent into a file as absent', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+
+      // A mount root itself has no path segments and is always present.
+      expect(bridge.exists('/project')).toBe(true);
+
+      // Descending past a leaf file returns "not found" rather than throwing.
+      bridge.writeFile('/project/leaf', new Uint8Array([1]));
+      expect(bridge.exists('/project/leaf/below')).toBe(false);
+    });
+
+    it('rejects removing a mount root (no file name)', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+      expect(() => bridge.removeFile('/project')).toThrow(WasiBridgeError);
+    });
+
+    it('silently no-ops removeFile when the parent directory is absent', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+      // Parent /project/ghost never existed — removal must be a no-op, not a throw.
+      expect(() => bridge.removeFile('/project/ghost/child')).not.toThrow();
+    });
   });
 
   describe('dispose', () => {

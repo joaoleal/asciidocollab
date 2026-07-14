@@ -25,6 +25,9 @@ step "Shared unit tests with coverage …"
 step "Domain unit tests with coverage …"
 (cd packages/domain && npx jest --coverage --coverageReporters=text lcov)
 
+step "Asciidoc-pdf unit tests with coverage …"
+pnpm --filter @asciidocollab/asciidoc-pdf test:ci
+
 step "API unit tests with coverage …"
 (cd apps/api && npx jest --coverage --coverageReporters=text lcov)
 
