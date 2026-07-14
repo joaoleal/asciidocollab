@@ -162,6 +162,168 @@ function parseAttributeLine(line: string): BlockAttributes | null {
 }
 
 // ---------------------------------------------------------------------------
+// Shared detection: the single authority over what the stage renders and hashes.
+// ---------------------------------------------------------------------------
+
+/**
+ * One renderable diagram or math block located in a document. This is the shared contract between
+ * detection and the stage's rendering/hashing: `source` and `params` are the exact inputs the stage
+ * feeds {@link computeSourceHash}, so a record's content address never drifts from what gets rendered.
+ */
+export interface RenderableBlock {
+  /** The shim family that renders this record. */
+  readonly category: 'diagram' | 'math';
+  /** The lowercased engine/notation (`mermaid`, `graphviz`, `vega`, `stem`, `latexmath`, …). */
+  readonly notation: string;
+  /** A delimited block, or an inline math macro (inline applies to math only). */
+  readonly kind: 'block' | 'inline';
+  /** The verbatim block/inline source text — part of the content-address hash. */
+  readonly source: string;
+  /** Named + positional (`pos<N>`) attributes plus the synthetic {@link BLOCK_NOTATION_PARAM}. */
+  readonly params: Record<string, string>;
+  /** 1-based line of the block's attribute line (or the inline macro's line), for diagnostics. */
+  readonly line: number;
+}
+
+/**
+ * A block located by the line scan, widened to include the unsupported-diagram category the public
+ * detector filters out. Carries the original block lines so the stage can leave a block untouched on
+ * a skip or a render failure.
+ */
+interface ScannedBlock {
+  readonly category: BlockCategory;
+  readonly notation: string;
+  readonly source: string;
+  readonly params: Record<string, string>;
+  readonly line: number;
+  readonly originalBlock: readonly string[];
+}
+
+/** An inline math macro located on a prose line, with the span the stage splices over. */
+interface InlineMatch {
+  readonly block: RenderableBlock;
+  readonly start: number;
+  readonly length: number;
+}
+
+/** One region of the document, yielded in order so a consumer can rebuild the whole text. */
+type ScanEvent =
+  | { readonly kind: 'block'; readonly block: ScannedBlock }
+  | { readonly kind: 'verbatim'; readonly lines: readonly string[] }
+  | { readonly kind: 'prose'; readonly line: string; readonly matches: readonly InlineMatch[] };
+
+/** Locate every inline math macro on a prose line (none inside verbatim regions ever reach here). */
+function detectInlineMatches(line: string, lineNumber: number): InlineMatch[] {
+  if (!line.includes(':[')) {
+    return [];
+  }
+  const matches: InlineMatch[] = [];
+  for (const match of line.matchAll(INLINE_MATH_RE)) {
+    const start = match.index;
+    if (start === undefined) {
+      continue;
+    }
+    const notation = match[1];
+    matches.push({
+      block: {
+        category: 'math',
+        notation,
+        kind: 'inline',
+        source: match[2],
+        params: { [BLOCK_NOTATION_PARAM]: notation },
+        line: lineNumber,
+      },
+      start,
+      length: match[0].length,
+    });
+  }
+  return matches;
+}
+
+/**
+ * Walk the document once, in order, classifying it into renderable/unsupported blocks, verbatim
+ * regions copied through unchanged, and prose lines with their inline math. This pragmatic line scan
+ * (no full AsciiDoc parse) is the sole detection authority: both the public {@link detectRenderableBlocks}
+ * and the stage's rewrite loop drive it, so the two can never diverge on what is renderable.
+ */
+function* scanDocument(text: string): Generator<ScanEvent> {
+  const lines = text.split('\n');
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const attribute = parseAttributeLine(line);
+
+    if (attribute !== null && index + 1 < lines.length && isDelimiter(lines[index + 1])) {
+      const category = classifyBlock(attribute.name);
+      if (category !== null) {
+        const delimiter = lines[index + 1].trim();
+        let close = index + 2;
+        while (close < lines.length && lines[close].trim() !== delimiter) {
+          close += 1;
+        }
+        if (close < lines.length) {
+          yield {
+            kind: 'block',
+            block: {
+              category,
+              notation: attribute.name,
+              source: lines.slice(index + 2, close).join('\n'),
+              params: { ...attribute.params, [BLOCK_NOTATION_PARAM]: attribute.name },
+              line: index + 1,
+              originalBlock: lines.slice(index, close + 1),
+            },
+          };
+          index = close + 1;
+          continue;
+        }
+      }
+    }
+
+    if (isDelimiter(line)) {
+      // A bare delimited region (listing/literal/passthrough): copied through verbatim so inline math
+      // inside it is treated as literal content, never rewritten.
+      const delimiter = line.trim();
+      const start = index;
+      index += 1;
+      while (index < lines.length && lines[index].trim() !== delimiter) {
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      yield { kind: 'verbatim', lines: lines.slice(start, index) };
+      continue;
+    }
+
+    yield { kind: 'prose', line, matches: detectInlineMatches(line, index + 1) };
+    index += 1;
+  }
+}
+
+/**
+ * Locate every renderable diagram/math block and inline math macro in a document, in order. Diagram
+ * engines with no offline renderer (PlantUML/ditaa) and inline math inside verbatim regions are
+ * excluded — they are not renderable here.
+ */
+export function detectRenderableBlocks(text: string): RenderableBlock[] {
+  const blocks: RenderableBlock[] = [];
+  for (const event of scanDocument(text)) {
+    if (event.kind === 'block') {
+      const { category, notation, source, params, line } = event.block;
+      if (category === 'diagram-unsupported') {
+        continue;
+      }
+      blocks.push({ category, notation, kind: 'block', source, params, line });
+    } else if (event.kind === 'prose') {
+      for (const match of event.matches) {
+        blocks.push(match.block);
+      }
+    }
+  }
+  return blocks;
+}
+
+// ---------------------------------------------------------------------------
 // VFS path helpers.
 // ---------------------------------------------------------------------------
 
@@ -232,6 +394,7 @@ async function renderOrReuse(
       format: output.asset.format,
       bytes: output.asset.bytes,
       rasterFallback: output.asset.rasterFallback,
+      altText: '',
     };
     context.cache.set(asset);
     if (asset.rasterFallback) {
@@ -282,61 +445,17 @@ async function runDiagramsMath(context: StageContext): Promise<StageResult> {
     return {};
   }
 
-  const lines = original.split('\n');
-  const out: string[] = [];
   const resource = rootPath;
-  let index = 0;
+  const out: string[] = [];
 
-  while (index < lines.length) {
-    const line = lines[index];
-    const attribute = parseAttributeLine(line);
-
-    if (attribute !== null && index + 1 < lines.length && isDelimiter(lines[index + 1])) {
-      const category = classifyBlock(attribute.name);
-      if (category !== null) {
-        const delimiter = lines[index + 1].trim();
-        let close = index + 2;
-        while (close < lines.length && lines[close].trim() !== delimiter) {
-          close += 1;
-        }
-        if (close < lines.length) {
-          const source = lines.slice(index + 2, close).join('\n');
-          const originalBlock = lines.slice(index, close + 1);
-          const replacement = await handleBlock(context, {
-            category,
-            name: attribute.name,
-            params: attribute.params,
-            source,
-            resource,
-            line: index + 1,
-            originalBlock,
-          });
-          out.push(...replacement);
-          index = close + 1;
-          continue;
-        }
-      }
+  for (const event of scanDocument(original)) {
+    if (event.kind === 'block') {
+      out.push(...(await handleBlock(context, event.block, resource)));
+    } else if (event.kind === 'verbatim') {
+      out.push(...event.lines);
+    } else {
+      out.push(await rewriteInlineMath(context, event, resource));
     }
-
-    if (isDelimiter(line)) {
-      // A bare delimited region (listing/literal/passthrough): copy through verbatim so inline math
-      // inside it is treated as literal content, not rewritten.
-      const delimiter = line.trim();
-      out.push(line);
-      index += 1;
-      while (index < lines.length && lines[index].trim() !== delimiter) {
-        out.push(lines[index]);
-        index += 1;
-      }
-      if (index < lines.length) {
-        out.push(lines[index]);
-        index += 1;
-      }
-      continue;
-    }
-
-    out.push(await rewriteInlineMath(context, line, resource, index + 1));
-    index += 1;
   }
 
   const rewritten = out.join('\n');
@@ -346,108 +465,90 @@ async function runDiagramsMath(context: StageContext): Promise<StageResult> {
   return {};
 }
 
-interface DetectedBlock {
-  readonly category: BlockCategory;
-  readonly name: string;
-  readonly params: Record<string, string>;
-  readonly source: string;
-  readonly resource: string;
-  readonly line: number;
-  readonly originalBlock: readonly string[];
-}
-
 /** Render one detected block and return the lines that replace it (unchanged on skip/failure). */
-async function handleBlock(context: StageContext, block: DetectedBlock): Promise<readonly string[]> {
+async function handleBlock(
+  context: StageContext,
+  block: ScannedBlock,
+  resource: string,
+): Promise<readonly string[]> {
   if (block.category === 'diagram-unsupported') {
     context.diagnostics.report({
       severity: SEVERITY_WARNING,
       code: DIAGNOSTIC_DIAGRAM_UNSUPPORTED,
-      resource: block.resource,
-      location: { path: block.resource, line: block.line },
-      message: `Diagram engine "${block.name}" has no offline renderer; the block was skipped.`,
+      resource,
+      location: { path: resource, line: block.line },
+      message: `Diagram engine "${block.notation}" has no offline renderer; the block was skipped.`,
     });
     return block.originalBlock;
   }
 
   const shim =
     block.category === 'diagram'
-      ? resolveDiagramShim(context, block.name)
+      ? resolveDiagramShim(context, block.notation)
       : context.shims.byKind('math')[0];
   if (shim === undefined) {
     context.diagnostics.report({
       severity: SEVERITY_WARNING,
       code: DIAGNOSTIC_DIAGRAM_UNSUPPORTED,
-      resource: block.resource,
-      location: { path: block.resource, line: block.line },
-      message: `No renderer is available for "${block.name}"; the block was skipped.`,
+      resource,
+      location: { path: resource, line: block.line },
+      message: `No renderer is available for "${block.notation}"; the block was skipped.`,
     });
     return block.originalBlock;
   }
 
-  const parameters: Record<string, string> = { ...block.params, [BLOCK_NOTATION_PARAM]: block.name };
   const asset = await renderOrReuse(context, {
     shim,
     source: block.source,
-    params: parameters,
+    params: block.params,
     category: block.category,
-    resource: block.resource,
+    resource,
     line: block.line,
   });
   if (asset === null) {
     return block.originalBlock;
   }
-  const target = genReference(block.resource, `${asset.sourceHash}.${asset.format}`);
+  const target = genReference(resource, `${asset.sourceHash}.${asset.format}`);
   return [`image::${target}[]`];
 }
 
-/** Rewrite every inline math macro on a prose line to an inline `image:` reference. */
+/** Rewrite every detected inline math macro on a prose line to an inline `image:` reference. */
 async function rewriteInlineMath(
   context: StageContext,
-  line: string,
+  event: { readonly line: string; readonly matches: readonly InlineMatch[] },
   resource: string,
-  lineNumber: number,
 ): Promise<string> {
-  if (!line.includes(':[')) {
-    return line;
-  }
-  const matches = [...line.matchAll(INLINE_MATH_RE)];
-  if (matches.length === 0) {
-    return line;
+  if (event.matches.length === 0) {
+    return event.line;
   }
   const shim = context.shims.byKind('math')[0];
 
   let result = '';
   let cursor = 0;
-  for (const match of matches) {
-    const start = match.index;
-    if (start === undefined) {
-      continue;
-    }
-    const full = match[0];
-    const notation = match[1];
-    const expression = match[2];
-    result += line.slice(cursor, start);
-    cursor = start + full.length;
+  for (const match of event.matches) {
+    result += event.line.slice(cursor, match.start);
+    const macro = event.line.slice(match.start, match.start + match.length);
+    cursor = match.start + match.length;
 
     if (shim === undefined) {
-      result += full;
+      result += macro;
       continue;
     }
     const asset = await renderOrReuse(context, {
       shim,
-      source: expression,
-      params: { [BLOCK_NOTATION_PARAM]: notation },
+      source: match.block.source,
+      params: match.block.params,
       category: 'math',
       resource,
-      line: lineNumber,
+      line: match.block.line,
     });
     if (asset === null) {
-      result += full;
+      result += macro;
       continue;
     }
     const target = genReference(resource, `${asset.sourceHash}.${asset.format}`);
     result += `image:${target}[]`;
   }
-  result += line.slice(cursor);
+  result += event.line.slice(cursor);
   return result;
 }

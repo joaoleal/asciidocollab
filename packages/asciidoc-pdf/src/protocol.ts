@@ -75,6 +75,13 @@ export interface RenderRequest {
   readonly changedPaths?: readonly string[];
   /** Run the PDF optimize pass (export sets this; preview may skip it). */
   readonly optimize: boolean;
+  /**
+   * Assets already rendered on the main thread (e.g. mermaid diagrams the worker's shims cannot
+   * produce in-VM) to pre-seed into the worker's content-addressed asset cache before preprocessing.
+   * Optional and additive — a request without it renders exactly as before. Each entry is keyed by its
+   * {@link GeneratedAsset.sourceHash}, so a pre-seeded hit skips re-rendering the matching block.
+   */
+  readonly generatedAssets?: readonly GeneratedAsset[];
 }
 
 /**
@@ -92,6 +99,8 @@ export interface GeneratedAsset {
   readonly bytes: Uint8Array;
   /** True when the SVG renderer could not consume the source and a raster fallback was used. */
   readonly rasterFallback: boolean;
+  /** Derived alt text applied to the emitted `image::`/`image:` reference for accessibility. */
+  readonly altText: string;
 }
 
 /**

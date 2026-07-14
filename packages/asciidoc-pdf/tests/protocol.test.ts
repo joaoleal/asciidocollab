@@ -10,6 +10,9 @@ import {
   type FromWorker,
   type RenderResult,
   type RenderError,
+  type RenderRequest,
+  type GeneratedAsset,
+  type ProjectSnapshot,
 } from '../src/protocol';
 
 describe('render phase constants', () => {
@@ -108,6 +111,49 @@ describe('FromWorker discriminant guards', () => {
     if (isErrorMessage(error)) {
       expect(error.error.phase).toBe('convert');
     }
+  });
+});
+
+describe('render request pre-seeded assets', () => {
+  const snapshot: ProjectSnapshot = {
+    files: { 'main.adoc': '= Doc' },
+    binaryAssets: {},
+    rootPath: 'main.adoc',
+    openPath: 'main.adoc',
+    fontPaths: [],
+    attributes: {},
+  };
+
+  it('remains valid without any pre-seeded generated assets', () => {
+    const request: RenderRequest = {
+      requestId: 'r1',
+      mode: 'export',
+      snapshot,
+      optimize: true,
+    };
+    expect(request.generatedAssets).toBeUndefined();
+  });
+
+  it('carries pre-seeded generated assets, each with derived alt text', () => {
+    const asset: GeneratedAsset = {
+      sourceHash: 'abc123',
+      kind: 'diagram',
+      format: 'svg',
+      bytes: Uint8Array.of(1, 2, 3),
+      rasterFallback: false,
+      altText: 'sequence diagram of the login flow',
+    };
+    const request: RenderRequest = {
+      requestId: 'r2',
+      mode: 'preview',
+      snapshot,
+      optimize: false,
+      generatedAssets: [asset],
+    };
+    expect(request.generatedAssets).toHaveLength(1);
+    expect(request.generatedAssets?.[0]?.altText).toBe(
+      'sequence diagram of the login flow',
+    );
   });
 });
 

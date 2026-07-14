@@ -15,6 +15,7 @@
 
 import {
   createCitationsStage,
+  createDiagramsMathStage,
   createImageGuardStage,
   createIncludeResolveStage,
   createMountAssetsStage,
@@ -37,6 +38,7 @@ import {
   type ToWorker,
 } from '@asciidocollab/asciidoc-pdf';
 import { assembleIncludes } from './assemble-includes';
+import { createDiagramsMathShims, seedGeneratedAssets } from './diagrams-math-wiring';
 import { createCitationJsShim } from './shims/citation-js';
 import { createWoff2FontConverter } from './woff2-font-converter';
 import { resolveSandboxedPath } from '../lib/asciidoc/sandbox-path';
@@ -154,17 +156,19 @@ function buildController(module: WebAssembly.Module): PdfRenderController {
   const fontConverter = createWoff2FontConverter();
 
   const buildPipeline = (arguments_: BuildPipelineArguments): BuiltPipeline => {
-    // Ordered stage list; the orchestrator re-sorts to the fixed pipeline order regardless.
-    //
-    // The `diagrams-math` stage is intentionally NOT wired here yet: its mermaid and MathJax shims
-    // need a DOM (script injection, `document`-bound serialization) that a dedicated Web Worker does
-    // not provide — the MathJax shim self-guards this exact case ("worker with no document: the
-    // browser converter cannot run here"). Wiring it into the worker as-is would fail every diagram/
-    // math block, and a partial registry (graphviz/vega only) would misroute mermaid blocks through
-    // the diagram-family fallback. It lands once those shims render on the main thread.
+    // Pre-seed assets the main thread already rendered (e.g. mermaid diagrams the worker's DOM-bound
+    // shim cannot produce headlessly) into the content-addressed cache before any stage runs, so each
+    // matching block resolves as a cache hit and its shim is never invoked here. Additive: a request
+    // without `generatedAssets` seeds nothing and renders exactly as before.
+    seedGeneratedAssets(arguments_.cache, arguments_.request.generatedAssets);
+
+    // Ordered stage list; the orchestrator re-sorts to the fixed pipeline order regardless. The
+    // `diagrams-math` stage renders math and the graphviz/vega diagrams headlessly in-worker (their
+    // shims need no DOM), and serves mermaid blocks from the pre-seeded cache above.
     const stages: PipelineStage[] = [
       createIncludeResolveStage({ resolveSandboxedPath: arguments_.resolveSandboxedPath }),
       createCitationsStage(),
+      createDiagramsMathStage(),
       createImageGuardStage(),
       createMountAssetsStage({ fontConverter }),
     ];
@@ -172,9 +176,10 @@ function buildController(module: WebAssembly.Module): PdfRenderController {
       request: arguments_.request,
       readFile: (path) => arguments_.request.snapshot.files[path] ?? null,
       vfs,
-      // citation-js is pure JS, so it runs in the worker; the diagram/math shims (DOM-bound) are
-      // omitted for the reason above and slot in with the `diagrams-math` stage when they land.
-      shims: createShimRegistry([createCitationJsShim()]),
+      // citation-js is pure JS; the diagram/math shims render headlessly (graphviz/vega via WASM, math
+      // via the DOM-free MathJax liteAdaptor). The DOM-bound mermaid shim is registered so its blocks
+      // resolve, but pre-seeded mermaid assets make it a cache hit, so it is never invoked in-worker.
+      shims: createShimRegistry([createCitationJsShim(), ...createDiagramsMathShims()]),
       includeAssembler: arguments_.includeAssembler,
       cache: arguments_.cache,
       diagnostics: arguments_.diagnostics,

@@ -3,22 +3,30 @@
 //
 // It implements the environment-agnostic `RenderShim` port from `@asciidocollab/asciidoc-pdf`, so the
 // pre-processing pipeline drives it without importing any DOM API. The actual MathJax engine call is
-// isolated behind an injectable {@link MathSvgConverter} seam: the composition root wires the real,
-// browser-only converter (self-hosted MathJax 3, SVG output), while unit tests inject an in-memory
-// fake. Malformed source or an engine failure is returned as a `malformed-math` diagnostic — this
-// shim never throws across the boundary and never performs network I/O.
+// isolated behind an injectable {@link MathSvgConverter} seam: the composition root wires the real
+// converter, while unit tests inject an in-memory fake. Malformed source or an engine failure is
+// returned as a `malformed-math` diagnostic — this shim never throws across the boundary and never
+// performs network I/O.
 //
-// Offline by construction (Constitution VI/VIII/IX): the browser converter loads MathJax from the web
-// app's OWN `public/vendor/mathjax/` (copied from the `mathjax` npm package at build time by
-// scripts/build-mathjax-assets.mjs) via a real same-origin `<script>` tag, mirroring the preview
-// renderer in src/components/math/render-math.ts. No CDN, no font URL, no network.
+// DOM-FREE by construction (Constitution VI/VIII/IX): the default converter typesets with the
+// `mathjax-full` liteAdaptor — an in-memory DOM shim — so math renders INSIDE the PDF Web Worker, which
+// has no `window`/`document`. No `<script>` tag, no self-hosted bundle, no CDN, no font URL, no network.
+// Every glyph is embedded per expression (`svg.fontCache: 'local'`) so each produced SVG is standalone
+// and the output is deterministic (identical source + params → identical bytes).
 //
-// Notation handling mirrors that preview renderer's TeX/AsciiMath split: the diagrams-math pipeline
-// stage tags each block with its AsciiDoc notation (`latexmath`/`asciimath`/`stem`) in `params`, and
-// this shim maps that to the TeX or AsciiMath input jax. Per Asciidoctor, an unqualified `stem` block
-// defaults to AsciiMath.
+// Notation handling mirrors the preview renderer's TeX/AsciiMath split: the diagrams-math pipeline stage
+// tags each block with its AsciiDoc notation (`latexmath`/`asciimath`/`stem`) in `params`, and this shim
+// maps that to the TeX or AsciiMath input jax. Per Asciidoctor, an unqualified `stem` block defaults to
+// AsciiMath.
 
-import mathjaxPackage from 'mathjax/package.json';
+import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
+import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
+import { AsciiMath } from 'mathjax-full/js/input/asciimath.js';
+import { TeX } from 'mathjax-full/js/input/tex.js';
+import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
+import { mathjax } from 'mathjax-full/js/mathjax.js';
+import { SVG } from 'mathjax-full/js/output/svg.js';
+import mathjaxPackage from 'mathjax-full/package.json';
 
 import type { DiagnosticCode, RenderShim, ShimAssetFormat, ShimInput, ShimKind, ShimOutput } from '@asciidocollab/asciidoc-pdf';
 
@@ -96,8 +104,8 @@ export interface MathConversion {
 
 /**
  * The seam that turns one inert math expression into a standalone SVG document string. The default
- * implementation ({@link createBrowserMathSvgConverter}) drives self-hosted MathJax 3 and is
- * BROWSER-ONLY; unit tests inject an in-memory fake so the shim contract is testable without a browser.
+ * implementation ({@link createMathJaxSvgConverter}) drives the DOM-free `mathjax-full` liteAdaptor;
+ * unit tests may inject an in-memory fake so the shim contract is testable in isolation.
  */
 export interface MathSvgConverter {
   /**
@@ -109,176 +117,62 @@ export interface MathSvgConverter {
   toSvg(conversion: MathConversion): Promise<string>;
 }
 
-/** Dependencies for {@link createMathJaxShim} — the composition root injects the browser converter. */
+/** Dependencies for {@link createMathJaxShim} — the composition root injects the converter. */
 export interface MathJaxShimDeps {
   /** The engine seam that produces SVG from math source. */
   readonly converter: MathSvgConverter;
 }
 
 // ---------------------------------------------------------------------------
-// Offline MathJax configuration (self-hosted, no external resource fetch).
+// The default DOM-free converter (mathjax-full liteAdaptor — runs in the worker, no DOM).
 // ---------------------------------------------------------------------------
 
-/** Base URL of the self-hosted MathJax bundle (same-origin, copied into public/ at build). */
-const MATHJAX_BASE = '/vendor/mathjax';
+/**
+ * The em size (in CSS pixels) MathJax lays glyphs out against. 16 mirrors the browser default so the
+ * worker's typeset SVG matches the preview renderer's metrics.
+ */
+const EM_SIZE = 16;
 
-/** The SVG-output entry bundle: TeX + MathML input, SVG output, plus the loader/startup. */
-export const MATHJAX_SVG_SCRIPT = `${MATHJAX_BASE}/tex-mml-svg.js`;
+/** The ex size (x-height, in CSS pixels) paired with {@link EM_SIZE} for consistent glyph metrics. */
+const EX_SIZE = 8;
 
-/** Loader component id for the AsciiMath input jax, fetched same-origin from the bundle base. */
-const ASCIIMATH_INPUT_COMPONENT = 'input/asciimath';
+/** The container width (in CSS pixels) used when laying out display math; the standalone SVG is sized to content. */
+const CONTAINER_WIDTH = 80 * EM_SIZE;
 
 /**
- * The offline MathJax 3 configuration installed before the bundle script runs. It performs no network
- * I/O: inputs/output come from the self-hosted bundle, `loader.load` fetches the AsciiMath jax from the
- * same same-origin base (MathJax derives the base from the script `src`), page-wide auto-typeset is
- * disabled (we convert per expression), and `svg.fontCache: 'local'` makes every produced SVG embed its
- * own glyph paths so a standalone SVG file is self-contained.
+ * The shared liteAdaptor: an in-memory DOM the html handler drives so MathJax never touches a real
+ * `document`. It is stateless for our use (serialization only), so a single instance is safe to reuse,
+ * and the html handler must be registered against it exactly once for the whole module.
  */
-export interface OfflineMathJaxConfig {
-  /** The TeX input delimiters for inline and display math (Asciidoctor's latexmath markup). */
-  readonly tex: {
-    readonly inlineMath: readonly (readonly string[])[];
-    readonly displayMath: readonly (readonly string[])[];
-  };
-  /** The AsciiMath input delimiters (Asciidoctor's asciimath markup). */
-  readonly asciimath: { readonly delimiters: readonly (readonly string[])[] };
-  /** The extra input-jax components loaded same-origin from the self-hosted bundle base. */
-  readonly loader: { readonly load: readonly string[] };
-  /** The startup options; page-wide auto-typeset is disabled because we convert per expression. */
-  readonly startup: { readonly typeset: boolean };
-  /** The SVG output options; a local font cache makes every produced SVG self-contained. */
-  readonly svg: { readonly fontCache: 'local' };
-}
+const adaptor = liteAdaptor();
+RegisterHTMLHandler(adaptor);
 
-/** Build the offline MathJax configuration (see {@link OfflineMathJaxConfig}). */
-export function createOfflineMathJaxConfig(): OfflineMathJaxConfig {
+/**
+ * Build the DOM-free converter. Each conversion gets a FRESH input jax, output jax, and document so the
+ * SVG output's per-document `local` font-cache counter always starts from the same value — that is what
+ * makes identical source + params yield byte-identical SVG (deterministic export). `svg.fontCache:
+ * 'local'` embeds every glyph as a `<defs>` path inside the produced SVG, so each asset is self-contained.
+ */
+export function createMathJaxSvgConverter(): MathSvgConverter {
   return {
-    // TeX (latexmath): standard inline `\(…\)` and display `\[…\]` delimiters (Asciidoctor's markup).
-    tex: {
-      inlineMath: [[String.raw`\(`, String.raw`\)`]],
-      displayMath: [[String.raw`\[`, String.raw`\]`]],
-    },
-    // AsciiMath: Asciidoctor wraps asciimath in `\$…\$`.
-    asciimath: { delimiters: [[String.raw`\$`, String.raw`\$`]] },
-    // The SVG bundle does not include the AsciiMath input jax — fetch it from the same self-hosted base.
-    loader: { load: [ASCIIMATH_INPUT_COMPONENT] },
-    // We convert each expression explicitly, so disable the page-wide auto-typeset on startup.
-    startup: { typeset: false },
-    // Per-expression local font cache → each standalone SVG embeds its own glyphs (no shared page defs).
-    svg: { fontCache: 'local' },
-  };
-}
+    toSvg({ expression, notation, display }: MathConversion): Promise<string> {
+      const inputJax =
+        notation === 'asciimath' ? new AsciiMath({}) : new TeX({ packages: AllPackages });
+      const outputJax = new SVG({ fontCache: 'local' });
+      const document = mathjax.document('', { InputJax: inputJax, OutputJax: outputJax });
 
-// ---------------------------------------------------------------------------
-// The default browser converter (BROWSER-ONLY — not exercised by the node unit tests).
-// ---------------------------------------------------------------------------
+      const node = document.convert(expression, {
+        display,
+        em: EM_SIZE,
+        ex: EX_SIZE,
+        containerWidth: CONTAINER_WIDTH,
+      });
 
-/** A MathJax SVG conversion helper exposed by the bundle after startup. */
-type SvgConvert = (math: string, options: { readonly display: boolean }) => Promise<Element>;
-
-/** Minimal structural shape of the MathJax 3 global once the SVG bundle has started up. */
-interface MathJaxSvgApi {
-  /** Convert a TeX (latexmath) expression to an `mjx-container` holding the produced `<svg>`. */
-  readonly tex2svgPromise: SvgConvert;
-  /** Convert an AsciiMath expression to an `mjx-container` holding the produced `<svg>`. */
-  readonly asciimath2svgPromise: SvgConvert;
-  /** Startup handshake (component loading + document build) exposed by the component bundle. */
-  readonly startup?: { readonly promise?: Promise<unknown> };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isSvgApi(value: unknown): value is MathJaxSvgApi {
-  return (
-    isRecord(value) &&
-    typeof value.tex2svgPromise === 'function' &&
-    typeof value.asciimath2svgPromise === 'function'
-  );
-}
-
-/**
- * Structural view of the global object's MathJax handle, so this module reads/writes it without
- * re-declaring the cross-module `var MathJax` global augmentation that render-math.ts already owns.
- */
-function globalHandle(): { MathJax?: unknown } {
-  return globalThis;
-}
-
-/** Install the offline configuration onto the MathJax global before the bundle script runs. */
-function installOfflineConfig(): void {
-  const handle = globalHandle();
-  const existing = handle.MathJax;
-  handle.MathJax = { ...(isRecord(existing) ? existing : {}), ...createOfflineMathJaxConfig() };
-}
-
-/** Await the startup handshake (if present) and return the ready SVG API, or undefined. */
-async function readSvgApiAfterStartup(): Promise<MathJaxSvgApi | undefined> {
-  const startup = isRecord(globalHandle().MathJax) ? globalHandle().MathJax : undefined;
-  if (isRecord(startup) && isRecord(startup.startup) && startup.startup.promise instanceof Promise) {
-    await startup.startup.promise;
-  }
-  const ready = globalHandle().MathJax;
-  return isSvgApi(ready) ? ready : undefined;
-}
-
-/** Inject the self-hosted SVG bundle and resolve once MathJax is ready (browser-only). */
-function injectSvgMathJax(): Promise<MathJaxSvgApi | undefined> {
-  installOfflineConfig();
-  return new Promise<MathJaxSvgApi | undefined>((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = MATHJAX_SVG_SCRIPT;
-    script.async = true;
-    script.addEventListener('load', () => {
-      readSvgApiAfterStartup().then(resolve, reject);
-    }, { once: true });
-    script.addEventListener(
-      'error',
-      () => reject(new Error(`Failed to load MathJax from ${MATHJAX_SVG_SCRIPT}`)),
-      { once: true },
-    );
-    document.head.append(script);
-  });
-}
-
-/**
- * The production converter: lazily loads self-hosted MathJax 3 (SVG output) and serializes each
- * expression to an SVG document string. BROWSER-ONLY — it needs a DOM to inject the `<script>` and
- * serialize the result, so it is verified in a real browser/integration test, not the node unit suite.
- */
-function createBrowserMathSvgConverter(): MathSvgConverter {
-  let load: Promise<MathJaxSvgApi | undefined> | null = null;
-  const ready = (): Promise<MathJaxSvgApi | undefined> => {
-    if (load) {
-      return load;
-    }
-    // No DOM (SSR / worker with no document): the browser converter cannot run here.
-    if (typeof document === 'undefined') {
-      return Promise.resolve(undefined);
-    }
-    load = injectSvgMathJax();
-    // On failure, drop the cached promise so a later call can retry a transient load error.
-    load.catch(() => {
-      load = null;
-    });
-    return load;
-  };
-
-  return {
-    async toSvg({ expression, notation, display }: MathConversion): Promise<string> {
-      const api = await ready();
-      if (api === undefined) {
-        throw new Error('MathJax is unavailable in this environment.');
-      }
-      const convert = notation === 'asciimath' ? api.asciimath2svgPromise : api.tex2svgPromise;
-      const container = await convert(expression, { display });
-      const svg = container.querySelector('svg');
-      if (svg === null) {
+      const svg = adaptor.tags(node, 'svg')[0];
+      if (svg === undefined) {
         throw new Error('MathJax produced no SVG element for the expression.');
       }
-      return new XMLSerializer().serializeToString(svg);
+      return Promise.resolve(adaptor.outerHTML(svg));
     },
   };
 }
@@ -320,11 +214,12 @@ async function renderMath(converter: MathSvgConverter, input: ShimInput): Promis
 }
 
 /**
- * Build the MathJax math {@link RenderShim}. With no arguments it uses the browser converter
- * (self-hosted MathJax 3, SVG output) at the composition root; tests inject an in-memory converter.
+ * Build the MathJax math {@link RenderShim}. With no arguments it uses the DOM-free `mathjax-full`
+ * converter (SVG output, local font cache), which typesets inside the PDF Web Worker; tests may inject
+ * an in-memory converter to exercise the contract in isolation.
  */
 export function createMathJaxShim(dependencies?: MathJaxShimDeps): RenderShim {
-  const converter = dependencies?.converter ?? createBrowserMathSvgConverter();
+  const converter = dependencies?.converter ?? createMathJaxSvgConverter();
   return {
     kind: SHIM_KIND,
     name: SHIM_NAME,

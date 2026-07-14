@@ -14,6 +14,7 @@ const makeAsset = (sourceHash: string, marker: number): GeneratedAsset => ({
   format: 'svg',
   bytes: Uint8Array.of(marker),
   rasterFallback: false,
+  altText: '',
 });
 
 const partsOf = (overrides: Partial<SourceHashParts> = {}): SourceHashParts => ({

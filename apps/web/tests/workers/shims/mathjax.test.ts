@@ -1,28 +1,21 @@
-// Contract unit tests for the MathJax math shim. These run in the jest `node` project (no DOM), so
-// the real browser MathJax engine is NEVER exercised here — the shim's engine call sits behind an
-// injectable `MathSvgConverter` seam, and every test supplies an in-memory fake (Principle III).
+// Contract unit tests for the MathJax math shim. These run in the jest `node` project (NO DOM: there is
+// no `window`/`document`), which is the whole point — the shim now typesets with the DOM-free
+// `mathjax-full` liteAdaptor so it can run inside the PDF Web Worker, which has no DOM.
 //
-// What is asserted here (browser-independent):
-//   - the RenderShim contract identity (kind/name/version);
-//   - success maps a converter's SVG string to UTF-8 SVG bytes with `rasterFallback:false`;
-//   - the notation param selects the TeX vs AsciiMath input jax, mirroring the preview renderer;
-//   - malformed/blank source and a converter throw map to `{ ok:false, malformed-math }` and never throw;
-//   - determinism (identical source+params → identical bytes);
-//   - the offline MathJax config performs no external resource fetch (no CDN/remote URL).
-//
-// What is NOT asserted here (browser-only, verified in a real browser/integration): the default
-// converter's `<script>` injection, MathJax startup handshake, and actual SVG typesetting.
+// Two layers are asserted here:
+//   - the RenderShim CONTRACT, exercised through an injected in-memory `MathSvgConverter` fake
+//     (identity, SVG-bytes mapping, notation/layout param selection, error mapping, determinism); and
+//   - the DEFAULT converter (no injection), which drives the real `mathjax-full` engine and MUST
+//     produce typeset SVG WITHOUT a DOM — the capability the browser `<script>` path could never have.
 
-import mathjaxPackage from 'mathjax/package.json';
+import mathjaxPackage from 'mathjax-full/package.json';
 
 import type { ShimInput, ShimOutput } from '@asciidocollab/asciidoc-pdf';
 
 import {
   createMathJaxShim,
-  createOfflineMathJaxConfig,
   MATH_DISPLAY_PARAM,
   MATH_NOTATION_PARAM,
-  MATHJAX_SVG_SCRIPT,
   type MathConversion,
   type MathSvgConverter,
 } from '@/workers/shims/mathjax';
@@ -53,6 +46,16 @@ function inputFor(source: string, parameters: Record<string, string> = {}): Shim
   return { source, params: parameters, preferredFormat: 'svg' };
 }
 
+function expectOkSvg(output: ShimOutput): string {
+  expect(output.ok).toBe(true);
+  if (!output.ok) {
+    throw new Error('expected a successful render');
+  }
+  expect(output.asset.format).toBe('svg');
+  expect(output.asset.rasterFallback).toBe(false);
+  return new TextDecoder().decode(output.asset.bytes);
+}
+
 function expectMalformed(output: ShimOutput): void {
   expect(output.ok).toBe(false);
   if (output.ok) {
@@ -71,20 +74,14 @@ describe('createMathJaxShim — contract identity', () => {
   });
 });
 
-describe('createMathJaxShim — successful render', () => {
+describe('createMathJaxShim — successful render (injected converter)', () => {
   it('returns the converter SVG as UTF-8 bytes with no raster fallback', async () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>x</text></svg>';
     const shim = createMathJaxShim({ converter: svgConverter(svg) });
 
     const output = await shim.render(inputFor('x^2', { [MATH_NOTATION_PARAM]: 'latexmath' }));
 
-    expect(output.ok).toBe(true);
-    if (!output.ok) {
-      throw new Error('expected success');
-    }
-    expect(output.asset.format).toBe('svg');
-    expect(output.asset.rasterFallback).toBe(false);
-    expect(new TextDecoder().decode(output.asset.bytes)).toBe(svg);
+    expect(expectOkSvg(output)).toBe(svg);
   });
 
   it('produces identical bytes for identical source + params (determinism)', async () => {
@@ -161,36 +158,61 @@ describe('createMathJaxShim — error mapping (never throws)', () => {
   });
 });
 
-describe('createMathJaxShim — default browser converter wiring', () => {
-  it('uses the built-in browser converter when none is injected and degrades gracefully with no DOM', async () => {
-    // With no converter injected the shim builds the browser converter. This node test has no DOM, so
-    // that converter cannot load MathJax and reports the expression as unavailable rather than throwing.
+describe('createMathJaxShim — default converter typesets WITHOUT a DOM (mathjax-full liteAdaptor)', () => {
+  // Guard the premise: this project is the jest `node` environment, so there is genuinely no DOM. If
+  // the default converter still produces SVG below, it proves the engine never touched `window`/`document`.
+  it('runs in a genuinely DOM-free environment', () => {
+    expect(typeof (globalThis as { window?: unknown }).window).toBe('undefined');
+    expect(typeof (globalThis as { document?: unknown }).document).toBe('undefined');
+  });
+
+  it('typesets a TeX (latexmath) expression to standalone SVG with no DOM present', async () => {
     const shim = createMathJaxShim();
-    const output = await shim.render(inputFor('x^2', { [MATH_NOTATION_PARAM]: 'latexmath' }));
-    expectMalformed(output);
+    const svg = expectOkSvg(await shim.render(inputFor('x^2', { [MATH_NOTATION_PARAM]: 'latexmath' })));
+    expect(svg.startsWith('<svg')).toBe(true);
+    expect(svg).toContain('</svg>');
+    // A local font cache embeds glyph paths as `<defs>` inside each standalone SVG (self-contained output).
+    expect(svg).toContain('<defs');
+    expect(svg).toContain('<path');
   });
 
-  it('reuses the same built-in converter result across repeated renders without a DOM', async () => {
+  it('typesets an AsciiMath expression to standalone SVG with no DOM present', async () => {
     const shim = createMathJaxShim();
-    const first = await shim.render(inputFor('a', { [MATH_NOTATION_PARAM]: 'latexmath' }));
-    const second = await shim.render(inputFor('b', { [MATH_NOTATION_PARAM]: 'asciimath' }));
-    expectMalformed(first);
-    expectMalformed(second);
-  });
-});
-
-describe('offline MathJax configuration (no external resource fetch)', () => {
-  it('references only the self-hosted, same-origin bundle', () => {
-    expect(MATHJAX_SVG_SCRIPT.startsWith('/vendor/mathjax')).toBe(true);
-    expect(MATHJAX_SVG_SCRIPT).not.toMatch(/https?:/);
+    const svg = expectOkSvg(await shim.render(inputFor('sqrt 4', { [MATH_NOTATION_PARAM]: 'asciimath' })));
+    expect(svg.startsWith('<svg')).toBe(true);
+    expect(svg).toContain('</svg>');
   });
 
-  it('fetches no CDN/remote resource and self-contains SVG fonts', () => {
-    const config = createOfflineMathJaxConfig();
-    expect(JSON.stringify(config)).not.toMatch(/https?:/);
-    expect(config.loader.load).toContain('input/asciimath');
-    expect(config.startup.typeset).toBe(false);
-    // Per-expression `local` font cache → each standalone SVG embeds its own glyphs (no shared page defs).
-    expect(config.svg.fontCache).toBe('local');
+  it('produces byte-identical SVG for identical source + params (deterministic local font cache)', async () => {
+    const shim = createMathJaxShim();
+    const first = await shim.render(inputFor('a+b', { [MATH_NOTATION_PARAM]: 'latexmath' }));
+    const second = await shim.render(inputFor('a+b', { [MATH_NOTATION_PARAM]: 'latexmath' }));
+
+    const firstSvg = expectOkSvg(first);
+    const secondSvg = expectOkSvg(second);
+    expect(firstSvg).toBe(secondSvg);
+    if (first.ok && second.ok) {
+      expect(first.asset.bytes).toEqual(second.asset.bytes);
+    }
+    // No timestamp/random-id leakage that would defeat a deterministic cache-key.
+    expect(firstSvg).not.toMatch(/\d{13}/);
+  });
+
+  it('honours the display param — displaystyle limits differ from inline for the same source', async () => {
+    // A summation places its bounds above/below in display style but as sub/superscripts inline, so the
+    // typeset SVG genuinely differs — proving the layout flag reaches the real engine, not just the seam.
+    const source = String.raw`\sum_{i=1}^{n} i`;
+    const shim = createMathJaxShim();
+    const display = expectOkSvg(await shim.render(inputFor(source, { [MATH_NOTATION_PARAM]: 'latexmath' })));
+    const inline = expectOkSvg(
+      await shim.render(inputFor(source, { [MATH_NOTATION_PARAM]: 'latexmath', [MATH_DISPLAY_PARAM]: 'false' })),
+    );
+    expect(display).not.toBe(inline);
+  });
+
+  it('emits only self-hosted, offline SVG (no remote/CDN URL)', async () => {
+    const shim = createMathJaxShim();
+    const svg = expectOkSvg(await shim.render(inputFor('E = mc^2', { [MATH_NOTATION_PARAM]: 'latexmath' })));
+    expect(svg).not.toMatch(/https?:\/\/(?!www\.w3\.org)/);
   });
 });
