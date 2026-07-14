@@ -1,11 +1,19 @@
 import { renderHook, act } from '@testing-library/react';
-import type {
-  FromWorker,
-  ProjectSnapshot,
-  RenderResult,
-  ToWorker,
+import {
+  computeSourceHash,
+  detectRenderableBlocks,
+  type FromWorker,
+  type ProjectSnapshot,
+  type RenderResult,
+  type ToWorker,
 } from '@asciidocollab/asciidoc-pdf';
 import { usePdfPreview } from '@/hooks/use-pdf-preview';
+import {
+  createMermaidPrerenderer,
+  type IdleScheduler,
+  type MermaidPrerenderer,
+} from '@/lib/pdf/prerender-mermaid';
+import { createMermaidShim, type MermaidRenderer } from '@/workers/shims/mermaid';
 
 // ── Worker mock ──────────────────────────────────────────────────────────────
 
@@ -45,6 +53,34 @@ jest.mock('@/lib/editor-config', () => ({
 
 import { createPdfWorker } from '@/lib/create-pdf-worker';
 const mockCreatePdfWorker = createPdfWorker as jest.Mock;
+
+// ── Mermaid pre-pass seams ────────────────────────────────────────────────────
+
+/** A deterministic, DOM-free stand-in for the real mermaid engine: SVG derived purely from the source. */
+const fakeRenderer: MermaidRenderer = async (_config, source) => `<svg data-source="${source}"></svg>`;
+
+/** Run the scheduled callback immediately (a synchronous idle). */
+const runNow: IdleScheduler = (callback) => callback();
+
+/** A document carrying exactly one mermaid diagram whose source is tagged with `label`. */
+function mermaidDocument(label: string): string {
+  return ['= Title', '', '[mermaid]', '----', `graph TD; A-->${label}`, '----', ''].join('\n');
+}
+
+/** A deterministic pre-pass instance for the hook to drive. */
+function makePrerenderer(mermaidRenderer: MermaidRenderer = fakeRenderer, scheduleIdle: IdleScheduler = runNow) {
+  return createMermaidPrerenderer({ mermaidRenderer, scheduleIdle });
+}
+
+/**
+ * Flush the pre-pass's chained microtasks so its `.then` posts the render. The idle scheduler here is
+ * synchronous, so only the promise chain (idle wait → shim render → post) needs draining.
+ */
+async function flushPrepass() {
+  await act(async () => {
+    for (let index = 0; index < 12; index += 1) await Promise.resolve();
+  });
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,7 +143,7 @@ describe('usePdfPreview', () => {
     expect(warmups).toHaveLength(1);
   });
 
-  it('coalesces rapid snapshot changes into a single latest render after debounce', () => {
+  it('coalesces rapid snapshot changes into a single latest render after debounce', async () => {
     const { rerender } = renderHook(
       ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
       { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= A' }) } },
@@ -121,6 +157,7 @@ describe('usePdfPreview', () => {
     expect(renderCalls(lastWorker())).toHaveLength(0);
 
     act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
 
     const renders = renderCalls(lastWorker());
     expect(renders).toHaveLength(1);
@@ -236,7 +273,7 @@ describe('usePdfPreview', () => {
     expect(result.current.isRendering).toBe(false);
   });
 
-  it('forwards caller-supplied changedPaths on a delta render', () => {
+  it('forwards caller-supplied changedPaths on a delta render', async () => {
     const { rerender } = renderHook(
       ({ snapshot, changedPaths }: { snapshot: ProjectSnapshot; changedPaths?: readonly string[] }) =>
         usePdfPreview({ snapshot, isEnabled: true, changedPaths }),
@@ -245,6 +282,7 @@ describe('usePdfPreview', () => {
 
     // Initial full render — no changedPaths.
     act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
     expect(renderCalls(lastWorker())[0]!.request.changedPaths).toBeUndefined();
 
     // A single file changed → the caller supplies the delta.
@@ -255,6 +293,7 @@ describe('usePdfPreview', () => {
       }),
     );
     act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
 
     const renders = renderCalls(lastWorker());
     expect(renders).toHaveLength(2);
@@ -280,7 +319,7 @@ describe('usePdfPreview', () => {
     expect(renderCalls(lastWorker())).toHaveLength(0);
   });
 
-  it('does not render while disabled and terminates the worker on unmount', () => {
+  it('does not render while disabled and terminates the worker on unmount', async () => {
     const { rerender, unmount } = renderHook(
       ({ isEnabled }: { isEnabled: boolean }) =>
         usePdfPreview({ snapshot: makeSnapshot({ 'main.adoc': '= Doc' }), isEnabled }),
@@ -288,15 +327,108 @@ describe('usePdfPreview', () => {
     );
 
     act(() => jest.advanceTimersByTime(500));
+    await flushPrepass();
     expect(renderCalls(lastWorker())).toHaveLength(0);
 
     act(() => rerender({ isEnabled: true }));
     act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
     expect(renderCalls(lastWorker())).toHaveLength(1);
 
     const worker = lastWorker();
     expect(worker.terminate).not.toHaveBeenCalled();
     unmount();
     expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches the mermaid pre-pass assets to the preview render request', async () => {
+    const document = mermaidDocument('B');
+    renderHook(() =>
+      usePdfPreview({
+        snapshot: makeSnapshot({ 'main.adoc': document }),
+        isEnabled: true,
+        prerenderer: makePrerenderer(),
+      }),
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(1);
+    const assets = renders[0]!.request.generatedAssets ?? [];
+    expect(assets).toHaveLength(1);
+    expect(assets[0]).toMatchObject({ kind: 'diagram', format: 'svg' });
+  });
+
+  it('drops a superseded pre-pass so only the newest edit renders (coalescing across the debounce)', async () => {
+    const idleQueue: Array<() => void> = [];
+    const scheduleIdle: IdleScheduler = (callback) => {
+      idleQueue.push(callback);
+    };
+    const renderer = jest.fn(fakeRenderer);
+    const prerenderer = makePrerenderer(renderer, scheduleIdle);
+
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) =>
+        usePdfPreview({ snapshot, isEnabled: true, prerenderer }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': mermaidDocument('A') }) } },
+    );
+
+    // The first edit's debounce fires: pre-pass A starts and parks on the (manual) idle queue.
+    act(() => jest.advanceTimersByTime(200));
+    // A newer edit arrives and its debounce fires: pre-pass B supersedes A.
+    act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': mermaidDocument('B') }) }));
+    act(() => jest.advanceTimersByTime(200));
+
+    // Drain every parked idle slice and settle both promise chains.
+    await act(async () => {
+      while (idleQueue.length > 0) idleQueue.shift()!();
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+
+    const renders = renderCalls(lastWorker());
+    // The stale pre-pass never posted; only the newest document rendered.
+    expect(renders).toHaveLength(1);
+    expect(renders[0]!.request.snapshot.files['main.adoc']).toContain('A-->B');
+    expect(renders[0]!.request.generatedAssets ?? []).toHaveLength(1);
+    // The superseded run never invoked the (DOM-bound) engine: only the winner rendered.
+    expect(renderer).toHaveBeenCalledTimes(1);
+  });
+
+  it('produces the same renderable blocks and diagnostics on the preview path as the export path', async () => {
+    const document = mermaidDocument('B');
+    renderHook(() =>
+      usePdfPreview({
+        snapshot: makeSnapshot({ 'main.adoc': document }),
+        isEnabled: true,
+        prerenderer: makePrerenderer(),
+      }),
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+
+    const previewAssets = renderCalls(lastWorker())[0]!.request.generatedAssets ?? [];
+
+    // The export path rides the identical shared detector + shim; simulate it independently.
+    const exportRun = await makePrerenderer().prerender(document);
+
+    // Same renderable-block set (content-addressed) AND same diagnostics on both paths.
+    expect(previewAssets.map((asset) => asset.sourceHash)).toEqual(
+      exportRun.assets.map((asset) => asset.sourceHash),
+    );
+    expect(exportRun.diagnostics).toEqual([]);
+
+    // And both match the shared detector + shim computed straight from the document.
+    const block = detectRenderableBlocks(document).find(
+      (candidate) => candidate.category === 'diagram' && candidate.notation === 'mermaid',
+    )!;
+    const expectedHash = computeSourceHash({
+      source: block.source,
+      renderParams: block.params,
+      shimVersion: createMermaidShim().version,
+    });
+    expect(previewAssets.map((asset) => asset.sourceHash)).toEqual([expectedHash]);
   });
 });

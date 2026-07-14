@@ -1,11 +1,16 @@
 import { renderHook, act } from '@testing-library/react';
 import type {
   FromWorker,
+  GeneratedAsset,
   ProjectSnapshot,
   RenderError,
   RenderResult,
 } from '@asciidocollab/asciidoc-pdf';
-import { usePdfExport } from '@/hooks/use-pdf-export';
+import { usePdfExport, type UsePdfExportDeps } from '@/hooks/use-pdf-export';
+import type {
+  MermaidPrerenderer,
+  MermaidPrerenderResult,
+} from '@/lib/pdf/prerender-mermaid';
 
 // ── Worker mock ──────────────────────────────────────────────────────────────
 
@@ -55,6 +60,40 @@ const SNAPSHOT: ProjectSnapshot = {
   fontPaths: [],
   attributes: {},
 };
+
+// ── Mermaid pre-pass injection ─────────────────────────────────────────────────
+
+const MERMAID_ASSET: GeneratedAsset = {
+  sourceHash: 'mermaid-hash-1',
+  kind: 'diagram',
+  format: 'svg',
+  bytes: new Uint8Array([1, 2, 3]),
+  rasterFallback: false,
+  altText: '',
+};
+
+/** A deterministic pre-pass that resolves to a fixed result — no real (DOM-bound) mermaid render. */
+function fakePrerenderer(
+  result: MermaidPrerenderResult,
+): { prerenderer: MermaidPrerenderer; prerender: jest.Mock } {
+  const prerender = jest.fn(async () => result);
+  return { prerenderer: { prerender }, prerender };
+}
+
+/** Kick off an export and flush the awaited pre-pass so the render request is posted. */
+async function exportAndSettle(
+  exportPdf: (snapshot: ProjectSnapshot) => void,
+  snapshot: ProjectSnapshot,
+): Promise<void> {
+  await act(async () => {
+    exportPdf(snapshot);
+  });
+}
+
+/** Render the hook with an optional injected pre-pass factory. */
+function renderExport(deps?: UsePdfExportDeps) {
+  return renderHook(() => usePdfExport(deps));
+}
 
 /** The render request the hook posted (skipping the leading warmup message). */
 function lastRenderRequest() {
@@ -126,10 +165,10 @@ describe('usePdfExport', () => {
     expect(lastWorker().postMessage).toHaveBeenCalledWith({ type: 'warmup' });
   });
 
-  it('posts an export render request with optimize enabled on exportPdf', () => {
-    const { result } = renderHook(() => usePdfExport());
+  it('posts an export render request with optimize enabled on exportPdf', async () => {
+    const { result } = renderExport();
 
-    act(() => result.current.exportPdf(SNAPSHOT));
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
 
     const request = lastRenderRequest();
     expect(request.mode).toBe('export');
@@ -139,10 +178,10 @@ describe('usePdfExport', () => {
     expect(result.current.isExporting).toBe(true);
   });
 
-  it('triggers a browser download and clears isExporting on a matching result', () => {
-    const { result } = renderHook(() => usePdfExport());
+  it('triggers a browser download and clears isExporting on a matching result', async () => {
+    const { result } = renderExport();
 
-    act(() => result.current.exportPdf(SNAPSHOT));
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
     const requestId = lastRenderRequest().requestId;
 
     act(() => lastWorker().emit({ type: 'result', result: makeResult(requestId) }));
@@ -153,9 +192,9 @@ describe('usePdfExport', () => {
     expect(result.current.isExporting).toBe(false);
   });
 
-  it('derives the download name from a root path that carries an extension', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf({ ...SNAPSHOT, rootPath: 'chapters/intro.adoc' }));
+  it('derives the download name from a root path that carries an extension', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, { ...SNAPSHOT, rootPath: 'chapters/intro.adoc' });
     const requestId = lastRenderRequest().requestId;
 
     act(() => lastWorker().emit({ type: 'result', result: makeResult(requestId) }));
@@ -163,9 +202,9 @@ describe('usePdfExport', () => {
     expect(lastDownloadName()).toBe('intro.pdf');
   });
 
-  it('appends a .pdf extension when the root path has no extension of its own', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf({ ...SNAPSHOT, rootPath: 'book' }));
+  it('appends a .pdf extension when the root path has no extension of its own', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, { ...SNAPSHOT, rootPath: 'book' });
     const requestId = lastRenderRequest().requestId;
 
     act(() => lastWorker().emit({ type: 'result', result: makeResult(requestId) }));
@@ -173,9 +212,9 @@ describe('usePdfExport', () => {
     expect(lastDownloadName()).toBe('book.pdf');
   });
 
-  it('falls back to a default name when the root path has no usable basename', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf({ ...SNAPSHOT, rootPath: 'chapters/' }));
+  it('falls back to a default name when the root path has no usable basename', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, { ...SNAPSHOT, rootPath: 'chapters/' });
     const requestId = lastRenderRequest().requestId;
 
     act(() => lastWorker().emit({ type: 'result', result: makeResult(requestId) }));
@@ -183,9 +222,9 @@ describe('usePdfExport', () => {
     expect(lastDownloadName()).toBe('document.pdf');
   });
 
-  it('exposes the result diagnostics for the UI to surface', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf(SNAPSHOT));
+  it('exposes the result diagnostics for the UI to surface', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
     const requestId = lastRenderRequest().requestId;
 
     const diagnostics = [
@@ -201,12 +240,12 @@ describe('usePdfExport', () => {
     expect(result.current.diagnostics).toEqual(diagnostics);
   });
 
-  it('ignores a stale result whose requestId is not the latest', () => {
-    const { result } = renderHook(() => usePdfExport());
+  it('ignores a stale result whose requestId is not the latest', async () => {
+    const { result } = renderExport();
 
-    act(() => result.current.exportPdf(SNAPSHOT));
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
     // A second export supersedes the first; the first result is now stale.
-    act(() => result.current.exportPdf(SNAPSHOT));
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
     const staleId = String(Number(lastRenderRequest().requestId) - 1);
 
     act(() => lastWorker().emit({ type: 'result', result: makeResult(staleId) }));
@@ -216,28 +255,28 @@ describe('usePdfExport', () => {
     expect(result.current.isExporting).toBe(true);
   });
 
-  it('reflects progress phase updates for the current request', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf(SNAPSHOT));
+  it('reflects progress phase updates for the current request', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
     const requestId = lastRenderRequest().requestId;
 
     act(() => lastWorker().emit({ type: 'progress', requestId, phase: 'converting' }));
     expect(result.current.phase).toBe('converting');
   });
 
-  it('ignores a stale progress update from a superseded request', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf(SNAPSHOT));
-    act(() => result.current.exportPdf(SNAPSHOT));
+  it('ignores a stale progress update from a superseded request', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
     const staleId = String(Number(lastRenderRequest().requestId) - 1);
 
     act(() => lastWorker().emit({ type: 'progress', requestId: staleId, phase: 'optimizing' }));
     expect(result.current.phase).not.toBe('optimizing');
   });
 
-  it('surfaces a fatal error and clears isExporting', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf(SNAPSHOT));
+  it('surfaces a fatal error and clears isExporting', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
     const requestId = lastRenderRequest().requestId;
 
     const error: RenderError = {
@@ -253,10 +292,10 @@ describe('usePdfExport', () => {
     expect(anchorClick).not.toHaveBeenCalled();
   });
 
-  it('reuses the single warm worker across multiple exports', () => {
-    const { result } = renderHook(() => usePdfExport());
-    act(() => result.current.exportPdf(SNAPSHOT));
-    act(() => result.current.exportPdf(SNAPSHOT));
+  it('reuses the single warm worker across multiple exports', async () => {
+    const { result } = renderExport();
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
 
     expect(mockCreatePdfWorker).toHaveBeenCalledTimes(1);
     expect(MockWorker.instances).toHaveLength(1);
@@ -268,5 +307,103 @@ describe('usePdfExport', () => {
     expect(worker.terminate).not.toHaveBeenCalled();
     unmount();
     expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Mermaid pre-pass wiring ──────────────────────────────────────────────────
+
+  it('renders the document mermaid diagrams before posting the request and attaches them as assets', async () => {
+    const { prerenderer, prerender } = fakePrerenderer({
+      assets: [MERMAID_ASSET],
+      diagnostics: [],
+      aborted: false,
+    });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+
+    // The pre-pass ran over the current (open) document's text, up front.
+    expect(prerender).toHaveBeenCalledTimes(1);
+    expect(prerender.mock.calls[0][0]).toBe(SNAPSHOT.files[SNAPSHOT.openPath]);
+    expect(lastRenderRequest().generatedAssets).toEqual([MERMAID_ASSET]);
+  });
+
+  it('surfaces the diagram phase for the pre-pass before the worker reports progress', async () => {
+    const { prerenderer } = fakePrerenderer({
+      assets: [MERMAID_ASSET],
+      diagnostics: [],
+      aborted: false,
+    });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+
+    expect(result.current.isExporting).toBe(true);
+    expect(result.current.phase).toBe('diagrams-math');
+  });
+
+  it('carries pre-pass diagnostics into the export diagnostics, ahead of the worker diagnostics', async () => {
+    const { prerenderer } = fakePrerenderer({
+      assets: [],
+      diagnostics: [{ line: 7, message: 'Parse error on line 1.' }],
+      aborted: false,
+    });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+
+    // Exposed as soon as the pre-pass resolves, mapped onto the shared diagnostic shape.
+    expect(result.current.diagnostics).toEqual([
+      {
+        severity: 'error',
+        code: 'malformed-diagram',
+        resource: SNAPSHOT.openPath,
+        location: { path: SNAPSHOT.openPath, line: 7 },
+        message: 'Parse error on line 1.',
+      },
+    ]);
+
+    const workerDiagnostic = {
+      severity: 'warning' as const,
+      code: 'remote-skipped' as const,
+      resource: 'https://example.com/logo.png',
+      message: 'Remote image skipped.',
+    };
+    act(() =>
+      lastWorker().emit({
+        type: 'result',
+        result: makeResult(lastRenderRequest().requestId, { diagnostics: [workerDiagnostic] }),
+      }),
+    );
+
+    expect(result.current.diagnostics).toEqual([
+      {
+        severity: 'error',
+        code: 'malformed-diagram',
+        resource: SNAPSHOT.openPath,
+        location: { path: SNAPSHOT.openPath, line: 7 },
+        message: 'Parse error on line 1.',
+      },
+      workerDiagnostic,
+    ]);
+  });
+
+  it('omits generatedAssets and exports normally when the document has no mermaid diagrams', async () => {
+    const { prerenderer, prerender } = fakePrerenderer({
+      assets: [],
+      diagnostics: [],
+      aborted: false,
+    });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+
+    expect(prerender).toHaveBeenCalledTimes(1);
+    const request = lastRenderRequest();
+    expect(request.generatedAssets).toBeUndefined();
+    expect(request.mode).toBe('export');
+
+    act(() => lastWorker().emit({ type: 'result', result: makeResult(request.requestId) }));
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(result.current.isExporting).toBe(false);
   });
 });

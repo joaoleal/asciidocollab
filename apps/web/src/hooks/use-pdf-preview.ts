@@ -14,10 +14,16 @@ import type {
 import { isProgressMessage, isResultMessage, isErrorMessage } from '@asciidocollab/asciidoc-pdf';
 import { PREVIEW_DEBOUNCE_MS } from '@/lib/editor-config';
 import { createPdfWorker } from '@/lib/create-pdf-worker';
+import { createMermaidPrerenderer, type MermaidPrerenderer } from '@/lib/pdf/prerender-mermaid';
 
 /** The preview surface renders a page-limited PDF and never runs the (expensive) optimize pass. */
 const PREVIEW_MODE: RenderMode = 'preview';
 const PREVIEW_OPTIMIZE = false;
+
+/** The document text the mermaid pre-pass scans — the render root file's contents. */
+function documentTextOf(snapshot: ProjectSnapshot): string {
+  return snapshot.files[snapshot.rootPath] ?? '';
+}
 
 /** Configuration for the live PDF preview hook. */
 export interface UsePdfPreviewOptions {
@@ -34,6 +40,12 @@ export interface UsePdfPreviewOptions {
    * files instead of repopulating the whole VFS. Leave unset for a full render (e.g. The first one).
    */
   changedPaths?: readonly string[];
+  /**
+   * The mermaid pre-pass driver. Mermaid needs a DOM the PDF worker lacks, so its diagrams are rendered
+   * on the main thread and pre-seeded into the worker's asset cache. Defaults to a real coalescing
+   * prerenderer; unit tests inject a deterministic one (fake engine + synchronous idle scheduler).
+   */
+  prerenderer?: MermaidPrerenderer;
 }
 
 /** Return value of {@link usePdfPreview}, shaped for the PDF preview panel. */
@@ -67,6 +79,7 @@ export function usePdfPreview({
   snapshot,
   isEnabled,
   changedPaths,
+  prerenderer,
 }: UsePdfPreviewOptions): UsePdfPreviewResult {
   const [pdf, setPdf] = useState<Blob | undefined>(undefined);
   const [isRendering, setIsRendering] = useState(false);
@@ -85,6 +98,15 @@ export function usePdfPreview({
   const requestCounterReference = useRef(0);
   const latestRequestIdReference = useRef<string | null>(null);
   const debounceReference = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // One stable, coalescing mermaid pre-pass for the hook's lifetime (its token state must persist so a
+  // newer invocation supersedes an in-flight one). Injected in tests; a real one otherwise.
+  const prerendererReference = useRef<MermaidPrerenderer | null>(null);
+  if (prerendererReference.current === null) {
+    prerendererReference.current = prerenderer ?? createMermaidPrerenderer();
+  }
+  // Aborts the pre-pass of a render that a newer edit (or a disable) has superseded.
+  const prerenderAbortReference = useRef<AbortController | null>(null);
 
   // Mount the single warm worker; warm the VM up front; tear it down on unmount.
   useEffect(() => {
@@ -123,6 +145,10 @@ export function usePdfPreview({
   }, []);
 
   // Debounce + coalesce: only the latest pending snapshot is ever sent. Reused by every trigger below.
+  // When the debounce fires, a main-thread mermaid pre-pass renders the document's diagrams and its
+  // assets pre-seed the worker's cache. Cancellation rides the debounce/supersession: each fresh render
+  // aborts the previous pre-pass, and a resolved pre-pass posts only while it is still the latest — so a
+  // superseded pre-pass can never overwrite a newer preview.
   const scheduleRender = (pending: ProjectSnapshot) => {
     if (debounceReference.current !== null) clearTimeout(debounceReference.current);
     debounceReference.current = setTimeout(() => {
@@ -133,15 +159,28 @@ export function usePdfPreview({
       setPhase(undefined);
       setError(undefined);
       setIsRendering(true);
+
+      // Supersede any still-in-flight pre-pass so its (now stale) result can never post.
+      prerenderAbortReference.current?.abort();
+      const controller = new AbortController();
+      prerenderAbortReference.current = controller;
+
       const delta = changedPathsReference.current;
-      const request: RenderRequest = {
-        requestId,
-        mode: PREVIEW_MODE,
-        snapshot: pending,
-        optimize: PREVIEW_OPTIMIZE,
-        ...(delta === undefined ? {} : { changedPaths: delta }),
-      };
-      workerReference.current?.postMessage({ type: 'render', request } satisfies ToWorker);
+      void prerendererReference.current!
+        .prerender(documentTextOf(pending), { signal: controller.signal })
+        .then((prerendered) => {
+          // Drop a superseded pre-pass: a newer render (or a disable) has taken over since it began.
+          if (prerendered.aborted || latestRequestIdReference.current !== requestId) return;
+          const request: RenderRequest = {
+            requestId,
+            mode: PREVIEW_MODE,
+            snapshot: pending,
+            optimize: PREVIEW_OPTIMIZE,
+            ...(delta === undefined ? {} : { changedPaths: delta }),
+            ...(prerendered.assets.length > 0 ? { generatedAssets: prerendered.assets } : {}),
+          };
+          workerReference.current?.postMessage({ type: 'render', request } satisfies ToWorker);
+        });
     }, PREVIEW_DEBOUNCE_MS);
   };
 
@@ -153,6 +192,8 @@ export function usePdfPreview({
         clearTimeout(debounceReference.current);
         debounceReference.current = null;
       }
+      // Cancel a pre-pass that already started so it can't post after the panel closes.
+      prerenderAbortReference.current?.abort();
       setIsRendering(false);
       return;
     }

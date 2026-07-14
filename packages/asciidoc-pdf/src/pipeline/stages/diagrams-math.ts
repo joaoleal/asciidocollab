@@ -106,6 +106,9 @@ const MIN_DELIMITER_LENGTH = 4;
 const DELIMITER_CHARS: ReadonlySet<string> = new Set(['-', '.', '+']);
 
 const BLOCK_ATTR_RE = /^\[([^\]]+)\]\s*$/;
+// An AsciiDoc block title: a leading `.` followed by a non-space, non-`.` character (so a `....`
+// literal delimiter is never mistaken for one) and the caption text.
+const BLOCK_TITLE_RE = /^\.([^.\s].*)$/;
 // The body captures every character up to the closing `]`, but the `(?!:\[)` guard also stops it at
 // the start of a following inline-math macro. That tempering bounds each scan to a single macro so the
 // match cost stays linear (an unguarded `[^\]]*` rescans the whole line from every macro start), while
@@ -161,6 +164,12 @@ function parseAttributeLine(line: string): BlockAttributes | null {
   return { name: parts[0].toLowerCase(), params: parameters };
 }
 
+/** The caption of a block-title line (`.Some caption`), or `undefined` when the line is not one. */
+function matchBlockTitle(line: string): string | undefined {
+  const match = BLOCK_TITLE_RE.exec(line);
+  return match === null ? undefined : match[1].trim();
+}
+
 // ---------------------------------------------------------------------------
 // Shared detection: the single authority over what the stage renders and hashes.
 // ---------------------------------------------------------------------------
@@ -197,6 +206,8 @@ interface ScannedBlock {
   readonly params: Record<string, string>;
   readonly line: number;
   readonly originalBlock: readonly string[];
+  /** The block-title caption (`.Some caption`) on the line immediately above, if any. */
+  readonly title?: string;
 }
 
 /** An inline math macro located on a prose line, with the span the stage splices over. */
@@ -271,6 +282,9 @@ function* scanDocument(text: string): Generator<ScanEvent> {
               params: { ...attribute.params, [BLOCK_NOTATION_PARAM]: attribute.name },
               line: index + 1,
               originalBlock: lines.slice(index, close + 1),
+              // Read (but do not consume) a caption on the line above: it stays in the output so
+              // its rendered figure title is preserved, and it seeds the image's alt text.
+              title: index > 0 ? matchBlockTitle(lines[index - 1]) : undefined,
             },
           };
           index = close + 1;
@@ -347,6 +361,56 @@ function genReference(rootPath: string, filename: string): string {
 const GENERATED_ASSET_KIND: Readonly<Record<'diagram' | 'math', GeneratedAsset['kind']>> =
   Object.freeze({ diagram: 'diagram', math: 'math' });
 
+/** Fallback label when a math block carries neither a caption nor any source expression. */
+const MATH_DEFAULT_ALT = 'math expression';
+
+/** Collapse runs of whitespace (including newlines) to single spaces and trim the ends. */
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** The named `title=` attribute value, if the block carried one. */
+function titleParam(params: Readonly<Record<string, string>> | undefined): string | undefined {
+  const value = params?.title;
+  return value === undefined || value.trim().length === 0 ? undefined : value;
+}
+
+/** Inputs a renderable block exposes for deriving its accessibility alt text. */
+interface AltTextSource {
+  readonly category: 'diagram' | 'math';
+  readonly notation: string;
+  readonly source: string;
+  readonly params?: Readonly<Record<string, string>>;
+  readonly title?: string;
+}
+
+/**
+ * Derive meaningful alt text for a rendered block. A caption (a `.Some caption` block title or a
+ * `title=` attribute) always wins; otherwise a diagram falls back to its engine name and a math
+ * block to its source expression (or a generic label when the expression is empty).
+ */
+function deriveAltText(block: AltTextSource): string {
+  const caption = block.title ?? titleParam(block.params);
+  if (caption !== undefined && caption.trim().length > 0) {
+    return collapseWhitespace(caption);
+  }
+  if (block.category === 'diagram') {
+    return `${block.notation} diagram`;
+  }
+  const expression = collapseWhitespace(block.source);
+  return expression.length > 0 ? expression : MATH_DEFAULT_ALT;
+}
+
+/**
+ * Render alt text as the first (positional) attribute of an `image::`/`image:` macro. The value is
+ * always double-quoted so commas and closing brackets cannot split or truncate the attribute list,
+ * and embedded backslashes/quotes are escaped for the quoted-attribute context.
+ */
+function escapeAltForMacro(alt: string): string {
+  const escaped = alt.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 interface RenderRequestForBlock {
   readonly shim: RenderShim;
   readonly source: string;
@@ -354,6 +418,8 @@ interface RenderRequestForBlock {
   readonly category: 'diagram' | 'math';
   readonly resource: string;
   readonly line: number;
+  /** Alt text stored on the asset; derived per block and independent of the content address. */
+  readonly altText: string;
 }
 
 /**
@@ -394,7 +460,7 @@ async function renderOrReuse(
       format: output.asset.format,
       bytes: output.asset.bytes,
       rasterFallback: output.asset.rasterFallback,
-      altText: '',
+      altText: request.altText,
     };
     context.cache.set(asset);
     if (asset.rasterFallback) {
@@ -497,6 +563,13 @@ async function handleBlock(
     return block.originalBlock;
   }
 
+  const altText = deriveAltText({
+    category: block.category,
+    notation: block.notation,
+    source: block.source,
+    params: block.params,
+    title: block.title,
+  });
   const asset = await renderOrReuse(context, {
     shim,
     source: block.source,
@@ -504,12 +577,13 @@ async function handleBlock(
     category: block.category,
     resource,
     line: block.line,
+    altText,
   });
   if (asset === null) {
     return block.originalBlock;
   }
   const target = genReference(resource, `${asset.sourceHash}.${asset.format}`);
-  return [`image::${target}[]`];
+  return [`image::${target}[${escapeAltForMacro(altText)}]`];
 }
 
 /** Rewrite every detected inline math macro on a prose line to an inline `image:` reference. */
@@ -534,6 +608,12 @@ async function rewriteInlineMath(
       result += macro;
       continue;
     }
+    const altText = deriveAltText({
+      category: 'math',
+      notation: match.block.notation,
+      source: match.block.source,
+      params: match.block.params,
+    });
     const asset = await renderOrReuse(context, {
       shim,
       source: match.block.source,
@@ -541,13 +621,14 @@ async function rewriteInlineMath(
       category: 'math',
       resource,
       line: match.block.line,
+      altText,
     });
     if (asset === null) {
       result += macro;
       continue;
     }
     const target = genReference(resource, `${asset.sourceHash}.${asset.format}`);
-    result += `image:${target}[]`;
+    result += `image:${target}[${escapeAltForMacro(altText)}]`;
   }
   result += event.line.slice(cursor);
   return result;

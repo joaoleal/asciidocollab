@@ -148,7 +148,7 @@ describe('createDiagramsMathStage', () => {
 
     const rewritten = vfs.readText(ROOT_VFS_PATH) ?? '';
     const hash = gen[0].slice(GEN_PREFIX.length, -'.svg'.length);
-    expect(rewritten).toContain(`image::.gen/${hash}.svg[]`);
+    expect(rewritten).toContain(`image::.gen/${hash}.svg["mermaid diagram"]`);
     expect(rewritten).not.toContain('graph TD');
     expect(rewritten).toContain('Intro');
     expect(rewritten).toContain('Outro');
@@ -182,7 +182,8 @@ describe('createDiagramsMathStage', () => {
     expect(gen).toHaveLength(1); // identical source ⇒ one stable file
     const hash = gen[0].slice(GEN_PREFIX.length, -'.svg'.length);
     const rewritten = vfs.readText(ROOT_VFS_PATH) ?? '';
-    const references = rewritten.match(new RegExp(String.raw`image::\.gen/${hash}\.svg\[\]`, 'g')) ?? [];
+    const references =
+      rewritten.match(new RegExp(String.raw`image::\.gen/${hash}\.svg\["mermaid diagram"\]`, 'g')) ?? [];
     expect(references).toHaveLength(2); // both occurrences point at the same asset
   });
 
@@ -198,7 +199,7 @@ describe('createDiagramsMathStage', () => {
     const gen = vfs.list(GEN_PREFIX);
     expect(gen[0]).toMatch(/\.png$/);
     const hash = gen[0].slice(GEN_PREFIX.length, -'.png'.length);
-    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toContain(`image::.gen/${hash}.png[]`);
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toContain(`image::.gen/${hash}.png["mermaid diagram"]`);
   });
 
   it('emits malformed-diagram and leaves the block unchanged when the shim returns {ok:false}', async () => {
@@ -243,7 +244,7 @@ describe('createDiagramsMathStage', () => {
     const gen = vfs.list(GEN_PREFIX);
     expect(gen).toHaveLength(1);
     const hash = gen[0].slice(GEN_PREFIX.length, -'.svg'.length);
-    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toContain(`image::.gen/${hash}.svg[]`);
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toContain(`image::.gen/${hash}.svg["sqrt(4) = 2"]`);
   });
 
   it('distinguishes latexmath from asciimath with identical source (different assets)', async () => {
@@ -279,7 +280,7 @@ describe('createDiagramsMathStage', () => {
     const gen = vfs.list(GEN_PREFIX);
     const hash = gen[0].slice(GEN_PREFIX.length, -'.svg'.length);
     const rewritten = vfs.readText(ROOT_VFS_PATH) ?? '';
-    expect(rewritten).toBe(`The value image:.gen/${hash}.svg[] is shown.`);
+    expect(rewritten).toBe(`The value image:.gen/${hash}.svg["x^2"] is shown.`);
   });
 
   it('leaves inline math inside a verbatim listing block untouched', async () => {

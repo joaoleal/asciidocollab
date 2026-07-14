@@ -243,7 +243,7 @@ describe('warm re-render delta path', () => {
     const rewritten = readText(store, ROOT_VFS_PATH);
     expect(rewritten).toContain('Intro edited');
     const hash = genAfterCold[0].slice(GEN_PREFIX.length, -'.svg'.length);
-    expect(rewritten).toContain(`image::.gen/${hash}.svg[]`);
+    expect(rewritten).toContain(`image::.gen/${hash}.svg["mermaid diagram"]`);
   });
 
   it('re-renders a changed diagram block on a warm re-render — cache miss, new .gen asset', async () => {

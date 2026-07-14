@@ -9,9 +9,15 @@ import {
   type RenderDiagnostic,
   type RenderError,
   type RenderPhase,
+  type RenderRequest,
   type ToWorker,
 } from '@asciidocollab/asciidoc-pdf';
 import { createPdfWorker } from '@/lib/create-pdf-worker';
+import {
+  createMermaidPrerenderer,
+  type MermaidPrerenderDiagnostic,
+  type MermaidPrerenderer,
+} from '@/lib/pdf/prerender-mermaid';
 
 /** File extension of the produced document. */
 const PDF_EXTENSION = '.pdf';
@@ -19,6 +25,27 @@ const PDF_EXTENSION = '.pdf';
 const DEFAULT_DOWNLOAD_NAME = 'document.pdf';
 /** Stable empty reference so idle renders share one array identity. */
 const NO_DIAGNOSTICS: readonly RenderDiagnostic[] = [];
+
+/**
+ * The phase surfaced while the main-thread mermaid pre-pass runs, before the worker request is even
+ * posted. It reuses the worker's own `diagrams-math` phase so the progress copy ("Rendering diagrams
+ * and math…") reads seamlessly across the main-thread pre-pass and the in-VM diagram stage.
+ */
+const DIAGRAM_PREPASS_PHASE: RenderPhase = 'diagrams-math';
+
+/** Map a mermaid pre-pass failure onto the shared per-block diagnostic shape the worker stage emits. */
+function toRenderDiagnostic(
+  diagnostic: MermaidPrerenderDiagnostic,
+  documentPath: string,
+): RenderDiagnostic {
+  return {
+    severity: 'error',
+    code: 'malformed-diagram',
+    resource: documentPath,
+    location: { path: documentPath, line: diagnostic.line },
+    message: diagnostic.message,
+  };
+}
 
 /** The value and behaviour a one-click PDF export exposes to the UI. */
 export interface UsePdfExportResult {
@@ -31,12 +58,27 @@ export interface UsePdfExportResult {
   exportPdf: (snapshot: ProjectSnapshot) => void;
   /** True from `exportPdf` until the matching result or a fatal error arrives. */
   isExporting: boolean;
-  /** The most recent progress phase for the current export, when one has been reported. */
+  /**
+   * The most recent progress phase for the current export, when one has been reported. Reported first
+   * by the main-thread mermaid pre-pass ({@link DIAGRAM_PREPASS_PHASE}), then by the worker per stage.
+   */
   phase?: RenderPhase;
   /** The fatal error from the last export, if it failed as a whole. */
   error?: RenderError;
-  /** Non-fatal per-resource diagnostics carried by the last successful export. */
+  /**
+   * Non-fatal per-resource diagnostics for the last export: the main-thread pre-pass failures followed
+   * by the worker's own per-resource diagnostics.
+   */
   diagnostics: readonly RenderDiagnostic[];
+}
+
+/** Injectable seams for {@link usePdfExport}; every unset seam uses its real implementation. */
+export interface UsePdfExportDeps {
+  /**
+   * Builds the coalescing mermaid pre-pass the export awaits before posting its render request. Unit
+   * tests inject a deterministic fake so no real (DOM-bound) mermaid render is needed.
+   */
+  readonly createPrerenderer?: () => MermaidPrerenderer;
 }
 
 /** Derive a download filename from the render root path (basename with a `.pdf` extension). */
@@ -77,7 +119,7 @@ function requestIdOf(message: FromWorker): string {
  * exposes its diagnostics; a matching `error` surfaces the failure. The UI supplies the snapshot and
  * renders the button/diagnostics from the returned state.
  */
-export function usePdfExport(): UsePdfExportResult {
+export function usePdfExport(deps: UsePdfExportDeps = {}): UsePdfExportResult {
   const [isExporting, setIsExporting] = useState(false);
   const [phase, setPhase] = useState<RenderPhase | undefined>(undefined);
   const [error, setError] = useState<RenderError | undefined>(undefined);
@@ -89,6 +131,15 @@ export function usePdfExport(): UsePdfExportResult {
   const latestRequestIdReference = useRef<string | null>(null);
   // The filename captured at request time, applied when that request's result comes back.
   const downloadNameReference = useRef(DEFAULT_DOWNLOAD_NAME);
+  // The current export's pre-pass diagnostics, held so the worker result can prepend them to its own.
+  const prepassDiagnosticsReference = useRef<readonly RenderDiagnostic[]>(NO_DIAGNOSTICS);
+  // Aborts a superseded export's in-flight pre-pass at the next slice boundary.
+  const prepassAbortReference = useRef<AbortController | null>(null);
+
+  // The (lazily built) single, coalescing pre-pass; the latest injected factory is read at build time.
+  const createPrerendererReference = useRef(deps.createPrerenderer);
+  createPrerendererReference.current = deps.createPrerenderer;
+  const prerendererReference = useRef<MermaidPrerenderer | null>(null);
 
   // Create the worker once, warm it, and tear it down on unmount.
   useEffect(() => {
@@ -105,7 +156,7 @@ export function usePdfExport(): UsePdfExportResult {
       }
       if (isResultMessage(message)) {
         triggerDownload(message.result.pdf, downloadNameReference.current);
-        setDiagnostics(message.result.diagnostics);
+        setDiagnostics([...prepassDiagnosticsReference.current, ...message.result.diagnostics]);
         setError(undefined);
         setIsExporting(false);
         return;
@@ -133,17 +184,49 @@ export function usePdfExport(): UsePdfExportResult {
     const requestId = String(requestCounterReference.current);
     latestRequestIdReference.current = requestId;
     downloadNameReference.current = downloadNameFor(snapshot.rootPath);
+    prepassDiagnosticsReference.current = NO_DIAGNOSTICS;
+
+    // Supersede any pre-pass still in flight for an earlier export.
+    prepassAbortReference.current?.abort();
+    const abort = new AbortController();
+    prepassAbortReference.current = abort;
+
+    if (prerendererReference.current === null) {
+      prerendererReference.current = (createPrerendererReference.current ?? createMermaidPrerenderer)();
+    }
+    const prerenderer = prerendererReference.current;
 
     setIsExporting(true);
-    setPhase(undefined);
+    // Mermaid renders on the main thread first, so the diagram phase surfaces before the worker starts.
+    setPhase(DIAGRAM_PREPASS_PHASE);
     setError(undefined);
     setDiagnostics(NO_DIAGNOSTICS);
 
-    const message: ToWorker = {
-      type: 'render',
-      request: { requestId, mode: 'export', snapshot, optimize: true },
-    };
-    worker.postMessage(message);
+    // Render mermaid diagrams (the one engine the worker's DOM-less VM cannot draw) up front, then hand
+    // the resulting content-addressed assets to the worker to pre-seed as cache hits.
+    void (async () => {
+      const documentPath = snapshot.openPath;
+      const text = snapshot.files[documentPath] ?? '';
+      const prepass = await prerenderer.prerender(text, { signal: abort.signal });
+
+      // A newer export superseded this one while its pre-pass ran; drop it silently.
+      if (latestRequestIdReference.current !== requestId) return;
+
+      const prepassDiagnostics = prepass.diagnostics.map((diagnostic) =>
+        toRenderDiagnostic(diagnostic, documentPath),
+      );
+      prepassDiagnosticsReference.current = prepassDiagnostics;
+      if (prepassDiagnostics.length > 0) setDiagnostics(prepassDiagnostics);
+
+      const request: RenderRequest = {
+        requestId,
+        mode: 'export',
+        snapshot,
+        optimize: true,
+        ...(prepass.assets.length > 0 ? { generatedAssets: prepass.assets } : {}),
+      };
+      worker.postMessage({ type: 'render', request } satisfies ToWorker);
+    })();
   }, []);
 
   return { exportPdf, isExporting, phase, error, diagnostics };
