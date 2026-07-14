@@ -8,6 +8,9 @@
 //   - the DEFAULT converter (no injection), which drives the real `mathjax-full` engine and MUST
 //     produce typeset SVG WITHOUT a DOM — the capability the browser `<script>` path could never have.
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import mathjaxPackage from 'mathjax-full/package.json';
 
 import type { ShimInput, ShimOutput } from '@asciidocollab/asciidoc-pdf';
@@ -215,4 +218,88 @@ describe('createMathJaxShim — default converter typesets WITHOUT a DOM (mathja
     const svg = expectOkSvg(await shim.render(inputFor('E = mc^2', { [MATH_NOTATION_PARAM]: 'latexmath' })));
     expect(svg).not.toMatch(/https?:\/\/(?!www\.w3\.org)/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Reference-parity guard: the DOM-free liteAdaptor (the production PDF-worker path) must lay glyphs out
+// identically to the committed PDF-parity reference SVGs, which were captured from the BROWSER MathJax
+// engine (see e2e/pdf-parity/emit-reference-inputs.spec.ts). The reference PDF the parity suite compares
+// against embeds those exact SVGs, so this guard is what ties the worker's typeset output to that visual
+// reference: same MathJax version + same `svg.fontCache: 'local'`, so the geometry — viewBox, glyph paths,
+// element placement — must be byte-equal up to serialization cosmetics (attribute order, the browser's
+// `aria-hidden`, void-element self-closing). If a future engine/adaptor change moves a glyph, this fails
+// loudly and the committed reference (and PDF) must be regenerated together.
+describe('createMathJaxShim — default converter matches the committed PDF-parity reference geometry', () => {
+  const REFERENCE_GEN_DIR = path.resolve(
+    __dirname,
+    '../../../e2e/pdf-parity/fixtures/math/reference-build/.gen',
+  );
+
+  /** The two displayed fixture expressions and the reference SVG each one produced (math/source/main.adoc). */
+  const FIXTURE_CASES = [
+    {
+      label: 'quadratic formula (latexmath, display)',
+      source: String.raw`x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}`,
+      notation: 'latexmath',
+      referenceFile: '1087f6478a440397.svg',
+    },
+    {
+      label: 'summation (asciimath, display)',
+      source: 'sum_(i=1)^n i = (n(n+1))/2',
+      notation: 'asciimath',
+      referenceFile: 'd2dce427889c5ba9.svg',
+    },
+  ] as const;
+
+  /** Read one attribute from a single element's opening tag, robust to attribute ordering. */
+  function attribute(tag: string, name: string): string {
+    return new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1] ?? '';
+  }
+
+  /** Every opening tag of the given element name (self-closing or not). */
+  function elements(svg: string, name: string): string[] {
+    return [...svg.matchAll(new RegExp(`<${name}\\b[^>]*?/?>`, 'g'))].map((match) => match[0]);
+  }
+
+  /**
+   * A serialization-independent geometry fingerprint: the root SVG's sizing box plus the sorted set of
+   * glyph paths, glyph placements, fraction/root rules, and group transforms. Two SVGs with the same
+   * fingerprint render identical ink; attribute order, `aria-hidden`, and void-element style are ignored.
+   */
+  function geometryFingerprint(svg: string): unknown {
+    const root = /<svg\b[^>]*>/.exec(svg)?.[0] ?? '';
+    return {
+      width: attribute(root, 'width'),
+      height: attribute(root, 'height'),
+      viewBox: attribute(root, 'viewBox'),
+      verticalAlign: (/vertical-align:\s*([^;"]*)/.exec(root)?.[1] ?? '').trim(),
+      paths: elements(svg, 'path')
+        .map((tag) => `${attribute(tag, 'id')}|${attribute(tag, 'd')}`)
+        .sort(),
+      uses: elements(svg, 'use')
+        .map(
+          (tag) =>
+            `${attribute(tag, 'xlink:href')}|${attribute(tag, 'transform')}|${attribute(tag, 'x')}|${attribute(tag, 'y')}`,
+        )
+        .sort(),
+      rects: elements(svg, 'rect')
+        .map((tag) => `${attribute(tag, 'x')}|${attribute(tag, 'y')}|${attribute(tag, 'width')}|${attribute(tag, 'height')}`)
+        .sort(),
+      groupTransforms: elements(svg, 'g')
+        .map((tag) => attribute(tag, 'transform'))
+        .filter((transform) => transform.length > 0)
+        .sort(),
+    };
+  }
+
+  it.each(FIXTURE_CASES)(
+    'lays out $label identically to its committed reference SVG',
+    async ({ source, notation, referenceFile }) => {
+      const shim = createMathJaxShim();
+      const ours = expectOkSvg(await shim.render(inputFor(source, { [MATH_NOTATION_PARAM]: notation })));
+      const reference = readFileSync(path.join(REFERENCE_GEN_DIR, referenceFile), 'utf8');
+
+      expect(geometryFingerprint(ours)).toEqual(geometryFingerprint(reference));
+    },
+  );
 });

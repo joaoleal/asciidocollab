@@ -80,8 +80,8 @@ typeset images at reference parity via the worker `liteAdapter` path (enabled by
 **Independent Test**: Export a doc with a `[stem]` block equation and an inline `stem:[…]` expression;
 both appear as typeset images at correct positions, matching the reference build.
 
-- [ ] T013 [US2] Math-parity spike (plan-flagged): verify `mathjax-full`/`liteAdapter` SVG output matches the committed math reference from feature 039 (which came from browser MathJax); if the adapter switch changes glyph geometry, regenerate the committed math reference via the reference toolchain and document the delta. Files: `packages/asciidoc-pdf/tests/integration/parity.integration.test.ts` (math cases) + reference assets.
-- [ ] T014 [US2] Add a math parity fixture exercising a `[stem]` block equation, an inline `stem:[…]` macro mid-sentence, and math-like text inside a verbatim block (must pass through untouched), with committed reference and parity assertion under `apps/web/e2e/pdf-parity/fixtures/math/**` (SC-002). Depends on T013.
+- [X] T013 [US2] Math-parity spike (plan-flagged): verify `mathjax-full`/`liteAdapter` SVG output matches the committed math reference from feature 039 (which came from browser MathJax); if the adapter switch changes glyph geometry, regenerate the committed math reference via the reference toolchain and document the delta. Files: `packages/asciidoc-pdf/tests/integration/parity.integration.test.ts` (math cases) + reference assets.
+- [X] T014 [US2] Add a math parity fixture exercising a `[stem]` block equation, an inline `stem:[…]` macro mid-sentence, and math-like text inside a verbatim block (must pass through untouched), with committed reference and parity assertion under `apps/web/e2e/pdf-parity/fixtures/math/**` (SC-002). Depends on T013.
 
 **Checkpoint**: US1 AND US2 both render in the PDF export/preview.
 

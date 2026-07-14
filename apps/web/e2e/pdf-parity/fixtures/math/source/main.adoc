@@ -15,3 +15,13 @@ A summation, expressed in AsciiMath:
 ++++
 sum_(i=1)^n i = (n(n+1))/2
 ++++
+
+Mass-energy equivalence stem:[E = mc^2] reads inline, mid-sentence, without breaking the paragraph flow around it.
+
+A verbatim listing must pass the math markup through untouched — here it is source text, not an equation:
+
+[source]
+----
+render_math("stem:[a^2+b^2=c^2]")
+render_math("latexmath:[\sqrt{n}]")
+----

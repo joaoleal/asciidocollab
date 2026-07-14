@@ -1,6 +1,6 @@
 {
   "name": "math",
-  "description": "A displayed LaTeX equation (latexmath) + an AsciiMath summation, each rendered by the MathJax shim to a self-contained SVG the engine embeds. asciidoctor-mathematical does not build on this platform, so the reference is the external Asciidoctor-PDF gem embedding the SAME shim-produced SVG assets (see reference-build/); the parity under test is therefore the wasm engine's SVG placement vs the reference gem's. MathJax emits glyph paths (no text layer), so parity is measured by a rasterized ink-map: same page count, math ink present, and the inked region's footprint + position within element-level tolerance (the tolerance absorbs the two engines' rasterizer antialiasing).",
+  "description": "Three math cases in one document: a displayed LaTeX equation (latexmath) block, an AsciiMath summation block, and an inline stem macro mid-sentence — each rendered by the MathJax shim to a self-contained SVG the engine embeds — plus a verbatim listing whose math-like markup must pass through untouched (source text, not an equation). asciidoctor-mathematical does not build on this platform, so the reference is the external Asciidoctor-PDF gem embedding the SAME shim-produced SVG assets (see reference-build/); the parity under test is therefore the wasm engine's SVG placement vs the reference gem's. MathJax emits glyph paths (no text layer), so parity is measured by a rasterized ink-map: same page count, math ink present, and the inked region's footprint + position within element-level tolerance (the tolerance absorbs the two engines' rasterizer antialiasing). The listing's literal markup is checked via labels: it survives into both text layers verbatim (never converted to a math SVG), which is exactly the verbatim-passthrough guarantee.",
   "mainFile": "main.adoc",
   "scale": 2,
   "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.02 },
@@ -11,5 +11,6 @@
     "minDarkFraction": 0.001,
     "maxDarkFractionRatioDelta": 0.35,
     "maxBboxEdgeDelta": 0.08
-  }
+  },
+  "labels": ["render_math(\"stem:[a^2+b^2=c^2]\")", "render_math(\"latexmath:[\\sqrt{n}]\")"]
 }
