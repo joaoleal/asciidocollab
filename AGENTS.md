@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
-Active feature plan: specs/039-export-pdf-client/plan.md
+Active feature plan: specs/040-pdf-diagrams-math/plan.md
 <!-- SPECKIT END -->
 
 ## Hard Constraints (MUST NOT)
