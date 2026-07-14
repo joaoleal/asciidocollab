@@ -129,7 +129,7 @@ export function AsciiDocPreview({
   // Default image base path: AsciiDoc image macros reference files by path, so point Asciidoctor's
   // `imagesdir` at the project's image endpoint (see GET /projects/:id/images/*).
   const imagesDirectory = `${API_BASE}/projects/${projectId}/images`;
-  const { html, state, error, previewRef, mathPresent } = useAsciidocPreview({
+  const { html, state, error, previewRef, mathPresent, diagramsPresent } = useAsciidocPreview({
     content,
     isEnabled,
     scrollToLine,
@@ -180,6 +180,42 @@ export function AsciiDocPreview({
       cancelled = true;
     };
   }, [html, mathPresent]);
+
+  // Render diagram placeholders client-side AFTER the sanitized HTML is committed, and only when the
+  // worker flagged a native diagram block (`diagramsPresent`). The heavy engines (mermaid/vega/
+  // graphviz) are lazy-imported inside `renderDiagrams`, so their bundle cost is paid only on a
+  // diagram-bearing preview — mirroring the MathJax effect above. Re-runs on html/diagramsPresent
+  // change; `renderDiagrams` re-derives each diagram from its preserved inert source, so a re-run does
+  // not double-inject. Fail-soft: `renderDiagrams` never throws and returns per-diagram warnings
+  // (unsupported/offline engine, blocked remote resource, render failure) — we log those and leave the
+  // rest of the preview intact; a rejected import/promise is caught so it can never crash the preview.
+  // Output stays within the scoped container (Constitution VI) — we only ever render into that node.
+  useEffect(() => {
+    if (!diagramsPresent || html === null) return;
+    const container = outputReference.current;
+    if (!container) return;
+    let cancelled = false;
+    void import('@/components/diagrams/render-diagrams')
+      .then(({ renderDiagrams }) => {
+        if (cancelled) return;
+        return renderDiagrams(container).then((result) => {
+          if (cancelled) return;
+          for (const warning of result.warnings) {
+            console.warn(
+              `Diagram (${warning.engine}${warning.sourceLine === null ? '' : `, line ${warning.sourceLine}`}) not rendered: ${warning.message}`,
+            );
+          }
+        });
+      })
+      .catch((error: unknown) => {
+        // Defence in depth: `renderDiagrams` is fail-soft by contract, but a failed dynamic import (or
+        // an unexpected rejection) must still never break the preview — the rest of it stays rendered.
+        console.warn('Diagram rendering could not run; preview left as source.', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [html, diagramsPresent]);
 
   // Delegated listener for include-placeholder interactions (click + keyboard).
   // A single listener on the container handles all placeholders — even those added

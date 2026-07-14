@@ -842,6 +842,64 @@ describe('useAsciidocPreview', () => {
     expect(lastCall.files['main.adoc']).toContain(':flag!:');
   });
 
+  // diagramsPresent gating: mirrors mathPresent — the hook exposes the worker's flag so a consumer
+  // can lazy-load the heavy diagram engines (mermaid/vega/graphviz) only when a diagram is present.
+  it('exposes diagramsPresent=true when the worker reports a diagram placeholder', () => {
+    const { result } = renderHook(
+      ({ content }: { content: string }) =>
+        useAsciidocPreview({ content, isEnabled: true, scrollToLine: null }),
+      { initialProps: { content: '[mermaid]\n----\ngraph TD; A-->B\n----\n' } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    act(() =>
+      lastWorker().emit({
+        requestId: 1,
+        ok: true,
+        html: '<div class="adc-diagram"></div>',
+        error: null,
+        diagramsPresent: true,
+      }),
+    );
+    expect(result.current.diagramsPresent).toBe(true);
+  });
+
+  it('exposes diagramsPresent=false when the worker omits the flag', () => {
+    const { result } = renderHook(
+      ({ content }: { content: string }) =>
+        useAsciidocPreview({ content, isEnabled: true, scrollToLine: null }),
+      { initialProps: { content: '= Doc' } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Doc</h1>', error: null }));
+    expect(result.current.diagramsPresent).toBe(false);
+  });
+
+  it('flips diagramsPresent as a document gains then loses a diagram across re-renders', () => {
+    const { result, rerender } = renderHook(
+      ({ content }: { content: string }) =>
+        useAsciidocPreview({ content, isEnabled: true, scrollToLine: null }),
+      { initialProps: { content: '= Doc' } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Doc</h1>', error: null, diagramsPresent: false }));
+    expect(result.current.diagramsPresent).toBe(false);
+
+    // Document gains a diagram
+    act(() => rerender({ content: '[mermaid]\n----\ngraph TD; A-->B\n----\n' }));
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 2, ok: true, html: '<div class="adc-diagram"></div>', error: null, diagramsPresent: true }));
+    expect(result.current.diagramsPresent).toBe(true);
+
+    // Document loses the diagram again
+    act(() => rerender({ content: '= Doc again' }));
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 3, ok: true, html: '<h1>Doc again</h1>', error: null, diagramsPresent: false }));
+    expect(result.current.diagramsPresent).toBe(false);
+  });
+
   it('forwards imagesDir to the worker as the image base path', () => {
     renderHook(() =>
       useAsciidocPreview({ content: '= Doc', isEnabled: true, scrollToLine: null, imagesDir: 'https://api/projects/p1/images' }),

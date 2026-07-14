@@ -131,6 +131,71 @@ function seedAttributesFromScope(
   return { attributes: seeded, baseOffset };
 }
 
+// Diagram block styles that render natively on-screen (main thread), mapped to the engine name the
+// preview dispatches on. `vega-lite` normalizes to `vegalite` so `data-diagram-engine` stays within the
+// diagram notation set {mermaid, graphviz, vega, vegalite}. Offline-unsupported engines (plantuml/ditaa)
+// are deliberately absent — they keep their default listing rendering, never a native placeholder.
+const DIAGRAM_ENGINE_BY_STYLE: Readonly<Record<string, string>> = {
+  mermaid: 'mermaid',
+  graphviz: 'graphviz',
+  vega: 'vega',
+  vegalite: 'vegalite',
+  'vega-lite': 'vegalite',
+};
+
+/** The normalized diagram engine for a block style, or `null` when the style is not a native diagram. */
+function diagramEngineForStyle(style: string): string | null {
+  return DIAGRAM_ENGINE_BY_STYLE[style.toLowerCase()] ?? null;
+}
+
+/** A native diagram block located during the pre-conversion walk, keyed by its (id'd) HTML element. */
+interface DiagramBlock {
+  id: string;
+  engine: string;
+  lineNum: number;
+  source: string;
+}
+
+/** Escape a raw diagram source for inert placement as element text content. */
+function escapeHtmlText(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+}
+
+/**
+ * The inert diagram placeholder the main thread locates and renders natively. `div` + `class` +
+ * `data-*` + escaped text is `html`-profile-safe, so the shared preview sanitizer keeps it intact; the
+ * source is preserved (escaped text) so a later re-render re-derives the SVG rather than nesting.
+ */
+function buildDiagramPlaceholder(diagram: DiagramBlock): string {
+  return `<div class="adc-diagram" data-diagram-engine="${diagram.engine}" data-source-line="${diagram.lineNum}">${escapeHtmlText(diagram.source)}</div>`;
+}
+
+/**
+ * Replace the whole element carrying `id="<id>"` (a diagram's rendered listing/literal block) with
+ * `replacement`. Walks balanced `<div>`/`</div>` from the element's own open tag so a nested content or
+ * title `<div>` is spanned correctly; the diagram source inside is HTML-escaped so no `<div` token can
+ * appear in it. Returns the input unchanged when the id is not found.
+ */
+function replaceElementById(html: string, id: string, replacement: string): string {
+  const idIndex = html.indexOf(`id="${id}"`);
+  if (idIndex === -1) return html;
+  const openStart = html.lastIndexOf('<div', idIndex);
+  if (openStart === -1) return html;
+  const tagRe = /<div\b|<\/div>/g;
+  tagRe.lastIndex = openStart;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tagRe.exec(html)) !== null) {
+    if (match[0] === '</div>') {
+      depth -= 1;
+      if (depth === 0) return html.slice(0, openStart) + replacement + html.slice(tagRe.lastIndex);
+    } else {
+      depth += 1;
+    }
+  }
+  return html;
+}
+
 /** Reverses the minimal HTML escaping Asciidoctor applies inside code blocks. */
 function unescapeHtml(value: string): string {
   return value
@@ -238,6 +303,12 @@ interface RenderResult {
    * load, so stem delimiters written where `:stem:` is not in effect stay as literal text.
    */
   mathPresent?: boolean;
+  /**
+   * True when the rendered document carries at least one native-diagram placeholder
+   * (`<div class="adc-diagram">`). The worker never renders diagrams itself; this flag gates the main
+   * thread's lazy import of the on-screen diagram engines. Absent/`false` ⇒ no engine import.
+   */
+  diagramsPresent?: boolean;
 }
 
 // A STEM BLOCK renders as `<div class="stemblock">` — a precise, stem-only signal in the output.
@@ -357,6 +428,9 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     // synthetic one so we can inject data-source-line via a post-processing pass
     // on the raw HTML string (setAttribute alone does not produce HTML attributes).
     const blockSourceLines: Array<{ id: string; lineNum: number }> = [];
+    // Native-diagram blocks: located here (parsed style + source), then swapped for an inert placeholder
+    // in the converted HTML so the main thread renders them on-screen (never the raw listing).
+    const diagramBlocks: DiagramBlock[] = [];
     // Track the document title line number (from the level-0 section block).
     // The showtitle <h1> has no id attribute, so it needs special handling below.
     let documentTitleLineNumber: number | null = null;
@@ -377,6 +451,31 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         continue;
       }
 
+      // A native-diagram block (mermaid/graphviz/vega/vegalite) renders on-screen on the main thread.
+      // Give it an id so its converted element can be located, record engine + source line + inert
+      // source, and skip the default block handling so the raw source is never shown as a listing.
+      const style: string =
+        typeof block.getStyle === 'function' ? String(block.getStyle() ?? '') : '';
+      const engine = context === 'listing' || context === 'literal' ? diagramEngineForStyle(style) : null;
+      if (engine !== null) {
+        const rawDiagramId: unknown = block.getId();
+        let diagramId: string = typeof rawDiagramId === 'string' && rawDiagramId ? rawDiagramId : '';
+        if (!diagramId) {
+          diagramId = `__adc_diagram_${diagramBlocks.length}`;
+          block.setId(diagramId);
+        }
+        // `getSource` is a Block (listing/literal) method, not on the AbstractBlock the walk is typed as.
+        const getSource = (block as { getSource?: () => unknown }).getSource;
+        const rawSource: unknown = typeof getSource === 'function' ? getSource.call(block) : '';
+        diagramBlocks.push({
+          id: diagramId,
+          engine,
+          lineNum: lineNumber,
+          source: typeof rawSource === 'string' ? rawSource : String(rawSource ?? ''),
+        });
+        continue;
+      }
+
       const rawId: unknown = block.getId();
       let id: string = typeof rawId === 'string' ? rawId : '';
       if (!id) {
@@ -393,6 +492,14 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     const stemAttribute =
       typeof asciidocDocument.getAttribute === 'function' ? asciidocDocument.getAttribute('stem') : undefined;
     const mathPresent = detectMathPresent(stemAttribute, source, html);
+
+    // Swap each native-diagram block's rendered listing for its inert placeholder (`html`-profile-safe
+    // so the shared sanitizer keeps it). Done before the id-based source-line pass so the placeholder's
+    // own `data-source-line` is authoritative and no leftover diagram id is decorated.
+    for (const diagram of diagramBlocks) {
+      html = replaceElementById(html, diagram.id, buildDiagramPlaceholder(diagram));
+    }
+    const diagramsPresent = diagramBlocks.length > 0;
 
     // Map project-relative image targets onto the authenticated image endpoint. Asciidoctor has
     // already applied the resolved `imagesdir` (identical to the PDF engine), so each `<img src>` is a
@@ -422,7 +529,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       html = html.replace('<h1>', `<h1 data-source-line="${documentTitleLineNumber}">`);
     }
 
-    postMessage({ requestId, ok: true, html, error: null, mathPresent } satisfies RenderResult);
+    postMessage({ requestId, ok: true, html, error: null, mathPresent, diagramsPresent } satisfies RenderResult);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     postMessage({ requestId, ok: false, html: null, error: message } satisfies RenderResult);

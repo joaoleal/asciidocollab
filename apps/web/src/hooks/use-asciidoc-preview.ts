@@ -28,6 +28,8 @@ interface RenderResult {
   error: string | null;
   /** True when the worker detected in-effect STEM math (resolved `:stem:` + stem markup). */
   mathPresent?: boolean;
+  /** True when the worker emitted ≥1 `adc-diagram` placeholder (a diagram block is present). */
+  diagramsPresent?: boolean;
 }
 
 /**
@@ -99,6 +101,11 @@ export interface UseAsciidocPreviewResult {
    * lazy-load MathJax and typeset the container only when there is math to render.
    */
   mathPresent: boolean;
+  /**
+   * True when the latest rendered HTML contains ≥1 diagram placeholder. The preview uses this to
+   * lazy-load the heavy diagram engines (mermaid/vega/graphviz) only when a diagram is present.
+   */
+  diagramsPresent: boolean;
 }
 
 /**
@@ -122,6 +129,7 @@ export function useAsciidocPreview({
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mathPresent, setMathPresent] = useState(false);
+  const [diagramsPresent, setDiagramsPresent] = useState(false);
 
   // Held in a ref so the debounced render always posts the current base path without
   // re-running the debounce effects when it changes (it is stable per editor session).
@@ -163,6 +171,9 @@ export function useAsciidocPreview({
         // The worker gates this on the resolved `:stem:`; MathJax delimiters (`\(`, `\[`, `\$`) are
         // plain text and survive DOMPurify, so the sanitized HTML still carries the math to typeset.
         setMathPresent(result.mathPresent === true);
+        // The `adc-diagram` placeholders survive DOMPurify (a plain div with data-* attributes), so
+        // the sanitized HTML still carries the blocks the lazily-loaded engine will hydrate.
+        setDiagramsPresent(result.diagramsPresent === true);
         setError(null);
         setState('up-to-date');
       } else {
@@ -279,5 +290,5 @@ export function useAsciidocPreview({
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [scrollToLine]);
 
-  return { html, state, error, previewRef: previewReference, mathPresent };
+  return { html, state, error, previewRef: previewReference, mathPresent, diagramsPresent };
 }

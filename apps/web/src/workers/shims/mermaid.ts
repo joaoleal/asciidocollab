@@ -51,6 +51,23 @@ function buildMermaidConfig(): MermaidConfig {
   };
 }
 
+/**
+ * The strict, deterministic configuration for the NATIVE on-screen preview render (main thread).
+ *
+ * Distinct from {@link buildMermaidConfig}: the browser preview can display mermaid's default
+ * `<foreignObject>` HTML labels directly, so this config does NOT force `htmlLabels: false` (that
+ * constraint exists only for the downstream prawn-svg PDF renderer, which cannot draw foreignObject).
+ * The security-critical bits are unchanged — `securityLevel: 'strict'` keeps the diagram source inert,
+ * and `deterministicIds` keeps output stable — so the preview render stays safe and reproducible.
+ */
+export function buildPreviewMermaidConfig(): MermaidConfig {
+  return {
+    startOnLoad: false,
+    securityLevel: SECURITY_LEVEL,
+    deterministicIds: true,
+  };
+}
+
 /** Drives the real mermaid engine; only runnable in a browser/worker (DOM-dependent). */
 const defaultMermaidRenderer: MermaidRenderer = async (config, source) => {
   const mermaidModule = await import('mermaid');
