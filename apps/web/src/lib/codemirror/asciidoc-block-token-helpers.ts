@@ -151,23 +151,25 @@ export function isLineStart(input: PeekInputWithPos): boolean {
  * so this only stops the absorption for true block boundaries.
  *
  * @param input - The look-ahead view over the input (cursor on the first char of the line).
+ * @param base - Offset of the first char of the line to test (0 = the cursor's own line). Lets a
+ *   caller test the line that FOLLOWS the current one without moving the cursor.
  * @returns `true` when the line starts a delimited block.
  */
-export function startsDelimitedBlock(input: PeekInput): boolean {
-  const ch = input.peek(0);
+export function startsDelimitedBlock(input: PeekInput, base = 0): boolean {
+  const ch = input.peek(base);
   // Fenced delimiters: a run of one repeated char alone on the line.
   if (ch === EQUALS || ch === STAR || ch === UNDERSCORE || ch === PLUS ||
       ch === SLASH || ch === DOT || ch === DASH) {
     let count = 0;
-    while (input.peek(count) === ch) count++;
-    const after = input.peek(count);
+    while (input.peek(base + count) === ch) count++;
+    const after = input.peek(base + count);
     if (after !== NEWLINE && after !== -1) return false; // text after the run ⇒ not a bare delimiter
     if (count >= 4) return true;                          // ==== ---- **** ____ ++++ .... ////
     return ch === DASH && count === 2;                    // -- open block
   }
   // Table fences `|=== , === :===` (the column-0 forms the tokenizer recognises).
   if (ch === PIPE || ch === COMMA || ch === COLON) {
-    return input.peek(1) === EQUALS && input.peek(2) === EQUALS && input.peek(3) === EQUALS;
+    return input.peek(base + 1) === EQUALS && input.peek(base + 2) === EQUALS && input.peek(base + 3) === EQUALS;
   }
   return false;
 }

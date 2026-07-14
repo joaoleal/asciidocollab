@@ -287,6 +287,12 @@ export const asciidocHighlightStyle = HighlightStyle.define([
   // ── Document header metadata (author/revision) ───────────────────────────
   { tag: ad.docInfo, color: c("--syntax-attr"), fontStyle: "italic" },
 
+  // ── Diagram block declaration (`[mermaid]`, `[graphviz]`, …) ───────────────
+  // A distinct chip so "this block renders to an image" reads differently from a generic
+  // `[source,ruby]` block-attribute line (amber `t.meta`): a bold callout-hued label.
+  { tag: ad.diagramDecl, color: c("--syntax-callout"), backgroundColor: c("--syntax-callout", 0.12),
+    borderRadius: "3px", padding: "0 2px", fontWeight: "600" },
+
   // Table header-row cells are bolded by the `cm-ad-table-header-cell` decoration
   // (asciidoc-block-decorations.ts), not a grammar tag — the header row is detected at the
   // decoration layer, so there is no `TableHeader` node for a tag to target.

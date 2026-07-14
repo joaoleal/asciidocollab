@@ -1,7 +1,13 @@
 import { parseMixed, type Input, type NestedParse, type Parser, type SyntaxNodeRef } from '@lezer/common';
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
-import { canonicalSourceLanguageName, resolveSourceLanguage } from './source-languages';
+import {
+  canonicalSourceLanguageName,
+  resolveSourceLanguage,
+  diagramBodyLanguageName,
+  resolveDiagramBodyParser,
+} from './source-languages';
+import { normalizeDiagramNotation, type DiagramNotation } from './diagram-notations';
 
 /**
  * In-editor source-language highlighting. The body of a
@@ -40,6 +46,33 @@ export function collectSourceLanguages(documentText: string): string[] {
   return [...languages];
 }
 
+// A diagram block declaration is a lone bracketed notation — `[mermaid]`, `[graphviz]`,
+// `[vega]`, `[vegalite]` (`vega-lite` folded) — optionally carrying further attributes
+// (`[mermaid, format=svg]`). Mirrors the block tokenizer: the notation is the first
+// attribute, ended by `]`, `,`, or whitespace; a `[[anchor]]` never matches.
+const DIAGRAM_DECL_RE = /^\s*\[([A-Za-z][\w-]*)(?:[\s,\]])/;
+
+/** Resolve the diagram notation declared by a line, or null when it is not one. */
+export function extractDiagramNotation(line: string): DiagramNotation | null {
+  const match = DIAGRAM_DECL_RE.exec(line);
+  return match ? normalizeDiagramNotation(match[1]) : null;
+}
+
+/**
+ * Distinct general-purpose languages (currently only JSON, for vega/vegalite) whose
+ * parsers the diagram blocks in the document need, so the lazy loader can preload them.
+ */
+export function collectDiagramBodyLanguages(documentText: string): string[] {
+  const languages = new Set<string>();
+  for (const line of documentText.split('\n')) {
+    const notation = extractDiagramNotation(line);
+    if (!notation) continue;
+    const language = diagramBodyLanguageName(notation);
+    if (language) languages.add(language);
+  }
+  return [...languages];
+}
+
 /** Find the resolved language for a listing block by scanning back to its `[source,..]` decl. */
 function languageForBlock(input: Input, blockFrom: number): string | null {
   const windowStart = Math.max(0, blockFrom - 400);
@@ -51,6 +84,22 @@ function languageForBlock(input: Input, blockFrom: number): string | null {
     if (language) return language;
     // Only a block title (`.Foo`) or another attribute line (`[..]`) may sit between
     // the source declaration and the delimiter; anything else ends the search.
+    if (!trimmed.startsWith('.') && !trimmed.startsWith('[')) return null;
+  }
+  return null;
+}
+
+/** Find the diagram notation for a block by scanning back to its `[notation]` decl. */
+function diagramNotationForBlock(input: Input, blockFrom: number): DiagramNotation | null {
+  const windowStart = Math.max(0, blockFrom - 400);
+  const preceding = input.read(windowStart, blockFrom).split('\n');
+  for (let index = preceding.length - 1; index >= 0; index--) {
+    const trimmed = preceding[index].trim();
+    if (trimmed === '') continue;
+    const notation = extractDiagramNotation(preceding[index]);
+    if (notation) return notation;
+    // Only a block title (`.Foo`) or another attribute line (`[..]`) may sit between the
+    // declaration and the delimiter; anything else ends the search.
     if (!trimmed.startsWith('.') && !trimmed.startsWith('[')) return null;
   }
   return null;
@@ -82,13 +131,27 @@ function blockBodySpan(input: Input, blockFrom: number, blockTo: number): { from
 /** Mixed-language wrap that injects the embedded language parser into source-block bodies. */
 export const sourceMixedWrap = parseMixed((node: SyntaxNodeRef, input: Input): NestedParse | null => {
   if (node.name !== 'ListingBlock' && node.name !== 'LiteralBlock') return null;
+  const span = blockBodySpan(input, node.from, node.to);
+  if (!span) return null;
+
+  // A recognised diagram declaration (`[mermaid]`/`[graphviz]`/`[vega]`/`[vegalite]`) routes
+  // the body to a notation-specific parser. Math blocks (`[stem]`/`[latexmath]`/`[asciimath]`)
+  // are not diagram notations, so they never match and are left untouched; a plain
+  // `[source,<lang>]` listing falls through to the language path below.
+  const notation = diagramNotationForBlock(input, node.from);
+  if (notation) {
+    const parser = resolveDiagramBodyParser(
+      notation,
+      input.read(span.from, span.to),
+      (name) => loadedParsers.get(name) ?? null,
+    );
+    return parser ? { parser, overlay: [span] } : null;
+  }
+
   const language = languageForBlock(input, node.from);
   if (!language) return null;
   const parser = loadedParsers.get(language);
   if (!parser) return null;
-
-  const span = blockBodySpan(input, node.from, node.to);
-  if (!span) return null;
   return { parser, overlay: [span] };
 });
 
@@ -109,7 +172,12 @@ export function asciidocSourceHighlight(reparse: (view: EditorView) => void): Ex
       }
 
       ensureLoaded(view: EditorView) {
-        for (const language of collectSourceLanguages(view.state.doc.toString())) {
+        const documentText = view.state.doc.toString();
+        const embedded = new Set([
+          ...collectSourceLanguages(documentText),
+          ...collectDiagramBodyLanguages(documentText),
+        ]);
+        for (const language of embedded) {
           if (loadedParsers.has(language) || loadingLanguages.has(language)) continue;
           const description = resolveSourceLanguage(language);
           if (!description) continue;

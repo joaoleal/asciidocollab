@@ -18,6 +18,7 @@ export const ad = {
   admonImportant:Tag.define(),
   admonCaution:  Tag.define(),
   docInfo:       Tag.define(),
+  diagramDecl:   Tag.define(),
 } as const;
 
 /**
@@ -162,6 +163,9 @@ export const asciidocHighlightTags = styleTags({
   BlockMacro:         t.macroName,
   BlockTitle:         ad.blockTitle,
   BlockAttributeLine: t.meta,
+  // A diagram block declaration line (`[mermaid]` etc.) — its own tag so it reads distinctly from a
+  // generic `[source,ruby]` block-attribute line (which stays `t.meta`).
+  DiagramBlockDeclaration: ad.diagramDecl,
   Conditional:        t.keyword,
   ThematicBreak:      t.contentSeparator,
   PageBreak:          t.special(t.contentSeparator),

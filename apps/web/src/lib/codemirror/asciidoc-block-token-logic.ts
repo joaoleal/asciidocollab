@@ -2,7 +2,7 @@ import type { InputStream, Stack } from '@lezer/lr';
 
 import {
   NEWLINE, SPACE, TAB, EQUALS, DASH, STAR, UNDERSCORE, BACKTICK,
-  PLUS, SLASH, COLON, PIPE, DOT, LBRACK, SEMICOLON, COMMA,
+  PLUS, SLASH, COLON, PIPE, DOT, LBRACK, RBRACK, SEMICOLON, COMMA,
   APOSTROPHE, LANGLE,
   isBreakLine,
   isBlockAttributeLine,
@@ -18,6 +18,42 @@ import {
   isAlphaNumberOrDash,
   scanInlineMark,
 } from './asciidoc-block-token-helpers';
+import { normalizeDiagramNotation, type DiagramNotation } from './diagram-notations';
+
+/**
+ * When the cursor sits on the opening `[` of a line, reports the diagram notation it declares — but
+ * ONLY when the line is a well-formed block-attribute line whose first attribute is a recognised
+ * notation (`[mermaid]`, `[graphviz]`, `[vega]`, `[vegalite]`, `vega-lite` folded) AND the
+ * IMMEDIATELY following physical line is a delimited-block delimiter (`----` / `....` / …). This is
+ * what distinguishes a diagram-block declaration from a generic `[source,ruby]` listing. Returns
+ * `null` when any of those conditions fails, so the line falls through to the generic block-attribute
+ * branch unchanged.
+ */
+function diagramDeclNotation(input: InputStream): DiagramNotation | null {
+  if (input.peek(1) === LBRACK) return null; // `[[` block anchor
+  let offset = 1;
+  let name = '';
+  while (offset < 200) {
+    const code = input.peek(offset);
+    if (code === RBRACK || code === COMMA || code === SPACE || code === TAB) break;
+    if (code === NEWLINE || code === -1) return null;
+    name += String.fromCharCode(code);
+    offset++;
+  }
+  const notation = normalizeDiagramNotation(name);
+  if (notation === null) return null;
+  if (!isBlockAttributeLine(input)) return null;
+  // Locate the start of the NEXT physical line (just past this line's newline); a diagram
+  // declaration REQUIRES a delimiter line immediately after it.
+  let lineEnd = 0;
+  for (;;) {
+    const code = input.peek(lineEnd);
+    if (code === -1) return null;
+    if (code === NEWLINE) break;
+    lineEnd++;
+  }
+  return startsDelimitedBlock(input, lineEnd + 1) ? notation : null;
+}
 
 /**
  * AsciiDoc block-level external-tokenizer logic — the SINGLE source of truth shared by the
@@ -51,6 +87,7 @@ export function createBlockTokenLogic(T: Record<string, number>): (input: InputS
     listingDelim, literalDelim, exampleDelim, sidebarDelim, quoteDelim, passthroughDelim,
     openDelim, tableDelim, csvTableDelim, dsvTableDelim,
     stemAttrToken: stemAttributeToken,
+    diagramDeclToken,
     admonNoteAttrToken, admonTipAttrToken, admonWarningAttrToken, admonImportantAttrToken, admonCautionAttrToken,
     admonNoteLineToken, admonTipLineToken, admonWarningLineToken, admonImportantLineToken, admonCautionLineToken,
     conditionalToken,
@@ -325,6 +362,10 @@ export function createBlockTokenLogic(T: Record<string, number>): (input: InputS
       if ((peekString(input, '[cols=') || peekString(input, '[cols ')) && isBlockAttributeLine(input)) {
         consumeToEOL(input); input.acceptToken(blockColsToken); return;
       }
+      // Diagram block declaration `[mermaid]` / `[graphviz]` / `[vega]` / `[vegalite]` sitting
+      // immediately above a delimited-block delimiter — emitted as its own token (before the generic
+      // block-attribute branch) so a diagram declaration highlights distinctly from `[source,ruby]`.
+      if (diagramDeclNotation(input) !== null) { consumeToEOL(input); input.acceptToken(diagramDeclToken); return; }
       // Generic block-attribute line `[source,ruby]`, `[.lead]`, and similar.
       if (isBlockAttributeLine(input)) { consumeToEOL(input); input.acceptToken(blockAttributeToken); return; }
       return;

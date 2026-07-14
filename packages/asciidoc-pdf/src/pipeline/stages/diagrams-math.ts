@@ -82,6 +82,34 @@ const UNSUPPORTED_DIAGRAM_BLOCKS: ReadonlySet<string> = new Set(['plantuml', 'di
 /** Math block/inline notations rendered through the math shim family. */
 const MATH_NOTATIONS: ReadonlySet<string> = new Set(['stem', 'latexmath', 'asciimath']);
 
+/**
+ * Fold a raw diagram block name to its canonical notation, collapsing the `vega-lite` alias onto
+ * `vegalite`. This is the renderer-side twin of the editor's normalization, kept here (rather than
+ * imported from the app) so this browser-leaf package stays one-directional.
+ */
+function canonicalDiagramNotation(name: string): string {
+  return name === 'vega-lite' ? 'vegalite' : name;
+}
+
+/**
+ * The diagram notation names this stage can render offline, published read-only so the editor can
+ * pin its own diagram-highlighting set against them (a consistency seam, not a shared registry).
+ *
+ * DERIVED from {@link DIAGRAM_SHIM_BY_BLOCK} — the single source of truth for supported engines —
+ * with the `vega-lite` alias folded onto `vegalite`, so the published set is
+ * `{mermaid, graphviz, vega, vegalite}` and never drifts from what the stage actually renders.
+ */
+export const DIAGRAM_NOTATIONS: ReadonlySet<string> = new Set(
+  Object.keys(DIAGRAM_SHIM_BY_BLOCK).map(canonicalDiagramNotation),
+);
+
+/**
+ * The diagram engines with no offline client-side renderer (PlantUML/ditaa), published read-only.
+ * DERIVED from {@link UNSUPPORTED_DIAGRAM_BLOCKS} so the editor can treat them consistently — never
+ * highlighting a declaration the exporter will silently skip.
+ */
+export const UNSUPPORTED_DIAGRAM_NOTATIONS: ReadonlySet<string> = new Set(UNSUPPORTED_DIAGRAM_BLOCKS);
+
 function classifyBlock(name: string): BlockCategory | null {
   if (name in DIAGRAM_SHIM_BY_BLOCK) {
     return 'diagram';

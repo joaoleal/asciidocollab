@@ -18,6 +18,7 @@
   listingDelim, literalDelim, exampleDelim, sidebarDelim, quoteDelim, passthroughDelim, openDelim, tableDelim,
   csvTableDelim, dsvTableDelim,
   stemAttrToken, admonAttrToken,
+  diagramDeclToken,
   conditionalToken, blockAttrToken,
   checkDoneMarker, checkTodoMarker, unorderedMarker, orderedMarker,
   inlineMacroToken, footnoteToken,
@@ -54,6 +55,7 @@ block {
   DsvTableBlock |
   Conditional |
   TableCols |
+  DiagramBlockDeclaration |
   BlockAttributeLine |
   ThematicBreak |
   PageBreak |
@@ -99,6 +101,11 @@ Conditional       { conditionalToken }
 // `[cols=…]` block-attribute line specifically and emits `blockColsToken` (whole line) so the cols
 // specifier highlights distinctly from a generic `[source,ruby]` block-attribute line.
 TableCols          { blockColsToken }
+// A diagram block declaration line `[mermaid]` / `[graphviz]` / `[vega]` / `[vegalite]` sitting
+// IMMEDIATELY above a delimited-block delimiter (`----` / `....`). The external tokenizer emits
+// `diagramDeclToken` for the whole `[...]` line (only for a recognised notation with a following
+// delimiter) so it highlights distinctly from a generic `[source,ruby]` block-attribute line.
+DiagramBlockDeclaration { diagramDeclToken }
 BlockAttributeLine { blockAttrToken }
 ThematicBreak     { thematicBreakToken }
 PageBreak         { pageBreakToken }
