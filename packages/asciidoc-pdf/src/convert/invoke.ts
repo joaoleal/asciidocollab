@@ -266,9 +266,19 @@ export async function invokeConvert(deps: InvokeConvertDeps): Promise<ConvertInv
   const diagnostics: ConvertDiagnostic[] = [];
 
   // 1. Convert.
+  //
+  // Run the convert SYNCHRONOUSLY (`eval`), not via `evalAsync`. `evalAsync` executes the Ruby program
+  // inside a Ruby Fiber (ruby.wasm drives it through `__eval_async_rb` so the code *may* suspend on a JS
+  // promise). A Fiber has its own, small, FIXED machine (C) stack — far smaller than the VM's main
+  // stack. Asciidoctor-PDF/prawn-svg lay diagrams out with deep recursion, and a document embedding
+  // several SVG diagrams at once overflows that fiber stack; on wasm a machine-stack overflow is not a
+  // catchable Ruby `SystemStackError` but a hard `memory access out of bounds` trap that aborts the VM
+  // (it escapes the in-Ruby `rescue`, is layout-sensitive, and reproduces most reliably under a deep
+  // host async context). The convert program is pure Ruby and never awaits a JS promise, so it does not
+  // need a fiber; running it on the main stack removes the overflow while changing nothing else.
   let convertOutcome: ConvertOutcome;
   try {
-    const value = await vm.evalAsync(buildConvertCode(sourcePath, outputPath, attributes));
+    const value = vm.eval(buildConvertCode(sourcePath, outputPath, attributes));
     convertOutcome = parseConvertOutcome(value.toString());
   } catch (error) {
     return failure(requestId, PHASE_CONVERT, CONVERT_ERROR_CODES.CONVERT_FAILED, messageOf(error));

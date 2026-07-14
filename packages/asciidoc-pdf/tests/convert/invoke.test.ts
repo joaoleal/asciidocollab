@@ -57,6 +57,9 @@ interface FakeConfig {
  */
 class FakeVm implements RubyPdfVm {
   ready = true;
+  /** Every program run on the VM, in order, whether via sync `eval` or `evalAsync`. */
+  readonly evalCalls: string[] = [];
+  /** Only the programs run via `evalAsync` (the capability-gated optimize/probe path). */
   readonly evalAsyncCalls: string[] = [];
   readonly reads: string[] = [];
   readonly removed: string[] = [];
@@ -67,18 +70,22 @@ class FakeVm implements RubyPdfVm {
     return { coldStart: false };
   }
 
-  eval(): RubyValue {
-    return makeValue('');
-  }
-
-  async evalAsync(code: string): Promise<RubyValue> {
-    this.evalAsyncCalls.push(code);
+  // The convert program runs synchronously (on the VM's main stack, not a fiber), so the fake serves
+  // its response from `eval`.
+  eval(code: string): RubyValue {
+    this.evalCalls.push(code);
     if (code.includes('convert_file')) {
       if (this.config.convertReject === true) {
         throw new Error('vm exploded during convert');
       }
       return makeValue(this.config.convertJson ?? OK_CONVERT_JSON);
     }
+    return makeValue('');
+  }
+
+  async evalAsync(code: string): Promise<RubyValue> {
+    this.evalCalls.push(code);
+    this.evalAsyncCalls.push(code);
     if (code.includes('HexaPDF::Document')) {
       return makeValue(this.config.optimizeJson ?? JSON.stringify({ ok: true }));
     }
@@ -262,7 +269,7 @@ describe('invokeConvert — invocation shape', () => {
       request: request({ snapshot: snapshot({ attributes: { doctype: 'book' } }) }),
     });
 
-    const convertCode = vm.evalAsyncCalls.find((code) => code.includes('convert_file'));
+    const convertCode = vm.evalCalls.find((code) => code.includes('convert_file'));
     expect(convertCode).toBeDefined();
     const code = convertCode ?? '';
     expect(code).toContain("Asciidoctor.convert_file('/project/book.adoc'");
@@ -288,8 +295,10 @@ describe('invokeConvert — invocation shape', () => {
     const vm = new FakeVm();
     await invokeConvert({ vm, request: request({ optimize: false }) });
 
-    expect(vm.evalAsyncCalls).toHaveLength(1);
-    expect(vm.evalAsyncCalls[0]).toContain('convert_file');
+    // Exactly one program runs — the (synchronous) convert — and no evalAsync/optimize probe fires.
+    expect(vm.evalCalls).toHaveLength(1);
+    expect(vm.evalCalls[0]).toContain('convert_file');
+    expect(vm.evalAsyncCalls).toHaveLength(0);
   });
 });
 
