@@ -387,6 +387,35 @@ describe('usePdfExport', () => {
     ]);
   });
 
+  it('preserves a pre-pass remote-skip warning severity and code in the export diagnostics', async () => {
+    const { prerenderer } = fakePrerenderer({
+      assets: [],
+      diagnostics: [
+        {
+          line: 4,
+          message: 'This mermaid diagram references a remote resource and was skipped.',
+          severity: 'warning',
+          code: 'remote-skipped',
+        },
+      ],
+      aborted: false,
+    });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+
+    // The warning severity and remote-skipped code survive the mapping onto the shared shape.
+    expect(result.current.diagnostics).toEqual([
+      {
+        severity: 'warning',
+        code: 'remote-skipped',
+        resource: SNAPSHOT.openPath,
+        location: { path: SNAPSHOT.openPath, line: 4 },
+        message: 'This mermaid diagram references a remote resource and was skipped.',
+      },
+    ]);
+  });
+
   it('omits generatedAssets and exports normally when the document has no mermaid diagrams', async () => {
     const { prerenderer, prerender } = fakePrerenderer({
       assets: [],

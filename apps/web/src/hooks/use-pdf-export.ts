@@ -33,14 +33,18 @@ const NO_DIAGNOSTICS: readonly RenderDiagnostic[] = [];
  */
 const DIAGRAM_PREPASS_PHASE: RenderPhase = 'diagrams-math';
 
-/** Map a mermaid pre-pass failure onto the shared per-block diagnostic shape the worker stage emits. */
+/**
+ * Map a mermaid pre-pass diagnostic onto the shared per-block shape the worker stage emits. A render
+ * failure carries no severity/code and defaults to an `error`/`malformed-diagram`; a skip (e.g. a
+ * remote-resource reference) carries its own `warning`/`remote-skipped`, preserved here.
+ */
 function toRenderDiagnostic(
   diagnostic: MermaidPrerenderDiagnostic,
   documentPath: string,
 ): RenderDiagnostic {
   return {
-    severity: 'error',
-    code: 'malformed-diagram',
+    severity: diagnostic.severity ?? 'error',
+    code: diagnostic.code ?? 'malformed-diagram',
     resource: documentPath,
     location: { path: documentPath, line: diagnostic.line },
     message: diagnostic.message,

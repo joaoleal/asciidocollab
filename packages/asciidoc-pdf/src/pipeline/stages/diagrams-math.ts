@@ -56,6 +56,25 @@ const POSITIONAL_PARAM_PREFIX = 'pos';
 
 const DIAGNOSTIC_DIAGRAM_UNSUPPORTED: DiagnosticCode = 'diagram-unsupported';
 const DIAGNOSTIC_RASTERIZED: DiagnosticCode = 'unsupported-image';
+const DIAGNOSTIC_REMOTE_SKIPPED: DiagnosticCode = 'remote-skipped';
+
+/**
+ * A remote resource reference inside diagram source: a `scheme://` URL (`http`, `https`, …). A relative
+ * or bare path is NOT remote — the offline renderer resolves those locally (or rejects them); only an
+ * absolute `scheme://` target would require reaching over the network. `data:` URIs carry their bytes
+ * inline (no `//`) and so are not treated as remote.
+ */
+const REMOTE_REFERENCE_PATTERN = /[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * Whether a diagram block's source references a remote resource (a `scheme://` URL) — e.g. a
+ * vega/vega-lite spec's remote `data.url`, or a remote image referenced by a mermaid node. Such a block
+ * is SKIPPED with a warning and never rendered, so no fetch is ever attempted for it (offline export).
+ * Exported so the main-thread mermaid pre-pass can apply the exact same rule and stay in parity.
+ */
+export function diagramSourceReferencesRemoteResource(source: string): boolean {
+  return REMOTE_REFERENCE_PATTERN.test(source);
+}
 
 const SEVERITY_WARNING: DiagnosticSeverity = 'warning';
 const SEVERITY_ERROR: DiagnosticSeverity = 'error';
@@ -109,6 +128,33 @@ export const DIAGRAM_NOTATIONS: ReadonlySet<string> = new Set(
  * highlighting a declaration the exporter will silently skip.
  */
 export const UNSUPPORTED_DIAGRAM_NOTATIONS: ReadonlySet<string> = new Set(UNSUPPORTED_DIAGRAM_BLOCKS);
+
+/**
+ * Recognise a PlantUML body that actually wraps Graphviz/DOT — a `digraph`/`graph { … }` definition or
+ * a `!include` of a DOT file — so the skip diagnostic can point at the offline `graphviz` engine (which
+ * renders that same source) rather than at mermaid.
+ */
+const PLANTUML_DOT_HINT_RE = /\bdigraph\b|\bgraph\s+[^\n{]*\{|^\s*!include\b/im;
+
+/**
+ * The honest, actionable advice appended to a skipped unsupported-offline block's warning: it NAMES a
+ * supported offline engine the author can re-author the block as, or states plainly that none exists.
+ * This only shapes the diagnostic text — the block is still skipped and the rest of the document still
+ * renders. PlantUML maps onto graphviz when its body is really DOT, otherwise onto mermaid; ditaa has
+ * no close offline equivalent, so the message says so instead of inventing one.
+ */
+function offlineAlternativeAdvice(notation: string, source: string): string {
+  if (notation === 'plantuml') {
+    if (PLANTUML_DOT_HINT_RE.test(source)) {
+      return 'This block is Graphviz/DOT; re-author it as a [graphviz] block, which renders offline.';
+    }
+    return 'Most PlantUML diagrams can be expressed as mermaid, which renders offline.';
+  }
+  if (notation === 'ditaa') {
+    return 'ditaa has no offline renderer and no close offline equivalent; pre-render it to an image and reference that instead.';
+  }
+  return 'No supported offline diagram engine can render this notation.';
+}
 
 function classifyBlock(name: string): BlockCategory | null {
   if (name in DIAGRAM_SHIM_BY_BLOCK) {
@@ -571,7 +617,18 @@ async function handleBlock(
       code: DIAGNOSTIC_DIAGRAM_UNSUPPORTED,
       resource,
       location: { path: resource, line: block.line },
-      message: `Diagram engine "${block.notation}" has no offline renderer; the block was skipped.`,
+      message: `Diagram engine "${block.notation}" has no offline renderer; the block was skipped. ${offlineAlternativeAdvice(block.notation, block.source)}`,
+    });
+    return block.originalBlock;
+  }
+
+  if (block.category === 'diagram' && diagramSourceReferencesRemoteResource(block.source)) {
+    context.diagnostics.report({
+      severity: SEVERITY_WARNING,
+      code: DIAGNOSTIC_REMOTE_SKIPPED,
+      resource,
+      location: { path: resource, line: block.line },
+      message: `Diagram "${block.notation}" references a remote resource and was skipped; remote and file data are never fetched during export.`,
     });
     return block.originalBlock;
   }

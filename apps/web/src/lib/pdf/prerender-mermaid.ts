@@ -23,6 +23,9 @@
 import {
   computeSourceHash,
   detectRenderableBlocks,
+  diagramSourceReferencesRemoteResource,
+  type DiagnosticCode,
+  type DiagnosticSeverity,
   type GeneratedAsset,
 } from '@asciidocollab/asciidoc-pdf';
 
@@ -37,12 +40,16 @@ const PREFERRED_FORMAT = 'svg' as const;
 /** Mermaid diagrams are diagram assets in the generated-asset taxonomy. */
 const DIAGRAM_KIND: GeneratedAsset['kind'] = 'diagram';
 
-/** A per-block render failure, surfaced without aborting the rest of the pre-pass. */
+/** A per-block problem surfaced without aborting the rest of the pre-pass. */
 export interface MermaidPrerenderDiagnostic {
   /** 1-based line of the block's attribute line, for editor surfacing. */
   readonly line: number;
-  /** The shim's failure message. */
+  /** The human-readable failure/skip message. */
   readonly message: string;
+  /** Severity to surface with; defaults to `error` (a render failure) when omitted. */
+  readonly severity?: DiagnosticSeverity;
+  /** Diagnostic code to surface with; defaults to `malformed-diagram` (a render failure) when omitted. */
+  readonly code?: DiagnosticCode;
 }
 
 /** The outcome of one pre-pass invocation. An aborted/superseded run always carries no assets. */
@@ -131,6 +138,19 @@ export function createMermaidPrerenderer(deps: MermaidPrerendererDeps = {}): Mer
       await waitForIdle(scheduleIdle);
       if (isStale()) {
         return abortedResult();
+      }
+
+      // Zero source egress: a diagram that references a remote resource is skipped with a warning and
+      // never rendered here, so the DOM-bound engine can never reach out over the network for it.
+      if (diagramSourceReferencesRemoteResource(block.source)) {
+        diagnostics.push({
+          line: block.line,
+          message:
+            'This mermaid diagram references a remote resource and was skipped; remote resources are never fetched during export.',
+          severity: 'warning',
+          code: 'remote-skipped',
+        });
+        continue;
       }
 
       const output = await shim.render({
