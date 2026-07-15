@@ -1,6 +1,8 @@
-import type { ProjectSnapshot } from '@asciidocollab/asciidoc-pdf';
+import type { ProjectSnapshot, PdfSourceMap } from '@asciidocollab/asciidoc-pdf';
 import {
   buildAssembledLineToSource,
+  buildAssembledScrollContext,
+  liftSourceMapToBlockStarts,
   openLineToAssembledLine,
 } from '@/lib/pdf/scroll-sync-map';
 import type { SourceMapEntry } from '@/workers/assemble-includes';
@@ -58,6 +60,57 @@ describe('buildAssembledLineToSource', () => {
     // A root path with no matching file yields an assembly whose only content is the unresolved-root
     // marker; the map is still an array, so this asserts the helper degrades to a value, never throws.
     expect(() => buildAssembledLineToSource(snapshot({ rootPath: 'absent.adoc' }))).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildAssembledScrollContext.
+// ---------------------------------------------------------------------------
+
+describe('buildAssembledScrollContext', () => {
+  it('returns the provenance map alongside the assembled source lines', () => {
+    const context = buildAssembledScrollContext(
+      snapshot({ files: { 'main.adoc': '= Title\n\nBody paragraph.\n' } }),
+    );
+
+    expect(context).not.toBeNull();
+    expect(context?.lineToSource[0]).toEqual({ path: 'main.adoc', sourceLine: 1 });
+    // The assembled lines mirror the source; the first line is the document title.
+    expect(context?.assembledLines[0]).toBe('= Title');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// liftSourceMapToBlockStarts.
+// ---------------------------------------------------------------------------
+
+describe('liftSourceMapToBlockStarts', () => {
+  // Lines: 1 `= T`, 2 ``, 3 `Before.`, 4 ``, 5 `.Example block`, 6 `====`, 7 `inside`, 8 `====`.
+  const assembledLines = ['= T', '', 'Before.', '', '.Example block', '====', 'inside', '===='];
+  const sourceMap: PdfSourceMap = [
+    { line: 3, page: 1, yFraction: 0.1 },
+    { line: 6, page: 1, yFraction: 0.4 }, // the example block, reported at its `====` delimiter
+    { line: 7, page: 1, yFraction: 0.5 },
+  ];
+
+  it('lifts a titled block entry to its title line, preserving page/position', () => {
+    const lifted = liftSourceMapToBlockStarts(sourceMap, assembledLines);
+    // The delimiter-line entry (6) moves up to the `.Example block` title line (5).
+    const example = lifted.find((mapEntry) => mapEntry.page === 1 && mapEntry.yFraction === 0.4);
+    expect(example?.line).toBe(5);
+    // The paragraph before it and the block's inner content keep their own lines.
+    expect(lifted.map((mapEntry) => mapEntry.line)).toEqual([3, 5, 7]);
+  });
+
+  it('keeps the map sorted by line and de-duplicated after lifting', () => {
+    const lifted = liftSourceMapToBlockStarts(sourceMap, assembledLines);
+    const lines = lifted.map((mapEntry) => mapEntry.line);
+    expect([...lines]).toEqual(lines.toSorted((a, b) => a - b));
+    expect(new Set(lines).size).toBe(lines.length);
+  });
+
+  it('returns an empty map unchanged', () => {
+    expect(liftSourceMapToBlockStarts([], assembledLines)).toEqual([]);
   });
 });
 

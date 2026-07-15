@@ -27,7 +27,11 @@ import { SearchView, type SearchResultTarget } from '@/components/editor/search-
 import { NonLiveIndicator } from '@/components/editor/non-live-indicator';
 import type { SectionOutlineEntry } from '@/lib/codemirror/asciidoc-outline';
 import { assembleOutline, mapOutlinePresence } from '@/lib/outline';
-import { buildAssembledLineToSource, openLineToAssembledLine } from '@/lib/pdf/scroll-sync-map';
+import {
+  buildAssembledScrollContext,
+  liftSourceMapToBlockStarts,
+  openLineToAssembledLine,
+} from '@/lib/pdf/scroll-sync-map';
 import { sameOutlineEntries } from '@/lib/outline/stable-entries';
 import type { OutlinePeer } from '@/lib/outline';
 import type { SelectedFile, FileContentState } from '@/hooks/use-file-selection';
@@ -665,11 +669,22 @@ export function ProjectEditorLayout({
   // provenance map the include-resolve stage would (via the shared helper), gated on the PDF preview
   // being active with scroll-sync on and a source map present so no assembly cost is paid otherwise.
   // Recomputes on the snapshot identity that drives the render, so it tracks the current source map.
-  const assembledLineToSource = useMemo(() => {
+  const assembledScrollContext = useMemo(() => {
     if (!pdfPreviewActive || !scrollSyncEnabled || previewSnapshot === null) return null;
     if (previewSourceMap === undefined || previewSourceMap.length === 0) return null;
-    return buildAssembledLineToSource(previewSnapshot);
+    return buildAssembledScrollContext(previewSnapshot);
   }, [pdfPreviewActive, scrollSyncEnabled, previewSnapshot, previewSourceMap]);
+  const assembledLineToSource = assembledScrollContext?.lineToSource ?? null;
+
+  // Lift the engine source map to block visual-start lines (title/attribute lines above each delimiter),
+  // the PDF-side twin of the HTML preview's data-source-line adjustment, so a click on a block's title
+  // scrolls to that block instead of the previous one. Falls back to the raw map when no assembly context
+  // is available (e.g. scroll-sync off) — the panel then uses the untouched engine coordinates.
+  const adjustedSourceMap = useMemo(() => {
+    if (previewSourceMap === undefined) return undefined;
+    if (assembledScrollContext === null) return previewSourceMap;
+    return liftSourceMapToBlockStarts(previewSourceMap, assembledScrollContext.assembledLines);
+  }, [previewSourceMap, assembledScrollContext]);
 
   // Translate the editor's current scroll request (an open-file line) into the assembled-document line
   // the source map is keyed in. A fresh scrollRequest object recomputes this so the panel scrolls to the
@@ -1039,7 +1054,7 @@ export function ProjectEditorLayout({
                     previewMode={previewMode}
                     onPreviewModeChange={setPreviewMode}
                     scrollToLine={scrollRequest}
-                    sourceMap={previewSourceMap}
+                    sourceMap={adjustedSourceMap}
                     assembledLine={assembledScrollLine}
                     totalLines={liveContentLineCount}
                     scrollSyncEnabled={scrollSyncEnabled}

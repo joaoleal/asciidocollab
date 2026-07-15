@@ -7,27 +7,85 @@
  */
 
 import { assembleIncludes, type SourceMapEntry } from '@/workers/assemble-includes';
-import type { ProjectSnapshot } from '@asciidocollab/asciidoc-pdf';
+import { blockStartLine } from '@/lib/asciidoc/block-start-line';
+import type { ProjectSnapshot, PdfSourceMap } from '@asciidocollab/asciidoc-pdf';
 
 /** The assembled-line→source provenance map: entry `i` gives the origin of assembled line `i + 1`. */
 export type AssembledLineToSource = readonly SourceMapEntry[];
 
 /**
- * Build the assembled-document line→source-file provenance map for a snapshot's render root by running
- * the SAME include assembly the PDF pipeline's include-resolve stage runs (the snapshot's root path and
- * its seeded attributes), this time requesting the provenance map. Returns null when the assembler
- * produced no map.
+ * The assembled document, plus the provenance and text a scroll-sync lookup needs: the line→source map
+ * (to translate an open-file line into the assembled coordinate the engine map is keyed in) and the
+ * assembled source split into lines (to lift each engine map entry to its block's visual start).
+ */
+export interface AssembledScrollContext {
+  /** The assembled-line→source provenance map. */
+  readonly lineToSource: AssembledLineToSource;
+  /** The assembled document split into lines (0-based array of 1-based source lines). */
+  readonly assembledLines: readonly string[];
+}
+
+/**
+ * Assemble a snapshot's render root the SAME way the PDF pipeline's include-resolve stage does (root path
+ * + seeded attributes, requesting the provenance map) and return the provenance map together with the
+ * assembled source lines. Returns null when the assembler produced no provenance map.
  *
  * @param snapshot - The render snapshot whose root document is assembled.
- * @returns The assembled-line→source provenance map, or null when unavailable.
+ * @returns The provenance map and assembled source lines, or null when unavailable.
  */
-export function buildAssembledLineToSource(snapshot: ProjectSnapshot): AssembledLineToSource | null {
+export function buildAssembledScrollContext(snapshot: ProjectSnapshot): AssembledScrollContext | null {
   const assembled = assembleIncludes(
     snapshot.rootPath,
     (path: string) => snapshot.files[path] ?? null,
     { seedAttributes: new Map(Object.entries(snapshot.attributes)), withSourceMap: true },
   );
-  return assembled.sourceMap?.lineToSource ?? null;
+  const lineToSource = assembled.sourceMap?.lineToSource;
+  if (lineToSource === undefined) return null;
+  return { lineToSource, assembledLines: assembled.content.split('\n') };
+}
+
+/**
+ * Build the assembled-document line→source-file provenance map for a snapshot's render root. Returns null
+ * when the assembler produced no map.
+ *
+ * @param snapshot - The render snapshot whose root document is assembled.
+ * @returns The assembled-line→source provenance map, or null when unavailable.
+ */
+export function buildAssembledLineToSource(snapshot: ProjectSnapshot): AssembledLineToSource | null {
+  return buildAssembledScrollContext(snapshot)?.lineToSource ?? null;
+}
+
+/**
+ * Lift each engine source-map entry's line to its block's VISUAL start (the block title/attribute lines
+ * above its delimiter), so a click on a block's title line resolves to that block instead of the previous
+ * one — the PDF-side twin of the HTML preview's `data-source-line` adjustment. Page/vertical positions are
+ * preserved (the block still renders where it renders); only the key line moves up. The result is
+ * re-sorted by line and de-duplicated (first entry per line wins) so the panel's binary search stays
+ * valid. Returns the input unchanged when it is empty.
+ *
+ * @param sourceMap - The engine-emitted, line-sorted source map (assembled-document coordinates).
+ * @param assembledLines - The assembled document split into lines (same coordinates as the map).
+ * @returns A new source map keyed on each block's visual start line.
+ */
+export function liftSourceMapToBlockStarts(
+  sourceMap: PdfSourceMap,
+  assembledLines: readonly string[],
+): PdfSourceMap {
+  if (sourceMap.length === 0) return sourceMap;
+  const lifted = sourceMap.map((entry) => ({
+    ...entry,
+    line: blockStartLine(assembledLines, entry.line),
+  }));
+  lifted.sort((a, b) => a.line - b.line);
+  const deduped: typeof lifted = [];
+  let lastLine: number | undefined;
+  for (const entry of lifted) {
+    if (entry.line !== lastLine) {
+      deduped.push(entry);
+      lastLine = entry.line;
+    }
+  }
+  return deduped;
 }
 
 /**
