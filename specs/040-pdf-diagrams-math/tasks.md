@@ -159,8 +159,8 @@ block; all three render on-screen, update when edited, and a diagram-free doc is
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T029 **Zero source-egress verification** (SC-004, FR-005/FR-026 — Principle X NON-NEGOTIABLE): an e2e network-intercept test that renders a document containing mermaid/graphviz/vega + block/inline math across **all three new render surfaces** — PDF export, live PDF preview, and the HTML preview diagram pass — and asserts **zero source-bearing outbound requests** (no diagram/math source text and no referenced resource URL leaves the client), including that a vega `data.url` / remote image is skipped-with-warning and never fetched (FR-027). Test in `apps/web/e2e/pdf-diagrams-math-egress.spec.ts`.
-- [ ] T030 Run `specs/040-pdf-diagrams-math/quickstart.md` validation end-to-end (each workstream's build/test/verify + WOFF2 reference regen steps) and fix any drift.
+- [X] T029 **Zero source-egress verification** (SC-004, FR-005/FR-026 — Principle X NON-NEGOTIABLE): an e2e network-intercept test that renders a document containing mermaid/graphviz/vega + block/inline math across **all three new render surfaces** — PDF export, live PDF preview, and the HTML preview diagram pass — and asserts **zero source-bearing outbound requests** (no diagram/math source text and no referenced resource URL leaves the client), including that a vega `data.url` / remote image is skipped-with-warning and never fetched (FR-027). Test in `apps/web/e2e/pdf-diagrams-math-egress.spec.ts`.
+- [X] T030 Run `specs/040-pdf-diagrams-math/quickstart.md` validation end-to-end (each workstream's build/test/verify + WOFF2 reference regen steps) and fix any drift.
 - [ ] T031 Full quality-gate sweep (`pnpm gate`: lint, typecheck, unit incl. the newly-gated asciidoc-pdf, integration, security scan, e2e) then run `/code-review` in a loop until zero findings (Constitution §End-of-Feature Verification).
 
 ---

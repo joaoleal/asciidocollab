@@ -16,12 +16,19 @@ The cache-key parity test (Contract A) is the key guard — it must pass or the 
 and drop diagrams/math. Real-browser verification (mermaid/MathJax on the main thread → worker cache
 pre-seed) runs via the e2e PDF export/preview specs.
 
-Parity (fidelity oracle, Principles XI/XV) — the Node real-wasm suite:
+Real-wasm engine smoke (Node, no browser) — syntax highlighting, deterministic output, performance,
+source map:
 
 ```bash
-# requires the built wasm engine + poppler-utils (pdftotext/pdffonts/pdfinfo)
-pnpm --filter @asciidocollab/asciidoc-pdf test:integration
+# requires the built wasm engine; poppler-utils (pdftotext) is used opportunistically for a text check
+pnpm --filter @asciidocollab/asciidoc-pdf test:integration    # runs tests/integration/engine-smoke.mjs
 ```
+
+Parity / fidelity oracle (Principles XI/XV) — content text equality, print-readiness (fonts embedded,
+page geometry) and a per-page visual diff against each committed `reference.pdf`. This lives in the
+gated `parity.integration.test.ts` jest suite (which spawns `parity-render.mjs`), so it runs as part of
+`test:ci` above — it SKIPS when the wasm engine is absent (whole suite) or a fixture has no reference
+PDF yet (per fixture), and requires poppler-utils (pdftotext/pdffonts/pdfinfo) for its measurements.
 
 ## Workstream 2 — Editor diagram highlighting
 
@@ -73,10 +80,11 @@ node apps/web/e2e/pdf-parity/generate-reference.mjs theme-fonts-woff2
 # reproducible: uses SOURCE_DATE_EPOCH=1704067200 internally; commit the resulting reference.pdf
 ```
 
-Then the parity fixture is exercised by:
+Then the WOFF2 parity fixture (`theme-fonts-woff2`) is exercised by the gated jest parity suite, which
+runs as part of the package's coverage run (NOT `test:integration`, which is the engine smoke harness):
 
 ```bash
-pnpm --filter @asciidocollab/asciidoc-pdf test:integration    # asserts allFontsEmbedded === true
+pnpm --filter @asciidocollab/asciidoc-pdf test:ci    # parity.integration.test.ts asserts allFontsEmbedded === true
 ```
 
 ## Full end-of-feature gate (Principle: End-of-Feature Verification)
