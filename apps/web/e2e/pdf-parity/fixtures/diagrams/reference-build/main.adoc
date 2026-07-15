@@ -3,12 +3,12 @@
 
 A Mermaid flowchart:
 
-image::.gen/56a4d5d3c68edd9c.svg[]
+image::.gen/56a4d5d3c68edd9c.svg["mermaid diagram"]
 
 A Graphviz directed graph:
 
-image::.gen/cd46c551d292b67f.svg[]
+image::.gen/cd46c551d292b67f.svg["graphviz diagram"]
 
 A Vega bar chart:
 
-image::.gen/c87e9ea8c15600d4.svg[]
+image::.gen/c87e9ea8c15600d4.svg["vega diagram"]

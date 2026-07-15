@@ -22,6 +22,8 @@ import type {
   ShimOutput,
 } from '@asciidocollab/asciidoc-pdf';
 
+import { flattenMermaidLabelTspans } from './mermaid-svg';
+
 const DIAGRAM_KIND: ShimKind = 'diagram';
 const SVG_FORMAT: ShimAssetFormat = 'svg';
 const MALFORMED_CODE: DiagnosticCode = 'malformed-diagram';
@@ -103,7 +105,9 @@ export function createMermaidShim(renderer: MermaidRenderer = defaultMermaidRend
     async render(input: ShimInput): Promise<ShimOutput> {
       try {
         const svg = await renderer(buildMermaidConfig(), input.source);
-        return succeed(svg);
+        // Flatten mermaid's nested per-word label tspans so prawn-svg lays the text out correctly in the
+        // exported PDF (this is the PDF render path; the on-screen preview uses mermaid's output as-is).
+        return succeed(flattenMermaidLabelTspans(svg));
       } catch (error) {
         return fail(error);
       }
