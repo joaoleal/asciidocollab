@@ -85,13 +85,20 @@ export interface MermaidPrerenderRun {
 
 /** A coalescing mermaid pre-pass: each invocation supersedes any still-in-flight one. */
 export interface MermaidPrerenderer {
-  /** Render the document's mermaid diagrams into content-addressed assets. */
+  /**
+   * Render the document's mermaid diagrams into content-addressed assets.
+   *
+   * @param text - The full AsciiDoc source to scan for mermaid blocks.
+   * @param run - Per-invocation options, such as an abort signal.
+   * @returns A promise resolving to the content-addressed render result.
+   */
   prerender(text: string, run?: MermaidPrerenderRun): Promise<MermaidPrerenderResult>;
 }
 
 /** The real idle scheduler: `requestIdleCallback` when present, else a macrotask fallback. */
 const defaultScheduleIdle: IdleScheduler = (callback) => {
-  const idle = (globalThis as { requestIdleCallback?: (cb: () => void) => unknown }).requestIdleCallback;
+  const globalWithIdle: { requestIdleCallback?: (callback_: () => void) => unknown } = globalThis;
+  const idle = globalWithIdle.requestIdleCallback;
   if (typeof idle === 'function') {
     idle(callback);
   } else {
