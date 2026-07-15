@@ -202,7 +202,7 @@ describe('diagrams-math alt text', () => {
     await createDiagramsMathStage().run(ctx);
 
     const { hash, rewritten } = singleAsset(vfs);
-    expect(rewritten).toContain(`image::.gen/${hash}.svg["Fig, \\"A\\""]`);
+    expect(rewritten).toContain(String.raw`image::.gen/${hash}.svg["Fig, \"A\""]`);
   });
 
   it('stores the same alt text on the cached GeneratedAsset', async () => {

@@ -40,14 +40,14 @@ const fakeReference: React.RefObject<HTMLDivElement> = { current: null };
 const diagramHtml = (label = 'graph TD; A--&gt;B') =>
   `<div class="adc-diagram" data-diagram-engine="mermaid" data-source-line="2">${label}</div>`;
 
-const mount = (props: Partial<React.ComponentProps<typeof AsciiDocPreview>> = {}) =>
+const mount = (properties: Partial<React.ComponentProps<typeof AsciiDocPreview>> = {}) =>
   render(
     React.createElement(AsciiDocPreview, {
       content: '[mermaid]\n----\ngraph TD; A-->B\n----',
       isEnabled: true,
       projectId: 'proj-1',
       scrollToLine: null,
-      ...props,
+      ...properties,
     }),
   );
 

@@ -142,7 +142,7 @@ const REPRESENTATIVE_DOCUMENT = [
   'sqrt(4) = 2',
   '++++',
   '',
-  'Inline stem:[x^2] and latexmath:[\\alpha] on one line.',
+  String.raw`Inline stem:[x^2] and latexmath:[\alpha] on one line.`,
   '',
   'An unsupported engine that must be skipped, not detected:',
   '',

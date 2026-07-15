@@ -37,7 +37,7 @@ function diagramDeclNotation(input: InputStream): DiagramNotation | null {
     const code = input.peek(offset);
     if (code === RBRACK || code === COMMA || code === SPACE || code === TAB) break;
     if (code === NEWLINE || code === -1) return null;
-    name += String.fromCharCode(code);
+    name += String.fromCodePoint(code);
     offset++;
   }
   const notation = normalizeDiagramNotation(name);

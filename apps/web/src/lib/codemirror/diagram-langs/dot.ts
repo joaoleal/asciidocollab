@@ -32,6 +32,9 @@ const KEYWORDS = new Set(['graph', 'digraph', 'subgraph', 'strict', 'node', 'edg
 const ID_START = /[A-Za-z_-￿]/;
 const ID_CHAR = /[A-Za-z0-9_-￿]/;
 
+/**
+ * Per-line mutable state threaded through the DOT stream tokenizer.
+ */
 export interface DotState {
   /** True while inside a block comment (which spans lines). */
   inBlockComment: boolean;
@@ -151,7 +154,7 @@ function token(stream: StringStream, state: DotState): string | null {
   // ── Identifiers / keywords / attribute keys ────────────────────────────────
   if (ID_START.test(ch)) {
     stream.next();
-    while (!stream.eol() && ID_CHAR.test(stream.peek() as string)) stream.next();
+    while (!stream.eol() && ID_CHAR.test(stream.peek() ?? '')) stream.next();
     const word = stream.current();
     if (KEYWORDS.has(word.toLowerCase())) return 'keyword';
     if (state.attrDepth > 0 && !state.expectValue) return 'attributeName';

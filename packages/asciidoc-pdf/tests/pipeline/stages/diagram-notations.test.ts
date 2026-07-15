@@ -16,7 +16,7 @@ import {
 
 describe('published diagram notation sets', () => {
   it('exposes the supported diagram notations as canonical, normalized names', () => {
-    expect([...DIAGRAM_NOTATIONS].sort()).toEqual(['graphviz', 'mermaid', 'vega', 'vegalite']);
+    expect([...DIAGRAM_NOTATIONS].toSorted()).toEqual(['graphviz', 'mermaid', 'vega', 'vegalite']);
   });
 
   it('folds the `vega-lite` alias into the canonical `vegalite` name', () => {
@@ -27,7 +27,7 @@ describe('published diagram notation sets', () => {
   });
 
   it('exposes the diagram engines with no offline renderer as the unsupported set', () => {
-    expect([...UNSUPPORTED_DIAGRAM_NOTATIONS].sort()).toEqual(['ditaa', 'plantuml']);
+    expect([...UNSUPPORTED_DIAGRAM_NOTATIONS].toSorted()).toEqual(['ditaa', 'plantuml']);
   });
 
   it('keeps the supported and unsupported sets disjoint', () => {

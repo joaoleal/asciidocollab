@@ -36,7 +36,7 @@ const DIAGRAM_PREPASS_PHASE: RenderPhase = 'diagrams-math';
 
 /**
  * Map a mermaid pre-pass diagnostic onto the shared per-block shape the worker stage emits. A render
- * failure carries no severity/code and defaults to an `error`/`malformed-diagram`; a skip (e.g. a
+ * failure carries no severity/code and defaults to an `error`/`malformed-diagram`; a skip (such as a
  * remote-resource reference) carries its own `warning`/`remote-skipped`, preserved here.
  */
 function toRenderDiagnostic(

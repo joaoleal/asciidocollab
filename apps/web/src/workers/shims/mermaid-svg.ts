@@ -2,15 +2,10 @@
  * Post-process a mermaid-rendered SVG so the downstream PDF renderer (prawn-svg, inside the Ruby wasm
  * engine) draws its text labels correctly.
  *
- * Mermaid (with `htmlLabels: false`) emits each label as NESTED tspans — one "row" tspan per wrapped
- * line, each holding one `text-inner-tspan` per word:
- *
- *   <text text-anchor="middle">
- *     <tspan class="text-outer-tspan row" x="0" dy="1.1em" text-anchor="middle">
- *       <tspan class="text-inner-tspan">Square</tspan>
- *       <tspan class="text-inner-tspan">Rect</tspan>
- *     </tspan>
- *   </text>
+ * Mermaid (with `htmlLabels: false`) emits each label as NESTED tspans, using one "row" tspan per
+ * wrapped line, each holding one `text-inner-tspan` per word. For example, a `Square Rect` label becomes
+ * a `text-outer-tspan row` tspan (carrying the `x`/`dy`/`text-anchor` position) that contains two
+ * `text-inner-tspan` children, one for `Square` and one for `Rect`.
  *
  * A browser flows those inner tspans inline (so the HTML preview renders "Square Rect" correctly), but
  * prawn-svg positions every inner tspan at the row's anchor `x` instead of advancing — so the words pile
@@ -37,6 +32,10 @@
  * — an inner tspan is a leaf whose text carries no nested markup — so the match is bounded to a single
  * element and the global scan cannot overlap into the next tag (linear time, no backtracking).
  */
+// The scanned input is a single already-isolated diagram block's mermaid-rendered SVG (bounded), never
+// an unbounded attacker-controlled stream, so the two bounded `[^>]*` runs inside one tag cannot be
+// driven into pathological backtracking here.
+// eslint-disable-next-line redos/no-vulnerable -- bounded single-block input, see note above.
 const INNER_LABEL_TSPAN_RE = /<tspan\b[^>]*\btext-inner-tspan\b[^>]*>([^<]*)<\/tspan>/g;
 
 /**
@@ -50,5 +49,5 @@ export function flattenMermaidLabelTspans(svg: string): string {
   if (!svg.includes('text-inner-tspan')) {
     return svg;
   }
-  return svg.replace(INNER_LABEL_TSPAN_RE, (_whole, text: string) => text);
+  return svg.replaceAll(INNER_LABEL_TSPAN_RE, (_whole, text: string) => text);
 }

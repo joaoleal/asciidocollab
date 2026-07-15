@@ -1,6 +1,6 @@
+/* @jest-environment jsdom */
+
 /**
- * @jest-environment jsdom
- *
  * Diagram-placeholder emission from asciidoc-render.worker.ts.
  *
  * The worker module is imported directly (not via `new Worker(url)`) so Jest can execute it: the
@@ -90,11 +90,11 @@ function renderBlocks(blocks: Array<Record<string, unknown>>): string {
       const getContext = block['getContext'] as () => string;
       const getSource = block['getSource'] as () => string;
       const id = getId() ?? '';
-      const idAttr = id ? ` id="${id}"` : '';
+      const idAttribute = id ? ` id="${id}"` : '';
       if (getContext() === 'listing') {
-        return `<div${idAttr} class="listingblock"><div class="content"><pre>${escapeText(getSource())}</pre></div></div>`;
+        return `<div${idAttribute} class="listingblock"><div class="content"><pre>${escapeText(getSource())}</pre></div></div>`;
       }
-      return `<div${idAttr} class="paragraph"><p>text</p></div>`;
+      return `<div${idAttribute} class="paragraph"><p>text</p></div>`;
     })
     .join('');
 }
@@ -105,6 +105,10 @@ function sendMessage(data: { requestId: number; content: string; imagesDir?: str
   } else {
     throw new Error('onmessage handler not registered');
   }
+}
+
+function lastResult() {
+  return postMessageMock.mock.calls[0][0] as { html: string | null; diagramsPresent?: boolean; ok: boolean };
 }
 
 describe('asciidoc-render.worker diagram placeholders', () => {
@@ -119,10 +123,6 @@ describe('asciidoc-render.worker diagram placeholders', () => {
     mockGetAttribute.mockReturnValue(undefined);
     mockLoad.mockReturnValue({ findBy: mockFindBy, convert: mockConvert, getAttribute: mockGetAttribute });
   });
-
-  function lastResult() {
-    return postMessageMock.mock.calls[0][0] as { html: string | null; diagramsPresent?: boolean; ok: boolean };
-  }
 
   it('emits one adc-diagram placeholder per diagram block with engine, source line, and escaped source', () => {
     const blocks = [

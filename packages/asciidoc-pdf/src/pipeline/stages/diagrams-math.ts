@@ -100,6 +100,7 @@ function dotSourceFetchesRemoteResource(source: string): boolean {
  * merely appears as label TEXT (not inside an `<img src>`) is drawn inertly and fetched by nothing, so it
  * is not matched here.
  */
+// eslint-disable-next-line redos/no-vulnerable -- Worst case is quadratic, but the input is one already-isolated diagram block's authored source (bounded), never an unbounded attacker stream; a linear rewrite is impossible in JS without atomic groups and would change match semantics.
 const MERMAID_IMG_SRC_RE = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
 
 /**
@@ -261,6 +262,7 @@ export const UNSUPPORTED_DIAGRAM_NOTATIONS: ReadonlySet<string> = new Set(UNSUPP
  * a `!include` of a DOT file — so the skip diagnostic can point at the offline `graphviz` engine (which
  * renders that same source) rather than at mermaid.
  */
+// eslint-disable-next-line redos/no-vulnerable -- Worst case is quadratic, but the input is one already-isolated diagram block's authored source (bounded), never an unbounded attacker stream; a linear rewrite is impossible in JS without atomic groups and would change match semantics.
 const PLANTUML_DOT_HINT_RE = /\bdigraph\b|\bgraph\s+[^\n{]*\{|^\s*!include\b/im;
 
 /**
@@ -572,12 +574,12 @@ const MATH_DEFAULT_ALT = 'math expression';
 
 /** Collapse runs of whitespace (including newlines) to single spaces and trim the ends. */
 function collapseWhitespace(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
+  return text.replaceAll(/\s+/g, ' ').trim();
 }
 
 /** The named `title=` attribute value, if the block carried one. */
-function titleParam(params: Readonly<Record<string, string>> | undefined): string | undefined {
-  const value = params?.title;
+function titleParameter(parameters: Readonly<Record<string, string>> | undefined): string | undefined {
+  const value = parameters?.title;
   return value === undefined || value.trim().length === 0 ? undefined : value;
 }
 
@@ -596,7 +598,7 @@ interface AltTextSource {
  * block to its source expression (or a generic label when the expression is empty).
  */
 function deriveAltText(block: AltTextSource): string {
-  const caption = block.title ?? titleParam(block.params);
+  const caption = block.title ?? titleParameter(block.params);
   if (caption !== undefined && caption.trim().length > 0) {
     return collapseWhitespace(caption);
   }
@@ -613,7 +615,7 @@ function deriveAltText(block: AltTextSource): string {
  * and embedded backslashes/quotes are escaped for the quoted-attribute context.
  */
 function escapeAltForMacro(alt: string): string {
-  const escaped = alt.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const escaped = alt.replaceAll('\\', '\\\\').replaceAll('"', String.raw`\"`);
   return `"${escaped}"`;
 }
 

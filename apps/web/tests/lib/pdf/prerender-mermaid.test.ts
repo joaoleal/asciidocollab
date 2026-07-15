@@ -10,6 +10,10 @@ import { createMermaidShim, type MermaidRenderer } from '@/workers/shims/mermaid
 /** A deterministic, DOM-free stand-in for the real mermaid engine: SVG derived purely from the source. */
 const fakeRenderer: MermaidRenderer = async (_config, source) => `<svg data-source="${source}"></svg>`;
 
+const failingRenderer: MermaidRenderer = async () => {
+  throw new Error('bad diagram');
+};
+
 /** A document holding one mermaid diagram, one graphviz diagram, one block and one inline math macro. */
 const MIXED_DOCUMENT = [
   '= Title',
@@ -90,7 +94,7 @@ describe('createMermaidPrerenderer', () => {
     const second = await prerenderer.prerender(MIXED_DOCUMENT);
 
     expect(first.assets[0].sourceHash).toBe(second.assets[0].sourceHash);
-    expect(Array.from(first.assets[0].bytes)).toEqual(Array.from(second.assets[0].bytes));
+    expect([...first.assets[0].bytes]).toEqual([...second.assets[0].bytes]);
   });
 
   it('schedules its work through the idle scheduler seam', async () => {
@@ -147,10 +151,7 @@ describe('createMermaidPrerenderer', () => {
   });
 
   it('records a diagnostic and emits no asset when a block fails to render', async () => {
-    const failing: MermaidRenderer = async () => {
-      throw new Error('bad diagram');
-    };
-    const prerenderer = createMermaidPrerenderer({ mermaidRenderer: failing, scheduleIdle: runNow });
+    const prerenderer = createMermaidPrerenderer({ mermaidRenderer: failingRenderer, scheduleIdle: runNow });
 
     const result = await prerenderer.prerender(MIXED_DOCUMENT);
 

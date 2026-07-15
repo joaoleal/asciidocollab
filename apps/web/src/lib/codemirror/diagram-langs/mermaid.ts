@@ -95,13 +95,11 @@ export function firstMermaidKeyword(source: string): string | null {
   for (const raw of source.split('\n')) {
     const line = raw.trim();
     if (line === '') continue;
-    if (line === '---') {
-      // A `---` fence is only frontmatter before any content line has appeared.
-      if (!seenContent || inFrontmatter) {
-        inFrontmatter = !inFrontmatter;
-        seenContent = true;
-        continue;
-      }
+    // A `---` fence is only frontmatter before any content line has appeared.
+    if (line === '---' && (!seenContent || inFrontmatter)) {
+      inFrontmatter = !inFrontmatter;
+      seenContent = true;
+      continue;
     }
     if (inFrontmatter) continue;
     seenContent = true;
@@ -120,6 +118,7 @@ export function firstMermaidKeyword(source: string): string | null {
 export const mermaidLexicalFallback: StreamParser<{ sawType: boolean; inFrontmatter: boolean }> = {
   name: 'mermaid-lexical',
   startState: () => ({ sawType: false, inFrontmatter: false }),
+  /* eslint-disable unicorn/prefer-regexp-test -- `stream.match(re)` is CodeMirror's StringStream.match, which advances the stream and returns the match; `re.test(stream)` would coerce the stream to a string and consume nothing. */
   token(stream, state) {
     // YAML frontmatter fences (`---`) sit before the diagram type.
     if (stream.sol() && !state.sawType && stream.match(/^---[ \t]*$/)) {
@@ -162,6 +161,7 @@ export const mermaidLexicalFallback: StreamParser<{ sawType: boolean; inFrontmat
     stream.next();
     return null;
   },
+  /* eslint-enable unicorn/prefer-regexp-test */
 };
 
 /** The lexical fallback wrapped as a CodeMirror {@link Parser} for `parseMixed`. */

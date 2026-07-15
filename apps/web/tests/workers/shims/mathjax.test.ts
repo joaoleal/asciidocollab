@@ -253,12 +253,12 @@ describe('createMathJaxShim — default converter matches the committed PDF-pari
 
   /** Read one attribute from a single element's opening tag, robust to attribute ordering. */
   function attribute(tag: string, name: string): string {
-    return new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1] ?? '';
+    return new RegExp(String.raw`\b${name}="([^"]*)"`).exec(tag)?.[1] ?? '';
   }
 
   /** Every opening tag of the given element name (self-closing or not). */
   function elements(svg: string, name: string): string[] {
-    return [...svg.matchAll(new RegExp(`<${name}\\b[^>]*?/?>`, 'g'))].map((match) => match[0]);
+    return [...svg.matchAll(new RegExp(String.raw`<${name}\b[^>]*?/?>`, 'g'))].map((match) => match[0]);
   }
 
   /**
@@ -275,20 +275,20 @@ describe('createMathJaxShim — default converter matches the committed PDF-pari
       verticalAlign: (/vertical-align:\s*([^;"]*)/.exec(root)?.[1] ?? '').trim(),
       paths: elements(svg, 'path')
         .map((tag) => `${attribute(tag, 'id')}|${attribute(tag, 'd')}`)
-        .sort(),
+        .toSorted(),
       uses: elements(svg, 'use')
         .map(
           (tag) =>
             `${attribute(tag, 'xlink:href')}|${attribute(tag, 'transform')}|${attribute(tag, 'x')}|${attribute(tag, 'y')}`,
         )
-        .sort(),
+        .toSorted(),
       rects: elements(svg, 'rect')
         .map((tag) => `${attribute(tag, 'x')}|${attribute(tag, 'y')}|${attribute(tag, 'width')}|${attribute(tag, 'height')}`)
-        .sort(),
+        .toSorted(),
       groupTransforms: elements(svg, 'g')
         .map((tag) => attribute(tag, 'transform'))
         .filter((transform) => transform.length > 0)
-        .sort(),
+        .toSorted(),
     };
   }
 

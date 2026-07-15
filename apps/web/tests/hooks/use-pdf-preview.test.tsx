@@ -11,7 +11,6 @@ import { usePdfPreview } from '@/hooks/use-pdf-preview';
 import {
   createMermaidPrerenderer,
   type IdleScheduler,
-  type MermaidPrerenderer,
 } from '@/lib/pdf/prerender-mermaid';
 import { createMermaidShim, type MermaidRenderer } from '@/workers/shims/mermaid';
 

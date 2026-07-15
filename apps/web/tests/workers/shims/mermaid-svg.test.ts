@@ -1,6 +1,4 @@
-/**
- * @jest-environment jsdom
- */
+/* @jest-environment jsdom */
 import { flattenMermaidLabelTspans } from '@/workers/shims/mermaid-svg';
 
 /** Wrap fragment markup in a minimal SVG document so DOMParser accepts it as image/svg+xml. */

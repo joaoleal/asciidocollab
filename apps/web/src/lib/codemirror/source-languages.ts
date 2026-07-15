@@ -110,12 +110,15 @@ export function resolveDiagramBodyParser(
   loadedLanguageParser: (name: string) => Parser | null,
 ): Parser | null {
   switch (notation) {
-    case 'graphviz':
+    case 'graphviz': {
       return dotLanguage.parser;
-    case 'mermaid':
+    }
+    case 'mermaid': {
       return mermaidParserForSource(body);
+    }
     case 'vega':
-    case 'vegalite':
+    case 'vegalite': {
       return loadedLanguageParser(diagramBodyLanguageName(notation)!);
+    }
   }
 }

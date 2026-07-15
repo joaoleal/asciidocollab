@@ -465,8 +465,8 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
           block.setId(diagramId);
         }
         // `getSource` is a Block (listing/literal) method, not on the AbstractBlock the walk is typed as.
-        const getSource = (block as { getSource?: () => unknown }).getSource;
-        const rawSource: unknown = typeof getSource === 'function' ? getSource.call(block) : '';
+        const rawSource: unknown =
+          'getSource' in block && typeof block.getSource === 'function' ? block.getSource() : '';
         diagramBlocks.push({
           id: diagramId,
           engine,
