@@ -59,21 +59,91 @@ const DIAGNOSTIC_RASTERIZED: DiagnosticCode = 'unsupported-image';
 const DIAGNOSTIC_REMOTE_SKIPPED: DiagnosticCode = 'remote-skipped';
 
 /**
- * A remote resource reference inside diagram source: a `scheme://` URL (`http`, `https`, …). A relative
- * or bare path is NOT remote — the offline renderer resolves those locally (or rejects them); only an
- * absolute `scheme://` target would require reaching over the network. `data:` URIs carry their bytes
- * inline (no `//`) and so are not treated as remote.
+ * A `scheme://` URL (`http`, `https`, …) at the START of a string. A relative or bare path is NOT
+ * remote — the offline renderer resolves those locally (or rejects them); only an absolute `scheme://`
+ * target requires reaching over the network. `data:` URIs carry their bytes inline (no `//`) and so are
+ * not treated as remote.
  */
-const REMOTE_REFERENCE_PATTERN = /[a-z][a-z0-9+.-]*:\/\//i;
+const REMOTE_URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 /**
- * Whether a diagram block's source references a remote resource (a `scheme://` URL) — e.g. a
- * vega/vega-lite spec's remote `data.url`, or a remote image referenced by a mermaid node. Such a block
- * is SKIPPED with a warning and never rendered, so no fetch is ever attempted for it (offline export).
- * Exported so the main-thread mermaid pre-pass can apply the exact same rule and stay in parity.
+ * A `scheme://` URL appearing ANYWHERE in a body — used to scan non-JSON diagram sources (mermaid /
+ * graphviz) for an embedded remote resource (e.g. a `<img src="https://…">` node the engine would fetch).
  */
-export function diagramSourceReferencesRemoteResource(source: string): boolean {
-  return REMOTE_REFERENCE_PATTERN.test(source);
+const EMBEDDED_REMOTE_URL_PATTERN = /[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * Whether a single URL string points at a remote (network) resource. Protocol-relative (`//host`) and
+ * any `scheme://` URL count as remote; an inline `data:` URI does not (it carries no network reference).
+ */
+function isRemoteUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (/^data:/i.test(trimmed)) {
+    return false;
+  }
+  return REMOTE_URL_PATTERN.test(trimmed) || trimmed.startsWith('//');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Find the first remote `url` reference anywhere in a parsed Vega/Vega-Lite spec (`data.url`, an image
+ * mark `url`, a tile `url`, …). Only the `url` key — the data-loading vector — is inspected, so a
+ * `$schema` identifier (a schema *name*, never fetched) or a label/tooltip that merely contains a URL
+ * string is not mistaken for a remote fetch.
+ */
+function findRemoteUrl(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findRemoteUrl(item);
+      if (found !== null) {
+        return found;
+      }
+    }
+    return null;
+  }
+  if (isPlainObject(value)) {
+    const url = value.url;
+    if (typeof url === 'string' && isRemoteUrl(url)) {
+      return url;
+    }
+    for (const nested of Object.values(value)) {
+      const found = findRemoteUrl(nested);
+      if (found !== null) {
+        return found;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a diagram block's source references a remote resource that a render would have to FETCH — a
+ * vega/vega-lite spec's remote `data.url` (or any remote `url` key), or a remote image URL embedded in
+ * a mermaid/graphviz body. Such a block is SKIPPED with a warning and never rendered, so no fetch is
+ * ever attempted for it (offline export). Exported so the main-thread mermaid pre-pass applies the exact
+ * same rule and stays in parity.
+ *
+ * A vega/vega-lite spec is inspected the way the preview's on-screen renderer is: parsed inertly as JSON
+ * and deep-scanned for remote `url` keys, so the MANDATORY `$schema` identifier (a schema name, not a
+ * fetched resource) never triggers a skip. A spec that is not valid JSON is left for the engine to reject
+ * (a render failure), not treated as remote. Non-JSON engines fall back to a plain `scheme://` scan of
+ * the source (a genuine embedded remote URL), which `data:` URIs and bare identifiers do not match.
+ */
+export function diagramSourceReferencesRemoteResource(notation: string, source: string): boolean {
+  const canonical = canonicalDiagramNotation(notation);
+  if (canonical === 'vega' || canonical === 'vegalite') {
+    let spec: unknown;
+    try {
+      spec = JSON.parse(source);
+    } catch {
+      return false;
+    }
+    return findRemoteUrl(spec) !== null;
+  }
+  return EMBEDDED_REMOTE_URL_PATTERN.test(source);
 }
 
 const SEVERITY_WARNING: DiagnosticSeverity = 'warning';
@@ -622,7 +692,7 @@ async function handleBlock(
     return block.originalBlock;
   }
 
-  if (block.category === 'diagram' && diagramSourceReferencesRemoteResource(block.source)) {
+  if (block.category === 'diagram' && diagramSourceReferencesRemoteResource(block.notation, block.source)) {
     context.diagnostics.report({
       severity: SEVERITY_WARNING,
       code: DIAGNOSTIC_REMOTE_SKIPPED,

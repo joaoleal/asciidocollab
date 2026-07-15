@@ -147,6 +147,23 @@ describe('createDiagramsMathStage remote-resource skipping', () => {
     }
   });
 
+  it('skips a mermaid block that embeds a remote resource (non-JSON engine, scheme:// scan)', async () => {
+    const render = renderMock(async () => okSvg());
+    const remoteMermaid = [
+      '[mermaid]',
+      '----',
+      'flowchart TD',
+      "  A[\"<img src='https://cdn.example.com/logo.png'>\"] --> B",
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(remoteMermaid, [fakeShim('diagram', 'mermaid', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).not.toHaveBeenCalled();
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(1);
+  });
+
   it('renders a sibling diagram while skipping the remote one (fail-soft, whole doc still exports)', async () => {
     const vega = renderMock(async () => okSvg('vega'));
     const mermaid = renderMock(async () => okSvg('mermaid'));
@@ -185,6 +202,105 @@ describe('createDiagramsMathStage remote-resource skipping', () => {
     await createDiagramsMathStage().run(ctx);
 
     // A relative reference is local: it is not skipped here (the shim decides its fate).
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('renders a vega spec whose only remote-looking URL is its $schema identifier (inline data)', async () => {
+    const render = renderMock(async () => okSvg());
+    const schemaOnly = [
+      '[vega]',
+      '----',
+      '{ "$schema": "https://vega.github.io/schema/vega/v5.json", "data": { "values": [{ "x": 1 }] }, "marks": [] }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(schemaOnly, [fakeShim('diagram', 'vega', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    // `$schema` is a schema NAME, never fetched — it must not trip the remote-skip guard.
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('renders a vega-lite spec with a $schema plus inline data (alias folds onto vega detection)', async () => {
+    const render = renderMock(async () => okSvg());
+    const vegaLite = [
+      '[vega-lite]',
+      '----',
+      '{ "$schema": "https://vega.github.io/schema/vega-lite/v5.json", "data": { "values": [] }, "mark": "point" }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(vegaLite, [fakeShim('diagram', 'vega', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('skips a vega spec whose remote url sits deep in a data-set array, alongside a harmless $schema', async () => {
+    const render = renderMock(async () => okSvg());
+    const nestedRemote = [
+      '[vega]',
+      '----',
+      '{ "$schema": "https://vega.github.io/schema/vega/v5.json", "data": [{ "name": "src", "url": "https://cdn.example.com/points.json" }], "marks": [] }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(nestedRemote, [fakeShim('diagram', 'vega', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    // A deep remote `url` key is still caught, even alongside a (harmless) $schema.
+    expect(render).not.toHaveBeenCalled();
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(1);
+  });
+
+  it('renders a vega spec whose data.url is an inline data: URI (carries its bytes, never fetched)', async () => {
+    const render = renderMock(async () => okSvg());
+    const dataUri = [
+      '[vega]',
+      '----',
+      '{ "data": { "url": "data:application/json,[]" }, "marks": [] }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(dataUri, [fakeShim('diagram', 'vega', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('skips a vega spec with a protocol-relative (//host) data.url', async () => {
+    const render = renderMock(async () => okSvg());
+    const protocolRelative = [
+      '[vega]',
+      '----',
+      '{ "data": { "url": "//cdn.example.com/data.json" }, "marks": [] }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(protocolRelative, [fakeShim('diagram', 'vega', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).not.toHaveBeenCalled();
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(1);
+  });
+
+  it('does not treat a malformed (non-JSON) vega spec as remote — it is left for the engine to reject', async () => {
+    const render = renderMock(async () => okSvg());
+    const malformed = [
+      '[vega]',
+      '----',
+      'this is not json https://cdn.example.com/data.json',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(malformed, [fakeShim('diagram', 'vega', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    // A vega body that is not valid JSON cannot drive a data fetch; it is handed to the shim, not skipped.
     expect(render).toHaveBeenCalledTimes(1);
     expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
   });

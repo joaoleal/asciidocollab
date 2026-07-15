@@ -142,7 +142,7 @@ export function createMermaidPrerenderer(deps: MermaidPrerendererDeps = {}): Mer
 
       // Zero source egress: a diagram that references a remote resource is skipped with a warning and
       // never rendered here, so the DOM-bound engine can never reach out over the network for it.
-      if (diagramSourceReferencesRemoteResource(block.source)) {
+      if (diagramSourceReferencesRemoteResource(block.notation, block.source)) {
         diagnostics.push({
           line: block.line,
           message:

@@ -182,6 +182,16 @@ jest.mock('@codemirror/language', () => ({
   foldGutter: () => ({}),
   syntaxHighlighting: () => ({}),
   defaultHighlightStyle: {},
+  // The diagram source-language highlighters (dot/mermaid) build languages at
+  // module-eval time and read `.parser` off the result, so the stubs must return a
+  // language-shaped object. `codemirror-lang-mermaid` (pulled in transitively) also
+  // builds LRLanguages and LanguageDescriptions at its own module-eval time under the
+  // same mock, so those constructors must be present too.
+  StreamLanguage: { define: jest.fn(() => ({ parser: {} })) },
+  LRLanguage: { define: jest.fn(() => ({ parser: {} })) },
+  LanguageDescription: { of: jest.fn(() => ({})) },
+  LanguageSupport: class {},
+  foldService: { of: jest.fn(() => ({})) },
 }));
 
 jest.mock('@codemirror/search', () => ({
