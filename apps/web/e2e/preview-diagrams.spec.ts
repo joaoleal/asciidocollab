@@ -76,19 +76,21 @@ test.describe('preview diagram (mermaid) rendering', () => {
     const diagramSvg = output.locator('.adc-diagram svg');
     await expect(diagramSvg.first()).toBeVisible({ timeout: 45_000 });
 
-    // The shape labels must be present as real text (the foreignObject-stripping regression left them
-    // blank). Native <text> labels put the words in the SVG's text content.
-    const diagramText = (await output.locator('.adc-diagram').first().textContent()) ?? '';
-    expect(diagramText).toContain('Square Rect');
-    expect(diagramText).toContain('Circle');
-    expect(diagramText).toContain('Round Rect');
+    // The shape labels must be present as real text in the RENDERED SVG — not the preserved inert
+    // source. `renderDiagrams` keeps the source in a hidden `.adc-diagram-source` child for idempotent
+    // re-renders, so asserting on the whole container's text would pass even with blank labels (the
+    // foreignObject-stripping regression). Assert on the injected output node, which holds only the SVG.
+    const renderedText = (await output.locator('.adc-diagram-output').first().textContent()) ?? '';
+    expect(renderedText).toContain('Square Rect');
+    expect(renderedText).toContain('Circle');
+    expect(renderedText).toContain('Round Rect');
+    // No mermaid error bomb in the rendered SVG.
+    expect(renderedText).not.toContain('Syntax error');
+
+    // The preserved source is kept for idempotency but must be HIDDEN (never shown as raw text).
+    await expect(output.locator('.adc-diagram-source').first()).toBeHidden();
 
     // The math block typesets alongside the diagram (native MathML in Chromium).
     await expect(output.locator('math').first()).toBeVisible({ timeout: 45_000 });
-
-    // No mermaid error bomb, and no un-rendered raw diagram source may survive on screen.
-    const text = (await output.textContent()) ?? '';
-    expect(text).not.toContain('Syntax error');
-    expect(text).not.toContain('graph LR');
   });
 });
