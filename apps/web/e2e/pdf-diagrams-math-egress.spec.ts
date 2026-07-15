@@ -220,15 +220,13 @@ test.describe('diagram and math rendering keeps all source in the browser', () =
 
     const requests: RecordedRequest[] = [];
     const websockets: string[] = [];
-    const consoleMessages: string[] = [];
 
-    // Record every browser request for the token/host scan, and log any websocket + console line (the
-    // HTML preview surfaces its remote-skip as a console warning).
+    // Record every browser request for the token/host scan and log any websocket. The HTML preview
+    // surfaces its remote-skip in the diagnostics panel (asserted below), not the console.
     page.on('request', (request: Request) => {
       requests.push({ url: request.url(), method: request.method(), postData: request.postData() ?? '' });
     });
     page.on('websocket', (ws) => websockets.push(ws.url()));
-    page.on('console', (message) => consoleMessages.push(message.text()));
 
     // Actively BLOCK any foreign request: loopback + inert schemes pass through; everything else is
     // aborted so a regression cannot actually exfiltrate anything during the run — the recorded attempt
@@ -263,13 +261,12 @@ test.describe('diagram and math rendering keeps all source in the browser', () =
     // The math pass also runs client-side (self-hosted MathJax) — its presence keeps the render honest.
     await expect(output.locator('math').first()).toBeVisible({ timeout: 45_000 });
 
-    // The remote-data vega is skipped with a warning rather than fetched — surfaced to the console.
-    await expect
-      .poll(() => consoleMessages.some((m) => /remote data reference blocked/i.test(m)), {
-        timeout: 20_000,
-        message: 'the HTML preview must skip the remote vega data url with a warning (no fetch)',
-      })
-      .toBe(true);
+    // The remote-data vega is skipped with a warning rather than fetched — surfaced in the preview
+    // diagnostics panel (the same panel the PDF export uses), not silently dropped.
+    await expect(
+      page.getByLabel('Preview diagnostics'),
+      'the HTML preview must skip the remote vega data url with a warning (no fetch)',
+    ).toContainText(/remote data reference blocked/i, { timeout: 20_000 });
     assertNoEgress('HTML preview diagram pass');
 
     // ---- Surface 2: the live PDF preview ----------------------------------------------------------
