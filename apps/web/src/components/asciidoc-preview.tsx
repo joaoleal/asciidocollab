@@ -3,12 +3,15 @@
 // (asciidoc-preview.css) wins on equal specificity for the few rules we deliberately override.
 import '../styles/asciidoctor-style.generated.css';
 import '../styles/asciidoc-preview.css';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utilities';
 import type { PreviewState, ScrollRequest } from '@/hooks/use-asciidoc-preview';
 import { useAsciidocPreview } from '@/hooks/use-asciidoc-preview';
+import { PdfDiagnostics } from '@/components/pdf-diagnostics';
+import type { RenderDiagnostic, DiagnosticCode } from '@asciidocollab/asciidoc-pdf';
+import type { DiagramWarning } from '@/components/diagrams/render-diagrams';
 import { PreviewStyleControl, type PreviewStyleValue } from '@/components/preview-style-control';
 import { PreviewModeToggle, type PreviewMode } from '@/components/preview-mode-toggle';
 import { ShowIncludesControl } from '@/components/show-includes-control';
@@ -21,6 +24,35 @@ import {
 export { isAsciiDocumentFile as isAsciiDocFile } from '@/lib/asciidoc/file-name';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+
+/** The diagram render-warning code shown as an error (a genuine draw failure); the rest are warnings. */
+const DIAGRAM_ERROR_CODE: DiagnosticCode = 'malformed-diagram';
+
+/** Each client diagram-render warning code, mapped to the shared render-diagnostic code it surfaces as. */
+const DIAGRAM_WARNING_CODE: Record<DiagramWarning['code'], DiagnosticCode> = {
+  'render-failed': DIAGRAM_ERROR_CODE,
+  'unsupported-engine': 'diagram-unsupported',
+  'remote-resource-blocked': 'remote-skipped',
+};
+
+/**
+ * Map a fail-soft client-side diagram render warning to the shared render-diagnostic shape, so the
+ * preview surfaces "what and where" in the SAME collapsible panel the PDF export uses — instead of a
+ * silent `console.warn`. A render failure is an error; a skipped remote resource or an unsupported
+ * engine is a (non-fatal) warning. The block's source line, when known, rides in the resource label.
+ *
+ * @param warning - One per-diagram warning returned by the client renderer.
+ * @param filePath - The previewed file's path, used as the resource label (defaults to "diagram").
+ * @returns The equivalent render diagnostic for the shared diagnostics panel.
+ */
+function toPreviewDiagnostic(warning: DiagramWarning, filePath = 'diagram'): RenderDiagnostic {
+  return {
+    severity: warning.code === 'render-failed' ? 'error' : 'warning',
+    code: DIAGRAM_WARNING_CODE[warning.code],
+    resource: warning.sourceLine === null ? filePath : `${filePath}:${warning.sourceLine}`,
+    message: `${warning.engine}: ${warning.message}`,
+  };
+}
 
 function SyncIndicator({ state, isEnabled }: { state: PreviewState; isEnabled: boolean }) {
   if (!isEnabled || state === 'idle') {
@@ -147,6 +179,11 @@ export function AsciiDocPreview({
   // sanitized HTML may carry STEM delimiters MathJax typesets in place.
   const outputReference = useRef<HTMLDivElement | null>(null);
 
+  // Per-diagram render diagnostics for the CURRENT preview (skipped remote data, unsupported engine, a
+  // draw failure). Surfaced in the shared diagnostics panel so a diagram that fails to generate is
+  // reported with what + where, exactly like the PDF export — not swallowed by a console log.
+  const [diagramDiagnostics, setDiagramDiagnostics] = useState<readonly RenderDiagnostic[]>([]);
+
   // Keep a stable ref to the latest onOpenInclude callback so the delegated listener closure never
   // captures a stale function reference (avoids re-attaching the listener just because the callback
   // identity changed, while still calling the most-recent version on each interaction).
@@ -191,7 +228,12 @@ export function AsciiDocPreview({
   // rest of the preview intact; a rejected import/promise is caught so it can never crash the preview.
   // Output stays within the scoped container (Constitution VI) — we only ever render into that node.
   useEffect(() => {
-    if (!diagramsPresent || html === null) return;
+    if (!diagramsPresent || html === null) {
+      // No diagrams in the current render ⇒ clear any diagnostics left from a previous one so a fixed
+      // document's stale warnings never linger (mirrors the PDF panel clearing on each fresh render).
+      setDiagramDiagnostics([]);
+      return;
+    }
     const container = outputReference.current;
     if (!container) return;
     let cancelled = false;
@@ -200,22 +242,29 @@ export function AsciiDocPreview({
         if (cancelled) return;
         return renderDiagrams(container).then((result) => {
           if (cancelled) return;
-          for (const warning of result.warnings) {
-            console.warn(
-              `Diagram (${warning.engine}${warning.sourceLine === null ? '' : `, line ${warning.sourceLine}`}) not rendered: ${warning.message}`,
-            );
-          }
+          setDiagramDiagnostics(
+            result.warnings.map((warning) => toPreviewDiagnostic(warning, openFilePath)),
+          );
         });
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         // Defence in depth: `renderDiagrams` is fail-soft by contract, but a failed dynamic import (or
-        // an unexpected rejection) must still never break the preview — the rest of it stays rendered.
-        console.warn('Diagram rendering could not run; preview left as source.', error);
+        // an unexpected rejection) must still never break the preview. Surface it as a single diagnostic
+        // rather than crashing; the rest of the preview stays rendered.
+        if (cancelled) return;
+        setDiagramDiagnostics([
+          {
+            severity: 'warning',
+            code: DIAGRAM_ERROR_CODE,
+            resource: openFilePath ?? 'diagram',
+            message: 'Diagram rendering could not run; the diagram source is shown instead.',
+          },
+        ]);
       });
     return () => {
       cancelled = true;
     };
-  }, [html, diagramsPresent]);
+  }, [html, diagramsPresent, openFilePath]);
 
   // Delegated listener for include-placeholder interactions (click + keyboard).
   // A single listener on the container handles all placeholders — even those added
@@ -310,6 +359,19 @@ export function AsciiDocPreview({
       {state === 'error' && error && (
         <div className="px-3 py-1.5 text-xs text-destructive border-b bg-destructive/10 shrink-0">
           {error}
+        </div>
+      )}
+
+      {/* Per-diagram render diagnostics, surfaced in the same collapsible panel the PDF export uses so a
+          diagram that could not be drawn is reported with what + where instead of failing silently. */}
+      {diagramDiagnostics.length > 0 && (
+        <div className="px-3 py-1.5 border-b shrink-0">
+          <PdfDiagnostics
+            diagnostics={diagramDiagnostics}
+            title="Preview diagnostics"
+            ariaLabel="Preview diagnostics"
+            intro="The preview rendered. Some diagrams were skipped or could not be drawn."
+          />
         </div>
       )}
 

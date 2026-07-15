@@ -11,9 +11,16 @@ import { cn } from "@/lib/utilities";
 /** A source location the editor can jump to when a diagnostic carries one. */
 type DiagnosticLocation = NonNullable<RenderDiagnostic["location"]>;
 
-/** Bindings for the per-resource PDF export diagnostics surface. */
+/** The default header/intro/aria copy — the PDF export surface this panel was first built for. */
+const PDF_DIAGNOSTICS_COPY = {
+  title: "PDF diagnostics",
+  intro: "The PDF was produced. The following items were skipped or adjusted.",
+  ariaLabel: "PDF export diagnostics",
+} as const;
+
+/** Bindings for the per-resource render-diagnostics surface (PDF export or on-screen preview). */
 export interface PdfDiagnosticsProperties {
-  /** Non-fatal warnings and per-resource errors gathered while producing the PDF. */
+  /** Non-fatal warnings and per-resource errors gathered while producing the output. */
   diagnostics: readonly RenderDiagnostic[];
   /**
    * Invoked with a diagnostic's source location so the editor can reveal it.
@@ -21,6 +28,12 @@ export interface PdfDiagnosticsProperties {
    * @param location - The diagnostic's source location to reveal in the editor.
    */
   onSelectLocation?: (location: DiagnosticLocation) => void;
+  /** Collapsed-header label. Defaults to the PDF-export copy. */
+  title?: string;
+  /** One-line explanation shown above the list when expanded. Defaults to the PDF-export copy. */
+  intro?: string;
+  /** Accessible section label. Defaults to the PDF-export copy. */
+  ariaLabel?: string;
 }
 
 /**
@@ -85,6 +98,9 @@ function summarize(diagnostics: readonly RenderDiagnostic[]): string {
 export function PdfDiagnostics({
   diagnostics,
   onSelectLocation,
+  title = PDF_DIAGNOSTICS_COPY.title,
+  intro = PDF_DIAGNOSTICS_COPY.intro,
+  ariaLabel = PDF_DIAGNOSTICS_COPY.ariaLabel,
 }: PdfDiagnosticsProperties) {
   const [collapsed, setCollapsed] = useState(false);
   const bodyId = useId();
@@ -98,7 +114,7 @@ export function PdfDiagnostics({
 
   return (
     <section
-      aria-label="PDF export diagnostics"
+      aria-label={ariaLabel}
       className="rounded-md border border-border bg-card text-sm"
     >
       <button
@@ -112,16 +128,14 @@ export function PdfDiagnostics({
           className="h-4 w-4 shrink-0 text-muted-foreground"
           aria-hidden="true"
         />
-        <span className="font-medium text-foreground">PDF diagnostics</span>
+        <span className="font-medium text-foreground">{title}</span>
         <span className="text-xs text-muted-foreground">
           {summarize(diagnostics)}
         </span>
       </button>
       {collapsed ? null : (
         <div id={bodyId}>
-          <p className="px-3 text-muted-foreground">
-            The PDF was produced. The following items were skipped or adjusted.
-          </p>
+          <p className="px-3 text-muted-foreground">{intro}</p>
           <ul
             role="list"
             className="flex max-h-64 flex-col gap-2 overflow-y-auto p-3"

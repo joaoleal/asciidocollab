@@ -164,8 +164,7 @@ describe('AsciiDocPreview diagram rendering', () => {
     expect(renderDiagramsMock).toHaveBeenCalledTimes(1);
   });
 
-  it('fails soft: warnings from the renderer do not crash the preview and the rest still renders', async () => {
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  it('fails soft: a warning is surfaced in the diagnostics panel and the rest still renders', async () => {
     renderDiagramsMock.mockResolvedValue({
       rendered: 0,
       warnings: [{ engine: 'plantuml', sourceLine: 2, code: 'unsupported-engine', message: 'unsupported diagram engine: plantuml' }],
@@ -181,11 +180,12 @@ describe('AsciiDocPreview diagram rendering', () => {
     mount();
     await flushAsync();
 
-    // Preview still shows its content; the warning was surfaced (logged) rather than thrown.
+    // Preview still shows its content; the warning is surfaced in the diagnostics panel (what + where),
+    // not thrown and not swallowed by a console log.
     expect(screen.getByTestId('asciidoc-output')).toBeInTheDocument();
     expect(screen.getByText('Doc')).toBeInTheDocument();
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(screen.getByText('Preview diagnostics')).toBeInTheDocument();
+    expect(screen.getByText(/unsupported diagram engine: plantuml/)).toBeInTheDocument();
   });
 
   it('fails soft: a rejected renderer promise does not crash the preview', async () => {
