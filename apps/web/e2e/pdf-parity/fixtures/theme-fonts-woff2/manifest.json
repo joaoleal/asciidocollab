@@ -1,0 +1,19 @@
+{
+  "name": "theme-fonts-woff2",
+  "description": "Custom PDF theme (extends default) whose branded monospace heading font is registered from WOFF2 web fonts, plus an embedded PNG mounted from the project images dir. Verifies the export decompresses each WOFF2 back to the TTF it wraps and embeds it faithfully, honouring the project's own theme, fonts, and imagery, plus print-readiness: fonts embedded, text selectable, page geometry matching the reference. Tolerance absorbs sub-pixel antialiasing at glyph and image edges only.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "theme/brand-theme.yml",
+    "fontPaths": [
+      "fonts/mplus1mn-regular-subset.woff2",
+      "fonts/mplus1mn-bold-subset.woff2",
+      "fonts/mplus1mn-italic-subset.woff2",
+      "fonts/mplus1mn-bold_italic-subset.woff2"
+    ],
+    "imagesDir": "images",
+    "attributes": {}
+  }
+}

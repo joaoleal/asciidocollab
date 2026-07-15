@@ -152,6 +152,68 @@ function buildSnapshot(fixtureDir, manifest) {
 }
 
 // ---------------------------------------------------------------------------
+// Asset mount — custom WOFF2 fonts.
+//
+// Asciidoctor-PDF/prawn embeds only TTF/OTF and dispatches on the file extension, so a project that
+// ships WOFF2 web fonts is made embeddable exactly the way the app's asset-mount stage does it: each
+// WOFF2 is losslessly decompressed back to the sfnt (TTF/OTF) it wraps, materialized under a `.ttf`
+// name, and the theme's font catalogue + the snapshot's `fontPaths` are repointed to that name. The
+// decode uses the same codec the app's `FontConverter` uses (fonteditor-core's WOFF2 module, whose
+// wasm loads from a local file — no network). A fixture that ships no WOFF2 font is returned untouched,
+// so the TTF-only fixtures render through the unchanged path.
+// ---------------------------------------------------------------------------
+
+const WOFF2_SUFFIX = '.woff2';
+const TTF_SUFFIX = '.ttf';
+
+/** A standalone `ArrayBuffer` view of a `Uint8Array` (the shape `woff2.decode` accepts). */
+function toArrayBuffer(view) {
+  return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+}
+
+/** The `.ttf` path a `.woff2` font decodes into (same directory + basename). */
+function decodedTtfPath(woff2Path) {
+  return `${woff2Path.slice(0, -WOFF2_SUFFIX.length)}${TTF_SUFFIX}`;
+}
+
+/**
+ * Decompress every WOFF2 custom font a fixture ships back to the embeddable TTF it wraps, mirroring the
+ * app's asset-mount stage: the decoded bytes are materialized under a `.ttf` name, the theme catalogue
+ * and the snapshot's `fontPaths` are repointed to it, and the `.woff2` asset is dropped. Returns the
+ * snapshot unchanged when it references no WOFF2 font, so TTF-only fixtures are untouched.
+ */
+async function mountWoff2Fonts(snapshot) {
+  const woff2Paths = snapshot.fontPaths.filter((path) => path.toLowerCase().endsWith(WOFF2_SUFFIX));
+  if (woff2Paths.length === 0) {
+    return snapshot;
+  }
+  log(`Decoding ${woff2Paths.length} WOFF2 custom font(s) to embeddable TTF...`);
+  const { woff2 } = requireWeb(join(WEB_MODULES, 'fonteditor-core'));
+  await woff2.init();
+
+  const binaryAssets = { ...snapshot.binaryAssets };
+  for (const woff2Path of woff2Paths) {
+    const bytes = binaryAssets[woff2Path];
+    if (bytes === undefined) continue;
+    const ttf = woff2.decode(toArrayBuffer(bytes));
+    binaryAssets[decodedTtfPath(woff2Path)] = new Uint8Array(ttf);
+    delete binaryAssets[woff2Path];
+  }
+  const fontPaths = snapshot.fontPaths.map((path) =>
+    path.toLowerCase().endsWith(WOFF2_SUFFIX) ? decodedTtfPath(path) : path,
+  );
+  // Repoint every text reference (the theme's font catalogue) from the `.woff2` names to the decoded
+  // `.ttf` names the render now embeds.
+  const files = { ...snapshot.files };
+  for (const [path, content] of Object.entries(files)) {
+    if (typeof content === 'string' && content.includes(WOFF2_SUFFIX)) {
+      files[path] = content.split(WOFF2_SUFFIX).join(TTF_SUFFIX);
+    }
+  }
+  return { ...snapshot, binaryAssets, fontPaths, files };
+}
+
+// ---------------------------------------------------------------------------
 // Engine render (the real shipping seams).
 // ---------------------------------------------------------------------------
 
@@ -372,7 +434,8 @@ async function main() {
   const tolerance = manifest.tolerance ?? { pixelThreshold: 0.1, maxMismatchRatio: 0.01 };
 
   log(`Building snapshot for ${manifest.name}...`);
-  const { snapshot, unresolved } = buildSnapshot(fixtureDir, manifest);
+  const { snapshot: rawSnapshot, unresolved } = buildSnapshot(fixtureDir, manifest);
+  const snapshot = await mountWoff2Fonts(rawSnapshot);
 
   log('Rendering through the wasm engine...');
   const { bytes: ourBytes, diagnostics } = await renderWithEngine(snapshot);

@@ -1,0 +1,24 @@
+= Branded Field Guide
+Ada Lovelace
+:doctype: book
+:sectids:
+
+image::logo.png[Brand logo,120,120]
+
+A short introduction paragraph precedes the first section so the rendered page has body text in the
+themed base font, set against the warm page background this fixture's theme declares.
+
+== Typography
+
+The section headings on this page are set in the branded monospace family the custom theme registers,
+in the brand accent colour, while body copy stays in the inherited serif base font. This section
+exists so the comparison exercises both the branded heading font and the base font on one page.
+
+Regular paragraph text, with some *bold* and _italic_ runs, so the base font's four styles all render.
+
+== Imagery
+
+image::logo.png[Repeated brand mark,80,80]
+
+The embedded raster above is mounted from the project's own images directory, exactly as it would be
+for a real export. Rendering it here confirms local image resolution stays faithful to the reference.
