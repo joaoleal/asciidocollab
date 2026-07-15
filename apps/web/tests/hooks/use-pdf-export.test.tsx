@@ -321,9 +321,9 @@ describe('usePdfExport', () => {
 
     await exportAndSettle(result.current.exportPdf, SNAPSHOT);
 
-    // The pre-pass ran over the current (open) document's text, up front.
+    // The pre-pass ran over the render-root document's text, up front.
     expect(prerender).toHaveBeenCalledTimes(1);
-    expect(prerender.mock.calls[0][0]).toBe(SNAPSHOT.files[SNAPSHOT.openPath]);
+    expect(prerender.mock.calls[0][0]).toBe(SNAPSHOT.files[SNAPSHOT.rootPath]);
     expect(lastRenderRequest().generatedAssets).toEqual([MERMAID_ASSET]);
   });
 
@@ -414,6 +414,93 @@ describe('usePdfExport', () => {
         message: 'This mermaid diagram references a remote resource and was skipped.',
       },
     ]);
+  });
+
+  it('renders the render-root file mermaid diagrams, not the open file, when they differ', async () => {
+    const { prerenderer, prerender } = fakePrerenderer({
+      assets: [MERMAID_ASSET],
+      diagnostics: [],
+      aborted: false,
+    });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    const snapshot: ProjectSnapshot = {
+      files: {
+        'book.adoc': '= Book\n\n[mermaid]\n....\ngraph TD; A-->B;\n....\n',
+        'chapter.adoc': '= Chapter\n\nNo diagrams here.\n',
+      },
+      binaryAssets: {},
+      rootPath: 'book.adoc',
+      openPath: 'chapter.adoc',
+      fontPaths: [],
+      attributes: {},
+    };
+
+    await exportAndSettle(result.current.exportPdf, snapshot);
+
+    // Like the preview, the export renders the project from the RENDER ROOT — so the pre-pass must scan
+    // the root file's text, not whatever file happens to be open in the editor.
+    expect(prerender).toHaveBeenCalledTimes(1);
+    expect(prerender.mock.calls[0][0]).toBe(snapshot.files['book.adoc']);
+    expect(lastRenderRequest().generatedAssets).toEqual([MERMAID_ASSET]);
+  });
+
+  it('records pre-pass diagnostics against the render-root path when the open file differs', async () => {
+    const { prerenderer } = fakePrerenderer({
+      assets: [],
+      diagnostics: [{ line: 3, message: 'Parse error.' }],
+      aborted: false,
+    });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    const snapshot: ProjectSnapshot = {
+      files: { 'book.adoc': '= Book', 'chapter.adoc': '= Chapter' },
+      binaryAssets: {},
+      rootPath: 'book.adoc',
+      openPath: 'chapter.adoc',
+      fontPaths: [],
+      attributes: {},
+    };
+
+    await exportAndSettle(result.current.exportPdf, snapshot);
+
+    expect(result.current.diagnostics).toEqual([
+      {
+        severity: 'error',
+        code: 'malformed-diagram',
+        resource: 'book.adoc',
+        location: { path: 'book.adoc', line: 3 },
+        message: 'Parse error.',
+      },
+    ]);
+  });
+
+  it('drops a superseded export result: no download, and its diagnostics never overwrite the latest', async () => {
+    const { prerenderer } = fakePrerenderer({ assets: [], diagnostics: [], aborted: false });
+    const { result } = renderExport({ createPrerenderer: () => prerenderer });
+
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+    // A second export supersedes the first; the first result is now stale.
+    await exportAndSettle(result.current.exportPdf, SNAPSHOT);
+    const staleId = String(Number(lastRenderRequest().requestId) - 1);
+
+    const staleDiagnostic = {
+      severity: 'warning' as const,
+      code: 'remote-skipped' as const,
+      resource: 'https://example.com/logo.png',
+      message: 'A superseded export diagnostic.',
+    };
+    act(() =>
+      lastWorker().emit({
+        type: 'result',
+        result: makeResult(staleId, { diagnostics: [staleDiagnostic] }),
+      }),
+    );
+
+    // The stale result neither downloads under the latest export's filename nor leaks its diagnostics.
+    expect(anchorClick).not.toHaveBeenCalled();
+    expect(result.current.isExporting).toBe(true);
+    expect(result.current.diagnostics).not.toContainEqual(staleDiagnostic);
   });
 
   it('omits generatedAssets and exports normally when the document has no mermaid diagrams', async () => {

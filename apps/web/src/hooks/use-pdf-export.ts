@@ -18,6 +18,7 @@ import {
   type MermaidPrerenderDiagnostic,
   type MermaidPrerenderer,
 } from '@/lib/pdf/prerender-mermaid';
+import { documentTextOf } from '@/lib/pdf/document-text';
 
 /** File extension of the produced document. */
 const PDF_EXTENSION = '.pdf';
@@ -209,8 +210,12 @@ export function usePdfExport(deps: UsePdfExportDeps = {}): UsePdfExportResult {
     // Render mermaid diagrams (the one engine the worker's DOM-less VM cannot draw) up front, then hand
     // the resulting content-addressed assets to the worker to pre-seed as cache hits.
     void (async () => {
-      const documentPath = snapshot.openPath;
-      const text = snapshot.files[documentPath] ?? '';
+      // Scan the RENDER-ROOT file (matching the preview): the worker assembles the document from the
+      // root, so root-document mermaid must be pre-rendered here or it drops from the export. Only the
+      // top-level root text is scanned — includes aren't resolved on the main thread, so mermaid inside
+      // an included file isn't pre-seeded and degrades to a surfaced worker render diagnostic.
+      const documentPath = snapshot.rootPath;
+      const text = documentTextOf(snapshot);
       const prepass = await prerenderer.prerender(text, { signal: abort.signal });
 
       // A newer export superseded this one while its pre-pass ran; drop it silently.

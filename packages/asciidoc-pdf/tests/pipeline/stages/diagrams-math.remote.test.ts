@@ -147,7 +147,25 @@ describe('createDiagramsMathStage remote-resource skipping', () => {
     }
   });
 
-  it('skips a mermaid block that embeds a remote resource (non-JSON engine, scheme:// scan)', async () => {
+  it('renders a mermaid block whose node label merely contains a URL (strict mode fetches nothing)', async () => {
+    const render = renderMock(async () => okSvg());
+    const mermaidLabelUrl = [
+      '[mermaid]',
+      '----',
+      'flowchart TD',
+      '  A["see https://example.com"] --> B',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(mermaidLabelUrl, [fakeShim('diagram', 'mermaid', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    // securityLevel:'strict' + htmlLabels:false draws the label as inert text; nothing is fetched.
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('skips a mermaid block with a remote <img src> embed — its one genuine fetch vector, no fetch', async () => {
     const render = renderMock(async () => okSvg());
     const remoteMermaid = [
       '[mermaid]',
@@ -160,8 +178,121 @@ describe('createDiagramsMathStage remote-resource skipping', () => {
 
     await createDiagramsMathStage().run(ctx);
 
+    // An <img src=remote> is the one vector by which a mermaid HTML label would fetch; it is skipped.
     expect(render).not.toHaveBeenCalled();
     expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(1);
+  });
+
+  it('renders a mermaid block whose <img src> is a local (relative) path — not a remote fetch', async () => {
+    const render = renderMock(async () => okSvg());
+    const localImg = [
+      '[mermaid]',
+      '----',
+      'flowchart TD',
+      '  A["<img src=\'icons/logo.png\'>"] --> B',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(localImg, [fakeShim('diagram', 'mermaid', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('renders a graphviz block whose only URL sits in a label (a label is not a fetch vector)', async () => {
+    const render = renderMock(async () => okSvg());
+    const dotLabelUrl = [
+      '[graphviz]',
+      '----',
+      'digraph { a [label="see http://example.com"]; a -> b }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(dotLabelUrl, [fakeShim('diagram', 'graphviz', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    // Graphviz never fetches a label; a URL that merely appears in display text must render, not skip.
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('renders a graphviz block with a remote URL=/href hyperlink (a clickable link is not a fetch)', async () => {
+    const render = renderMock(async () => okSvg());
+    const dotHyperlink = [
+      '[graphviz]',
+      '----',
+      'digraph { a [URL="https://example.com", href="https://example.org/x"]; a -> b }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(dotHyperlink, [fakeShim('diagram', 'graphviz', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    // A DOT URL=/href is a clickable hyperlink baked into the SVG, not a resource the render fetches.
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
+  });
+
+  it('skips a graphviz block with a remote image= attribute — a genuine fetch vector, no fetch', async () => {
+    const render = renderMock(async () => okSvg());
+    const fetchMock = jest.fn();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const dotRemoteImage = [
+        '[graphviz]',
+        '----',
+        'digraph { a [image="https://cdn.example.com/logo.png"]; a -> b }',
+        '----',
+      ].join('\n');
+      const { ctx, vfs } = makeContext(dotRemoteImage, [fakeShim('diagram', 'graphviz', render)]);
+
+      await createDiagramsMathStage().run(ctx);
+
+      const remote = ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped');
+      expect(remote).toHaveLength(1);
+      expect(remote[0].location?.line).toBe(1);
+      // Zero source egress: the shim was never reached and no network request was made.
+      expect(render).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(vfs.list(GEN_PREFIX)).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('skips a graphviz block with a remote bgimage= attribute (a background picture is fetched)', async () => {
+    const render = renderMock(async () => okSvg());
+    const dotBgImage = [
+      '[graphviz]',
+      '----',
+      'digraph { graph [bgimage="http://cdn.example.com/bg.png"]; a -> b }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(dotBgImage, [fakeShim('diagram', 'graphviz', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).not.toHaveBeenCalled();
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(1);
+  });
+
+  it('renders a graphviz block whose image= points at a local (relative) file — not remote', async () => {
+    const render = renderMock(async () => okSvg());
+    const dotLocalImage = [
+      '[graphviz]',
+      '----',
+      'digraph { a [image="icons/logo.png"]; a -> b }',
+      '----',
+    ].join('\n');
+    const { ctx } = makeContext(dotLocalImage, [fakeShim('diagram', 'graphviz', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    // A relative image path is local; the shim decides its fate, it is not remote-skipped here.
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(ctx.diagnostics.all().filter((d) => d.code === 'remote-skipped')).toHaveLength(0);
   });
 
   it('renders a sibling diagram while skipping the remote one (fail-soft, whole doc still exports)', async () => {

@@ -15,15 +15,11 @@ import { isProgressMessage, isResultMessage, isErrorMessage } from '@asciidocoll
 import { PREVIEW_DEBOUNCE_MS } from '@/lib/editor-config';
 import { createPdfWorker } from '@/lib/create-pdf-worker';
 import { createMermaidPrerenderer, type MermaidPrerenderer } from '@/lib/pdf/prerender-mermaid';
+import { documentTextOf } from '@/lib/pdf/document-text';
 
 /** The preview surface renders a page-limited PDF and never runs the (expensive) optimize pass. */
 const PREVIEW_MODE: RenderMode = 'preview';
 const PREVIEW_OPTIMIZE = false;
-
-/** The document text the mermaid pre-pass scans — the render root file's contents. */
-function documentTextOf(snapshot: ProjectSnapshot): string {
-  return snapshot.files[snapshot.rootPath] ?? '';
-}
 
 /** Configuration for the live PDF preview hook. */
 export interface UsePdfPreviewOptions {

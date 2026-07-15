@@ -67,10 +67,55 @@ const DIAGNOSTIC_REMOTE_SKIPPED: DiagnosticCode = 'remote-skipped';
 const REMOTE_URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 /**
- * A `scheme://` URL appearing ANYWHERE in a body — used to scan non-JSON diagram sources (mermaid /
- * graphviz) for an embedded remote resource (e.g. a `<img src="https://…">` node the engine would fetch).
+ * The Graphviz/DOT attributes that name a resource the engine FETCHES and rasterizes into the drawing:
+ * `image`/`bgimage` (an embedded picture) and `shapefile` (a custom node shape). A remote value on one
+ * of these is a genuine network fetch, so it must be skipped. Deliberately EXCLUDED are `label=`/
+ * `tooltip=` (display text) and `URL=`/`href=` (a clickable hyperlink baked into the SVG): Graphviz
+ * never retrieves those, so a URL appearing there — or in free text — is not a fetch vector.
+ *
+ * The value is captured double-quoted, single-quoted, or bare (up to the next separator) so each form is
+ * classified by {@link isRemoteUrl}; a relative or bare path is local and does not trigger a skip.
  */
-const EMBEDDED_REMOTE_URL_PATTERN = /[a-z][a-z0-9+.-]*:\/\//i;
+const DOT_FETCH_VECTOR_RE =
+  /\b(?:image|bgimage|shapefile)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s,;\]]+))/gi;
+
+/**
+ * Whether a Graphviz/DOT source assigns a REMOTE value to one of its fetch-vector attributes
+ * ({@link DOT_FETCH_VECTOR_RE}). Only those attributes retrieve a resource; a URL in a label, tooltip,
+ * hyperlink, or free text is never fetched and so is not reported here.
+ */
+function dotSourceFetchesRemoteResource(source: string): boolean {
+  for (const match of source.matchAll(DOT_FETCH_VECTOR_RE)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    if (value !== undefined && isRemoteUrl(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Mermaid's one remote-fetch vector from source text: an `<img src="…">` HTML embed inside a node label.
+ * With HTML labels enabled the browser retrieves that `src`, so a remote one must be skipped. A URL that
+ * merely appears as label TEXT (not inside an `<img src>`) is drawn inertly and fetched by nothing, so it
+ * is not matched here.
+ */
+const MERMAID_IMG_SRC_RE = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+
+/**
+ * Whether a mermaid source embeds a remote `<img src>` ({@link MERMAID_IMG_SRC_RE}) — the only vector by
+ * which mermaid would fetch a network resource from its source. A bare URL in a node label is not a fetch
+ * vector and is not reported.
+ */
+function mermaidSourceFetchesRemoteResource(source: string): boolean {
+  for (const match of source.matchAll(MERMAID_IMG_SRC_RE)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    if (value !== undefined && isRemoteUrl(value)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Whether a single URL string points at a remote (network) resource. Protocol-relative (`//host`) and
@@ -129,8 +174,14 @@ function findRemoteUrl(value: unknown): string | null {
  * A vega/vega-lite spec is inspected the way the preview's on-screen renderer is: parsed inertly as JSON
  * and deep-scanned for remote `url` keys, so the MANDATORY `$schema` identifier (a schema name, not a
  * fetched resource) never triggers a skip. A spec that is not valid JSON is left for the engine to reject
- * (a render failure), not treated as remote. Non-JSON engines fall back to a plain `scheme://` scan of
- * the source (a genuine embedded remote URL), which `data:` URIs and bare identifiers do not match.
+ * (a render failure), not treated as remote.
+ *
+ * The detection is scoped to each engine's actual fetch vector, never a blanket URL-in-text scan:
+ * Graphviz is checked only for a remote value on an `image`/`bgimage`/`shapefile` attribute (see
+ * {@link dotSourceFetchesRemoteResource}) — a URL in a label, tooltip, or `URL=`/`href` hyperlink is not
+ * fetched and renders normally. Mermaid is checked only for a remote `<img src>` HTML embed (see
+ * {@link mermaidSourceFetchesRemoteResource}) — its one fetch vector — so a bare URL that merely appears
+ * as label text does not trigger a skip.
  */
 export function diagramSourceReferencesRemoteResource(notation: string, source: string): boolean {
   const canonical = canonicalDiagramNotation(notation);
@@ -143,7 +194,13 @@ export function diagramSourceReferencesRemoteResource(notation: string, source: 
     }
     return findRemoteUrl(spec) !== null;
   }
-  return EMBEDDED_REMOTE_URL_PATTERN.test(source);
+  if (canonical === 'graphviz') {
+    return dotSourceFetchesRemoteResource(source);
+  }
+  if (canonical === 'mermaid') {
+    return mermaidSourceFetchesRemoteResource(source);
+  }
+  return false;
 }
 
 const SEVERITY_WARNING: DiagnosticSeverity = 'warning';
