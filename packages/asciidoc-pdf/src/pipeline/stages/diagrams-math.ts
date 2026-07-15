@@ -548,11 +548,16 @@ function toVfsPath(relativePath: string): string {
   return `${PROJECT_ROOT}/${trimmed}`;
 }
 
-/** The `image::`/`image:` target that points from the root document at a `.gen` asset. */
-function genReference(rootPath: string, filename: string): string {
-  const segments = rootPath.split('/').filter((segment) => segment.length > 0);
-  const depth = Math.max(0, segments.length - 1);
-  return `${'../'.repeat(depth)}${GEN_DIR_NAME}/${filename}`;
+/**
+ * The `image::`/`image:` target that points at a `.gen` asset. The convert pins `base_dir` to the
+ * project mount root (`/project`) and resolves every relative image target against it (that is how
+ * `image::sub/pic.png[]` resolves the same from a root document in any subfolder), so the reference is
+ * ALWAYS project-root-relative — `.gen/<filename>`, never prefixed with `../`. A document-relative
+ * (`../.gen/…`) form would escape the project root for a root document that lives in a subfolder (e.g.
+ * `New Folder/doc.adoc` → `/.gen/…`), so the asset — written under `/project/.gen` — would not embed.
+ */
+function genReference(filename: string): string {
+  return `${GEN_DIR_NAME}/${filename}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -794,7 +799,7 @@ async function handleBlock(
   if (asset === null) {
     return block.originalBlock;
   }
-  const target = genReference(resource, `${asset.sourceHash}.${asset.format}`);
+  const target = genReference(`${asset.sourceHash}.${asset.format}`);
   return [`image::${target}[${escapeAltForMacro(altText)}]`];
 }
 
@@ -839,7 +844,7 @@ async function rewriteInlineMath(
       result += macro;
       continue;
     }
-    const target = genReference(resource, `${asset.sourceHash}.${asset.format}`);
+    const target = genReference(`${asset.sourceHash}.${asset.format}`);
     result += `image:${target}[${escapeAltForMacro(altText)}]`;
   }
   result += event.line.slice(cursor);

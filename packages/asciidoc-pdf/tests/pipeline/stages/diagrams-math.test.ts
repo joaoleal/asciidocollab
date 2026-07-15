@@ -127,6 +127,29 @@ function makeContext(document: string, shims: readonly RenderShim[]): ContextPar
   return { ctx: context, vfs };
 }
 
+/** Like {@link makeContext} but roots the document at an arbitrary project-relative path. */
+function makeContextWithRoot(
+  rootPath: string,
+  document: string,
+  shims: readonly RenderShim[],
+): ContextParts {
+  const vfs = makeVfs();
+  const rootVfsPath = `/project/${rootPath}`;
+  vfs.writeText(rootVfsPath, document);
+  const base = makeRequest();
+  const context: StageContext = {
+    request: { ...base, snapshot: { ...base.snapshot, rootPath, openPath: rootPath } },
+    readFile: () => vfs.readText(rootVfsPath),
+    vfs,
+    shims: createShimRegistry(shims),
+    includeAssembler: noopAssembler,
+    cache: makeCache(),
+    diagnostics: createDiagnosticsCollector(),
+    cancellation: cancellationToken(() => false),
+  };
+  return { ctx: context, vfs };
+}
+
 const MERMAID_BLOCK = ['[mermaid]', '----', 'graph TD; A-->B;', '----'].join('\n');
 
 describe('createDiagramsMathStage', () => {
@@ -314,6 +337,27 @@ describe('createDiagramsMathStage', () => {
     expect(render).not.toHaveBeenCalled();
     expect(vfs.readText(ROOT_VFS_PATH)).toBe(document);
     expect(ctx.diagnostics.all()).toHaveLength(0);
+  });
+
+  it('references .gen relative to the project root for a root document in a subfolder', async () => {
+    // The convert pins base_dir to the project mount root and resolves image targets against it, so a
+    // `../`-prefixed reference from a subfolder root would escape to `/.gen/...` and the asset written
+    // under /project/.gen would fail to embed ("image to embed not found or not readable").
+    const render = renderMock(async () => okSvg());
+    const rootPath = 'New Folder/new-document-2.adoc';
+    const { ctx, vfs } = makeContextWithRoot(rootPath, `Intro\n\n${MERMAID_BLOCK}`, [
+      fakeShim('diagram', 'mermaid', render),
+    ]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    const gen = vfs.list(GEN_PREFIX);
+    expect(gen).toHaveLength(1);
+    expect(gen[0]).toMatch(/^\/project\/\.gen\/[0-9a-f]{16}\.svg$/); // asset lives at the project root
+    const hash = gen[0].slice(GEN_PREFIX.length, -'.svg'.length);
+    const rewritten = vfs.readText(`/project/${rootPath}`) ?? '';
+    expect(rewritten).toContain(`image::.gen/${hash}.svg`); // project-root-relative, never ../-prefixed
+    expect(rewritten).not.toContain('../.gen/');
   });
 
   it('has the diagrams-math stage kind', () => {
