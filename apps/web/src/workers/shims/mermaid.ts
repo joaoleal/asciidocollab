@@ -48,24 +48,26 @@ function buildMermaidConfig(): MermaidConfig {
     deterministicIds: true,
     htmlLabels: false,
     flowchart: { htmlLabels: false },
+    // On a parse error mermaid otherwise draws its "Syntax error" bomb graphic into a throwaway element
+    // it appends to the document and leaves behind. Suppress it so a malformed diagram throws cleanly
+    // (the shim/caller then fails soft) and no bomb is ever injected or embedded.
+    suppressErrorRendering: true,
   };
 }
 
 /**
  * The strict, deterministic configuration for the NATIVE on-screen preview render (main thread).
  *
- * Distinct from {@link buildMermaidConfig}: the browser preview can display mermaid's default
- * `<foreignObject>` HTML labels directly, so this config does NOT force `htmlLabels: false` (that
- * constraint exists only for the downstream prawn-svg PDF renderer, which cannot draw foreignObject).
- * The security-critical bits are unchanged — `securityLevel: 'strict'` keeps the diagram source inert,
- * and `deterministicIds` keeps output stable — so the preview render stays safe and reproducible.
+ * Identical to {@link buildMermaidConfig}: although a browser CAN paint mermaid's default
+ * `<foreignObject>` HTML labels, the rendered preview SVG is passed through the svg-profile DOMPurify
+ * sanitizer, which strips `<foreignObject>` and its HTML children — leaving shapes with empty labels.
+ * Forcing native `<text>` labels (`htmlLabels: false`) makes the labels survive that sanitize, exactly
+ * as the downstream prawn-svg PDF path requires. Error suppression and the security-critical bits
+ * (`securityLevel: 'strict'`, `deterministicIds`) are shared too, so the preview stays safe, labelled,
+ * and reproducible. Kept as a named seam for the preview call site and its tests.
  */
 export function buildPreviewMermaidConfig(): MermaidConfig {
-  return {
-    startOnLoad: false,
-    securityLevel: SECURITY_LEVEL,
-    deterministicIds: true,
-  };
+  return buildMermaidConfig();
 }
 
 /** Drives the real mermaid engine; only runnable in a browser/worker (DOM-dependent). */
