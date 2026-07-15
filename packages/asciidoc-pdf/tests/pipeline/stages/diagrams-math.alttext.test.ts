@@ -169,7 +169,7 @@ describe('diagrams-math alt text', () => {
     await createDiagramsMathStage().run(ctx);
 
     const { hash, rewritten } = singleAsset(vfs);
-    expect(rewritten).toContain(`image::.gen/${hash}.svg["sqrt(4) = 2"]`);
+    expect(rewritten).toContain(`image::.gen/${hash}.svg["sqrt(4) = 2",align=center]`);
   });
 
   it('defaults an empty math expression alt to a generic label', async () => {
@@ -180,7 +180,7 @@ describe('diagrams-math alt text', () => {
     await createDiagramsMathStage().run(ctx);
 
     const { hash, rewritten } = singleAsset(vfs);
-    expect(rewritten).toContain(`image::.gen/${hash}.svg["math expression"]`);
+    expect(rewritten).toContain(`image::.gen/${hash}.svg["math expression",align=center]`);
   });
 
   it('derives alt for inline math from its expression', async () => {

@@ -62,6 +62,15 @@ const MATH_DISPLAY_PARAM = 'asciidoc-math-display';
 /** The {@link MATH_DISPLAY_PARAM} value that selects inline (non-display) layout for an inline macro. */
 const MATH_DISPLAY_INLINE = 'false';
 
+/**
+ * The `image::` attribute that centers a block (display) math equation on its own line. Asciidoctor-PDF
+ * left-aligns a block image by default, but block/display math is centered in the HTML preview and by
+ * conventional math typesetting (LaTeX display mode, MathJax display CSS). Centering the math block image
+ * keeps the exported PDF in parity with the on-screen preview. Diagrams keep the default left alignment,
+ * and inline math (an `image:` macro that flows in the text) is never affected.
+ */
+const MATH_BLOCK_ALIGN = 'align=center';
+
 /** Prefix for positional block attributes captured from an attribute line. */
 const POSITIONAL_PARAM_PREFIX = 'pos';
 
@@ -814,7 +823,12 @@ async function handleBlock(
     return block.originalBlock;
   }
   const target = genReference(`${asset.sourceHash}.${asset.format}`);
-  return [`image::${target}[${escapeAltForMacro(altText)}]`];
+  // Center block/display math to match the HTML preview; diagrams keep the default left alignment.
+  const attributes =
+    block.category === 'math'
+      ? `${escapeAltForMacro(altText)},${MATH_BLOCK_ALIGN}`
+      : escapeAltForMacro(altText);
+  return [`image::${target}[${attributes}]`];
 }
 
 /** Rewrite every detected inline math macro on a prose line to an inline `image:` reference. */

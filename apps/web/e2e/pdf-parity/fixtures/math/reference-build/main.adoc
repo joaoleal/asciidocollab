@@ -4,11 +4,11 @@
 
 The quadratic formula, as a displayed LaTeX equation:
 
-image::.gen/1087f6478a440397.svg["x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}"]
+image::.gen/1087f6478a440397.svg["x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}",align=center]
 
 A summation, expressed in AsciiMath:
 
-image::.gen/d2dce427889c5ba9.svg["sum_(i=1)^n i = (n(n+1))/2"]
+image::.gen/d2dce427889c5ba9.svg["sum_(i=1)^n i = (n(n+1))/2",align=center]
 
 Mass-energy equivalence image:.gen/397128c839fe6fd9.svg["E = mc^2"] reads inline, mid-sentence, without breaking the paragraph flow around it.
 

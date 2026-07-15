@@ -267,7 +267,7 @@ describe('createDiagramsMathStage', () => {
     const gen = vfs.list(GEN_PREFIX);
     expect(gen).toHaveLength(1);
     const hash = gen[0].slice(GEN_PREFIX.length, -'.svg'.length);
-    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toContain(`image::.gen/${hash}.svg["sqrt(4) = 2"]`);
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toContain(`image::.gen/${hash}.svg["sqrt(4) = 2",align=center]`);
   });
 
   it('distinguishes latexmath from asciimath with identical source (different assets)', async () => {
