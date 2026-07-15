@@ -216,6 +216,44 @@ function sizeMathSvgToPoints(svg: string): string {
   });
 }
 
+/** Matches the root `<svg>`'s `viewBox` so the selectable text layer can be stretched over the glyphs. */
+const VIEWBOX_RE = /viewBox="(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)"/;
+
+// Matches the root `<svg>` open tag. The scanned input is our own MathJax-produced SVG (bounded), never
+// an attacker-controlled stream, so the `[^>]*` run cannot be driven into pathological backtracking.
+// eslint-disable-next-line redos/no-vulnerable -- bounded MathJax-produced input, see note above.
+const SVG_ROOT_OPEN_RE = /(<svg\b[^>]*>)/;
+
+/** Escape a string for safe placement as SVG/XML text content. */
+function escapeXmlText(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+}
+
+/**
+ * Overlay an invisible, selectable text layer carrying the math source over the vector glyphs. MathJax
+ * draws glyphs as paths that carry no text, so the rendered math is otherwise unselectable. The
+ * prawn-svg renderer emits a zero-opacity text element as a real, extractable PDF text object, so the
+ * formula becomes searchable and copyable as its AsciiMath or LaTeX source. The text is stretched across
+ * the equation box so selecting the equation selects its source. The input is returned unchanged when
+ * the root has no viewBox.
+ *
+ * @param svg - The MathJax SVG document.
+ * @param source - The inert math source to embed as the selectable layer.
+ * @returns The SVG with an invisible selectable source-text layer added over the glyphs.
+ */
+function addSelectableSourceLayer(svg: string, source: string): string {
+  const box = VIEWBOX_RE.exec(svg);
+  if (box === null) {
+    return svg;
+  }
+  const [, minX, minY, width, height] = box;
+  const baseline = (Number(minY) + Number(height)).toFixed(2); // box bottom ≈ text baseline
+  const layer =
+    `<text x="${minX}" y="${baseline}" font-size="${height}" textLength="${width}" ` +
+    `lengthAdjust="spacingAndGlyphs" fill="#000000" fill-opacity="0">${escapeXmlText(source)}</text>`;
+  return svg.replace(SVG_ROOT_OPEN_RE, `$1${layer}`);
+}
+
 function malformed(message: string): ShimOutput {
   return { ok: false, diagnostic: { code: MALFORMED_MATH, message } };
 }
@@ -239,11 +277,13 @@ async function renderMath(converter: MathSvgConverter, input: ShimInput): Promis
     if (svg.length === 0) {
       return malformed('MathJax produced no SVG output for the expression.');
     }
-    // Size the root SVG in absolute points so prawn-svg renders math at body-text scale (not ~2x).
+    // Size the root SVG in absolute points so prawn-svg renders math at body-text scale (not ~2x), then
+    // overlay an invisible selectable text layer so the formula is searchable/copyable as its source.
     const sized = sizeMathSvgToPoints(svg);
+    const withText = addSelectableSourceLayer(sized, expression);
     return {
       ok: true,
-      asset: { format: OUTPUT_FORMAT, bytes: new TextEncoder().encode(sized), rasterFallback: false },
+      asset: { format: OUTPUT_FORMAT, bytes: new TextEncoder().encode(withText), rasterFallback: false },
     };
   } catch (error) {
     return malformed(messageOf(error));

@@ -87,6 +87,33 @@ describe('createMathJaxShim — successful render (injected converter)', () => {
     expect(expectOkSvg(output)).toBe(svg);
   });
 
+  it('sizes the root in points and overlays an invisible selectable source-text layer', async () => {
+    // A MathJax-shaped SVG: ex-based root dimensions plus a viewBox for the text layer to span.
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="8ex" height="2ex" viewBox="0 -800 4000 1000">' +
+      '<path d="M0 0"/></svg>';
+    const shim = createMathJaxShim({ converter: svgConverter(svg) });
+
+    const out = expectOkSvg(await shim.render(inputFor('E = mc^2', { [MATH_NOTATION_PARAM]: 'latexmath' })));
+
+    // Root dimensions converted ex → absolute pt so prawn-svg renders math at body-text scale, not ~2x.
+    expect(out).toContain('width="36.00pt"');
+    expect(out).toContain('height="9.00pt"');
+    // An invisible (zero-opacity) text layer carries the source verbatim — searchable/copyable, no visual change.
+    expect(out).toContain('fill-opacity="0"');
+    expect(out).toContain('>E = mc^2</text>');
+  });
+
+  it('escapes markup-significant characters in the selectable source layer', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -800 4000 1000"><path d="M0 0"/></svg>';
+    const shim = createMathJaxShim({ converter: svgConverter(svg) });
+
+    const out = expectOkSvg(await shim.render(inputFor('a < b & c', { [MATH_NOTATION_PARAM]: 'asciimath' })));
+
+    expect(out).toContain('a &lt; b &amp; c');
+    expect(out).not.toContain('>a < b & c<');
+  });
+
   it('produces identical bytes for identical source + params (determinism)', async () => {
     const shim = createMathJaxShim({ converter: svgConverter() });
     const first = await shim.render(inputFor('a+b', { [MATH_NOTATION_PARAM]: 'latexmath' }));
