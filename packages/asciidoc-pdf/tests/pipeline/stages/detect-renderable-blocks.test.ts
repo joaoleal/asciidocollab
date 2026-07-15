@@ -201,10 +201,15 @@ describe('detectRenderableBlocks', () => {
     });
   });
 
-  it('gives an inline math record only the synthetic notation param', () => {
+  it('gives an inline math record the notation param plus the inline (non-display) marker', () => {
     const inlineStem = detectRenderableBlocks(REPRESENTATIVE_DOCUMENT)[2];
 
-    expect(inlineStem.params).toEqual({ 'asciidoc-block-notation': 'stem' });
+    // Inline math must render at text size, so it carries the display=false marker; a block math/diagram
+    // omits it and the shim defaults to display layout.
+    expect(inlineStem.params).toEqual({
+      'asciidoc-block-notation': 'stem',
+      'asciidoc-math-display': 'false',
+    });
   });
 
   it('does not detect plantuml/ditaa or inline math inside a verbatim listing', () => {

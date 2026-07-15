@@ -181,6 +181,41 @@ export function createMathJaxSvgConverter(): MathSvgConverter {
 // The shim.
 // ---------------------------------------------------------------------------
 
+/**
+ * Points per `ex` used to size the rendered math for the PDF. MathJax emits the root `<svg>`
+ * width/height in `ex` (relative to the surrounding font size). In a browser those `ex` resolve against
+ * the parent's font, so math matches the text; but a standalone SVG embedded by prawn-svg has NO
+ * font-size context, so prawn-svg resolves `ex` against its own (large) default and renders math at
+ * roughly TWICE the body-text size — display equations look bloated and inline math towers over the
+ * line. Converting the root dimensions to absolute `pt` at this scale makes math track Asciidoctor-PDF's
+ * default ~10.5pt body font (empirically 1ex ≈ 4.5pt), for both inline and display math. It is tuned to
+ * the default theme's base font size; a project with a very different base size would want it scaled.
+ */
+const POINTS_PER_EX = 4.5;
+
+// Matches the root `<svg>`'s `ex`-based width/height (MathJax emits them adjacent, width then height).
+// The scanned input is our own MathJax-produced SVG (bounded), never an attacker-controlled stream, so
+// the lazy `[^>]*?` before the dimensions cannot be driven into pathological backtracking here.
+// eslint-disable-next-line redos/no-vulnerable -- bounded MathJax-produced input, see note above.
+const ROOT_SVG_EX_SIZE_RE = /(<svg\b[^>]*?)\swidth="([\d.]+)ex"\s+height="([\d.]+)ex"/;
+
+/**
+ * Rewrite the root `<svg>`'s `ex`-based width/height to absolute `pt` so prawn-svg renders the math at
+ * body-text size instead of roughly double it. The `ex`-based `vertical-align` (baseline offset) and the
+ * inner geometry stay untouched, since the viewBox scales the glyphs to fit the new box. It is a no-op
+ * when the root carries no `ex` dimensions (for example a test fake), so the shim stays engine-agnostic.
+ *
+ * @param svg - The serialized MathJax SVG document.
+ * @returns The SVG with its root dimensions expressed in points.
+ */
+function sizeMathSvgToPoints(svg: string): string {
+  return svg.replace(ROOT_SVG_EX_SIZE_RE, (_match, prefix: string, widthEx: string, heightEx: string) => {
+    const width = (Number(widthEx) * POINTS_PER_EX).toFixed(2);
+    const height = (Number(heightEx) * POINTS_PER_EX).toFixed(2);
+    return `${prefix} width="${width}pt" height="${height}pt"`;
+  });
+}
+
 function malformed(message: string): ShimOutput {
   return { ok: false, diagnostic: { code: MALFORMED_MATH, message } };
 }
@@ -204,9 +239,11 @@ async function renderMath(converter: MathSvgConverter, input: ShimInput): Promis
     if (svg.length === 0) {
       return malformed('MathJax produced no SVG output for the expression.');
     }
+    // Size the root SVG in absolute points so prawn-svg renders math at body-text scale (not ~2x).
+    const sized = sizeMathSvgToPoints(svg);
     return {
       ok: true,
-      asset: { format: OUTPUT_FORMAT, bytes: new TextEncoder().encode(svg), rasterFallback: false },
+      asset: { format: OUTPUT_FORMAT, bytes: new TextEncoder().encode(sized), rasterFallback: false },
     };
   } catch (error) {
     return malformed(messageOf(error));

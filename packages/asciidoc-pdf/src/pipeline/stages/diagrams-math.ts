@@ -51,6 +51,17 @@ const PREFERRED_FORMAT: ShimAssetFormat = 'svg';
  */
 const BLOCK_NOTATION_PARAM = 'asciidoc-block-notation';
 
+/**
+ * A synthetic render param telling the math shim to lay an expression out INLINE (text-flow size)
+ * rather than as DISPLAY (block) math. The shim renders display math by default, which is correct for a
+ * `[stem]`/`[latexmath]` block; an inline `stem:[…]` macro must opt out, or it renders at full block size
+ * mid-sentence and wrecks the line. The name matches the shim's `MATH_DISPLAY_PARAM` contract.
+ */
+const MATH_DISPLAY_PARAM = 'asciidoc-math-display';
+
+/** The {@link MATH_DISPLAY_PARAM} value that selects inline (non-display) layout for an inline macro. */
+const MATH_DISPLAY_INLINE = 'false';
+
 /** Prefix for positional block attributes captured from an attribute line. */
 const POSITIONAL_PARAM_PREFIX = 'pos';
 
@@ -444,7 +455,8 @@ function detectInlineMatches(line: string, lineNumber: number): InlineMatch[] {
         notation,
         kind: 'inline',
         source: match[2],
-        params: { [BLOCK_NOTATION_PARAM]: notation },
+        // Inline math must render at text size, not display/block size (see MATH_DISPLAY_PARAM).
+        params: { [BLOCK_NOTATION_PARAM]: notation, [MATH_DISPLAY_PARAM]: MATH_DISPLAY_INLINE },
         line: lineNumber,
       },
       start,
