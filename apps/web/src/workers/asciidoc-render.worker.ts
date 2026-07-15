@@ -148,6 +148,41 @@ function diagramEngineForStyle(style: string): string | null {
   return DIAGRAM_ENGINE_BY_STYLE[style.toLowerCase()] ?? null;
 }
 
+// A block title line: a leading `.` followed by a non-`.`, non-space char (so a `....`/`...` literal
+// delimiter is never mistaken for one), e.g. `.Example block`, `.Code caption`.
+const BLOCK_TITLE_LINE_RE = /^\.[^.\s]/;
+// A block attribute/anchor line, e.g. `[source,ruby]`, `[example]`, `[[section-anchor]]`, `[.role]`.
+const BLOCK_ATTR_LINE_RE = /^\[.+]$/;
+
+/**
+ * The line where a block VISUALLY begins in the source, which the editor→preview scroll sync maps to.
+ *
+ * Asciidoctor's source location for a block points at its opening delimiter (or first content line),
+ * never at the block title (`.Caption`) or attribute lines (`[source,ruby]`, `[[anchor]]`) that sit
+ * directly above it. Without this adjustment a click on the title line has no exact `data-source-line`
+ * and the preview's "nearest line ≤ cursor" fallback jumps to the PREVIOUS block. Walking up over the
+ * contiguous title/attribute metadata lines (stopping at the first blank or content line) makes a click
+ * anywhere in a block's leading metadata resolve to the block itself.
+ *
+ * @param sourceLines - The assembled document split into lines (0-based array of 1-based source lines).
+ * @param lineNumber - The block's 1-based Asciidoctor source line (its delimiter/content line).
+ * @returns The 1-based line of the topmost contiguous metadata line, or `lineNumber` when there is none.
+ */
+function blockStartLine(sourceLines: readonly string[], lineNumber: number): number {
+  let start = lineNumber;
+  for (let above = lineNumber - 1; above >= 1; above -= 1) {
+    const text = sourceLines[above - 1];
+    if (text === undefined) break;
+    const trimmed = text.trim();
+    if (BLOCK_TITLE_LINE_RE.test(trimmed) || BLOCK_ATTR_LINE_RE.test(trimmed)) {
+      start = above;
+    } else {
+      break;
+    }
+  }
+  return start;
+}
+
 /** A native diagram block located during the pre-conversion walk, keyed by its (id'd) HTML element. */
 interface DiagramBlock {
   id: string;
@@ -435,11 +470,16 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     // The showtitle <h1> has no id attribute, so it needs special handling below.
     let documentTitleLineNumber: number | null = null;
 
+    // The assembled source, split once, so a block's data-source-line can be lifted to its visual start
+    // (the topmost of its title/attribute metadata lines) instead of its delimiter — see blockStartLine.
+    const sourceLines = source.split('\n');
+
     const blocks = asciidocDocument.findBy({});
     for (const block of blocks) {
       const loc = block.getSourceLocation();
       if (!loc) continue;
       const lineNumber = Number(loc.getLineNumber());
+      const startLine = blockStartLine(sourceLines, lineNumber);
       const context = String(block.getContext());
       // The document-level block has no wrapping HTML element.
       if (context === 'document') continue;
@@ -470,7 +510,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         diagramBlocks.push({
           id: diagramId,
           engine,
-          lineNum: lineNumber,
+          lineNum: startLine,
           source: typeof rawSource === 'string' ? rawSource : String(rawSource ?? ''),
         });
         continue;
@@ -482,7 +522,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         id = `__src_${context}_${lineNumber}`;
         block.setId(id);
       }
-      blockSourceLines.push({ id, lineNum: lineNumber });
+      blockSourceLines.push({ id, lineNum: startLine });
     }
 
     let html = String(asciidocDocument.convert());

@@ -125,6 +125,34 @@ describe('asciidoc-render.worker', () => {
     expect(result.error).toBeNull();
   });
 
+  // (a2) a block's data-source-line is lifted to its VISUAL start — the block title (and attribute)
+  // lines above the delimiter — so a click on the `.Example block` title scrolls to the block itself
+  // instead of falling back to the previous block.
+  it('maps a titled block to its title line, not its delimiter line', () => {
+    mockConvert.mockReturnValueOnce(
+      '<div id="__src_example_6" class="exampleblock">' +
+        '<div class="title">Example block</div>' +
+        '<div class="content"><div id="__src_paragraph_7" class="paragraph"><p>inside</p></div></div>' +
+        '</div>',
+    );
+    mockFindBy.mockReturnValueOnce([
+      makeBlock({ lineNumber: 6, id: null, context: 'example' }),
+      makeBlock({ lineNumber: 7, id: null, context: 'paragraph' }),
+    ]);
+    require('@/workers/asciidoc-render.worker');
+    // Line 5 is the `.Example block` title; line 6 is the `====` delimiter Asciidoctor reports.
+    sendMessage({
+      requestId: 6,
+      content: '= T\n\nBefore.\n\n.Example block\n====\ninside\n====',
+    });
+
+    const { html } = postMessageMock.mock.calls[0][0];
+    // The example block carries the TITLE line (5), not its delimiter line (6).
+    expect(html).toContain('id="__src_example_6" data-source-line="5"');
+    // The nested paragraph keeps its own content line.
+    expect(html).toContain('id="__src_paragraph_7" data-source-line="7"');
+  });
+
   // (b) ok=false with error when Asciidoctor throws
   it('posts RenderResult with ok=false when Asciidoctor throws', () => {
     mockLoad.mockImplementation(() => { throw new Error('parse error'); });
