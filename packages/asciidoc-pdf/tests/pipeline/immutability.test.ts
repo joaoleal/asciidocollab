@@ -55,6 +55,9 @@ const PROJECT = '/project';
 const ROOT_VFS_PATH = `${PROJECT}/${ROOT_PATH}`;
 const GEN_PREFIX = `${PROJECT}/.gen/`;
 const FONT_VFS_PATH = `${PROJECT}/${FONT_PATH}`;
+// The `.ttf` the WOFF2 font decodes into: prawn dispatches by extension, so the embeddable sfnt is
+// materialized under a `.ttf` base name (never written back to the `.woff2` name).
+const DECODED_FONT_VFS_PATH = FONT_VFS_PATH.replace(/\.woff2$/, '.ttf');
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -247,9 +250,11 @@ describe('pipeline shared-content immutability', () => {
 
     const genAssets = vfs.list(GEN_PREFIX);
     expect(genAssets.length).toBeGreaterThanOrEqual(1); // .gen assets written to the VFS
-    // The asset-mount stage decoded the custom WOFF2 font in place, into the VFS (not the snapshot).
+    // The asset-mount stage decoded the custom WOFF2 font into the VFS (not the snapshot), under a
+    // `.ttf` base name — prawn dispatches by extension, so the stale `.woff2` name is dropped.
     // (Theme + TTF/OTF fonts are mounted by populateProject, which runs before the pipeline.)
-    expect(vfs.exists(FONT_VFS_PATH)).toBe(true);
+    expect(vfs.exists(DECODED_FONT_VFS_PATH)).toBe(true);
+    expect(vfs.exists(FONT_VFS_PATH)).toBe(false);
   });
 
   it('re-runs against the same snapshot produce byte-identical VFS writes, so no mutation accumulates', async () => {

@@ -117,24 +117,86 @@ describe('createMountAssetsStage', () => {
     expect(result.diagnostics ?? []).toEqual([]);
   });
 
-  it('decodes a WOFF2 font in place to its embeddable sfnt at the same /project path', async () => {
-    // The theme catalog references the font by its `.woff2` filename; prawn/ttfunk identifies a font by
-    // its sfnt signature, not its extension, so overwriting the SAME path with decoded bytes is correct.
+  it('decodes a WOFF2 font to a .ttf asset in the VFS and drops the stale .woff2', async () => {
+    // Prawn dispatches font loading by file EXTENSION: a `.woff2`-named file holding TTF bytes hits its
+    // AFM branch and fails to embed. So the decoded sfnt must be materialized under a `.ttf` base name
+    // and the stale `.woff2` asset dropped. The immutable snapshot is never mutated — only the VFS.
     const woff2 = new Uint8Array([0x77, 0x4F, 0x46, 0x32]);
     const snapshot = makeSnapshot({
       fontPaths: ['fonts/Brand-Regular.woff2'],
       binaryAssets: { 'fonts/Brand-Regular.woff2': woff2 },
     });
     const vfs = makeVfs();
+    // Simulate populate: the source .woff2 font is already mounted under /project.
+    vfs.writeFile('/project/fonts/Brand-Regular.woff2', woff2);
     const converter = makeFontConverter();
 
     const result = await createMountAssetsStage({ fontConverter: converter }).run(makeContext(snapshot, vfs));
 
     expect(converter.woff2ToTtf).toHaveBeenCalledTimes(1);
     expect(converter.woff2ToTtf).toHaveBeenCalledWith(woff2);
-    expect(vfs.readFile('/project/fonts/Brand-Regular.woff2')).toEqual(DECODED_SFNT);
-    expect(vfs.writtenPaths()).toEqual(['/project/fonts/Brand-Regular.woff2']);
+    // The decoded sfnt lands under a `.ttf` base name in the same directory...
+    expect(vfs.readFile('/project/fonts/Brand-Regular.ttf')).toEqual(DECODED_SFNT);
+    // ...and no `.woff2`-named font asset survives on the VFS.
+    expect(vfs.exists('/project/fonts/Brand-Regular.woff2')).toBe(false);
+    // The immutable input snapshot is untouched — the convert derives `pdf-fontsdir` from the font's
+    // (unchanged) directory, so the `.ttf` resolves from the same search dir without a fontPaths edit.
+    expect(snapshot.fontPaths).toEqual(['fonts/Brand-Regular.woff2']);
     expect(result.diagnostics ?? []).toEqual([]);
+  });
+
+  it('repoints the project theme font catalogue from the .woff2 base name to the decoded .ttf', async () => {
+    // The theme references each font by base name within `pdf-fontsdir`; a stale `.woff2` catalogue
+    // entry would fail to embed (extension dispatch) even though the mounted bytes are TTF.
+    const woff2 = new Uint8Array([0x77, 0x4F, 0x46, 0x32]);
+    const snapshot = makeSnapshot({
+      themePath: 'theme/brand.yml',
+      fontPaths: ['fonts/Brand-Regular.woff2', 'fonts/Brand-Bold.woff2'],
+      binaryAssets: {
+        'fonts/Brand-Regular.woff2': woff2,
+        'fonts/Brand-Bold.woff2': woff2,
+      },
+    });
+    const vfs = makeVfs();
+    // Simulate populate: the theme catalogue and both .woff2 fonts are already mounted under /project.
+    vfs.writeText(
+      '/project/theme/brand.yml',
+      'font:\n  catalog:\n    Brand:\n      normal: Brand-Regular.woff2\n      bold: Brand-Bold.woff2\n',
+    );
+    vfs.writeFile('/project/fonts/Brand-Regular.woff2', woff2);
+    vfs.writeFile('/project/fonts/Brand-Bold.woff2', woff2);
+
+    const result = await createMountAssetsStage({ fontConverter: makeFontConverter() }).run(makeContext(snapshot, vfs));
+
+    const theme = vfs.readText('/project/theme/brand.yml') ?? '';
+    expect(theme).toContain('Brand-Regular.ttf');
+    expect(theme).toContain('Brand-Bold.ttf');
+    expect(theme).not.toContain('.woff2');
+    // Both decoded fonts are materialized under their `.ttf` names; the `.woff2` assets are dropped.
+    expect(vfs.exists('/project/fonts/Brand-Regular.ttf')).toBe(true);
+    expect(vfs.exists('/project/fonts/Brand-Bold.ttf')).toBe(true);
+    expect(vfs.exists('/project/fonts/Brand-Regular.woff2')).toBe(false);
+    expect(result.diagnostics ?? []).toEqual([]);
+  });
+
+  it('leaves a theme that names no decoded font untouched', async () => {
+    // A project theme that does not reference the decoded font by base name is not rewritten — the
+    // decode still lands as a `.ttf` in the VFS, but the theme bytes stay byte-identical.
+    const woff2 = new Uint8Array([0x77, 0x4F, 0x46, 0x32]);
+    const snapshot = makeSnapshot({
+      themePath: 'theme/brand.yml',
+      fontPaths: ['fonts/Brand-Regular.woff2'],
+      binaryAssets: { 'fonts/Brand-Regular.woff2': woff2 },
+    });
+    const vfs = makeVfs();
+    const themeText = 'extends: default\nbase:\n  font-family: Noto Serif\n';
+    vfs.writeText('/project/theme/brand.yml', themeText);
+    vfs.writeFile('/project/fonts/Brand-Regular.woff2', woff2);
+
+    await createMountAssetsStage({ fontConverter: makeFontConverter() }).run(makeContext(snapshot, vfs));
+
+    expect(vfs.readText('/project/theme/brand.yml')).toBe(themeText);
+    expect(vfs.readFile('/project/fonts/Brand-Regular.ttf')).toEqual(DECODED_SFNT);
   });
 
   it('writes nothing under /usr — the baked default fonts are never touched', async () => {

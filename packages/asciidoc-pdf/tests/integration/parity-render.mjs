@@ -39,6 +39,7 @@ const requirePkg = createRequire(join(PACKAGE_ROOT, 'package.json'));
 const { createWasiBridge } = requirePkg(join(DIST, 'vm', 'wasi-bridge.js'));
 const { createRubyPdfVm } = requirePkg(join(DIST, 'vm', 'ruby-pdf-vm.js'));
 const { populateProject } = requirePkg(join(DIST, 'vfs', 'populate.js'));
+const { createMountAssetsStage } = requirePkg(join(DIST, 'pipeline', 'stages', 'mount-assets.js'));
 const { invokeConvert } = requirePkg(join(DIST, 'convert', 'invoke.js'));
 const { assembleIncludes } = requirePkg('@asciidocollab/asciidoc-core');
 
@@ -152,65 +153,80 @@ function buildSnapshot(fixtureDir, manifest) {
 }
 
 // ---------------------------------------------------------------------------
-// Asset mount — custom WOFF2 fonts.
+// Asset mount — custom WOFF2 fonts, through the SHIPPING production stage.
 //
 // Asciidoctor-PDF/prawn embeds only TTF/OTF and dispatches on the file extension, so a project that
-// ships WOFF2 web fonts is made embeddable exactly the way the app's asset-mount stage does it: each
-// WOFF2 is losslessly decompressed back to the sfnt (TTF/OTF) it wraps, materialized under a `.ttf`
-// name, and the theme's font catalogue + the snapshot's `fontPaths` are repointed to that name. The
-// decode uses the same codec the app's `FontConverter` uses (fonteditor-core's WOFF2 module, whose
-// wasm loads from a local file — no network). A fixture that ships no WOFF2 font is returned untouched,
-// so the TTF-only fixtures render through the unchanged path.
+// ships WOFF2 web fonts must have each WOFF2 losslessly decompressed back to the sfnt (TTF/OTF) it
+// wraps, materialized under a `.ttf` name, the `.woff2` dropped, and the theme's font catalogue
+// repointed to the `.ttf`. Rather than reimplement that here, this harness runs the app's OWN
+// `createMountAssetsStage` against the live VM VFS (exactly as the worker does, after populate and
+// before convert) so the `theme-fonts-woff2` fixture guards the real production decode/repoint path.
+// The stage's injected `FontConverter` uses the same codec the app uses (fonteditor-core's WOFF2
+// module, whose wasm loads from a local file — no network). A fixture that ships no WOFF2 font never
+// invokes the decoder, so the TTF-only fixtures render through the unchanged path.
 // ---------------------------------------------------------------------------
-
-const WOFF2_SUFFIX = '.woff2';
-const TTF_SUFFIX = '.ttf';
 
 /** A standalone `ArrayBuffer` view of a `Uint8Array` (the shape `woff2.decode` accepts). */
 function toArrayBuffer(view) {
   return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
 }
 
-/** The `.ttf` path a `.woff2` font decodes into (same directory + basename). */
-function decodedTtfPath(woff2Path) {
-  return `${woff2Path.slice(0, -WOFF2_SUFFIX.length)}${TTF_SUFFIX}`;
+/** The production stage's WOFF2→TTF `FontConverter`, using the app's own codec (lazy, local wasm). */
+function createFontConverter() {
+  const { woff2 } = requireWeb(join(WEB_MODULES, 'fonteditor-core'));
+  let initialized = null;
+  return {
+    async woff2ToTtf(bytes) {
+      if (initialized === null) {
+        initialized = woff2.init();
+      }
+      await initialized;
+      return new Uint8Array(woff2.decode(toArrayBuffer(bytes)));
+    },
+  };
+}
+
+/** A `PipelineVfs` (the surface the asset-mount stage writes through) backed by the live VM VFS. */
+function pipelineVfsOverVm(vm) {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const readBytes = (path) => {
+    try {
+      return vm.readFile(path);
+    } catch {
+      return null;
+    }
+  };
+  return {
+    writeFile: (path, bytes) => vm.writeFile(path, bytes),
+    readFile: (path) => readBytes(path),
+    writeText: (path, content) => vm.writeFile(path, encoder.encode(content)),
+    readText: (path) => {
+      const bytes = readBytes(path);
+      return bytes === null ? null : decoder.decode(bytes);
+    },
+    exists: (path) => vm.exists(path),
+    remove: (path) => vm.removeFile(path),
+    list: () => [],
+  };
 }
 
 /**
- * Decompress every WOFF2 custom font a fixture ships back to the embeddable TTF it wraps, mirroring the
- * app's asset-mount stage: the decoded bytes are materialized under a `.ttf` name, the theme catalogue
- * and the snapshot's `fontPaths` are repointed to it, and the `.woff2` asset is dropped. Returns the
- * snapshot unchanged when it references no WOFF2 font, so TTF-only fixtures are untouched.
+ * Make a fixture's custom WOFF2 fonts embeddable through the app's OWN asset-mount stage, run against
+ * the live VM VFS after populate and before convert — the exact production seam. A fixture with no
+ * WOFF2 font never constructs the codec, so TTF-only fixtures are untouched.
  */
-async function mountWoff2Fonts(snapshot) {
-  const woff2Paths = snapshot.fontPaths.filter((path) => path.toLowerCase().endsWith(WOFF2_SUFFIX));
-  if (woff2Paths.length === 0) {
-    return snapshot;
+async function mountAssets(vm, snapshot) {
+  if (!snapshot.fontPaths.some((path) => path.toLowerCase().endsWith('.woff2'))) {
+    return;
   }
-  log(`Decoding ${woff2Paths.length} WOFF2 custom font(s) to embeddable TTF...`);
-  const { woff2 } = requireWeb(join(WEB_MODULES, 'fonteditor-core'));
-  await woff2.init();
-
-  const binaryAssets = { ...snapshot.binaryAssets };
-  for (const woff2Path of woff2Paths) {
-    const bytes = binaryAssets[woff2Path];
-    if (bytes === undefined) continue;
-    const ttf = woff2.decode(toArrayBuffer(bytes));
-    binaryAssets[decodedTtfPath(woff2Path)] = new Uint8Array(ttf);
-    delete binaryAssets[woff2Path];
+  log('Decoding WOFF2 custom font(s) via the production asset-mount stage...');
+  const stage = createMountAssetsStage({ fontConverter: createFontConverter() });
+  const request = { requestId: 'parity-mount', mode: 'export', snapshot, optimize: false };
+  const { diagnostics } = await stage.run({ request, vfs: pipelineVfsOverVm(vm) });
+  for (const diagnostic of diagnostics ?? []) {
+    log(`asset-mount ${diagnostic.code}: ${diagnostic.resource ?? ''}`);
   }
-  const fontPaths = snapshot.fontPaths.map((path) =>
-    path.toLowerCase().endsWith(WOFF2_SUFFIX) ? decodedTtfPath(path) : path,
-  );
-  // Repoint every text reference (the theme's font catalogue) from the `.woff2` names to the decoded
-  // `.ttf` names the render now embeds.
-  const files = { ...snapshot.files };
-  for (const [path, content] of Object.entries(files)) {
-    if (typeof content === 'string' && content.includes(WOFF2_SUFFIX)) {
-      files[path] = content.split(WOFF2_SUFFIX).join(TTF_SUFFIX);
-    }
-  }
-  return { ...snapshot, binaryAssets, fontPaths, files };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +239,9 @@ async function renderWithEngine(snapshot) {
   const vm = createRubyPdfVm({ createBridge: () => createWasiBridge({ module }) });
   await vm.warmup();
   populateProject(vm, snapshot);
+  // The shipping asset-mount stage: decode each WOFF2 already mounted under /project to the TTF it
+  // wraps, drop the `.woff2`, and repoint the theme catalogue — all in the VFS the convert reads.
+  await mountAssets(vm, snapshot);
   const request = { requestId: 'parity-render', mode: 'export', snapshot, optimize: false };
   const result = await invokeConvert({ vm, request });
   vm.dispose();
@@ -434,8 +453,7 @@ async function main() {
   const tolerance = manifest.tolerance ?? { pixelThreshold: 0.1, maxMismatchRatio: 0.01 };
 
   log(`Building snapshot for ${manifest.name}...`);
-  const { snapshot: rawSnapshot, unresolved } = buildSnapshot(fixtureDir, manifest);
-  const snapshot = await mountWoff2Fonts(rawSnapshot);
+  const { snapshot, unresolved } = buildSnapshot(fixtureDir, manifest);
 
   log('Rendering through the wasm engine...');
   const { bytes: ourBytes, diagnostics } = await renderWithEngine(snapshot);
