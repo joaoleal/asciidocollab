@@ -227,11 +227,13 @@ function sizeMathSvgToPoints(svg: string): string {
  * prawn-svg fill the glyphs only — matching MathJax's intent.
  *
  * BUT enclosure/strike notations (`\boxed`, `\fbox`, `\cancel`, `menclose`) draw a `<rect>`/`<line>` with
- * a NON-zero `stroke-width` and NO stroke attribute of their own — they rely on inheriting the root's
- * paint. Neutralising the root alone would make those inherit `stroke="none"` and vanish. So after
- * neutralising the root, {@link restoreNonZeroStrokes} re-adds an explicit `stroke="currentColor"` on
- * every element that carries a non-zero stroke width, keeping real strokes drawn while the zero-width
- * glyphs stay fill-only.
+ * a NON-zero `stroke-width`, either inheriting the root's paint (no own stroke) or declaring their own
+ * `stroke="currentColor"`. Neutralising the root paint would make the inheriting ones vanish; and because
+ * we can't neutralise the root in isolation (its paint is textually identical to an enclosure's own), the
+ * blanket rewrite also turns any enclosure's own `stroke="currentColor"` into `stroke="none"`. So after
+ * neutralising, {@link restoreNonZeroStrokes} re-asserts `stroke="currentColor"` on every element with a
+ * non-zero stroke width that lacks a real (non-`none`) stroke colour — covering both the inheriting and
+ * the just-neutralised enclosures — while the zero-width glyphs/rules stay fill-only.
  */
 const GLYPH_STROKE_PAINT = 'stroke="currentColor"';
 
@@ -239,13 +241,14 @@ const GLYPH_STROKE_PAINT = 'stroke="currentColor"';
 const NO_STROKE_PAINT = 'stroke="none"';
 
 /**
- * Rewrite MathJax's root `stroke="currentColor"` to `stroke="none"` so prawn-svg fills the glyphs without
- * adding a zero-width hairline outline (see {@link GLYPH_STROKE_PAINT}). MathJax emits this paint exactly
- * once (on the root group), so a blanket replace only touches the root; enclosure/strike strokes are
- * re-added afterwards by {@link restoreNonZeroStrokes}. A no-op for a fake SVG that carries no such stroke.
+ * Rewrite every `stroke="currentColor"` to `stroke="none"` so prawn-svg fills the glyphs without adding a
+ * zero-width hairline outline (see {@link GLYPH_STROKE_PAINT}). This targets the root group's paint but
+ * cannot single it out (an enclosure may carry the identical paint), so it also neutralises enclosure
+ * strokes; {@link restoreNonZeroStrokes} re-asserts those afterwards from the surviving stroke width. A
+ * no-op for a fake SVG that carries no such stroke.
  *
  * @param svg - The serialized MathJax SVG document.
- * @returns The SVG with its root glyph stroke neutralised.
+ * @returns The SVG with `currentColor` strokes neutralised.
  */
 function neutralizeGlyphStroke(svg: string): string {
   return svg.replaceAll(GLYPH_STROKE_PAINT, NO_STROKE_PAINT);
@@ -260,25 +263,35 @@ function neutralizeGlyphStroke(svg: string): string {
 // eslint-disable-next-line redos/no-vulnerable -- bounded MathJax-produced input, see note above.
 const STROKE_WIDTH_ELEMENT_RE = /<(rect|line|path|ellipse|circle|polyline|polygon)\b[^>]*\bstroke-width="([^"]+)"[^>]*>/g;
 
-/** Whether an opening tag already carries an explicit stroke PAINT attribute (not `stroke-width`). */
-function hasStrokePaint(tag: string): boolean {
-  return /\sstroke="/.test(tag);
+/**
+ * The opening tag's explicit stroke PAINT (the value of a `stroke="…"` attribute, never `stroke-width`),
+ * or null when it carries none. Used to tell a real colour apart from the `none` that
+ * {@link neutralizeGlyphStroke} may have just written.
+ */
+function strokePaintOf(tag: string): string | null {
+  return /\sstroke="([^"]*)"/.exec(tag)?.[1] ?? null;
 }
 
 /**
- * Re-add an explicit `stroke="currentColor"` to every element that carries a NON-zero `stroke-width` but
- * no stroke paint of its own, so enclosure/strike notations still draw after {@link neutralizeGlyphStroke}
- * set the root paint to `none`. Zero-width elements (the root group, glyph rules) are left unstroked so
- * the glyph-hairline fix holds; elements that already declare a stroke paint are untouched. The paint is
- * inserted right after the element name so it is robust to attribute order and self-closing tags.
+ * Re-assert `stroke="currentColor"` on every element with a NON-zero `stroke-width` that lacks a real
+ * (non-`none`) stroke colour, so enclosure/strike notations still draw after {@link neutralizeGlyphStroke}
+ * rewrote `currentColor` paints to `none`. This covers both the enclosures that inherited the root paint
+ * (no own stroke) and those whose own `currentColor` was just neutralised (now `stroke="none"`); any
+ * existing `stroke="none"` is stripped first so the tag is not left with two stroke attributes. Zero-width
+ * elements (the root group, glyph rules) keep their neutralised `none` so the glyph-hairline fix holds,
+ * and an element declaring a genuine colour is left untouched. The paint is inserted right after the
+ * element name so it is robust to attribute order and self-closing tags.
  *
- * @param svg - The SVG whose root stroke has already been neutralised.
+ * @param svg - The SVG whose `currentColor` strokes have already been neutralised.
  * @returns The SVG with real (non-zero-width) strokes restored.
  */
 function restoreNonZeroStrokes(svg: string): string {
   return svg.replaceAll(STROKE_WIDTH_ELEMENT_RE, (tag: string, _name: string, width: string) => {
-    if (hasStrokePaint(tag) || Number.parseFloat(width) === 0) return tag;
-    return tag.replace(/^<([\w-]+)/, `<$1 ${GLYPH_STROKE_PAINT}`);
+    if (Number.parseFloat(width) === 0) return tag;
+    const paint = strokePaintOf(tag);
+    if (paint !== null && paint !== 'none') return tag;
+    const withoutNone = paint === 'none' ? tag.replace(/\sstroke="none"/, '') : tag;
+    return withoutNone.replace(/^<([\w-]+)/, `<$1 ${GLYPH_STROKE_PAINT}`);
   });
 }
 

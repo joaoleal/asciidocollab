@@ -11,7 +11,7 @@ function makeView(): { view: EditorView; fireScroll: () => void; removed: () => 
   let removed = false;
   const view = {
     scrollDOM: {
-      addEventListener: (_type: string, fn: () => void) => { listener = fn; },
+      addEventListener: (_type: string, function_: () => void) => { listener = function_; },
       removeEventListener: () => { removed = true; },
       getBoundingClientRect: () => ({ left: 0, top: 0 }),
     },

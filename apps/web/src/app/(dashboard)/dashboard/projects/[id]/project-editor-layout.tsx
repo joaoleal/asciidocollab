@@ -552,9 +552,12 @@ export function ProjectEditorLayout({
   // and both previews surface a short "not part of the main document" notice. The export/download stays
   // rooted at the main document regardless (see handleExportPdf).
   const openFileOutsideMainTree = useMemo(() => {
-    // Read the file map lazily (cached to one call): the helper short-circuits before any file read when
-    // no main file is configured or the open file IS the main file, so getProjectFiles() is only invoked
-    // when reachability actually has to be assembled.
+    // Only the open preview consumes this (its root + the not-part-of-main notice), and assembling the
+    // include tree is O(document size); skip the whole walk while the preview is closed so a closed panel
+    // never taxes typing. Read the file map lazily (cached to one call): the helper also short-circuits
+    // before any file read when no main file is configured or the open file IS the main file, so
+    // getProjectFiles() is only invoked when reachability actually has to be assembled.
+    if (!previewOpen) return false;
     let files: Record<string, string> | null = null;
     return isOpenFileOutsideMainTree(previewRootPath, previewOpenPath, (path: string) => {
       files ??= getProjectFiles();
@@ -562,7 +565,7 @@ export function ProjectEditorLayout({
     });
     // liveOverlayContent + reachableDocVersion are the same edit/content signals that refresh the render,
     // so a newly-added (or removed) include that changes reachability re-evaluates this.
-  }, [previewRootPath, previewOpenPath, getProjectFiles, liveOverlayContent, reachableDocVersion]);
+  }, [previewOpen, previewRootPath, previewOpenPath, getProjectFiles, liveOverlayContent, reachableDocVersion]);
 
   // ── Export to PDF ──────────────────────────────────────────────────────────────────────────
   // Fully client-side one-click export. The render root mirrors the symbol-index root: the
@@ -747,20 +750,6 @@ export function ProjectEditorLayout({
     }
     return openLineToAssembledLine(assembledLineToSource, previewOpenPath, scrollRequest.line);
   }, [assembledLineToSource, scrollRequest, previewOpenPath]);
-
-  // Whether the open file actually contributes to the rendered PDF document. The PDF preview always
-  // renders the configured main document (rooted at `previewRootPath`); when a DIFFERENT file is open —
-  // one the main document neither is nor includes — the preview shows a document the editor is not
-  // editing, so scroll-sync has nothing valid to scroll to. Without this gate the panel falls through to
-  // its proportional fallback, mapping the open file's unrelated line count onto the main document's page
-  // stack and scrolling to a meaningless position on every selection. True when no main file is
-  // configured (the preview then roots at the open file), when the open file IS the root, or when the
-  // assembled provenance map shows it contributing lines (an included child).
-  const openFileInRenderedDocument = useMemo(() => {
-    if (previewRootPath === undefined || previewOpenPath === undefined) return true;
-    if (previewOpenPath === previewRootPath) return true;
-    return assembledLineToSource?.some((entry) => entry.path === previewOpenPath) ?? false;
-  }, [previewRootPath, previewOpenPath, assembledLineToSource]);
 
   // Reveal a diagnostic's source location, reusing the file/line navigation seam: in-place when it
   // is the open file, otherwise switch to its file and reveal the line once the new editor mounts.
@@ -1123,10 +1112,11 @@ export function ProjectEditorLayout({
                     onSelectLocation={handleDiagnosticLocation}
                     previewMode={previewMode}
                     onPreviewModeChange={setPreviewMode}
-                    // Suppress scroll-sync when the open file is not part of the rendered (main) document:
-                    // there is no rendered position for its lines, so a proportional guess would scroll the
-                    // preview to a meaningless spot on every selection (see openFileInRenderedDocument).
-                    scrollToLine={openFileInRenderedDocument ? scrollRequest : null}
+                    // The open file always contributes to the rendered document — it is either the render
+                    // root (out-of-tree files preview standalone; see openFileOutsideMainTree) or an
+                    // included child of the main document — so its lines always have a rendered position
+                    // (exact via the source map, else the proportional fallback) to scroll to.
+                    scrollToLine={scrollRequest}
                     sourceMap={adjustedSourceMap}
                     assembledLine={assembledScrollLine}
                     totalLines={liveContentLineCount}

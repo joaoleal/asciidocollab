@@ -141,6 +141,42 @@ describe('createMathJaxShim — successful render (injected converter)', () => {
     expect(rect).toContain('stroke="currentColor"');
   });
 
+  it('restores an enclosure stroke the neutraliser rewrote, when the enclosure declared its OWN currentColor', async () => {
+    // Hardening beyond the inherited case above: an enclosure/strike primitive may carry its OWN
+    // stroke="currentColor" (textually identical to the root's), so the blanket neutraliser turns it into
+    // stroke="none". Restore must re-assert currentColor from the surviving non-zero stroke-width rather
+    // than leave the element unstroked — otherwise the box/strike vanishes.
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -800 4000 1000">' +
+      '<g fill="currentColor" stroke="currentColor" stroke-width="0">' +
+      '<path d="M0 0"/><line x1="0" y1="0" x2="100" y2="100" stroke="currentColor" stroke-width="67"/></g></svg>';
+    const shim = createMathJaxShim({ converter: svgConverter(svg) });
+
+    const out = expectOkSvg(await shim.render(inputFor(String.raw`\cancel{x}`, { [MATH_NOTATION_PARAM]: 'latexmath' })));
+
+    const line = /<line\b[^>]*>/.exec(out)?.[0] ?? '';
+    expect(line).toContain('stroke-width="67"');
+    expect(line).toContain('stroke="currentColor"');
+    // The neutralised `none` must not linger alongside the restored paint (no double stroke attribute).
+    expect(line).not.toContain('stroke="none"');
+  });
+
+  it('leaves a genuine (non-currentColor) stroke colour untouched when restoring strokes', async () => {
+    // A stroke paint that is a real colour (e.g. \color) is neither the neutralised `none` nor an
+    // inheriting enclosure, so the restore pass must not overwrite it with currentColor.
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -800 4000 1000">' +
+      '<g fill="currentColor" stroke="currentColor" stroke-width="0">' +
+      '<path d="M0 0"/><rect x="0" y="0" width="100" height="50" fill="none" stroke="#ff0000" stroke-width="67"/></g></svg>';
+    const shim = createMathJaxShim({ converter: svgConverter(svg) });
+
+    const out = expectOkSvg(await shim.render(inputFor(String.raw`\boxed{x}`, { [MATH_NOTATION_PARAM]: 'latexmath' })));
+
+    const rect = /<rect\b[^>]*>/.exec(out)?.[0] ?? '';
+    expect(rect).toContain('stroke="#ff0000"');
+    expect(rect).not.toContain('stroke="currentColor"');
+  });
+
   it('escapes markup-significant characters in the selectable source layer', async () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -800 4000 1000"><path d="M0 0"/></svg>';
     const shim = createMathJaxShim({ converter: svgConverter(svg) });
