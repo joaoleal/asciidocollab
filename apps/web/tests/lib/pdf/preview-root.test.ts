@@ -23,6 +23,14 @@ describe('isOpenFileOutsideMainTree', () => {
     expect(isOpenFileOutsideMainTree('main.adoc', 'chapter.adoc', read(files))).toBe(false);
   });
 
+  it('is false when the main document content is not yet loaded (cannot assemble; must not go standalone)', () => {
+    // Regression (collab main-file change): the project main switched to a file this client has not
+    // fetched, so its content is unavailable. Reachability cannot be assembled — the open child must
+    // stay rooted at the main (keeping its inherited attribute scope), not flip to a standalone preview.
+    const files = { 'child.adoc': '= Child\n\nProduct is {productName}.\n' }; // alt.adoc (the main) absent
+    expect(isOpenFileOutsideMainTree('alt.adoc', 'child.adoc', read(files))).toBe(false);
+  });
+
   it('is true when a main document is configured but the open file is unreachable from it', () => {
     const files = {
       'main.adoc': '= Title\n\ninclude::chapter.adoc[]\n',

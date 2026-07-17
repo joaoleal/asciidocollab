@@ -13,7 +13,8 @@ import { isPathInAssembledTree } from './scroll-sync-map';
  * Whether the open file is OUTSIDE the configured main document's include tree: a main document is
  * configured, the open file is not that document, and it is not reached through its includes. False when
  * no main document is configured (the open file is then its own document, so there is no tree to be
- * outside of) or when the open file IS the main document.
+ * outside of), when the open file IS the main document, or when the main's own content is not yet loaded
+ * (reachability cannot be assembled — so we keep rooting at the main rather than flip to standalone).
  *
  * @param mainPath - The configured main document's path, or undefined when none is set.
  * @param openPath - The open file's path, or undefined when unresolved.
@@ -27,6 +28,14 @@ export function isOpenFileOutsideMainTree(
 ): boolean {
   if (mainPath === undefined || openPath === undefined) return false;
   if (openPath === mainPath) return false;
+  // Assembling the main's include tree needs the main's OWN content. When it is not yet loaded — e.g.
+  // right after the project main file changed to a file this client has not fetched — we cannot tell
+  // whether the open file is included, and must NOT flip the preview to standalone: that would drop the
+  // open file's inherited cross-document attribute scope (its `{attr}` refs would render unresolved).
+  // Treat it as in-tree until the main's content is available; keeping the preview rooted at the main is
+  // also what drives that content to load, so reachability can then be resolved for real (without this,
+  // a standalone preview never references the new main, so its content never loads — a deadlock).
+  if (readFile(mainPath) === null) return false;
   return !isPathInAssembledTree(mainPath, readFile, openPath);
 }
 
