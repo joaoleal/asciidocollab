@@ -217,14 +217,21 @@ function sizeMathSvgToPoints(svg: string): string {
 }
 
 /**
- * MathJax tags its glyph group with `stroke="currentColor"` alongside `stroke-width="0"`: it draws every
- * glyph, fraction bar, and radical rule as a FILLED path, and the zero width declares "never stroke".
- * The prawn-svg renderer, however, decides fill-vs-`fill_and_stroke` purely on whether the stroke paint
- * is `none` — a non-`none` stroke makes it stroke every glyph with a zero-width line, which
+ * MathJax tags its root glyph group with `stroke="currentColor"` alongside `stroke-width="0"`: it draws
+ * every glyph, fraction bar, and radical rule as a FILLED path, and the zero width declares "never
+ * stroke". The prawn-svg renderer, however, decides fill-vs-`fill_and_stroke` purely on whether the
+ * stroke paint is `none` — a non-`none` stroke makes it stroke every glyph with a zero-width line, which
  * PDF renders as a 1-device-pixel hairline in the glyph's own colour. That hairline thickens each glyph,
  * so the exported equation looks bold/heavy next to the body text (and unlike the on-screen preview,
- * where the browser honours `stroke-width="0"`). Rewriting the stroke paint to `none` makes prawn-svg
- * fill only — matching MathJax's intent — with no visual loss, since MathJax never relies on strokes.
+ * where the browser honours `stroke-width="0"`). Rewriting the root's stroke paint to `none` makes
+ * prawn-svg fill the glyphs only — matching MathJax's intent.
+ *
+ * BUT enclosure/strike notations (`\boxed`, `\fbox`, `\cancel`, `menclose`) draw a `<rect>`/`<line>` with
+ * a NON-zero `stroke-width` and NO stroke attribute of their own — they rely on inheriting the root's
+ * paint. Neutralising the root alone would make those inherit `stroke="none"` and vanish. So after
+ * neutralising the root, {@link restoreNonZeroStrokes} re-adds an explicit `stroke="currentColor"` on
+ * every element that carries a non-zero stroke width, keeping real strokes drawn while the zero-width
+ * glyphs stay fill-only.
  */
 const GLYPH_STROKE_PAINT = 'stroke="currentColor"';
 
@@ -232,15 +239,47 @@ const GLYPH_STROKE_PAINT = 'stroke="currentColor"';
 const NO_STROKE_PAINT = 'stroke="none"';
 
 /**
- * Rewrite MathJax's `stroke="currentColor"` glyph stroke to `stroke="none"` so prawn-svg fills the
- * glyphs without adding a zero-width hairline outline (see {@link GLYPH_STROKE_PAINT}). A no-op for a
- * fake SVG that carries no such stroke, so the shim stays engine-agnostic.
+ * Rewrite MathJax's root `stroke="currentColor"` to `stroke="none"` so prawn-svg fills the glyphs without
+ * adding a zero-width hairline outline (see {@link GLYPH_STROKE_PAINT}). MathJax emits this paint exactly
+ * once (on the root group), so a blanket replace only touches the root; enclosure/strike strokes are
+ * re-added afterwards by {@link restoreNonZeroStrokes}. A no-op for a fake SVG that carries no such stroke.
  *
  * @param svg - The serialized MathJax SVG document.
- * @returns The SVG with its glyph stroke neutralised.
+ * @returns The SVG with its root glyph stroke neutralised.
  */
 function neutralizeGlyphStroke(svg: string): string {
   return svg.replaceAll(GLYPH_STROKE_PAINT, NO_STROKE_PAINT);
+}
+
+/**
+ * Any SVG shape element MathJax may draw a real (non-zero-width) stroke with — the enclosure/strike
+ * primitives of `menclose`/`\boxed`/`\cancel` (`rect`, `line`, `path`, …). Matched as a whole opening tag
+ * so its attributes can be inspected. The scanned input is our own MathJax-produced SVG (bounded), so the
+ * `[^>]*` runs cannot be driven into pathological backtracking.
+ */
+// eslint-disable-next-line redos/no-vulnerable -- bounded MathJax-produced input, see note above.
+const STROKE_WIDTH_ELEMENT_RE = /<(rect|line|path|ellipse|circle|polyline|polygon)\b[^>]*\bstroke-width="([^"]+)"[^>]*>/g;
+
+/** Whether an opening tag already carries an explicit stroke PAINT attribute (not `stroke-width`). */
+function hasStrokePaint(tag: string): boolean {
+  return /\sstroke="/.test(tag);
+}
+
+/**
+ * Re-add an explicit `stroke="currentColor"` to every element that carries a NON-zero `stroke-width` but
+ * no stroke paint of its own, so enclosure/strike notations still draw after {@link neutralizeGlyphStroke}
+ * set the root paint to `none`. Zero-width elements (the root group, glyph rules) are left unstroked so
+ * the glyph-hairline fix holds; elements that already declare a stroke paint are untouched. The paint is
+ * inserted right after the element name so it is robust to attribute order and self-closing tags.
+ *
+ * @param svg - The SVG whose root stroke has already been neutralised.
+ * @returns The SVG with real (non-zero-width) strokes restored.
+ */
+function restoreNonZeroStrokes(svg: string): string {
+  return svg.replaceAll(STROKE_WIDTH_ELEMENT_RE, (tag: string, _name: string, width: string) => {
+    if (hasStrokePaint(tag) || Number.parseFloat(width) === 0) return tag;
+    return tag.replace(/^<([\w-]+)/, `<$1 ${GLYPH_STROKE_PAINT}`);
+  });
 }
 
 /** Matches the root `<svg>`'s `viewBox` so the selectable text layer can be stretched over the glyphs. */
@@ -305,11 +344,11 @@ async function renderMath(converter: MathSvgConverter, input: ShimInput): Promis
       return malformed('MathJax produced no SVG output for the expression.');
     }
     // Size the root SVG in absolute points so prawn-svg renders math at body-text scale (not ~2x),
-    // neutralise MathJax's zero-width glyph stroke so prawn-svg does not thicken every glyph with a
-    // hairline outline, then overlay an invisible selectable text layer so the formula is
-    // searchable/copyable as its source.
+    // neutralise MathJax's zero-width root stroke so prawn-svg does not thicken every glyph with a
+    // hairline outline (then restore real, non-zero-width enclosure/strike strokes), and finally overlay
+    // an invisible selectable text layer so the formula is searchable/copyable as its source.
     const sized = sizeMathSvgToPoints(svg);
-    const unstroked = neutralizeGlyphStroke(sized);
+    const unstroked = restoreNonZeroStrokes(neutralizeGlyphStroke(sized));
     const withText = addSelectableSourceLayer(unstroked, expression);
     return {
       ok: true,

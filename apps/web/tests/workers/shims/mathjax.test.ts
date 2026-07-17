@@ -104,6 +104,43 @@ describe('createMathJaxShim — successful render (injected converter)', () => {
     expect(out).toContain('>E = mc^2</text>');
   });
 
+  it('neutralises MathJax\'s zero-width glyph stroke so prawn-svg does not thicken the glyphs', async () => {
+    // MathJax tags its glyph group with a non-none stroke plus stroke-width="0"; prawn-svg keys its
+    // fill-vs-fill_and_stroke choice on the stroke paint alone, so a non-none stroke makes it outline
+    // every glyph with a 1px hairline (the equation renders bold). The shim must rewrite it to none.
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -800 4000 1000">' +
+      '<g fill="currentColor" stroke="currentColor" stroke-width="0"><path d="M0 0"/></g></svg>';
+    const shim = createMathJaxShim({ converter: svgConverter(svg) });
+
+    const out = expectOkSvg(await shim.render(inputFor('x', { [MATH_NOTATION_PARAM]: 'latexmath' })));
+
+    expect(out).toContain('stroke="none"');
+    expect(out).not.toContain('stroke="currentColor"');
+    // The fill paint is untouched — only the stroke is neutralised.
+    expect(out).toContain('fill="currentColor"');
+  });
+
+  it('preserves a non-zero-width enclosure stroke (menclose/boxed/cancel) while neutralising glyphs', async () => {
+    // The root group declares the zero-width glyph stroke; the enclosure <rect> carries a REAL non-zero
+    // stroke-width and no stroke of its own, relying on inheritance. Neutralising the root must not erase
+    // it — the rect must keep an explicit stroke paint so the box still draws.
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -800 4000 1000">' +
+      '<g fill="currentColor" stroke="currentColor" stroke-width="0">' +
+      '<path d="M0 0"/><rect x="0" y="0" width="100" height="50" fill="none" stroke-width="67"/></g></svg>';
+    const shim = createMathJaxShim({ converter: svgConverter(svg) });
+
+    const out = expectOkSvg(await shim.render(inputFor(String.raw`\boxed{x}`, { [MATH_NOTATION_PARAM]: 'latexmath' })));
+
+    // Root group is neutralised (glyphs render fill-only, no hairline).
+    expect(out).toContain('<g fill="currentColor" stroke="none" stroke-width="0">');
+    // The enclosure rect keeps its non-zero width AND regains an explicit stroke so it still draws.
+    const rect = /<rect\b[^>]*>/.exec(out)?.[0] ?? '';
+    expect(rect).toContain('stroke-width="67"');
+    expect(rect).toContain('stroke="currentColor"');
+  });
+
   it('escapes markup-significant characters in the selectable source layer', async () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -800 4000 1000"><path d="M0 0"/></svg>';
     const shim = createMathJaxShim({ converter: svgConverter(svg) });
@@ -244,6 +281,29 @@ describe('createMathJaxShim — default converter typesets WITHOUT a DOM (mathja
     const shim = createMathJaxShim();
     const svg = expectOkSvg(await shim.render(inputFor('E = mc^2', { [MATH_NOTATION_PARAM]: 'latexmath' })));
     expect(svg).not.toMatch(/https?:\/\/(?!www\.w3\.org)/);
+  });
+
+  it('emits no non-none glyph stroke, so prawn-svg fills glyphs without a bolding hairline', async () => {
+    // The real engine tags its glyph group `stroke="currentColor" stroke-width="0"`. prawn-svg would
+    // stroke that with a 1px hairline (bold-looking math); the shim must leave no such stroke behind for a
+    // plain (enclosure-free) expression.
+    const shim = createMathJaxShim();
+    const svg = expectOkSvg(await shim.render(inputFor('E = mc^2', { [MATH_NOTATION_PARAM]: 'latexmath' })));
+    expect(svg).toContain('<path');
+    expect(svg).not.toContain('stroke="currentColor"');
+  });
+
+  it('keeps a boxed equation\'s border stroked (enclosure notations are not erased)', async () => {
+    // Regression: neutralising the root stroke must not wipe \boxed/\cancel/menclose borders, which are
+    // drawn as a non-zero-width <rect>/<line> that inherits the root paint. The engine draws \boxed's box
+    // as a rect with a real stroke-width; after the shim it must carry an explicit stroke so it still draws.
+    const shim = createMathJaxShim();
+    const svg = expectOkSvg(await shim.render(inputFor(String.raw`\boxed{x}`, { [MATH_NOTATION_PARAM]: 'latexmath' })));
+    const stroked = [...svg.matchAll(/<(?:rect|line)\b[^>]*>/g)].find(
+      (match) => /stroke-width="([\d.]+)"/.exec(match[0]) !== null && Number.parseFloat(/stroke-width="([\d.]+)"/.exec(match[0])![1]) > 0,
+    );
+    expect(stroked).toBeDefined();
+    expect(stroked?.[0]).toContain('stroke="currentColor"');
   });
 });
 
