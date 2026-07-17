@@ -2,6 +2,7 @@ import type { ProjectSnapshot, PdfSourceMap } from '@asciidocollab/asciidoc-pdf'
 import {
   buildAssembledLineToSource,
   buildAssembledScrollContext,
+  isPathInAssembledTree,
   liftSourceMapToBlockStarts,
   openLineToAssembledLine,
 } from '@/lib/pdf/scroll-sync-map';
@@ -24,6 +25,44 @@ function snapshot(overrides: Partial<ProjectSnapshot> = {}): ProjectSnapshot {
 }
 
 const entry = (path: string, sourceLine: number): SourceMapEntry => ({ path, sourceLine });
+
+// ---------------------------------------------------------------------------
+// isPathInAssembledTree.
+// ---------------------------------------------------------------------------
+
+const read = (files: Record<string, string>) => (path: string) => files[path] ?? null;
+
+describe('isPathInAssembledTree', () => {
+  it('is true for the root path itself (no assembly needed)', () => {
+    expect(isPathInAssembledTree('main.adoc', () => null, 'main.adoc')).toBe(true);
+  });
+
+  it('is true for a file the root reaches through an include directive', () => {
+    const files = {
+      'main.adoc': '= Title\n\ninclude::chapters/one.adoc[]\n',
+      'chapters/one.adoc': '== One\n\nBody.\n',
+    };
+    expect(isPathInAssembledTree('main.adoc', read(files), 'chapters/one.adoc')).toBe(true);
+  });
+
+  it('is true for a transitively included file (include of an include)', () => {
+    const files = {
+      'main.adoc': 'include::a.adoc[]\n',
+      'a.adoc': 'include::b.adoc[]\n',
+      'b.adoc': 'Leaf.\n',
+    };
+    expect(isPathInAssembledTree('main.adoc', read(files), 'b.adoc')).toBe(true);
+  });
+
+  it('is false for a file the root never includes', () => {
+    const files = {
+      'main.adoc': '= Title\n\ninclude::chapters/one.adoc[]\n',
+      'chapters/one.adoc': '== One\n',
+      'orphan.adoc': '= Orphan\n',
+    };
+    expect(isPathInAssembledTree('main.adoc', read(files), 'orphan.adoc')).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // buildAssembledLineToSource.

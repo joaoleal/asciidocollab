@@ -216,6 +216,33 @@ function sizeMathSvgToPoints(svg: string): string {
   });
 }
 
+/**
+ * MathJax tags its glyph group with `stroke="currentColor"` alongside `stroke-width="0"`: it draws every
+ * glyph, fraction bar, and radical rule as a FILLED path, and the zero width declares "never stroke".
+ * The prawn-svg renderer, however, decides fill-vs-`fill_and_stroke` purely on whether the stroke paint
+ * is `none` — a non-`none` stroke makes it stroke every glyph with a zero-width line, which
+ * PDF renders as a 1-device-pixel hairline in the glyph's own colour. That hairline thickens each glyph,
+ * so the exported equation looks bold/heavy next to the body text (and unlike the on-screen preview,
+ * where the browser honours `stroke-width="0"`). Rewriting the stroke paint to `none` makes prawn-svg
+ * fill only — matching MathJax's intent — with no visual loss, since MathJax never relies on strokes.
+ */
+const GLYPH_STROKE_PAINT = 'stroke="currentColor"';
+
+/** The neutralised stroke paint that makes prawn-svg fill glyphs without a hairline outline. */
+const NO_STROKE_PAINT = 'stroke="none"';
+
+/**
+ * Rewrite MathJax's `stroke="currentColor"` glyph stroke to `stroke="none"` so prawn-svg fills the
+ * glyphs without adding a zero-width hairline outline (see {@link GLYPH_STROKE_PAINT}). A no-op for a
+ * fake SVG that carries no such stroke, so the shim stays engine-agnostic.
+ *
+ * @param svg - The serialized MathJax SVG document.
+ * @returns The SVG with its glyph stroke neutralised.
+ */
+function neutralizeGlyphStroke(svg: string): string {
+  return svg.replaceAll(GLYPH_STROKE_PAINT, NO_STROKE_PAINT);
+}
+
 /** Matches the root `<svg>`'s `viewBox` so the selectable text layer can be stretched over the glyphs. */
 const VIEWBOX_RE = /viewBox="(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)"/;
 
@@ -277,10 +304,13 @@ async function renderMath(converter: MathSvgConverter, input: ShimInput): Promis
     if (svg.length === 0) {
       return malformed('MathJax produced no SVG output for the expression.');
     }
-    // Size the root SVG in absolute points so prawn-svg renders math at body-text scale (not ~2x), then
-    // overlay an invisible selectable text layer so the formula is searchable/copyable as its source.
+    // Size the root SVG in absolute points so prawn-svg renders math at body-text scale (not ~2x),
+    // neutralise MathJax's zero-width glyph stroke so prawn-svg does not thicken every glyph with a
+    // hairline outline, then overlay an invisible selectable text layer so the formula is
+    // searchable/copyable as its source.
     const sized = sizeMathSvgToPoints(svg);
-    const withText = addSelectableSourceLayer(sized, expression);
+    const unstroked = neutralizeGlyphStroke(sized);
+    const withText = addSelectableSourceLayer(unstroked, expression);
     return {
       ok: true,
       asset: { format: OUTPUT_FORMAT, bytes: new TextEncoder().encode(withText), rasterFallback: false },

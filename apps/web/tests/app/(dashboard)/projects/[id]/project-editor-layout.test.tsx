@@ -69,9 +69,11 @@ jest.mock('@/hooks/use-file-tree-events', () => ({
   useFileTreeEvents: (...arguments_: unknown[]) => mockUseFileTreeEvents(...arguments_),
 }));
 // The cross-file symbol index has its own tests and registers its own useFileTreeEvents
-// consumer; stub it here so it doesn't interfere with the file-tree SSE assertions below.
+// consumer; stub it here so it doesn't interfere with the file-tree SSE assertions below. A jest.fn
+// (defaulting to the empty index) so a test can supply a populated index to drive the preview root.
+const mockUseProjectSymbolIndex = jest.fn(() => ({ index: null, getIndex: () => null }));
 jest.mock('@/hooks/use-project-symbol-index', () => ({
-  useProjectSymbolIndex: () => ({ index: null, getIndex: () => null }),
+  useProjectSymbolIndex: (...arguments_: unknown[]) => mockUseProjectSymbolIndex(...arguments_),
 }));
 
 jest.mock('@/hooks/use-file-selection', () => ({
@@ -167,6 +169,72 @@ describe('ProjectEditorLayout', () => {
     mockRememberFile.mockReset();
     mockRememberLine.mockReset();
     mockClearLastSelection.mockReset();
+    mockUseProjectSymbolIndex.mockReturnValue({ index: null, getIndex: () => null });
+  });
+
+  it('previews an out-of-tree file on its own and flags it as not part of the main document', async () => {
+    // A main document is configured but the open file is NOT reachable from it, so the preview must
+    // root at the open file (rootFilePath null = standalone) and pass the "outside main tree" flag.
+    const files = { 'main.adoc': '= Main\n\ninclude::chapter.adoc[]\n', 'chapter.adoc': '== Chapter\n', 'orphan.adoc': '= Orphan\n\nBody.\n' };
+    const pathById: Record<string, string> = { 'id-main': 'main.adoc', 'id-orphan': 'orphan.adoc' };
+    const idByPath: Record<string, string> = { 'main.adoc': 'id-main', 'orphan.adoc': 'id-orphan' };
+    mockUseProjectSymbolIndex.mockReturnValue({
+      index: {
+        pathOf: (id: string) => pathById[id] ?? null,
+        inheritedOffset: () => 0,
+        inheritedAttributes: () => new Map(),
+        symbols: [],
+      },
+      getIndex: () => null,
+      getFiles: () => files,
+      resolvedScopeOf: () => new Map(),
+      refresh: jest.fn(),
+      fileIdForPath: (path: string) => idByPath[path] ?? null,
+      reachableDocVersion: 0,
+    } as unknown as ReturnType<typeof mockUseProjectSymbolIndex>);
+    jest.requireMock('@/hooks/use-file-selection').useFileSelection.mockReturnValue({
+      selectedFile: { nodeId: 'id-orphan', nodeName: 'orphan.adoc', nodePath: '/orphan.adoc', nodeType: 'file' },
+      contentState: { content: '= Orphan\n\nBody.\n', isLoading: false, error: null, isBinary: false },
+      selectFile: jest.fn(),
+      clearSelection: jest.fn(),
+    });
+
+    const { AsciiDocPreview } = jest.requireMock('@/components/asciidoc-preview');
+    render(<ProjectEditorLayout {...defaultProps} mainFileNodeId="id-main" />);
+    // The preview starts collapsed; expand it so the HTML preview (AsciiDocPreview) mounts.
+    fireEvent.click(await screen.findByLabelText('expand preview'));
+
+    await waitFor(() => expect(AsciiDocPreview).toHaveBeenCalled());
+    // The HTML preview received the standalone-root signal: outsideMainTree true, rootFilePath null.
+    const lastCall = AsciiDocPreview.mock.calls.at(-1)?.[0];
+    expect(lastCall.outsideMainTree).toBe(true);
+    expect(lastCall.rootFilePath).toBeNull();
+  });
+
+  it('does not flag the main document itself as outside its own tree', async () => {
+    const files = { 'main.adoc': '= Main\n\nBody.\n' };
+    mockUseProjectSymbolIndex.mockReturnValue({
+      index: { pathOf: (id: string) => (id === 'id-main' ? 'main.adoc' : null), inheritedOffset: () => 0, inheritedAttributes: () => new Map(), symbols: [] },
+      getIndex: () => null,
+      getFiles: () => files,
+      resolvedScopeOf: () => new Map(),
+      refresh: jest.fn(),
+      fileIdForPath: (path: string) => (path === 'main.adoc' ? 'id-main' : null),
+      reachableDocVersion: 0,
+    } as unknown as ReturnType<typeof mockUseProjectSymbolIndex>);
+    jest.requireMock('@/hooks/use-file-selection').useFileSelection.mockReturnValue({
+      selectedFile: { nodeId: 'id-main', nodeName: 'main.adoc', nodePath: '/main.adoc', nodeType: 'file' },
+      contentState: { content: '= Main\n\nBody.\n', isLoading: false, error: null, isBinary: false },
+      selectFile: jest.fn(),
+      clearSelection: jest.fn(),
+    });
+
+    const { AsciiDocPreview } = jest.requireMock('@/components/asciidoc-preview');
+    render(<ProjectEditorLayout {...defaultProps} mainFileNodeId="id-main" />);
+    fireEvent.click(await screen.findByLabelText('expand preview'));
+
+    await waitFor(() => expect(AsciiDocPreview).toHaveBeenCalled());
+    expect(AsciiDocPreview.mock.calls.at(-1)?.[0].outsideMainTree).toBe(false);
   });
 
   // shell renders with required data-testids

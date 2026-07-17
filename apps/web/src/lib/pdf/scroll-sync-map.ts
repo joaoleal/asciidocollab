@@ -56,6 +56,29 @@ export function buildAssembledLineToSource(snapshot: ProjectSnapshot): Assembled
 }
 
 /**
+ * Whether a target file is part of the include tree rooted at `rootPath`: it IS the root, or the
+ * assembled document (include-expanded from the root) contains at least one line originating in it. Used
+ * to decide whether the open file belongs to the configured main document — if it does not, the preview
+ * renders it on its own instead of showing the unrelated main document. Mirrors the outline's reachability
+ * check (assemble from the root, look for the target path in the provenance map) so the two agree.
+ *
+ * @param rootPath - The project-relative path of the render root (the configured main document).
+ * @param readFile - Reads a project file's content by path, or null when unavailable.
+ * @param targetPath - The project-relative path to test for membership.
+ * @returns True when the target belongs to the root's include tree.
+ */
+export function isPathInAssembledTree(
+  rootPath: string,
+  readFile: (path: string) => string | null,
+  targetPath: string,
+): boolean {
+  if (targetPath === rootPath) return true;
+  const assembled = assembleIncludes(rootPath, readFile, { withSourceMap: true });
+  const lineToSource = assembled.sourceMap?.lineToSource;
+  return lineToSource !== undefined && lineToSource.some((entry) => entry.path === targetPath);
+}
+
+/**
  * Lift each engine source-map entry's line to its block's VISUAL start (the block title/attribute lines
  * above its delimiter), so a click on a block's title line resolves to that block instead of the previous
  * one — the PDF-side twin of the HTML preview's `data-source-line` adjustment. Page/vertical positions are

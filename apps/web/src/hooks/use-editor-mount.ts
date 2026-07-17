@@ -38,6 +38,21 @@ function clampToValidLine(line: number, totalLines: number): number {
 /** Stable empty default for the inherited-attributes prop (avoids a new map identity per render). */
 const EMPTY_INHERITED_ATTRIBUTES: ReadonlyMap<string, string> = new Map();
 
+/**
+ * Quiet period, in milliseconds, the selection-driven preview sync waits for after the caret settles.
+ * A mouse drag or a held arrow key coalesces into one sync at the final line rather than one per step.
+ */
+const SELECTION_SYNC_DEBOUNCE_MS = 80;
+
+/**
+ * Window, in milliseconds, after a selection-only caret move during which the top-of-viewport scroll
+ * sync is suppressed. A caret move auto-scrolls the editor to reveal the caret; that reveal scroll
+ * fires just after the selection sync and would otherwise clobber the precise selected line in the
+ * preview. Long enough to cover the reveal (and any follow-up measure scroll), short enough that a
+ * deliberate user scroll a moment later still syncs.
+ */
+const SELECTION_REVEAL_SUPPRESS_MS = 350;
+
 /** Lowercase the keys of an attribute map into a name set (Asciidoctor matches names case-insensitively). */
 function toLowercaseNames(scope: ReadonlyMap<string, string>): ReadonlySet<string> {
   const names = new Set<string>();
@@ -106,6 +121,14 @@ interface UseEditorMountOptions {
    * @param line - The 1-based line number at the top of the visible viewport.
    */
   onScrollLine?: (line: number) => void;
+  /**
+   * Called with the 1-based caret line when the selection moves WITHOUT an edit — a click, keyboard
+   * navigation, or a text selection, but never plain typing. Lets the preview follow the caret so
+   * selecting a block scrolls it into view, as a companion to the scroll-position sync above.
+   *
+   * @param line - The 1-based line the caret moved to.
+   */
+  onSelectionLine?: (line: number) => void;
   /**
    * 1-based line to place the cursor on when the editor mounts (selection restore). Clamped
    * to the current document's line count ("closest valid line"); ignored when not provided.
@@ -188,6 +211,7 @@ export function useEditorMount({
   resolvedScope = EMPTY_INHERITED_ATTRIBUTES,
   onLineClick,
   onScrollLine,
+  onSelectionLine,
   initialLine,
   revealRequest,
   collabExtension,
@@ -214,6 +238,11 @@ export function useEditorMount({
   useEffect(() => { onLineClickReference.current = onLineClick; }, [onLineClick]);
   const onScrollLineReference = useRef(onScrollLine);
   useEffect(() => { onScrollLineReference.current = onScrollLine; }, [onScrollLine]);
+  const onSelectionLineReference = useRef(onSelectionLine);
+  useEffect(() => { onSelectionLineReference.current = onSelectionLine; }, [onSelectionLine]);
+  // Timestamp (ms) until which the top-of-viewport scroll sync is suppressed because a selection move
+  // just triggered a reveal scroll; read by wireScrollSync so that reveal does not clobber the sync.
+  const selectionRevealUntilReference = useRef(0);
   // Review interactivity (feature 038): kept in refs so the marker-click handler and the
   // selection-affordance plugin stay live without rebinding (they are captured once at mount).
   const onReviewMarkerClickReference = useRef(onReviewMarkerClick);
@@ -280,6 +309,10 @@ export function useEditorMount({
     if (!containerReference.current) return;
     collabLineRestoredReference.current = false;
 
+    // Debounces the selection-driven preview sync so dragging a selection or holding an arrow key
+    // coalesces into one request; cleared on teardown below.
+    let selectionSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         onDocChange(update.state.doc.toString());
@@ -306,6 +339,24 @@ export function useEditorMount({
       const head = update.state.selection.main.head;
       const line = update.state.doc.lineAt(head);
       onCursorChange({ line: line.number, col: head - line.from + 1, totalLines: update.state.doc.lines });
+
+      // Selection-driven preview sync: follow the caret in the preview when it moves WITHOUT an edit
+      // (a click, keyboard navigation, or selecting text). Skipped on `docChanged` so plain typing
+      // never yanks the preview on every keystroke, and debounced so a mouse drag or a held arrow key
+      // produces a single sync at the settled line. The same move opens a short window during which the
+      // top-of-viewport scroll sync is suppressed (see wireScrollSync): the reveal scroll it triggers
+      // would otherwise fire just after and clobber the precise selected line in the preview.
+      if (update.selectionSet && !update.docChanged) {
+        selectionRevealUntilReference.current = Date.now() + SELECTION_REVEAL_SUPPRESS_MS;
+        if (onSelectionLineReference.current) {
+          const selectionLine = line.number;
+          if (selectionSyncTimer !== null) clearTimeout(selectionSyncTimer);
+          selectionSyncTimer = setTimeout(() => {
+            selectionSyncTimer = null;
+            onSelectionLineReference.current?.(selectionLine);
+          }, SELECTION_SYNC_DEBOUNCE_MS);
+        }
+      }
     });
 
     // DOM-level handlers + Ctrl+click hover tooltip. Each closes over a live ref accessor so it
@@ -404,7 +455,11 @@ export function useEditorMount({
     }
 
     // Scroll sync: fire onScrollLine with the 1-based line at the top of the viewport.
-    const teardownScrollSync = wireScrollSync(view, () => onScrollLineReference.current);
+    const teardownScrollSync = wireScrollSync(
+      view,
+      () => onScrollLineReference.current,
+      () => Date.now() < selectionRevealUntilReference.current,
+    );
 
     const linkHandler = createLinkHandler(
       {
@@ -423,6 +478,7 @@ export function useEditorMount({
 
     return () => {
       teardownScrollSync();
+      if (selectionSyncTimer !== null) clearTimeout(selectionSyncTimer);
       view.dom.removeEventListener('mousedown', mousedownFunction);
       view.destroy();
       viewReference.current = null;

@@ -198,6 +198,15 @@ describe('PdfPreviewPanel', () => {
     expect(mockGetDocument).not.toHaveBeenCalled();
   });
 
+  test('shows the "not part of the main document" notice only when outsideMainTree is set', () => {
+    const { queryByTestId, rerender } = render(<PdfPreviewPanel pdf={null} isRendering={false} />);
+    expect(queryByTestId('outside-main-tree-notice')).not.toBeInTheDocument();
+
+    rerender(<PdfPreviewPanel pdf={null} isRendering={false} outsideMainTree />);
+    expect(queryByTestId('outside-main-tree-notice')).toBeInTheDocument();
+    expect(queryByTestId('outside-main-tree-notice')).toHaveTextContent(/part of the main document/i);
+  });
+
   test('surfaces a phase-keyed rendering status while a render is in flight', () => {
     render(<PdfPreviewPanel pdf={null} isRendering phase="converting" />);
     const region = screen.getByRole('region', { name: /pdf preview/i });

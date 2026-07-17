@@ -165,8 +165,19 @@ const WIDTH_EPSILON = 2;
 const RENDER_DEBOUNCE_MS = 180;
 
 /**
- * Small gap, in CSS pixels, left above a source-map-synced line so the target block is not glued to the
- * very top edge of the viewport. Subtracted from the computed scroll offset.
+ * Fraction of the viewport height left ABOVE a source-map-synced line, so the target block lands a
+ * little below the top edge instead of glued to it. This breathing room also absorbs the engine source
+ * map's block-position granularity: the engine reports each block's `(page, yFraction)` from a layout
+ * cursor captured a few lines off the block's actual glyphs, so a synced line can render up to ~one
+ * short paragraph away from the exact computed offset — most visible for content past an `include::`,
+ * where the assembled coordinate is furthest from the file's own line. Placing the target a little down
+ * from the top keeps it comfortably on-screen despite that drift, rather than just above the fold.
+ */
+const SYNC_TOP_FRACTION = 0.18;
+
+/**
+ * Floor for the synced-line top gap, in CSS pixels, so a very short viewport still leaves a little room
+ * above the target. The applied margin is the larger of this and {@link SYNC_TOP_FRACTION} of the height.
  */
 const SYNC_TOP_MARGIN = 12;
 
@@ -303,6 +314,12 @@ export interface PdfPreviewPanelProperties {
   assembledLine?: number;
   /** Total number of source lines in the previewed document, used to compute the proportional offset. */
   totalLines?: number;
+  /**
+   * True when the open file is NOT part of the configured main document's include tree, so the panel is
+   * rendering it on its own. Surfaces a short, non-intrusive notice below the header. Never set when no
+   * main document is configured (there is then no tree to be outside of).
+   */
+  outsideMainTree?: boolean;
   /** Whether the preview scrolls to follow the editor's scroll position. */
   scrollSyncEnabled?: boolean;
   /** Called when the user toggles the scroll-sync option in the header. */
@@ -340,6 +357,7 @@ export function PdfPreviewPanel({
   sourceMap,
   assembledLine,
   totalLines,
+  outsideMainTree = false,
   scrollSyncEnabled = false,
   onToggleScrollSync,
   onCollapse,
@@ -635,9 +653,11 @@ export function PdfPreviewPanel({
           : (pagesReference.current?.querySelector<HTMLElement>(`[data-page="${entry.page}"]`) ?? null);
       if (entry !== null && pageElement !== null) {
         // offsetTop/offsetHeight are layout metrics that ignore the zoom transform, so the target stays
-        // correct even while a debounced crisp re-paint is pending.
-        container.scrollTop =
-          pageElement.offsetTop + entry.yFraction * pageElement.offsetHeight - SYNC_TOP_MARGIN;
+        // correct even while a debounced crisp re-paint is pending. Leave a fraction of the viewport
+        // above the target (floored at SYNC_TOP_MARGIN) so the engine's block-position granularity
+        // cannot push the synced line off the top edge — see SYNC_TOP_FRACTION.
+        const topGap = Math.max(SYNC_TOP_MARGIN, Math.round(container.clientHeight * SYNC_TOP_FRACTION));
+        container.scrollTop = pageElement.offsetTop + entry.yFraction * pageElement.offsetHeight - topGap;
         return;
       }
       // Fall through to the proportional sync when the map is empty or the mapped page is not in the DOM.
@@ -850,6 +870,18 @@ export function PdfPreviewPanel({
           )}
         </div>
       </div>
+
+      {/* Not-part-of-main notice: the open file is outside the configured main document's include tree,
+          so it is previewed on its own. Short and non-intrusive; only shown when a main file is set. */}
+      {outsideMainTree ? (
+        <div
+          role="status"
+          data-testid="outside-main-tree-notice"
+          className="shrink-0 border-b px-3 py-1 text-xs text-[hsl(var(--warning))] bg-[hsl(var(--warning-bg))] border-[hsl(var(--warning-border))]"
+        >
+          This file isn&apos;t part of the main document; it&apos;s previewed on its own.
+        </div>
+      ) : null}
 
       <div ref={scrollReference} className="relative flex-1 overflow-auto">
         {/* The stack grows to `max-content` (as wide as the widest page) but never narrower than the

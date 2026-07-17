@@ -125,13 +125,23 @@ export function createCtrlClickTooltip(
  * Wires a debounced scroll listener onto the view's scroll container that reports the 1-based line
  * at the top of the viewport through a live `onScrollLine` accessor.
  *
+ * A caret/selection move auto-scrolls the editor to reveal the caret, which would otherwise fire this
+ * top-of-viewport sync and clobber the precise line the SELECTION sync just sent to the preview (the
+ * scroll fires slightly later, so it wins the race). The `isSuppressed` predicate — true for a short
+ * window after a selection-driven move — lets that reveal scroll pass without emitting, so the preview
+ * stays on the selected line. A genuine user scroll (wheel/drag), with no recent selection move, is
+ * never suppressed.
+ *
  * @param view - The mounted editor view.
  * @param getOnScrollLine - Returns the current `onScrollLine` callback (or undefined when unwired).
+ * @param isSuppressed - Optional predicate; when it returns true the pending emit is skipped (a
+ *   selection reveal is in flight). Checked at emit time so only the reveal scroll is swallowed.
  * @returns A teardown function that removes the listener and clears any pending debounce.
  */
 export function wireScrollSync(
   view: EditorView,
   getOnScrollLine: () => ((line: number) => void) | undefined,
+  isSuppressed?: () => boolean,
 ): () => void {
   let scrollDebounce: ReturnType<typeof setTimeout> | null = null;
   const handleEditorScroll = (): void => {
@@ -139,6 +149,7 @@ export function wireScrollSync(
     if (scrollDebounce !== null) clearTimeout(scrollDebounce);
     scrollDebounce = setTimeout(() => {
       scrollDebounce = null;
+      if (isSuppressed?.()) return;
       const rect = view.scrollDOM.getBoundingClientRect();
       const pos = view.posAtCoords({ x: rect.left + 1, y: rect.top + 1 });
       if (pos !== null) {

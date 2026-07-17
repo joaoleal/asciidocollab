@@ -78,6 +78,13 @@ interface AsciiDocEditorProperties {
    * @param line - The 1-based line number at the top of the visible viewport.
    */
   onScrollLine?: (line: number) => void;
+  /**
+   * Called with the caret's 1-based line when the selection moves without an edit (click, keyboard
+   * navigation, or text selection), so the preview can follow the caret. See {@link onScrollLine}.
+   *
+   * @param line - The 1-based line the caret moved to.
+   */
+  onSelectionLine?: (line: number) => void;
   /** 1-based line to place the cursor on when this editor instance mounts (selection restore). */
   initialLine?: number;
   /**
@@ -199,6 +206,7 @@ export function AsciiDocEditor({
   onOpenUrl,
   onLineClick,
   onScrollLine,
+  onSelectionLine,
   initialLine,
   onCursorLineChange,
   onOutlineChange,
@@ -343,6 +351,7 @@ export function AsciiDocEditor({
     onOpenUrl,
     onLineClick,
     onScrollLine,
+    onSelectionLine,
     initialLine,
     getProjectIndex,
     collabExtension,

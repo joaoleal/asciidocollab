@@ -65,6 +65,26 @@ describe('AsciiDocPreview', () => {
     expect(wrapper?.innerHTML).toContain('<h1>Hello</h1>');
   });
 
+  it('shows the "not part of the main document" notice only when outsideMainTree is set', () => {
+    mockUsePreview.mockReturnValue({
+      html: '<h1>Hello</h1>',
+      state: 'up-to-date',
+      error: null,
+      previewRef: fakeReference,
+    });
+
+    const { queryByTestId, rerender } = render(
+      <AsciiDocPreview content="= Hello" isEnabled projectId="proj-1" scrollToLine={null} />,
+    );
+    expect(queryByTestId('outside-main-tree-notice')).not.toBeInTheDocument();
+
+    rerender(
+      <AsciiDocPreview content="= Hello" isEnabled projectId="proj-1" scrollToLine={null} outsideMainTree />,
+    );
+    expect(queryByTestId('outside-main-tree-notice')).toBeInTheDocument();
+    expect(queryByTestId('outside-main-tree-notice')).toHaveTextContent(/part of the main document/i);
+  });
+
   // (b) shows rendering indicator when state is pending or rendering
   it('shows rendering indicator when state is pending', () => {
     mockUsePreview.mockReturnValue({ html: null, state: 'pending', error: null, previewRef: fakeReference });

@@ -96,6 +96,12 @@ interface AsciiDocPreviewProperties {
   rootFilePath?: string | null;
   /** Project-relative path of the previewed open file, whose inherited attribute scope is seeded. */
   openFilePath?: string;
+  /**
+   * True when the open file is NOT part of the configured main document's include tree, so it is being
+   * previewed on its own. Surfaces a short, non-intrusive notice in the header. Never set when no main
+   * document is configured (there is then no tree to be outside of).
+   */
+  outsideMainTree?: boolean;
   scrollToLine?: ScrollRequest | null;
   /** When provided, a collapse button is rendered in the header. */
   onCollapse?: () => void;
@@ -146,6 +152,7 @@ export function AsciiDocPreview({
   projectAttributes,
   rootFilePath,
   openFilePath,
+  outsideMainTree = false,
   scrollToLine = null,
   onCollapse,
   scrollSyncEnabled = false,
@@ -354,6 +361,18 @@ export function AsciiDocPreview({
           )}
         </div>
       </div>
+
+      {/* Not-part-of-main notice: the open file is outside the configured main document's include tree,
+          so it is previewed on its own. Short and non-intrusive; only shown when a main file is set. */}
+      {outsideMainTree && (
+        <div
+          role="status"
+          data-testid="outside-main-tree-notice"
+          className="px-3 py-1 text-xs border-b shrink-0 text-[hsl(var(--warning))] bg-[hsl(var(--warning-bg))] border-[hsl(var(--warning-border))]"
+        >
+          This file isn&apos;t part of the main document; it&apos;s previewed on its own.
+        </div>
+      )}
 
       {/* Error callout — shown below header, preserves previous html underneath */}
       {state === 'error' && error && (

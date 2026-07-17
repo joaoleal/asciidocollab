@@ -253,6 +253,56 @@ describe('useEditorMount document + cursor listeners', () => {
   });
 });
 
+describe('useEditorMount selection-driven preview sync', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  test('fires onSelectionLine (debounced) when the caret moves without an edit', () => {
+    const onSelectionLine = jest.fn();
+    const rendered = mount(baseOptions({ onSelectionLine }));
+    const view = rendered.getView();
+
+    // Move the caret to line 3 with a pure selection change (no doc edit).
+    act(() => {
+      view.dispatch({ selection: { anchor: view.state.doc.line(3).from } });
+    });
+    // Debounced: nothing yet until the quiet period elapses.
+    expect(onSelectionLine).not.toHaveBeenCalled();
+    act(() => { jest.advanceTimersByTime(100); });
+    expect(onSelectionLine).toHaveBeenCalledWith(3);
+
+    rendered.unmount();
+  });
+
+  test('does not fire onSelectionLine on a plain edit (typing must not yank the preview)', () => {
+    const onSelectionLine = jest.fn();
+    const rendered = mount(baseOptions({ onSelectionLine }));
+    const view = rendered.getView();
+
+    act(() => { view.dispatch({ changes: { from: 0, insert: 'X' } }); });
+    act(() => { jest.advanceTimersByTime(100); });
+    expect(onSelectionLine).not.toHaveBeenCalled();
+
+    rendered.unmount();
+  });
+
+  test('coalesces a burst of selection moves into one sync at the settled line', () => {
+    const onSelectionLine = jest.fn();
+    const rendered = mount(baseOptions({ onSelectionLine }));
+    const view = rendered.getView();
+
+    act(() => {
+      view.dispatch({ selection: { anchor: view.state.doc.line(2).from } });
+      view.dispatch({ selection: { anchor: view.state.doc.line(3).from } });
+    });
+    act(() => { jest.advanceTimersByTime(100); });
+    expect(onSelectionLine).toHaveBeenCalledTimes(1);
+    expect(onSelectionLine).toHaveBeenCalledWith(3);
+
+    rendered.unmount();
+  });
+});
+
 describe('useEditorMount initialLine restore (REST path)', () => {
   test('clamps an out-of-range initialLine to the last line and scrolls it into view', () => {
     const rendered = mount(baseOptions({ content: 'a\nb\nc\n', initialLine: 999 }));

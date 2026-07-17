@@ -32,6 +32,7 @@ import {
   liftSourceMapToBlockStarts,
   openLineToAssembledLine,
 } from '@/lib/pdf/scroll-sync-map';
+import { isOpenFileOutsideMainTree, resolvePreviewRoot } from '@/lib/pdf/preview-root';
 import { sameOutlineEntries } from '@/lib/outline/stable-entries';
 import type { OutlinePeer } from '@/lib/outline';
 import type { SelectedFile, FileContentState } from '@/hooks/use-file-selection';
@@ -81,6 +82,7 @@ interface ContentAreaProperties {
   /** Project document language (ISO 639-1) driving the spellchecker, or null when unset. */
   projectLanguage: string | null;
   onScrollLine?: (line: number) => void;
+  onSelectionLine?: (line: number) => void;
   onLineClick?: (line: number) => void;
   // Ctrl+click on an include/image path — reveals and selects the target file in the tree.
   onNavigateToFile?: (path: string) => void;
@@ -162,6 +164,7 @@ function ContentArea({
   projectId,
   projectLanguage,
   onScrollLine,
+  onSelectionLine,
   onLineClick,
   onNavigateToFile,
   onNavigateToXref,
@@ -228,6 +231,7 @@ function ContentArea({
       isAsciiDoc={isAsciiDocFile(selectedFile.nodeName)}
       spellcheckLanguage={projectLanguage}
       onScrollLine={onScrollLine}
+      onSelectionLine={onSelectionLine}
       onLineClick={onLineClick}
       onNavigateToFile={onNavigateToFile}
       onNavigateToXref={onNavigateToXref}
@@ -540,6 +544,26 @@ export function ProjectEditorLayout({
   const previewOpenPath =
     selectedFile && projectIndex ? (projectIndex.pathOf(selectedFile.nodeId) ?? undefined) : undefined;
 
+  // Whether the open file is OUTSIDE the configured main document's include tree (not the main file and
+  // not reachable through its includes). Only meaningful when a main file is configured; false otherwise
+  // (with no main, the open file IS its own document). Assembled from the main root the same way the
+  // outline/scroll-sync bridges are, so the three agree on reachability. When true, the on-screen preview
+  // renders the open file on its own (as its own main document) rather than the unrelated main document,
+  // and both previews surface a short "not part of the main document" notice. The export/download stays
+  // rooted at the main document regardless (see handleExportPdf).
+  const openFileOutsideMainTree = useMemo(() => {
+    // Read the file map lazily (cached to one call): the helper short-circuits before any file read when
+    // no main file is configured or the open file IS the main file, so getProjectFiles() is only invoked
+    // when reachability actually has to be assembled.
+    let files: Record<string, string> | null = null;
+    return isOpenFileOutsideMainTree(previewRootPath, previewOpenPath, (path: string) => {
+      files ??= getProjectFiles();
+      return files[path] ?? null;
+    });
+    // liveOverlayContent + reachableDocVersion are the same edit/content signals that refresh the render,
+    // so a newly-added (or removed) include that changes reachability re-evaluates this.
+  }, [previewRootPath, previewOpenPath, getProjectFiles, liveOverlayContent, reachableDocVersion]);
+
   // ── Export to PDF ──────────────────────────────────────────────────────────────────────────
   // Fully client-side one-click export. The render root mirrors the symbol-index root: the
   // configured main file, else the open file. Both are resolved to project-relative paths; the
@@ -578,6 +602,26 @@ export function ProjectEditorLayout({
     return merged;
   }, [projectRenderAttributes, baseExportAttributes]);
 
+  // The live PREVIEW's render root diverges from the export root ONLY when the open file is outside the
+  // main document's tree: then it is previewed as its own main document (root + attribute scope = the open
+  // file), so the panel shows what is being edited instead of an unrelated document. Otherwise it mirrors
+  // the export root (the configured main document). The export always uses the main root — never this.
+  const { mainPath: previewSnapshotMainPath, rootFileId: previewRootFileId } = resolvePreviewRoot({
+    outsideMainTree: openFileOutsideMainTree,
+    mainPath: exportMainPath,
+    mainRootFileId: exportRootFileId,
+    openFileId: selectedFile?.nodeId ?? null,
+  });
+  const basePreviewAttributes =
+    previewRootFileId && projectIndex ? resolvedScopeOf(previewRootFileId) : NO_EXPORT_ATTRIBUTES;
+  const previewAttributes = useMemo<ReadonlyMap<string, string>>(() => {
+    const projectAttributes = projectRenderAttributes.attributes;
+    if (Object.keys(projectAttributes).length === 0) return basePreviewAttributes;
+    const merged = new Map<string, string>(Object.entries(projectAttributes));
+    for (const [name, value] of basePreviewAttributes) merged.set(name, value);
+    return merged;
+  }, [projectRenderAttributes, basePreviewAttributes]);
+
   // Per-project cache of fetched binary asset (image / custom-font) bytes. Images and fonts live
   // server-side and are reached over the authenticated image endpoint; their bytes are not in the
   // editor's text cache. The cache fetches them once each and feeds them into the render snapshot as
@@ -590,7 +634,11 @@ export function ProjectEditorLayout({
   // records. Returns null until a render root path is known. This is light main-thread work (a map
   // over the text cache plus the sandbox guard); all heavy rendering happens off-thread in the worker.
   const buildSnapshot = useCallback(
-    (binaryFiles: readonly SnapshotFile[]): ProjectSnapshot | null => {
+    (
+      binaryFiles: readonly SnapshotFile[],
+      snapshotMainPath: string | null,
+      snapshotAttributes: ReadonlyMap<string, string>,
+    ): ProjectSnapshot | null => {
       if (exportOpenPath === null) return null;
       // Text project files (AsciiDoc, YAML theme, .bib) from the symbol index's content cache, plus the
       // fetched binary assets keyed by the SAME project-relative path the engine resolves them to (so
@@ -600,14 +648,14 @@ export function ProjectEditorLayout({
       );
       const { snapshot } = buildProjectSnapshot({
         files: [...textFiles, ...binaryFiles],
-        mainPath: exportMainPath,
+        mainPath: snapshotMainPath,
         openPath: exportOpenPath,
-        attributes: exportAttributes,
+        attributes: snapshotAttributes,
         extraFontDirs: projectRenderAttributes.extraFontDirs,
       });
       return snapshot;
     },
-    [exportOpenPath, exportMainPath, exportAttributes, projectRenderAttributes, getProjectFiles],
+    [exportOpenPath, projectRenderAttributes, getProjectFiles],
   );
 
   // One-click export: enumerate the referenced assets, AWAIT their bytes (so nothing renders as a
@@ -616,10 +664,12 @@ export function ProjectEditorLayout({
     if (exportOpenPath === null) return;
     const assetPaths = collectReferencedAssetPaths({ files: getProjectFiles(), attributes: exportAttributes });
     const binaryFiles = await loadAssets(assetPaths);
-    const snapshot = buildSnapshot(binaryFiles);
+    // The export/download ALWAYS renders from the configured main document (root = exportMainPath, or the
+    // open file when no main is configured) — never the preview's per-open-file root.
+    const snapshot = buildSnapshot(binaryFiles, exportMainPath, exportAttributes);
     if (snapshot === null) return;
     exportPdf(snapshot);
-  }, [exportOpenPath, getProjectFiles, exportAttributes, loadAssets, buildSnapshot, exportPdf]);
+  }, [exportOpenPath, getProjectFiles, exportAttributes, exportMainPath, loadAssets, buildSnapshot, exportPdf]);
 
   // ── Live PDF preview ─────────────────────────────────────────────────────────────────────────
   // The single preview panel switches between its HTML and PDF renderings via the header's segmented
@@ -636,8 +686,8 @@ export function ProjectEditorLayout({
   // (a cheap macro scan), and recomputed on the same content signals as the snapshot so a
   // newly-referenced image is discovered as soon as it is typed.
   const previewAssetPaths = useMemo<readonly string[]>(
-    () => (pdfPreviewActive ? collectReferencedAssetPaths({ files: getProjectFiles(), attributes: exportAttributes }) : NO_ASSET_PATHS),
-    [pdfPreviewActive, getProjectFiles, exportAttributes, liveOverlayContent, reachableDocVersion],
+    () => (pdfPreviewActive ? collectReferencedAssetPaths({ files: getProjectFiles(), attributes: previewAttributes }) : NO_ASSET_PATHS),
+    [pdfPreviewActive, getProjectFiles, previewAttributes, liveOverlayContent, reachableDocVersion],
   );
   // Warm the cache for the referenced assets off the render path; each arriving image bumps
   // assetVersion, which rebuilds the snapshot below so the picture appears on the next render.
@@ -645,11 +695,13 @@ export function ProjectEditorLayout({
     if (pdfPreviewActive) ensureAssets(previewAssetPaths);
   }, [pdfPreviewActive, previewAssetPaths, ensureAssets]);
   const previewSnapshot = useMemo<ProjectSnapshot | null>(
-    () => (pdfPreviewActive ? buildSnapshot(getAssets()) : null),
+    // The preview roots at previewSnapshotMainPath (the main document, or the open file when it is outside
+    // the main tree) with the matching attribute scope — distinct from the export's always-main root.
+    () => (pdfPreviewActive ? buildSnapshot(getAssets(), previewSnapshotMainPath, previewAttributes) : null),
     // liveOverlayContent + reachableDocVersion are edit/content signals, and assetVersion is the
     // binary-arrival signal, that must refresh the snapshot identity even though buildSnapshot/getAssets
     // are referentially stable across them (see the outline memo for the same repopulate pattern).
-    [pdfPreviewActive, buildSnapshot, getAssets, liveOverlayContent, reachableDocVersion, assetVersion],
+    [pdfPreviewActive, buildSnapshot, getAssets, previewSnapshotMainPath, previewAttributes, liveOverlayContent, reachableDocVersion, assetVersion],
   );
   const {
     pdf: previewPdf,
@@ -695,6 +747,20 @@ export function ProjectEditorLayout({
     }
     return openLineToAssembledLine(assembledLineToSource, previewOpenPath, scrollRequest.line);
   }, [assembledLineToSource, scrollRequest, previewOpenPath]);
+
+  // Whether the open file actually contributes to the rendered PDF document. The PDF preview always
+  // renders the configured main document (rooted at `previewRootPath`); when a DIFFERENT file is open —
+  // one the main document neither is nor includes — the preview shows a document the editor is not
+  // editing, so scroll-sync has nothing valid to scroll to. Without this gate the panel falls through to
+  // its proportional fallback, mapping the open file's unrelated line count onto the main document's page
+  // stack and scrolling to a meaningless position on every selection. True when no main file is
+  // configured (the preview then roots at the open file), when the open file IS the root, or when the
+  // assembled provenance map shows it contributing lines (an included child).
+  const openFileInRenderedDocument = useMemo(() => {
+    if (previewRootPath === undefined || previewOpenPath === undefined) return true;
+    if (previewOpenPath === previewRootPath) return true;
+    return assembledLineToSource?.some((entry) => entry.path === previewOpenPath) ?? false;
+  }, [previewRootPath, previewOpenPath, assembledLineToSource]);
 
   // Reveal a diagnostic's source location, reusing the file/line navigation seam: in-place when it
   // is the open file, otherwise switch to its file and reveal the line once the new editor mounts.
@@ -982,6 +1048,7 @@ export function ProjectEditorLayout({
               projectId={projectId}
               projectLanguage={projectLanguage}
               onScrollLine={previewOpen && scrollSyncEnabled ? handleScrollLine : undefined}
+              onSelectionLine={previewOpen && scrollSyncEnabled ? handleScrollLine : undefined}
               onLineClick={previewOpen ? handleLineClick : undefined}
               onNavigateToFile={handleNavigateToFile}
               onNavigateToXref={handleNavigateToXref}
@@ -1030,8 +1097,11 @@ export function ProjectEditorLayout({
                     getFiles={getProjectFiles}
                     filesVersion={reachableDocVersion}
                     projectAttributes={projectRenderAttributes.attributes}
-                    rootFilePath={previewRootPath}
+                    // Outside the main tree, resolve the open file standalone (its own attribute scope),
+                    // not against the unrelated main document's include-point.
+                    rootFilePath={openFileOutsideMainTree ? null : previewRootPath}
                     openFilePath={previewOpenPath}
+                    outsideMainTree={openFileOutsideMainTree}
                     scrollToLine={scrollRequest}
                     onCollapse={togglePreview}
                     scrollSyncEnabled={scrollSyncEnabled}
@@ -1053,10 +1123,14 @@ export function ProjectEditorLayout({
                     onSelectLocation={handleDiagnosticLocation}
                     previewMode={previewMode}
                     onPreviewModeChange={setPreviewMode}
-                    scrollToLine={scrollRequest}
+                    // Suppress scroll-sync when the open file is not part of the rendered (main) document:
+                    // there is no rendered position for its lines, so a proportional guess would scroll the
+                    // preview to a meaningless spot on every selection (see openFileInRenderedDocument).
+                    scrollToLine={openFileInRenderedDocument ? scrollRequest : null}
                     sourceMap={adjustedSourceMap}
                     assembledLine={assembledScrollLine}
                     totalLines={liveContentLineCount}
+                    outsideMainTree={openFileOutsideMainTree}
                     scrollSyncEnabled={scrollSyncEnabled}
                     onToggleScrollSync={() => setScrollSyncEnabled(!scrollSyncEnabled)}
                     onCollapse={togglePreview}
