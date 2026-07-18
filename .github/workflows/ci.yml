@@ -183,7 +183,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
 
       - name: Start PostgreSQL and Mailpit
-        run: docker compose -f docker-compose.dev.yml up -d postgres mailpit --wait
+        run: docker compose -f docker/docker-compose.dev.yml up -d postgres mailpit --wait
 
       - name: Apply database schema (force-reset for a clean slate)
         run: pnpm --filter @asciidocollab/db exec prisma db push --force-reset

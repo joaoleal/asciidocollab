@@ -53,7 +53,7 @@ trap cleanup EXIT INT TERM
 
 # ─── Infrastructure ──────────────────────────────────────────────────────────
 step "Starting PostgreSQL and Mailpit …"
-docker compose -f "$ROOT/docker-compose.dev.yml" up -d postgres mailpit --wait
+docker compose -f "$ROOT/docker/docker-compose.dev.yml" up -d postgres mailpit --wait
 
 # ─── Build ───────────────────────────────────────────────────────────────────
 step "Building shared packages …"

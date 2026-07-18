@@ -8,9 +8,9 @@
 #   - Postgres data is stored in a named Docker volume (easy to wipe)
 #
 # Usage (not the default compose filename, so -f is required):
-#   Start:   docker compose -f docker-compose.dev.yml up -d --wait
-#   Stop:    docker compose -f docker-compose.dev.yml down
-#   Wipe DB: docker compose -f docker-compose.dev.yml down -v
+#   Start:   docker compose -f docker/docker-compose.dev.yml up -d --wait
+#   Stop:    docker compose -f docker/docker-compose.dev.yml down
+#   Wipe DB: docker compose -f docker/docker-compose.dev.yml down -v
 #
 # The recommended way to start everything (DB + app) is:
 #   ./scripts/dev.sh

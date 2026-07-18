@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/lib/term.sh"; source "$ROOT/scripts/lib/proc.sh"; term_save
 
-COMPOSE="docker compose -f $ROOT/docker-compose.e2e.yml"
+COMPOSE="docker compose -f $ROOT/docker/docker-compose.e2e.yml"
 PG_PORT="${E2E_PG_PORT:-5433}"; SMTP_PORT="${E2E_SMTP_PORT:-1126}"; MAILPIT_UI_PORT="${E2E_MAILPIT_UI_PORT:-8126}"
 API_PORT="${E2E_API_PORT:-4100}"; WEB_PORT="${E2E_WEB_PORT:-3100}"; COLLAB_PORT="${E2E_COLLAB_PORT:-4102}"
 
