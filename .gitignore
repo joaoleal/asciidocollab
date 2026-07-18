@@ -5,6 +5,15 @@ coverage/
 .next/
 .env
 .env.local
+# Production deployment secrets: generated env file and the internal mTLS PKI
+# (private keys) produced by docker/generate-secrets.sh. Never commit these.
+# The .bak.* patterns matter as much as the originals — rotation keeps the OLD
+# secret in a timestamped backup, so leaking one leaks the credential you rotated
+# away from (and, for pki.bak, a CA key that can still mint trusted certs).
+docker/.env
+docker/.env.bak.*
+docker/pki/
+docker/pki.bak.*/
 .last-run.json
 *.log
 .DS_Store

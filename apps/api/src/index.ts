@@ -154,6 +154,17 @@ export async function buildServer(overrides?: Partial<AppContainer>) {
   const appConfig = getConfig();
 
   const app = Fastify({
+    // Behind a TLS-terminating reverse proxy this MUST be on, and it must be set
+    // here rather than only read by individual plugins: Fastify derives
+    // `request.protocol` and `request.ip` from X-Forwarded-* only when it is.
+    //
+    // Two things break silently without it:
+    //   * @fastify/session refuses to issue a cookie marked `secure` unless
+    //     `request.protocol === 'https'`, so login returns 200 with no
+    //     Set-Cookie and the user can never authenticate;
+    //   * every request appears to come from the proxy's address, so per-IP rate
+    //     limits collapse into one shared bucket for all users.
+    trustProxy: appConfig.api.trustProxy,
     logger: {
       level: 'info',
       redact: ['req.headers.cookie', 'req.body.password', 'req.body.currentPassword', 'req.body.newPassword', 'req.body.token', 'req.body.email'],

@@ -15,6 +15,7 @@ import type { DiagramWarning } from '@/components/diagrams/render-diagrams';
 import { PreviewStyleControl, type PreviewStyleValue } from '@/components/preview-style-control';
 import { PreviewModeToggle, type PreviewMode } from '@/components/preview-mode-toggle';
 import { ShowIncludesControl } from '@/components/show-includes-control';
+import { API_BASE_URL } from '@/lib/api/base-url';
 import {
   INCLUDE_PLACEHOLDER_CLASS,
   INCLUDE_PLACEHOLDER_TARGET_ATTR,
@@ -22,8 +23,6 @@ import {
 // Re-exported for back-compat: the AsciiDoc file-name rule now lives in lib/asciidoc/file-name
 // (single presentation copy of the domain rule), but existing callers import it from here.
 export { isAsciiDocumentFile as isAsciiDocFile } from '@/lib/asciidoc/file-name';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 /** The diagram render-warning code shown as an error (a genuine draw failure); the rest are warnings. */
 const DIAGRAM_ERROR_CODE: DiagnosticCode = 'malformed-diagram';
@@ -167,7 +166,7 @@ export function AsciiDocPreview({
 }: AsciiDocPreviewProperties) {
   // Default image base path: AsciiDoc image macros reference files by path, so point Asciidoctor's
   // `imagesdir` at the project's image endpoint (see GET /projects/:id/images/*).
-  const imagesDirectory = `${API_BASE}/projects/${projectId}/images`;
+  const imagesDirectory = `${API_BASE_URL}/projects/${projectId}/images`;
   const { html, state, error, previewRef, mathPresent, diagramsPresent } = useAsciidocPreview({
     content,
     isEnabled,

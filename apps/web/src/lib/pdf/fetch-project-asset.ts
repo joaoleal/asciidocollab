@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '@/lib/api/base-url';
 /**
  * Fetch a project binary asset's bytes for the in-browser PDF pipeline. The HTML preview loads images
  * over HTTP from the API's per-path image endpoint; the offline PDF engine cannot, so its bytes are
@@ -8,7 +9,6 @@
  */
 
 /** Base URL of the Fastify backend, configurable via NEXT_PUBLIC_API_URL. */
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 /**
  * Raster image formats that are re-encoded to a clean, embeddable image before mounting. Limited to the
@@ -82,7 +82,7 @@ async function normalizeRasterImage(bytes: Uint8Array, path: string): Promise<Ui
  */
 export function projectAssetUrl(projectId: string, path: string): string {
   const encoded = path.split('/').map((segment) => encodeURIComponent(segment)).join('/');
-  return `${API_BASE}/projects/${projectId}/images/${encoded}`;
+  return `${API_BASE_URL}/projects/${projectId}/images/${encoded}`;
 }
 
 /**

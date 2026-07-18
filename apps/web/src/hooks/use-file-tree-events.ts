@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef } from 'react';
+import { API_BASE_URL } from '@/lib/api/base-url';
 import type {
   ContentChangedEventDto,
   FileTreeEventDto,
@@ -7,8 +8,6 @@ import type {
   ProjectEventDto,
   ReviewItemsChangedEventDto,
 } from '@asciidocollab/shared';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 let workerInstance: SharedWorker | null = null;
 
@@ -69,7 +68,7 @@ export function useFileTreeEvents(projectId: string, handlers: ProjectEventHandl
     const worker = getWorker();
     if (!worker) return;
 
-    worker.port.postMessage({ type: 'subscribe', projectId, apiBase: API_BASE });
+    worker.port.postMessage({ type: 'subscribe', projectId, apiBase: API_BASE_URL });
 
     const handleMessage = (message: MessageEvent) => {
       const data = message.data;

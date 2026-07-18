@@ -1,8 +1,7 @@
 import type { ProjectDto } from '@asciidocollab/shared';
 import { apiRequest } from '@/lib/api/transport';
 import type { PaginatedResponse, PaginationParameters } from '@/lib/api/transport';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { API_BASE_URL } from './base-url';
 
 /** Role a user can hold within a project. */
 export type ProjectMemberRole = 'viewer' | 'editor' | 'owner';

@@ -2,7 +2,7 @@
 # Isolated stack for local end-to-end tests.
 #
 # Everything here is deliberately separate from the development stack
-# (docker-compose.dev.yml) so running the e2e suite never touches your dev
+# (docker/docker-compose.dev.yml) so running the e2e suite never touches your dev
 # containers or data:
 #   - distinct Compose project name  (asciidocollab-e2e)
 #   - distinct host ports            (5433 / 1126 / 8126 instead of 5432 / 1025 / 8025)

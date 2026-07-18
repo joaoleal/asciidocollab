@@ -3,7 +3,7 @@
 #
 # Unlike scripts/ci/e2e.sh — which targets the shared dev compose and runs a
 # destructive `prisma db push --force-reset` on it — this script spins up a
-# SEPARATE Postgres + Mailpit (docker-compose.e2e.yml, distinct ports and
+# SEPARATE Postgres + Mailpit (docker/docker-compose.e2e.yml, distinct ports and
 # Compose project) and runs the API and web on distinct ports against a
 # throwaway database. It never touches your development containers or data.
 #
@@ -31,7 +31,7 @@ term_save
 command -v docker &>/dev/null || die "Docker is required."
 
 # ─── Isolated configuration (override via env if a port clashes) ─────────────
-COMPOSE="docker compose -f $ROOT/docker-compose.e2e.yml"
+COMPOSE="docker compose -f $ROOT/docker/docker-compose.e2e.yml"
 PG_PORT="${E2E_PG_PORT:-5433}"
 SMTP_PORT="${E2E_SMTP_PORT:-1126}"
 MAILPIT_UI_PORT="${E2E_MAILPIT_UI_PORT:-8126}"

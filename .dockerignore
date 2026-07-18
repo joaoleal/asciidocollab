@@ -1,0 +1,51 @@
+# Build context excludes for the production image build (docker/Dockerfile).
+# NOTE: the vendored Asciidoctor-PDF wasm engine at
+#   packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
+# is git-ignored but MUST stay in the build context (the web prebuild copies it
+# into public/vendor). It lives outside every path excluded below, so it is kept.
+
+# Dependencies + build output (reinstalled / recompiled inside the image)
+**/node_modules
+**/dist
+**/.next
+**/tsconfig.tsbuildinfo
+
+# VCS + editor + CI
+.git
+.github
+.idea
+.opencode
+.claude
+.agents
+.specify
+.design-sync
+.ds-sync
+.dev-storage
+.e2e-storage
+.e2e-storage-*
+.ds-bundle
+
+# Local env / secrets (never bake into an image)
+.env
+.env.local
+.env.*.local
+docker/.env
+docker/.env.bak.*
+docker/pki
+docker/pki.bak.*
+
+# Test / coverage artifacts
+**/coverage
+**/test-results
+**/playwright-report
+**/reports
+**/*.log
+
+# Docs / specs not needed at build time
+specs
+assets
+TODO.txt
+
+# Ruby build tree for the wasm engine — the prebuilt .wasm blob is kept (it is a
+# file, not under this directory), but the multi-GB build checkout is excluded.
+packages/asciidoc-pdf/ruby/build

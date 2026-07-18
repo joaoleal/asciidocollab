@@ -81,7 +81,7 @@ export NEXT_PUBLIC_COLLAB_URL="${NEXT_PUBLIC_COLLAB_URL:-ws://localhost:${ASCIID
 # because the official postgres image only accepts connections after its
 # POSTGRES_DB initialisation script has run.
 info "Starting infrastructure services (PostgreSQL + Mailpit) …"
-docker compose -f "$ROOT/docker-compose.dev.yml" up -d --wait
+docker compose -f "$ROOT/docker/docker-compose.dev.yml" up -d --wait
 success "PostgreSQL is ready."
 
 # ─── Dependencies ─────────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ cleanup() {
   stop_tree "$COLLAB_PID"
   stop_tree "$WEB_PID"
   term_restore
-  info "Stopped. Docker services are still running — stop them with: docker compose -f docker-compose.dev.yml down"
+  info "Stopped. Docker services are still running — stop them with: docker compose -f docker/docker-compose.dev.yml down"
 }
 trap cleanup EXIT INT TERM
 
@@ -166,7 +166,7 @@ echo -e "  Email UI  →  ${CYAN}http://localhost:8025${RESET}  (captured emails
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
 echo -e "  Press ${YELLOW}Ctrl+C${RESET} to stop the app servers."
-echo -e "  Run ${YELLOW}docker compose -f docker-compose.dev.yml down${RESET} to also stop the database."
+echo -e "  Run ${YELLOW}docker compose -f docker/docker-compose.dev.yml down${RESET} to also stop the database."
 echo ""
 
 wait "$API_PID" "$COLLAB_PID" "$WEB_PID"

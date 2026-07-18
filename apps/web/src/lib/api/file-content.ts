@@ -1,4 +1,8 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { API_BASE_URL } from './base-url';
+
+// Re-exported for the many call sites that already import it from here.
+// `export…from` rather than exporting the local binding, per unicorn/prefer-export-from.
+export { API_BASE_URL } from './base-url';
 
 /** Builds the canonical content URL for a project file. */
 export function fileContentUrl(projectId: string, fileNodeId: string): string {

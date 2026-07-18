@@ -25,6 +25,25 @@ jobs:
     name: Quality (lint · types · architecture)
     runs-on: ubuntu-latest
 
+    # The migration drift check (scripts/ci/check-migrations.sh) replays
+    # prisma/migrations into a shadow database and compares it to schema.prisma,
+    # so this job needs PostgreSQL. The check is strict under CI — it must never
+    # silently skip, or a schema change with no migration would reach production.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: asciidocollab
+          POSTGRES_PASSWORD: asciidocollab
+          POSTGRES_DB: asciidocollab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asciidocollab"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v5
         with:
@@ -183,10 +202,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
 
       - name: Start PostgreSQL and Mailpit
-        run: docker compose -f docker-compose.dev.yml up -d postgres mailpit --wait
+        run: docker compose -f docker/docker-compose.dev.yml up -d postgres mailpit --wait
 
-      - name: Apply database schema (force-reset for a clean slate)
-        run: pnpm --filter @asciidocollab/db exec prisma db push --force-reset
+      # `migrate deploy` rather than `db push --force-reset`: it applies
+      # prisma/migrations/ — the exact SQL the production migrate job runs — so CI
+      # exercises the real migration path. No reset is needed: the Postgres
+      # service container is created fresh for every run, so the database is
+      # already empty.
+      - name: Apply database schema (migrations, as production does)
+        run: pnpm --filter @asciidocollab/db exec prisma migrate deploy
         env:
           ASCIIDOCOLLAB_DATABASE_URL: postgresql://asciidocollab:asciidocollab@localhost:5432/asciidocollab
 

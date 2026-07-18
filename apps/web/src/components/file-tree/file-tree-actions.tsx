@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 import {
   MoreHorizontal,
   Search,
@@ -32,6 +31,7 @@ import { ConfirmationDialog } from '@/components/confirmation-dialog';
 import { UploadProgressPanel } from './upload-progress-panel';
 import { useDropUpload } from '@/hooks/use-drop-upload';
 import { createFolder, createFileNode, renameFileNode, deleteFileNode, FileTreeApiError } from '@/lib/api/file-tree';
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 type DialogKind =
   | { type: 'rename'; currentName: string }
@@ -232,7 +232,7 @@ export function FileTreeActions({
           {isRoot && (
             <DropdownMenuItem asChild>
               <a
-                href={`${API_BASE}/projects/${projectId}/download`}
+                href={`${API_BASE_URL}/projects/${projectId}/download`}
                 download
                 className="flex items-center"
               >
@@ -258,7 +258,7 @@ export function FileTreeActions({
           {!isRoot && nodeType === 'file' && (
             <DropdownMenuItem asChild>
               <a
-                href={`${API_BASE}/projects/${projectId}/files/${fileNodeId}/download`}
+                href={`${API_BASE_URL}/projects/${projectId}/files/${fileNodeId}/download`}
                 download
                 className="flex items-center"
               >

@@ -1,6 +1,13 @@
+const path = require('path');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Emit a self-contained server bundle (.next/standalone) for the production
+  // Docker image — Next traces exactly the node_modules the server needs.
+  output: 'standalone',
+  // The traced root must be the monorepo root so workspace deps are included.
+  outputFileTracingRoot: path.join(__dirname, '../../'),
   transpilePackages: [
     '@asciidocollab/asciidoc-core',
     '@asciidocollab/asciidoc-pdf',

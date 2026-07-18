@@ -1,8 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import type { KeyBindingDto } from '@asciidocollab/shared';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 /** Groups key bindings by their namespace for display in the settings UI. */
 export interface KeyBindingGroup {
@@ -20,7 +19,7 @@ export function useKeyBindingSettings() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/auth/me/keybindings`, { credentials: 'include' });
+      const r = await fetch(`${API_BASE_URL}/auth/me/keybindings`, { credentials: 'include' });
       if (r.ok) setBindings(await r.json());
     } catch {
       // Silently ignore fetch errors; bindings stay empty
@@ -45,7 +44,7 @@ export function useKeyBindingSettings() {
     setBindings((previous) => previous.map((b) => b.action === action ? { ...b, keyCombo, isDefault: false } : b));
 
     try {
-      const r = await fetch(`${API_BASE}/auth/me/keybindings/${encodeURIComponent(action)}`, {
+      const r = await fetch(`${API_BASE_URL}/auth/me/keybindings/${encodeURIComponent(action)}`, {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -65,7 +64,7 @@ export function useKeyBindingSettings() {
   const resetBinding = useCallback(async (action: string) => {
     const previousBindings = bindings;
     try {
-      const r = await fetch(`${API_BASE}/auth/me/keybindings/${encodeURIComponent(action)}`, {
+      const r = await fetch(`${API_BASE_URL}/auth/me/keybindings/${encodeURIComponent(action)}`, {
         method: 'DELETE',
         credentials: 'include',
       });

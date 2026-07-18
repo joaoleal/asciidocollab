@@ -9,8 +9,8 @@
 </p>
 
 > **⚠ Pre-MVP — not ready for production use.**
-> The editor, file management, and real-time co-editing are built and working — co-editing is under active
-> hardening. In-browser PDF export has landed and is being finalized; Git integration is not yet built. See
+> The editor, file management, real-time co-editing and in-browser PDF export are built and working —
+> co-editing is under active hardening. Git integration, the last MVP feature, is not yet built. See
 > [Project status](#project-status) for the honest picture.
 
 **Collaborative AsciiDoc editing for teams — self-hosted, secure, and built for real work.**
@@ -45,8 +45,9 @@ self-hosted web application.
 - Live HTML preview — Asciidoctor.js renders AsciiDoc to HTML in the browser
 - In-browser PDF export & live PDF preview — renders the project to a print-ready PDF entirely client-side via
   the real Asciidoctor-PDF engine compiled to WebAssembly (no server round-trip, no upload); project images,
-  custom fonts (including WOFF2), and PDF themes are embedded. Diagram, math, and citation rendering in the
-  exported PDF is still being wired.
+  custom fonts (including WOFF2), PDF themes, citations, STEM math (block and inline), and diagrams
+  (mermaid, graphviz/DOT, vega/vega-lite) are all rendered. Diagrams also render in the on-screen HTML preview,
+  and diagram blocks get their own syntax highlighting in the editor.
 
 **Not yet built (MVP blockers)**
 
@@ -64,8 +65,8 @@ self-hosted web application.
 **This project has not reached MVP.**
 
 The authentication, file management, editor, and real-time collaboration layers are built and have been through
-multiple rounds of code review and hardening. In-browser PDF export and live preview have landed and are being
-finalized; Git integration — the remaining MVP feature — is not yet started.
+multiple rounds of code review and hardening. In-browser PDF export and live preview are complete, including
+citations, math and diagrams. Git integration — the remaining MVP feature — is not yet started.
 
 | Layer                               | Status            |
 |-------------------------------------|-------------------|
@@ -77,10 +78,15 @@ finalized; Git integration — the remaining MVP feature — is not yet started.
 | AsciiDoc editor                     | ✅ Built           |
 | Live HTML preview                   | ✅ Built           |
 | Real-time collaboration             | ✅ Built           |
-| PDF export & live preview           | 🚧 In progress    |
+| PDF export & live preview           | ✅ Built           |
 | Git integration                     | ❌ Not started     |
+| Self-hosted deployment (Docker)     | ✅ Built           |
 
 Do not deploy this to production or rely on it for real work yet. The API and data model may change before MVP.
+
+A hardened Docker stack for self-hosting is built and tested — see
+[Self-hosting](#self-hosting) below. It does not change the pre-MVP status of the
+application itself.
 
 ---
 
@@ -114,44 +120,28 @@ by [Mailpit](https://mailpit.axllent.org) and visible at `http://localhost:8025`
 
 ## Configuration
 
-Copy `.env.example` to `.env.local` and edit as needed. The only values you must change for a real deployment are:
+Everything has a secure default, so a local install works out of the box. For a
+real deployment you need to set a database URL, two generated secrets, your
+public URL and an email sender address.
 
-| Variable                                    | Purpose                                                |
-|---------------------------------------------|--------------------------------------------------------|
-| `ASCIIDOCOLLAB_DATABASE_URL`                | PostgreSQL connection string                           |
-| `ASCIIDOCOLLAB_AUTH_SESSION_SECRET`         | Cookie signing secret (run `openssl rand -base64 32`)  |
-| `ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY` | Session encryption key (run `openssl rand -base64 32`) |
-| `ASCIIDOCOLLAB_API_FRONTEND_URL`            | Your public frontend URL                               |
-| `ASCIIDOCOLLAB_AUTH_EMAIL_FROM`             | From address for outbound email                        |
-
-For **real-time collaboration**, the web client connects to the collaboration WebSocket server:
-
-| Variable                                                                                                                 | Purpose                                                                                                                |
-|--------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
-| `NEXT_PUBLIC_COLLAB_URL`                                                                                                 | WebSocket URL of the collab server (default `ws://localhost:4002`; use `wss://` in production)                         |
-| `ASCIIDOCOLLAB_COLLAB_ALLOWED_ORIGINS`                                                                                   | Comma-separated allowlist of handshake Origins — **must** be set in production (CSWSH defence)                         |
-| `ASCIIDOCOLLAB_COLLAB_MAX_PAYLOAD_BYTES` / `_MAX_CONNECTIONS_PER_USER` / `_MAX_ROOMS_PER_USER` / `_CONNECT_RATE_PER_MIN` | Per-user rate/size limits for the public WebSocket                                                                     |
-| `ASCIIDOCOLLAB_COLLAB_EDIT_URL` / `ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_PORT`                                              | API↔collab internal edit endpoint used to rewrite cross-file references in *live* documents (default loopback `:4003`) |
-| `ASCIIDOCOLLAB_COLLAB_EDIT_SECRET` (= collab `_INTERNAL_EDIT_SECRET`) + the `_EDIT_TLS_*` / `_INTERNAL_EDIT_TLS_*` pairs | Secure the internal edit endpoint with a shared secret and/or mTLS when collab runs off-loopback                       |
-
-In production the collab server must share a registrable domain with the web app so the session
-cookie is sent on the WebSocket handshake (it carries no token); deploy it behind `wss://`. The
-internal edit endpoint (API→collab) is loopback-only by default — set the shared secret and/or mTLS
-above if the API and collab server run on separate hosts.
-
-All other settings have secure defaults. See `.env.example` for the full list with descriptions.
+See **[CONFIGURATION.md](CONFIGURATION.md)** for the full reference, or
+`.env.example` for the annotated list of every setting.
 
 ---
 
 ## Self-hosting
 
-AsciiDoCollab is designed to be self-hosted. You need:
+AsciiDoCollab is designed to be self-hosted. No cloud accounts, no telemetry, no
+external services required — you need a PostgreSQL database, a way to send email,
+and somewhere to run Node.js.
 
-- A PostgreSQL 15+ database
-- An SMTP relay, SendGrid account, or AWS SES credentials (or disable email for local testing)
-- Node.js 24+ to run the API and web app
+The supported path is the Docker stack in **[docker/README.md](docker/README.md)**:
+Postgres, the API, the collaboration server, the web app and a reverse proxy with
+automatic HTTPS. Secrets and internal certificates are generated for you; you
+supply a domain and SMTP credentials.
 
-No cloud accounts, no telemetry, no external dependencies required.
+The stability warning above still applies — treat this as suitable for trials and
+internal deployments.
 
 ---
 

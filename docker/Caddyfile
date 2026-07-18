@@ -1,0 +1,132 @@
+# Edge proxy for AsciiDoCollab.
+#
+# Everything is served from a single origin, which keeps session cookies
+# first-party (SameSite=Strict works), removes CORS from the picture entirely,
+# and means only one certificate is needed.
+#
+# Routing:
+#   /collab*                        -> collab  (WebSocket)
+#   /api, /auth, /admin, /projects  -> api
+#   everything else                 -> web (Next.js)
+#
+# These prefixes were checked against the Next.js page routes: the app's own
+# pages live at /login, /register, /dashboard/*, /403 and similar, so there is
+# no overlap. Adding a Next.js page under one of the API prefixes above would
+# be shadowed by the api — check this list when adding top-level routes.
+{
+	# A browser connecting to a bare IP sends no SNI, so without this Caddy has no
+	# site to match and aborts the handshake with an internal error — even though
+	# it holds a valid certificate. Harmless for domain deployments, essential for
+	# IP/LAN ones.
+	default_sni {$ADC_DOMAIN}
+
+	# Only trust X-Forwarded-* headers when they arrive from a private address —
+	# i.e. from our own containers. A client on the internet has a public source
+	# address, so it cannot spoof its way into the client IP the api uses for
+	# rate limiting and audit logging.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+{$ADC_DOMAIN} {
+	# How the certificate is obtained, set by generate-secrets.sh:
+	#
+	#   an email address  → publicly-trusted certificate from Let's Encrypt.
+	#                       Requires a real domain that resolves to this host and
+	#                       inbound port 80. The address receives expiry warnings.
+	#   internal          → self-signed certificate from Caddy's own CA. Used when
+	#                       deploying to a bare IP or a LAN hostname, where ACME
+	#                       cannot validate. Browsers will warn until Caddy's root
+	#                       CA is trusted — see "Deploying without a domain".
+	#
+	# This must never be empty: Caddy fails to start rather than silently serving
+	# plaintext.
+	tls {$ADC_TLS}
+
+	encode zstd gzip
+
+	header {
+		# HTTPS only, including subdomains. Remove `preload` unless you intend
+		# to submit the domain to the HSTS preload list — it is hard to undo.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Browser feature access is denied by default; the editor needs none of these.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+		-Server
+
+		# Content-Security-Policy. Every directive below was derived from what this
+		# application actually does, not copied from a template — an over-tight
+		# policy silently breaks the editor, which is worse than none at all:
+		#
+		#   script-src 'wasm-unsafe-eval'  the Asciidoctor-PDF engine and the diagram
+		#                                  renderers instantiate WebAssembly.
+		#   script-src 'unsafe-inline'     Next.js App Router streams hydration data
+		#                                  through inline <script> tags. Removing this
+		#                                  needs per-request nonces threaded through the
+		#                                  middleware.
+		#   script-src 'unsafe-eval'       vega compiles chart expressions with the
+		#                                  Function constructor, and a browser run of
+		#                                  the real app showed eval being blocked on
+		#                                  every page. Because 'unsafe-inline' is
+		#                                  already unavoidable here, script-src is not
+		#                                  the meaningful XSS control — the protection
+		#                                  comes from the directives below — so this is
+		#                                  granted rather than silently breaking
+		#                                  vega/vega-lite diagram rendering.
+		#   style-src  'unsafe-inline'     rendered AsciiDoc, injected diagram SVG and
+		#                                  CodeMirror all carry inline style attributes.
+		#   object-src 'self'              NOT 'none': the preview renders interactive
+		#                                  SVG images as <object data="…"> pointing at
+		#                                  same-origin project assets.
+		#   worker-src 'self' blob:        render/PDF/diagram workers.
+		#   img-src    data: blob:         embedded images and generated previews.
+		#   connect-src wss://<domain>     the collaboration WebSocket, same origin.
+		#   frame-ancestors 'none'         this app is never framed; blocks clickjacking.
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data: wss://{$ADC_DOMAIN}; media-src 'self' blob:; manifest-src 'self'"
+	}
+
+	# ─── Collaboration WebSocket ──────────────────────────────────────────────
+	# The Hocuspocus client connects to the configured URL verbatim and sends the
+	# document name in-protocol, so stripping the prefix here is safe.
+	handle /collab* {
+		uri strip_prefix /collab
+		reverse_proxy collab:4002
+	}
+
+	# ─── API ──────────────────────────────────────────────────────────────────
+	# /health is deliberately NOT routed: it is for container healthchecks on the
+	# internal network, not for the public internet.
+	handle /api* {
+		reverse_proxy api:4000
+	}
+	handle /auth* {
+		reverse_proxy api:4000
+	}
+	handle /admin* {
+		reverse_proxy api:4000
+	}
+	handle /projects* {
+		reverse_proxy api:4000
+	}
+
+	# ─── Web application ──────────────────────────────────────────────────────
+	handle {
+		reverse_proxy web:3000
+	}
+
+	# Reject oversized bodies at the edge instead of streaming them to the api.
+	# The api's own cap is 20 MiB (ASCIIDOCOLLAB_STORAGE_MAX_UPLOAD_BYTES); this
+	# leaves headroom for multipart framing overhead. If you raise the api limit,
+	# raise this one too, or uploads will fail here with a 413 before reaching it.
+	request_body {
+		max_size 25MB
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

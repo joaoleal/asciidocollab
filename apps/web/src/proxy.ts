@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-
-const INTERNAL_API_URL =
-  process.env.INTERNAL_API_URL ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:4000";
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 /**
  * Next.js proxy (middleware) that enforces authentication and email verification
@@ -18,7 +14,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   const cookieHeader = request.headers.get("cookie") ?? "";
 
   try {
-    const response = await fetch(`${INTERNAL_API_URL}/auth/session-status`, {
+    const response = await fetch(`${API_BASE_URL}/auth/session-status`, {
       headers: { Cookie: cookieHeader },
       cache: "no-store",
     });

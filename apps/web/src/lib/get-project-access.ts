@@ -1,8 +1,7 @@
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import type { ProjectMember, ProjectMemberRole, Project } from './api';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 /** Resolved access context for a project page, containing the project, its members, and the current user's identity and role. */
 export interface ProjectAccess {
