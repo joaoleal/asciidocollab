@@ -15,8 +15,7 @@ import { useFileTreeUIState } from '@/hooks/use-file-tree-ui-state';
 import type { FileTreeNode as FileTreeNodeType } from './types';
 import type { ParticipantPresence } from '@/hooks/use-collab-presence';
 import type { FileTreeEventDto } from '@asciidocollab/shared';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 const sortComparator = (a: FileTreeNodeType, b: FileTreeNodeType) =>
   a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
@@ -198,7 +197,7 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
   const fetchTree = useCallback(async () => {
     try {
       setFetchError(false);
-      const response = await fetch(`${API_BASE}/projects/${projectId}/files`, { credentials: 'include' });
+      const response = await fetch(`${API_BASE_URL}/projects/${projectId}/files`, { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
         setTree(sortChildren(data));

@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 interface EmailConfirmPageProperties {
   searchParams: Promise<{ token?: string }>;

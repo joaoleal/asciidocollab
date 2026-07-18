@@ -1,7 +1,6 @@
 import { cache } from 'react';
 import { cookies } from 'next/headers';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 /** Minimal session data returned by /auth/me. */
 export interface SessionData {

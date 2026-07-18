@@ -8,8 +8,7 @@ import { FileTreeActions } from './file-tree-actions';
 import { OpenByOthersMarker } from './open-by-others-marker';
 import type { ParticipantPresence } from '@/hooks/use-collab-presence';
 import type { FileTreeNode as FileTreeNodeType } from './types';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { API_BASE_URL } from '@/lib/api/base-url';
 
 /**
  * True when a drag carries OS files (a file or folder upload) rather than an in-tree node move.
@@ -117,7 +116,7 @@ export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, 
       {node.type === 'file' && <OpenByOthersMarker participants={presenceByFile?.get(node.id) ?? []} />}
       {isProjectRoot && (
         <a
-          href={`${API_BASE}/projects/${projectId}/download`}
+          href={`${API_BASE_URL}/projects/${projectId}/download`}
           download
           aria-disabled={zipDownloading || undefined}
           aria-label="Download as ZIP"

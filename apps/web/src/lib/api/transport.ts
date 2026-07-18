@@ -3,9 +3,11 @@
  * CSRF protection is handled by SameSite=Strict cookies + server-side Origin header
  * validation. No manual CSRF tokens are needed.
  */
+import { API_BASE_URL } from './base-url';
 
-/** Base URL of the Fastify backend, configurable via NEXT_PUBLIC_API_URL. */
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+// Re-exported for the many call sites that already import it from here.
+// `export…from` rather than exporting the local binding, per unicorn/prefer-export-from.
+export { API_BASE_URL } from './base-url';
 
 /**
  * Custom error class for API errors.
