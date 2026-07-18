@@ -39,6 +39,13 @@ npx fresh-onion
 step "Security audit (high+ severity) …"
 pnpm audit --audit-level=high
 
+# Development applies the schema with `db push`; production runs `migrate deploy`.
+# This catches a schema change that never got a migration — which would pass every
+# other gate and then simply not reach production. Needs a database, so it skips
+# locally when none is reachable and is strict under CI.
+step "Prisma migration drift (schema.prisma vs prisma/migrations) …"
+"$(dirname "${BASH_SOURCE[0]}")/check-migrations.sh"
+
 # Dead-code / unused-dependency report. NON-GATING (matches ci.yml): the dist-entry package layout +
 # dynamic deps produce known false positives pending curation, so knip's findings never fail the gate.
 step "Dead-code report (knip) — non-gating …"
