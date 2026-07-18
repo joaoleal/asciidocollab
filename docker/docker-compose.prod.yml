@@ -1,0 +1,384 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Production stack for AsciiDoCollab — single host, TLS-terminated at Caddy.
+#
+#   ./docker/generate-secrets.sh                     # once: secrets + internal PKI
+#   docker compose -f docker/docker-compose.prod.yml up -d --build
+#
+# Secrets and the public domain come from docker/.env, which compose loads
+# automatically (it sits beside this file). Nothing secret appears here.
+#
+# Deployment steps, the backup procedure, the hardening applied and the known
+# limitations are all documented in docker/README.md.
+# ─────────────────────────────────────────────────────────────────────────────
+name: asciidocollab-prod
+
+# ─── Shared building blocks ───────────────────────────────────────────────────
+x-logging: &logging
+  # Without rotation a chatty container will eventually fill the host disk.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-build: &build
+  # Context is the repository root so the build can see the whole workspace.
+  context: ..
+  dockerfile: docker/Dockerfile
+
+services:
+  # ─── Database ───────────────────────────────────────────────────────────────
+  # Reachable only on the internal network — no host port is published, so it is
+  # not exposed to the host or the LAN.
+  postgres:
+    # Pinned by digest — see the note in docker/Dockerfile on refreshing these.
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_USER: asciidocollab
+      POSTGRES_DB: asciidocollab
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./docker/generate-secrets.sh first}
+      # Postgres refuses to initialise into a non-empty mount point; keeping the
+      # data one level down lets us mount the parent as a clean named volume.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asciidocollab -d asciidocollab"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The postgres entrypoint starts as root to chown the data directory and
+    # then drops to the postgres user. These five capabilities are exactly what
+    # that requires — with a bare `cap_drop: ALL` it crash-loops on
+    # "chown: Operation not permitted".
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "2.0", memory: 2G, pids: 512}
+    stop_grace_period: 30s
+
+  # ─── Schema application (one-shot) ──────────────────────────────────────────
+  # Runs to completion before api/collab start. NOT restarted: this must run
+  # exactly once per deploy, and a crash-loop against a database is not a
+  # recovery strategy.
+  #
+  # Runs `prisma migrate deploy`: it applies the reviewed, version-controlled
+  # migrations in packages/db/prisma/migrations/ and never computes a schema diff
+  # of its own, so it cannot silently drop a column. Still take a backup before
+  # any schema change. Databases first created with the older `db push` flow need
+  # a one-time baseline — see "Upgrading" in README.md.
+  migrate:
+    build: {<<: *build, target: migrate}
+    image: asciidocollab/migrate:latest
+    restart: "no"
+    networks: [backend]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      ASCIIDOCOLLAB_DATABASE_URL: postgresql://asciidocollab:${POSTGRES_PASSWORD}@postgres:5432/asciidocollab?schema=public
+    read_only: true
+    # noexec/nosuid: /tmp is the only writable path left in a read-only
+    # container, so deny executing anything dropped there.
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+    <<: [*hardening]
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 1G, pids: 256}
+
+  # ─── API ────────────────────────────────────────────────────────────────────
+  api:
+    build: {<<: *build, target: api}
+    image: asciidocollab/api:latest
+    restart: unless-stopped
+    networks: [backend, edge]
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate:  {condition: service_completed_successfully}
+    environment:
+      ASCIIDOCOLLAB_DATABASE_URL: postgresql://asciidocollab:${POSTGRES_PASSWORD}@postgres:5432/asciidocollab?schema=public
+
+      # Public identity. FRONTEND_URL is embedded in password-reset and
+      # invitation emails, so it must be the real public URL.
+      ASCIIDOCOLLAB_API_FRONTEND_URL: https://${ADC_DOMAIN:?run ./docker/generate-secrets.sh first}
+      ASCIIDOCOLLAB_API_CORS_ORIGINS: https://${ADC_DOMAIN}
+
+      # TLS is terminated at Caddy, which already issues the HTTP->HTTPS redirect
+      # (308) for public traffic. Leaving the api's own redirect on breaks
+      # internal callers: server-side rendering calls http://api:4000, gets a 301
+      # to https://api:4000, and then fails the TLS handshake against a plaintext
+      # listener (ERR_SSL_WRONG_VERSION_NUMBER). trustProxy stays on so the api
+      # still sees real client IPs for rate limiting.
+      ASCIIDOCOLLAB_API_HTTPS_REDIRECT: "false"
+
+      # Session security.
+      ASCIIDOCOLLAB_AUTH_SESSION_SECRET: ${ASCIIDOCOLLAB_AUTH_SESSION_SECRET:?run ./docker/generate-secrets.sh first}
+      ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY: ${ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY:?run ./docker/generate-secrets.sh first}
+
+      # Shared file storage — MUST be the same volume at the same path as
+      # collab, or collab's startup check fails and live edits would diverge.
+      ASCIIDOCOLLAB_STORAGE_PATH: /data/storage
+
+      # Internal auth server that collab calls. Containerisation moves this off
+      # loopback, so it is protected by network isolation PLUS mTLS below.
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_HOST: 0.0.0.0
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_TLS_CERT: /run/pki/api.crt
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_TLS_KEY: /run/pki/api.key
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_TLS_CLIENT_CA: /run/pki/ca.crt
+
+      # Outbound channel to collab's internal edit endpoint: shared secret + mTLS.
+      ASCIIDOCOLLAB_COLLAB_EDIT_URL: https://collab:4003
+      ASCIIDOCOLLAB_COLLAB_EDIT_SECRET: ${ASCIIDOCOLLAB_COLLAB_EDIT_SECRET:?run ./docker/generate-secrets.sh first}
+      ASCIIDOCOLLAB_COLLAB_EDIT_TLS_CERT: /run/pki/api.crt
+      ASCIIDOCOLLAB_COLLAB_EDIT_TLS_KEY: /run/pki/api.key
+      ASCIIDOCOLLAB_COLLAB_EDIT_TLS_CA: /run/pki/ca.crt
+
+      # Email. The api refuses to start without EMAIL_FROM.
+      ASCIIDOCOLLAB_AUTH_EMAIL_FROM: ${ASCIIDOCOLLAB_AUTH_EMAIL_FROM:?set this in docker/.env}
+      ASCIIDOCOLLAB_AUTH_SMTP_HOST: ${ASCIIDOCOLLAB_AUTH_SMTP_HOST:-}
+      ASCIIDOCOLLAB_AUTH_SMTP_PORT: ${ASCIIDOCOLLAB_AUTH_SMTP_PORT:-587}
+      ASCIIDOCOLLAB_AUTH_SMTP_USER: ${ASCIIDOCOLLAB_AUTH_SMTP_USER:-}
+      ASCIIDOCOLLAB_AUTH_SMTP_PASSWORD: ${ASCIIDOCOLLAB_AUTH_SMTP_PASSWORD:-}
+    volumes:
+      - project_storage:/data/storage
+      - ./pki:/run/pki:ro
+    healthcheck:
+      # The forwarded-proto header is not strictly needed now that the api's own
+      # httpsRedirect is off, but it is kept so the probe still reports honestly
+      # if that setting is ever turned back on — otherwise the check would start
+      # following a 301 into a failing TLS handshake and report a false failure.
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          fetch('http://127.0.0.1:4000/health',{headers:{'X-Forwarded-Proto':'https'}})
+            .then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    read_only: true
+    # noexec/nosuid: /tmp is the only writable path left in a read-only
+    # container, so deny executing anything dropped there.
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+    <<: [*hardening]
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "2.0", memory: 2G, pids: 512}
+    stop_grace_period: 30s
+
+  # ─── Collaboration (Yjs / Hocuspocus WebSocket) ─────────────────────────────
+  collab:
+    build: {<<: *build, target: collab}
+    image: asciidocollab/collab:latest
+    restart: unless-stopped
+    networks: [backend, edge]
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate:  {condition: service_completed_successfully}
+      # collab verifies at startup that it shares storage with the api, which
+      # requires the api to be up and answering.
+      api:      {condition: service_healthy}
+    environment:
+      ASCIIDOCOLLAB_DATABASE_URL: postgresql://asciidocollab:${POSTGRES_PASSWORD}@postgres:5432/asciidocollab?schema=public
+
+      # Same volume, same path as the api. Do not change one without the other.
+      ASCIIDOCOLLAB_STORAGE_PATH: /data/storage
+
+      # Cross-site WebSocket hijacking defence: empty would disable the Origin
+      # check entirely, so this is pinned to the public origin.
+      ASCIIDOCOLLAB_COLLAB_ALLOWED_ORIGINS: https://${ADC_DOMAIN}
+
+      # Outbound to the api's internal auth server, over mTLS.
+      ASCIIDOCOLLAB_COLLAB_API_INTERNAL_URL: https://api:4001
+      ASCIIDOCOLLAB_COLLAB_API_INTERNAL_TLS_CERT: /run/pki/collab.crt
+      ASCIIDOCOLLAB_COLLAB_API_INTERNAL_TLS_KEY: /run/pki/collab.key
+      ASCIIDOCOLLAB_COLLAB_API_INTERNAL_TLS_CA: /run/pki/ca.crt
+
+      # Inbound internal edit server: off loopback, so shared secret + mTLS.
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_HOST: 0.0.0.0
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_SECRET: ${ASCIIDOCOLLAB_COLLAB_EDIT_SECRET}
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_TLS_CERT: /run/pki/collab.crt
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_TLS_KEY: /run/pki/collab.key
+      ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_TLS_CLIENT_CA: /run/pki/ca.crt
+    volumes:
+      - project_storage:/data/storage
+      - ./pki:/run/pki:ro
+    healthcheck:
+      # Hocuspocus exposes no HTTP health route, so probe the listening socket.
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('net').connect(4002,'127.0.0.1')
+            .on('connect',function(){this.end();process.exit(0)})
+            .on('error',()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    read_only: true
+    # noexec/nosuid: /tmp is the only writable path left in a read-only
+    # container, so deny executing anything dropped there.
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+    <<: [*hardening]
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "2.0", memory: 2G, pids: 512}
+    # Long enough for open documents to flush before the process goes away.
+    stop_grace_period: 60s
+
+  # ─── Web (Next.js) ──────────────────────────────────────────────────────────
+  web:
+    build:
+      <<: *build
+      target: web
+      args:
+        # Build-time only: these are inlined into the browser bundle, so the
+        # image is domain-specific and must be rebuilt if the domain changes.
+        # NOTHING SECRET MAY BE ADDED HERE — build args are readable from the
+        # image history.
+        NEXT_PUBLIC_API_URL: https://${ADC_DOMAIN:?run ./docker/generate-secrets.sh first}
+        NEXT_PUBLIC_COLLAB_URL: wss://${ADC_DOMAIN}/collab
+    image: asciidocollab/web:latest
+    restart: unless-stopped
+    networks: [edge]
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      # Read at runtime (unlike NEXT_PUBLIC_*, which is inlined at build time).
+      # Every server-side module — the auth middleware, the session/profile
+      # loader, the project and admin guards, and the email-confirm page —
+      # prefers this, so server rendering talks to the api directly over the
+      # internal network instead of hairpinning out through Caddy and back.
+      # The browser still uses the public URL baked into the client bundle.
+      INTERNAL_API_URL: http://api:4000
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          fetch('http://127.0.0.1:3000/login')
+            .then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    read_only: true
+    # Next writes its ISR/image cache under .next/cache at runtime.
+    # noexec/nosuid: nothing dropped into either path may be executed.
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+      - /app/apps/web/.next/cache:noexec,nosuid,nodev,size=256m
+    <<: [*hardening]
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "2.0", memory: 2G, pids: 512}
+    stop_grace_period: 30s
+
+  # ─── Edge proxy: TLS termination, automatic HTTPS, path routing ─────────────
+  # The only service that publishes ports.
+  caddy:
+    # Pinned by digest — see the note in docker/Dockerfile on refreshing these.
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    networks:
+      edge:
+        aliases:
+          # Safety net. Server rendering now calls the api directly via
+          # INTERNAL_API_URL, so nothing depends on this today — but if a future
+          # server component reaches for the public URL, this keeps it resolvable
+          # from inside the network instead of failing outright.
+          - ${ADC_DOMAIN:?run ./docker/generate-secrets.sh first}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      ADC_DOMAIN: ${ADC_DOMAIN}
+      # Either an email address (Let's Encrypt) or the literal "internal"
+      # (self-signed, for IP/LAN deployments). Never blank — see the Caddyfile.
+      ADC_TLS: ${ADC_TLS:?run ./docker/generate-secrets.sh first}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # ACME account keys and issued certificates. Losing this volume means
+      # re-issuing on every redeploy, which will hit Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    # Deliberately NOT gated on web/api being healthy. Server-side rendering
+    # resolves the public domain, which resolves to this proxy — so waiting for
+    # web to be healthy before starting the proxy deadlocks a fresh deploy.
+    # Caddy starts immediately and returns 502 for the few seconds until the
+    # upstreams are listening.
+    depends_on:
+      web: {condition: service_started}
+      api: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Caddy writes only to /data and /config, both named volumes, so its root
+    # filesystem can be read-only like the app services.
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Binding 80/443 requires this one capability; everything else is dropped.
+    cap_add:
+      - NET_BIND_SERVICE
+    logging: *logging
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 512M, pids: 256}
+    stop_grace_period: 30s
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  # No external connectivity: the database and the internal api/collab channels
+  # live here and cannot reach, or be reached from, the outside world.
+  backend:
+    internal: true
+  # Proxy <-> application traffic, plus the outbound access the app needs for
+  # SMTP, ACME and breach-check lookups.
+  edge: {}
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+# All persistent state. Back up postgres_data and project_storage together —
+# they reference each other, so a split-time restore will be inconsistent.
+volumes:
+  postgres_data:
+  project_storage:
+  caddy_data:
+  caddy_config:
