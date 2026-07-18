@@ -9,7 +9,7 @@ Active feature plan: specs/040-pdf-diagrams-math/plan.md
 - MUST NOT use inline `eslint-disable` comments — fix the root cause instead
 - MUST NOT use TypeScript `as X` assertions — `assertionStyle: 'never'` is enforced; use typed variable assignment or restructure the types instead
 - MUST NOT name tests with task IDs (e.g. `[T042]`, `T-042`) — test names MUST describe behavior
-- MUST NOT define `const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '...'` locally in hooks or components — import `API_BASE_URL` from `@/lib/api/file-content` (client-side) or use the local `API_BASE_URL` in server-side lib files
+- MUST NOT define the API base URL locally (`const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '...'`) anywhere — import `API_BASE_URL` from `@/lib/api/base-url`, the single isomorphic source. It resolves to the internal address during server rendering and the public one in the browser; a local copy silently loses that.
 - MUST NOT add `@jest-environment` docblock pragma to `.tsx` test files — `.tsx` files automatically run in jsdom; the pragma is only valid in `.ts` test files that need a non-default environment
 - MUST NOT create a test file without first verifying no test file already exists at an adjacent path
 - MUST NOT throw raw strings or generic `Error` in domain or application layers — use typed `DomainError` subclasses
@@ -22,6 +22,8 @@ Active feature plan: specs/040-pdf-diagrams-math/plan.md
 ## Project
 
 AsciiDoCollab is a browser-based collaborative AsciiDoc editor: real-time multi-user editing, project/file management, Git integration, HTML live preview, PDF generation. Targets self-hosted and SaaS deployments.
+
+A production self-hosting stack lives in `docker/` (see `docker/README.md`): Postgres, api, collab, web and a Caddy edge proxy with automatic HTTPS, generated secrets, and mutual TLS on the internal api↔collab channels. `docker/README.md` also records the hardening applied and the limitations accepted deliberately.
 
 ## Tech Stack
 
@@ -115,11 +117,31 @@ asciidocollab/
 │   ├── asciidoc-pdf/               # Browser-only leaf: renders a project to PDF entirely client-side via
 │   │                               # Asciidoctor-PDF compiled to WebAssembly (ruby.wasm) in a Web Worker.
 │   │                               # Depends inward on asciidoc-core only; never imported by server code
-│   ├── db/                         # Prisma schema, migrations
+│   ├── db/                         # Prisma schema + prisma/migrations (production applies these)
 │   └── testing/                    # Testcontainers helper, factories, shared test setup
+├── docker/                         # ALL compose files live here — dev, e2e and prod
+│   ├── docker-compose.dev.yml      # local Postgres + Mailpit (used by scripts/dev.sh)
+│   ├── docker-compose.e2e.yml      # isolated throwaway stack for e2e
+│   ├── docker-compose.prod.yml     # production stack: postgres, migrate, api, collab, web, caddy
+│   ├── Dockerfile                  # multi-stage, one runtime image per service (Alpine base)
+│   ├── Caddyfile                   # edge proxy: TLS, security headers, path routing
+│   ├── generate-secrets.sh         # secrets + internal mTLS PKI; safe to re-run, explicit rotation
+│   └── README.md                   # deployment, backups, upgrades, hardening, troubleshooting
 ├── specs/
 │   └── <NNN>-<feature>/            # spec.md, plan.md, tasks.md, data-model.md, contracts/, research.md
 └── pnpm-workspace.yaml
+```
+
+**Database schema — two different mechanisms.** Development and e2e apply the schema with
+`prisma db push` (fast, throwaway databases, no migration produced). Production runs
+`prisma migrate deploy`, which applies only the committed SQL in `packages/db/prisma/migrations/`.
+
+Consequence: **changing `schema.prisma` without generating a migration will pass every test and
+then never reach production.** `scripts/ci/check-migrations.sh` (part of the quality gate) fails
+the build when they drift. After a schema change:
+
+```bash
+cd packages/db && pnpm exec prisma migrate dev --name <describe-the-change>
 ```
 
 ## Development Commands
@@ -163,7 +185,7 @@ pnpm gate    # = scripts/ci/gate.sh — runs all five jobs below, stops on first
 `pnpm gate` uses the **isolated** e2e job (`scripts/ci/e2e-local.sh`), so it is safe to run while `scripts/dev.sh` is up — it never clashes on the dev ports or touches the dev database. **When asked to "run all quality gates with e2e", use `pnpm gate` (or `scripts/ci/e2e-local.sh` for the e2e job) — never `scripts/ci/e2e.sh` while a dev stack is running** (see below). The individual jobs (all under `scripts/ci/`):
 
 ```bash
-./scripts/ci/quality.sh      # Job 1: build · lint · types · architecture · audit
+./scripts/ci/quality.sh      # Job 1: build · lint · types · architecture · audit · migration drift
 ./scripts/ci/unit.sh         # Job 2: unit tests + coverage — shared, domain, api, collab, web (needs Job 1)
 ./scripts/ci/integration.sh  # Job 3: integration tests via Testcontainers (needs Job 1)
 ./scripts/ci/security.sh     # Job 4: security scan — Semgrep · zizmor · gitleaks · OSV-Scanner (High+) · knip
@@ -172,11 +194,13 @@ pnpm gate    # = scripts/ci/gate.sh — runs all five jobs below, stops on first
 
 **Directive — "run all quality gates" / "run the quality gates" ALWAYS includes Job 4 (the security scan above).** Lint + typecheck + tests are NOT the whole gate. Run the full sweep with `pnpm gate`, or Job 4 alone with `./scripts/ci/security.sh` (mirrors the CI `security` job in `.github/workflows/ci.yml`). Whether Job 5 / e2e is included follows the "with e2e" convention above.
 
+`check-migrations.sh` behavior (part of Job 1): it needs a reachable PostgreSQL for the shadow database, so locally it **skips** with a notice when none is up and still exits 0; `CI=1` (or `MIGRATION_CHECK_STRICT=1`) makes an unreachable database a hard failure. Same lenient-local / strict-CI contract as `security.sh`.
+
 `security.sh` behavior: its four scanners are NOT npm-managed (Semgrep, zizmor → pip; gitleaks, osv-scanner → release binaries). Locally it **skips** any not installed (prints an install hint) and still exits 0 — so `pnpm gate` scans with whatever is present; knip always runs. `SECURITY_STRICT=1` (set by `CI=1`) makes a missing scanner a hard failure. Reproduce CI offline: `pipx install semgrep zizmor` + the gitleaks/osv-scanner release binaries.
 
 E2E tests are mandatory before merge — they are the only layer that catches missing route registrations and broken API contracts.
 
-**`scripts/ci/e2e-local.sh` (= `pnpm e2e:local`) vs `scripts/ci/e2e.sh`:** both run the *same* Playwright suite. `e2e-local.sh` spins up a throwaway Postgres + Mailpit from `docker-compose.e2e.yml` on distinct ports (5433/1126/8126, API 4100, web 3100, collab-internal 4101) and tears down — it never touches your dev containers, ports, or data, so it coexists with a running `dev.sh`. `e2e.sh` is the **CI** form: it targets the dev stack (`docker-compose.dev.yml`, ports 4000/3000) and runs `prisma db push --force-reset`, so running it locally while `dev.sh` is up would `EADDRINUSE` on 4000/3000 and wipe the dev database. `scripts/e2e-stack-up.sh` brings the isolated stack **up and leaves it running** for iterating on individual specs.
+**`scripts/ci/e2e-local.sh` (= `pnpm e2e:local`) vs `scripts/ci/e2e.sh`:** both run the *same* Playwright suite. `e2e-local.sh` spins up a throwaway Postgres + Mailpit from `docker/docker-compose.e2e.yml` on distinct ports (5433/1126/8126, API 4100, web 3100, collab-internal 4101) and tears down — it never touches your dev containers, ports, or data, so it coexists with a running `dev.sh`. `e2e.sh` is the **CI** form: it targets the dev stack (`docker/docker-compose.dev.yml`, ports 4000/3000) and runs `prisma db push --force-reset`, so running it locally while `dev.sh` is up would `EADDRINUSE` on 4000/3000 and wipe the dev database. `scripts/e2e-stack-up.sh` brings the isolated stack **up and leaves it running** for iterating on individual specs.
 
 Local e2e gotchas: (1) the isolated scripts offset the collab-internal port to 4101 so they coexist with a dev API on 4001; override `ASCIIDOCOLLAB_COLLAB_INTERNAL_PORT` if 4101 is also taken; (2) dev and e2e share `apps/web/.next`, so a stale `.next` (a prior `next dev` build mixed with `next build`) can make the served HTML reference chunks that 404→500 and pages won't hydrate (e.g. the register button stays disabled) — `rm -rf apps/web/.next` before building if you hit this; (3) never `DROP SCHEMA` on the e2e DB while the API is running (it corrupts the Prisma pool) — reset the DB before the API starts.
 
@@ -209,7 +233,7 @@ On opening a file the editor calls `GET /projects/:projectId/files/:fileNodeId/c
    - `SEC#` (security requirement), `CFG#` (config item)
 
    Non-spec tokens that look similar are fine and must be preserved: `SHA-256`, `UTF-8`, `AES-256`, `CM6`, `Constitution VIII` and other constitution/feature references, Markdown/AsciiDoc markup (`- [ ]`, `Term;;`), and table cells.
-3. **`API_BASE_URL` source** — never define `const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '...'` locally; import `API_BASE_URL` from `@/lib/api/file-content` in client-side hooks/components; use the local `API_BASE_URL` in server-side lib files.
+3. **`API_BASE_URL` source** — never define the API base URL locally; import `API_BASE_URL` from `@/lib/api/base-url`. It is isomorphic: `INTERNAL_API_URL` (runtime, server) wins over `NEXT_PUBLIC_API_URL` (build-time, browser), so server rendering reaches the API directly instead of hairpinning through the reverse proxy. `@/lib/api/file-content` and `@/lib/api/file-tree` re-export it for existing call sites.
 4. **Jest environments in `apps/web`** — `.test.ts` files run in Node environment; `.test.tsx` files run in jsdom environment. No `@jest-environment` docblock pragma needed in `.tsx` files.
 5. **No duplicate test files** — before creating a test file, verify no file already exists at an adjacent path.
 6. **No TypeScript type assertions** — `assertionStyle: 'never'` is enforced; no `as X`; use typed variable assignment or restructure the types.
