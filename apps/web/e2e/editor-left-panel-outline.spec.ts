@@ -413,6 +413,15 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await expect(outlineRow(page, 'Intro Section')).toBeVisible({ timeout: 20_000 });
     await expect(outlineRow(page, 'Child Section')).toBeVisible({ timeout: 10_000 });
 
+    // The outline-scoped marker: the file-tree (024) marker shares this testid, so scope to the
+    // section-outline navigation to assert specifically on the outline's presence marker.
+    const outlineMarker = page.getByRole('navigation', { name: /section outline/i }).getByTestId('open-by-others-marker');
+
+    // A does NOT see a marker for their own session (self-exclusion). This MUST be asserted before B
+    // joins: merely opening the file publishes presence (see outline-followups.spec.ts), so once B is
+    // in the room a marker is expected and this assertion would be racing presence propagation.
+    await expect(outlineMarker).toHaveCount(0);
+
     // Session B: second browser context, opens the same main file.
     const contextB = await browser.newContext();
     const pageB = await contextB.newPage();
@@ -422,13 +431,6 @@ test.describe('Editor left panel: Outline view (028)', () => {
       await expect(pageB.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
       await pageB.getByTestId('tree-node-main-presence.adoc').click();
       await waitCollabSynced(pageB);
-
-      // The outline-scoped marker: the file-tree (024) marker shares this testid, so scope to the
-      // section-outline navigation to assert specifically on the outline's presence marker.
-      const outlineMarker = page.getByRole('navigation', { name: /section outline/i }).getByTestId('open-by-others-marker');
-
-      // A does NOT see a marker on their own session (self-exclusion).
-      await expect(outlineMarker).toHaveCount(0);
 
       // B places cursor on the "Child Section" heading line by clicking in the editor around line 7.
       const editorB = pageB.locator('.cm-editor .cm-content');
