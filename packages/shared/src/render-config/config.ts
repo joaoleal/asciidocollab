@@ -18,6 +18,26 @@ const CUSTOM_ATTR_MAX_COUNT = 100;
 const STRING_OPTION_MAX_LEN = 200;
 const FONT_DIR_MAX_COUNT = 20;
 
+/** Upper bound on how many converter extensions one project may enable. */
+const EXTENSION_MAX_COUNT = 100;
+/** Upper bound on a single extension identifier. */
+const EXTENSION_ID_MAX_LEN = 100;
+
+/**
+ * A converter-extension identifier: lowercase alphanumerics and dashes, nothing else.
+ *
+ * The character class is the point. An id is resolved by looking it up in the catalogue and is never
+ * joined onto a filesystem path — but rejecting separators, dots and whitespace here means a stored
+ * selection could not name a path even if some future call site got that wrong.
+ */
+const extensionIdSchema = z
+  .string()
+  .min(1)
+  .max(EXTENSION_ID_MAX_LEN)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+    message: 'An extension id may contain only lowercase letters, digits and single dashes.',
+  });
+
 /** Asciidoctor-PDF named page sizes exposed in the UI (passed through verbatim as `pdf-page-size`). */
 export const PDF_PAGE_SIZES = ['A3', 'A4', 'A5', 'LETTER', 'LEGAL', 'LEDGER', 'TABLOID'] as const;
 
@@ -129,6 +149,23 @@ export const renderConfigSchema = z
       .refine((map) => Object.keys(map).length <= CUSTOM_ATTR_MAX_COUNT, {
         message: `At most ${CUSTOM_ATTR_MAX_COUNT} custom attributes are allowed.`,
       })
+      .optional(),
+
+    // --- PDF converter extensions ---
+    /**
+     * Which deployment-provided converter extensions this project applies. Identifiers ONLY: every
+     * extension's code lives in the deployment (the shipped gem or the administrator's folder), so a
+     * project's stored selection is a list of names and can carry nothing executable.
+     *
+     * Ids that no longer match a catalogue entry are deliberately KEPT here rather than filtered —
+     * an administrator can remove an extension a project still has enabled, and that stale selection
+     * must reach the owner as a warning instead of vanishing.
+     */
+    extensions: z
+      .object({
+        enabled: z.array(extensionIdSchema).max(EXTENSION_MAX_COUNT).optional(),
+      })
+      .strict()
       .optional(),
   })
   .strict();

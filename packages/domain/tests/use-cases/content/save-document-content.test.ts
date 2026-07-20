@@ -168,6 +168,79 @@ describe('SaveDocumentContentUseCase', () => {
   });
 });
 
+/**
+ * A PDF theme is an ordinary project document. This feature adds an editor for it, not a storage
+ * path — so the save route, the permission checks, the size limit and the content-version bump that
+ * feeds the audit trail must all apply to it unchanged (FR-022, FR-023). These assert that
+ * INHERITANCE rather than a mechanism of the theme editor's own: if a theme ever acquires special
+ * handling in the save path, they fail.
+ */
+describe('SaveDocumentContentUseCase — a theme is an ordinary document', () => {
+  let projectMemberRepo: InMemoryProjectMemberRepository;
+  let fileNodeRepo: InMemoryFileNodeRepository;
+  let documentRepo: InMemoryDocumentRepository;
+  let fileStore: InMemoryProjectFileStore;
+  let useCase: SaveDocumentContentUseCase;
+
+  const actorId = UserId.create('550e8400-e29b-41d4-a716-446655440001');
+  const outsiderId = UserId.create('550e8400-e29b-41d4-a716-446655440009');
+  const projectId = ProjectId.create('770e8400-e29b-41d4-a716-446655440013');
+  const rootFolderId = FileNodeId.create('880e8400-e29b-41d4-a716-446655440014');
+  const themeNodeId = FileNodeId.create('aa0e8400-e29b-41d4-a716-446655440016');
+  const themeDocumentId = DocumentId.create('bb0e8400-e29b-41d4-a716-446655440017');
+  const themePath = FilePath.create('/branding/corporate-theme.yml');
+  const originalContentId = ContentId.create('cc0e8400-e29b-41d4-a716-446655440018');
+  const themeYaml = Buffer.from('page:\n  layout: landscape\n');
+
+  beforeEach(async () => {
+    projectMemberRepo = new InMemoryProjectMemberRepository();
+    fileNodeRepo = new InMemoryFileNodeRepository();
+    documentRepo = new InMemoryDocumentRepository();
+    fileStore = new InMemoryProjectFileStore();
+    useCase = new SaveDocumentContentUseCase(projectMemberRepo, fileNodeRepo, documentRepo, fileStore);
+
+    const rootFolder = new FileNode(rootFolderId, projectId, null, 'Test', FileNodeType.create('folder'), FilePath.create('/'));
+    await fileNodeRepo.save(rootFolder);
+    const themeNode = new FileNode(themeNodeId, projectId, rootFolderId, 'corporate-theme.yml', FileNodeType.create('file'), themePath);
+    await fileNodeRepo.save(themeNode);
+    await documentRepo.save(
+      new Document(themeDocumentId, themeNodeId, originalContentId, YjsStateId.create('dd0e8400-e29b-41d4-a716-446655440019'), MimeType.create('text/yaml')),
+    );
+    await fileStore.write(projectId, themePath, Buffer.from('page:\n'));
+    await projectMemberRepo.addMember(new ProjectMember(projectId, actorId, Role.create('editor')));
+  });
+
+  it('saves a theme through the same path as any other document', () => {
+    return useCase.execute(actorId, projectId, themeNodeId, themeYaml).then(async (result) => {
+      expect(result.success).toBe(true);
+      expect(await fileStore.read(projectId, themePath)).toEqual(themeYaml);
+    });
+  });
+
+  it('bumps the content version, which is what the audit trail records (FR-023)', async () => {
+    await useCase.execute(actorId, projectId, themeNodeId, themeYaml);
+    const stored = await documentRepo.findByFileNodeId(themeNodeId);
+    expect(stored?.contentId.value).not.toBe(originalContentId.value);
+  });
+
+  it('refuses a non-member exactly as it would for a prose document (FR-022)', async () => {
+    const result = await useCase.execute(outsiderId, projectId, themeNodeId, themeYaml);
+    expect(result.success).toBe(false);
+  });
+
+  it('applies the same rules to a .yaml theme as a .yml one', async () => {
+    const altNodeId = FileNodeId.create('aa0e8400-e29b-41d4-a716-446655440026');
+    const altPath = FilePath.create('/alt-theme.yaml');
+    await fileNodeRepo.save(new FileNode(altNodeId, projectId, rootFolderId, 'alt-theme.yaml', FileNodeType.create('file'), altPath));
+    await documentRepo.save(
+      new Document(DocumentId.create('bb0e8400-e29b-41d4-a716-446655440027'), altNodeId, ContentId.create('cc0e8400-e29b-41d4-a716-446655440028'), YjsStateId.create('dd0e8400-e29b-41d4-a716-446655440029'), MimeType.create('text/yaml')),
+    );
+    await fileStore.write(projectId, altPath, Buffer.from('page:\n'));
+    const result = await useCase.execute(actorId, projectId, altNodeId, themeYaml);
+    expect(result.success).toBe(true);
+  });
+});
+
 describe('SaveDocumentContentUseCase — active-session guard', () => {
   const actorId2 = UserId.create('550e8400-e29b-41d4-a716-446655440001');
   const projectId2 = ProjectId.create('770e8400-e29b-41d4-a716-446655440003');

@@ -117,3 +117,9 @@ export { CloseCollaborationSessionUseCase } from './project/close-collaboration-
 
 // review/ (feature 038)
 export * from './review';
+export {
+  GetPdfExtensionCatalogueUseCase,
+  type PdfExtensionCatalogue,
+  type PdfExtensionConflict,
+  type GetPdfExtensionCatalogueInput,
+} from './project/get-pdf-extension-catalogue';

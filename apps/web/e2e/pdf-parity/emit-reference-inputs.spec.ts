@@ -32,7 +32,23 @@ const WEB_ROOT = process.cwd();
 const FIXTURES_DIR = path.join(WEB_ROOT, 'e2e', 'pdf-parity', 'fixtures');
 const MERMAID_BUNDLE = path.join(WEB_ROOT, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js');
 const MATHJAX_ES5_DIR = path.join(WEB_ROOT, 'node_modules', 'mathjax', 'es5');
-const REFERENCE_IMAGE = 'adc-pdf-ref:latest';
+/**
+ * The SAME content-addressed image the other reference tools use, built from the pinned Dockerfile
+ * and locked gem closure. This used to be `adc-pdf-ref:latest` — a moving tag over an image nothing
+ * rebuilds, so the reference it emitted depended on whatever the developer happened to have locally.
+ *
+ * Loaded through a dynamic import rather than a static one, and only once an emit actually runs.
+ * Playwright transpiles every statically-imported module to CommonJS, which a `.mjs` file is then
+ * loaded as ESM — `exports is not defined in ES module scope`, at import time, for the WHOLE config.
+ * That took the comparison suite down with it, even though this spec self-skips without PARITY_EMIT
+ * and the comparison suite never touches Docker. `import()` keeps the module in its own ESM graph.
+ */
+async function referenceImage(): Promise<{
+  ensureReferenceImage: () => string;
+  SOURCE_DATE_EPOCH: string;
+}> {
+  return (await import('./tools/reference-image.mjs')) as never;
+}
 
 const emitEnabled = process.env.PARITY_EMIT === '1';
 
@@ -49,7 +65,12 @@ function snapshotFor(fixtureName: string): ProjectSnapshot {
 }
 
 /** Write the rewritten project into `reference-build/`, then Docker-render main.adoc into reference.pdf. */
-function emitReference(fixtureName: string, files: Readonly<Record<string, string>>): void {
+async function emitReference(
+  fixtureName: string,
+  files: Readonly<Record<string, string>>,
+): Promise<void> {
+  const { ensureReferenceImage, SOURCE_DATE_EPOCH: sourceDateEpoch } = await referenceImage();
+  const image = ensureReferenceImage();
   const fixtureDirectory = path.join(FIXTURES_DIR, fixtureName);
   const buildDirectory = path.join(fixtureDirectory, 'reference-build');
   rmSync(buildDirectory, { recursive: true, force: true });
@@ -64,8 +85,14 @@ function emitReference(fixtureName: string, files: Readonly<Record<string, strin
   cpSync(buildDirectory, work, { recursive: true });
   execFileSync(
     'docker',
-    ['run', '--rm', '-v', `${work}:/work`, '-w', '/work', REFERENCE_IMAGE,
-      'asciidoctor-pdf', '-a', 'reproducible', '-o', 'reference.pdf', 'main.adoc'],
+    ['run', '--rm',
+      '--network', 'none',
+      // Never root — the PDF is copied straight back into the developer's checkout.
+      '--user', `${process.getuid()}:${process.getgid()}`,
+      '-e', `SOURCE_DATE_EPOCH=${sourceDateEpoch}`,
+      '-v', `${work}:/work`, '-w', '/work', image,
+      // Through bundler, so the render resolves the LOCKED gem closure.
+      'bundle', 'exec', 'asciidoctor-pdf', '-a', 'reproducible', '-o', 'reference.pdf', 'main.adoc'],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   );
   cpSync(path.join(work, 'reference.pdf'), path.join(fixtureDirectory, 'reference.pdf'));
@@ -102,7 +129,7 @@ test.describe('emit reference inputs (math + diagrams)', () => {
         // eslint-disable-next-line no-console
         console.log(`${fixtureName} preprocess diagnostics:`, JSON.stringify(diagnostics, null, 2));
       }
-      emitReference(fixtureName, files);
+      await emitReference(fixtureName, files);
     });
   }
 });

@@ -9,6 +9,33 @@ export interface ProjectConfig {
     /** Set-main-file rate limit window in milliseconds. */
     rateLimitWindow: number;
   };
+  /**
+   * Administrator-provided PDF converter extensions: where they live, and the bounds on reading them.
+   *
+   * `maxExtensions` and `maxSourceBytes` are what make the folder scan BOUNDED work rather than work
+   * an outside party influences — the folder's contents are not under the application's control, so
+   * without them a deployment could be slowed by dropping in a large or numerous set of files.
+   * `scanCacheTtl` turns FR-033b's "takes effect without a redeployment" into a stated interval
+   * rather than a vague promise, while keeping repeated catalogue reads cheap.
+   */
+  pdfExtensions: {
+    /** Filesystem path of the administrator drop-folder (bind-mounted, outside the image). */
+    path: string;
+    /** Maximum catalogue entries read from the folder; beyond this the scan stops and reports. */
+    maxExtensions: number;
+    /** Maximum bytes of a single extension source; a larger file is excluded and reported. */
+    maxSourceBytes: number;
+    /** How long a folder scan is reused, in milliseconds. */
+    scanCacheTtl: number;
+    /** Maximum catalogue reads per user/IP per window. */
+    rateLimitMax: number;
+    /** Catalogue read rate limit window in milliseconds. */
+    rateLimitWindow: number;
+    /** Maximum extension-source reads per user/IP per window. */
+    sourceRateLimitMax: number;
+    /** Extension-source read rate limit window in milliseconds. */
+    sourceRateLimitWindow: number;
+  };
   /** Project render-config (get/save) rate limiting configuration. */
   renderConfig: {
     /** Maximum render-config requests per user/IP per window. */
@@ -99,6 +126,56 @@ export const projectSchema: convict.Schema<ProjectConfig> = {
       format: 'integer',
       default: 3_600_000,
       env: 'ASCIIDOCOLLAB_PROJECT_MAIN_FILE_RATE_LIMIT_WINDOW',
+    },
+  },
+  pdfExtensions: {
+    path: {
+      doc: 'Directory administrators drop PDF converter extensions into. Bind-mounted from outside the image so an extension can be added without a rebuild.',
+      format: String,
+      default: '/data/pdf-extensions',
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH',
+    },
+    maxExtensions: {
+      doc: 'Maximum extensions read from the drop-folder. Beyond this the scan stops and reports what it excluded.',
+      format: 'integer',
+      default: 50,
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_MAX',
+    },
+    maxSourceBytes: {
+      doc: 'Maximum bytes of a single extension source file (256 KiB). A larger file is excluded and reported.',
+      format: 'integer',
+      default: 262_144,
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_MAX_SOURCE_BYTES',
+    },
+    scanCacheTtl: {
+      doc: 'How long a drop-folder scan is reused, in milliseconds. Bounds how long a newly added extension takes to appear.',
+      format: 'integer',
+      default: 30_000,
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL',
+    },
+    rateLimitMax: {
+      doc: 'Maximum extension-catalogue reads per user/IP per window.',
+      format: 'integer',
+      default: 120,
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_RATE_LIMIT_MAX',
+    },
+    rateLimitWindow: {
+      doc: 'Extension-catalogue read rate limit window in milliseconds.',
+      format: 'integer',
+      default: 3_600_000,
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_RATE_LIMIT_WINDOW',
+    },
+    sourceRateLimitMax: {
+      doc: 'Maximum extension-source reads per user/IP per window. Higher than the catalogue budget because a render fetches one source per enabled extension.',
+      format: 'integer',
+      default: 240,
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SOURCE_RATE_LIMIT_MAX',
+    },
+    sourceRateLimitWindow: {
+      doc: 'Extension-source read rate limit window in milliseconds.',
+      format: 'integer',
+      default: 3_600_000,
+      env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SOURCE_RATE_LIMIT_WINDOW',
     },
   },
   renderConfig: {

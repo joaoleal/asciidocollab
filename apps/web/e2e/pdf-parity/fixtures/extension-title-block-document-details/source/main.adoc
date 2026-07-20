@@ -1,0 +1,15 @@
+= A Report With Document Details
+Jane Roe <jane@example.com>
+v2.1, 2026-07-19
+:doctype: book
+:organization: Example Corporation
+:department: Research Division
+:document-id: DOC-2026-0042
+:classification: Internal
+// Covers all three forms in one fixture: a labelled detail, a detail whose attribute is NOT SET
+// (which must be omitted rather than drawn empty), and a bare attribute name (no label).
+:title-block-details: Document ID=document-id, Classification=classification, Organisation=organization, Department=department, Not Set=missing-attribute, organization
+
+== First Chapter
+
+Body text.

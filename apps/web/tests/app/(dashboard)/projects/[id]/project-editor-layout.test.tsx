@@ -19,8 +19,19 @@ jest.mock('@/hooks/use-project-render-config', () => ({
 // Stub the live PDF preview hook AND its panel: both pull in the PDF worker/pdf.js, whose
 // `import.meta.url` is unloadable under the commonjs jest transform, so the real modules can never
 // be imported here (mocked by design).
+// The theme editor runs its own sample preview, which is legitimately enabled while a theme is open.
+// Mocked out here so `pdfPreviewCalls` records only the LAYOUT's document preview — the thing these
+// tests are about — exactly as `AsciiDocEditor` is mocked for the editor.
+jest.mock('@/components/theme-editor/theme-editor', () => ({
+  ThemeEditor: () => <div data-testid="theme-editor" />,
+}));
+
+const pdfPreviewCalls: { isEnabled: boolean }[] = [];
 jest.mock('@/hooks/use-pdf-preview', () => ({
-  usePdfPreview: () => ({ pdf: undefined, isRendering: false, diagnostics: [] }),
+  usePdfPreview: (options: { isEnabled: boolean }) => {
+    pdfPreviewCalls.push({ isEnabled: options.isEnabled });
+    return { pdf: undefined, isRendering: false, diagnostics: [] };
+  },
 }));
 jest.mock('@/components/pdf-preview-panel', () => ({
   PdfPreviewPanel: () => <div data-testid="pdf-preview-panel-mock" />,
@@ -104,6 +115,10 @@ const mockRememberCursorLine = jest.fn();
 const mockReadCursorLine = jest.fn(() => undefined as number | undefined);
 const mockPruneCursor = jest.fn();
 jest.mock('@/hooks/use-last-selection', () => ({
+  // Standalone export used by the layout's first-open flag (isFirstOpen); mirrors the hook's value.
+  // Wrapped in an arrow so the reference is deferred past this factory's hoist (the const below is in
+  // its temporal dead zone when the factory first evaluates).
+  readLastSelection: () => mockReadLastSelection(),
   useLastSelection: jest.fn(() => ({
     readLastSelection: mockReadLastSelection,
     rememberFile: mockRememberFile,
@@ -148,6 +163,7 @@ const defaultProps = {
   mainFileNodeId: null,
   canManage: true,
   canEdit: true,
+  canModifyFiles: true,
   userId: 'user-1',
 };
 
@@ -170,6 +186,35 @@ describe('ProjectEditorLayout', () => {
     mockRememberLine.mockReset();
     mockClearLastSelection.mockReset();
     mockUseProjectSymbolIndex.mockReturnValue({ index: null, getIndex: () => null });
+    pdfPreviewCalls.length = 0;
+  });
+
+  describe('the document preview only renders documents', () => {
+    /** Open `nodeName` and return whether the PDF preview was activated for it. */
+    function previewActivatedFor(nodeName: string): boolean {
+      jest.requireMock('@/hooks/use-file-selection').useFileSelection.mockReturnValue({
+        selectedFile: { nodeId: 'id-x', nodeName, nodePath: `/${nodeName}`, nodeType: 'file' },
+        contentState: { content: 'x', isLoading: false, error: null, isBinary: false },
+        selectFile: jest.fn(),
+        clearSelection: jest.fn(),
+      });
+      pdfPreviewCalls.length = 0;
+      render(<ProjectEditorLayout {...defaultProps} />);
+      return pdfPreviewCalls.some((call) => call.isEnabled);
+    }
+
+    it('does not render a theme file as a document', () => {
+      // A theme is YAML with its own preview inside the theme editor. Rendering it as a document
+      // produced a PDF of raw YAML text — and because the last successful render is retained, that
+      // page of YAML was then shown for a few seconds when the author opened a real document.
+      expect(previewActivatedFor('local-theme.yaml')).toBe(false);
+      expect(previewActivatedFor('corporate-theme.yml')).toBe(false);
+    });
+
+    it('does not render other non-AsciiDoc files as documents either', () => {
+      expect(previewActivatedFor('config.yml')).toBe(false);
+      expect(previewActivatedFor('notes.txt')).toBe(false);
+    });
   });
 
   it('previews an out-of-tree file on its own and flags it as not part of the main document', async () => {

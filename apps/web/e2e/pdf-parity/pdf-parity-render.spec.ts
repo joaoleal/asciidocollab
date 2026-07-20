@@ -4,25 +4,40 @@
  * For each fixture it produces the PDF the way production does — the real rendering shims feed the real
  * pre-processing pipeline, then the real wasm engine converts — and compares the result against a
  * committed reference PDF built by the EXTERNAL Asciidoctor-PDF toolchain (see tools/build-references.mjs).
- * Comparison is structural at each fixture's recorded element-level tolerance: citations assert the
- * reference-list entries / order / numbering; code asserts the highlighted code text survives and is
- * placed; math + diagrams assert the artifact rendered and is placed via a rasterized ink-map plus its
- * text labels. The suite self-gates: absent wasm or absent reference PDF ⇒ a clean skip.
+ *
+ * The suite is MANIFEST-DRIVEN: every case comes from a fixture directory's `manifest.json`, so
+ * adding a fixture is adding a directory. Each manifest's `kind` selects the oracle, because different
+ * fidelity risks need different comparisons:
+ *
+ *   structural  page count + the reference's text layer surviving into ours (themes, fonts, includes)
+ *   code        page count + the highlighted code text surviving into ours
+ *   citations   the reference-list entries, order and (numeric styles) assigned numbers
+ *   ink         rasterized ink-map footprint/position + text labels (math, diagrams)
+ *
+ * The suite self-gates: absent wasm or absent reference PDF ⇒ a clean skip.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import type { ProjectSnapshot } from '@asciidocollab/asciidoc-pdf';
 import { createParityEngine, type ParityEngine } from './harness/engine';
 import { renderOurs } from './harness/pipeline';
 import { nodeShims, browserShims } from './harness/shims';
-import { pageCount, extractText, pageInkMaps, compareInkMaps, type InkTolerance } from './harness/pdftools';
+import { pageCount, extractText, pageInkMaps, compareInkMaps } from './harness/pdftools';
 import { startStaticServer, type StaticServer } from './harness/static-server';
+import {
+  loadParityCases,
+  readFixtureSource,
+  type ParityCase,
+  type ParityProjectConfig,
+} from './harness/manifest';
+// The app's OWN snapshot builder, imported deliberately: a fixture declaring a `projectConfig` is
+// covered only if the code under test is the code that ships.
+import { buildProjectSnapshot, type SnapshotFile } from '@/lib/pdf/build-project-snapshot';
 import {
   extractCitationFacts,
   compareCitationFacts,
-  isNumericStyle,
   CITED_WORKS,
 } from './harness/citations-check';
 
@@ -33,80 +48,114 @@ const MERMAID_BUNDLE = path.join(WEB_ROOT, 'node_modules', 'mermaid', 'dist', 'm
 const MATHJAX_ES5_DIR = path.join(WEB_ROOT, 'node_modules', 'mathjax', 'es5');
 
 const enginePresent = existsSync(WASM_PATH);
+const parityCases = loadParityCases(FIXTURES_DIR);
 
-/** The ink-map + label config a diagram/math fixture records in its manifest. */
-interface InkManifest {
-  readonly ink: InkTolerance;
-  readonly labels: readonly string[];
-}
-
-function numberField(source: Record<string, unknown>, key: string): number {
-  const value = source[key];
-  if (typeof value !== 'number') {
-    throw new TypeError(`manifest ink.${key} must be a number`);
-  }
-  return value;
-}
-
-function readInkManifest(fixtureName: string): InkManifest {
-  const raw: unknown = JSON.parse(readFileSync(path.join(FIXTURES_DIR, fixtureName, 'manifest.json'), 'utf8'));
-  if (typeof raw !== 'object' || raw === null) {
-    throw new Error(`${fixtureName}/manifest.json is not an object`);
-  }
-  const record: Record<string, unknown> = { ...raw };
-  const inkRaw = record.ink;
-  if (typeof inkRaw !== 'object' || inkRaw === null) {
-    throw new Error(`${fixtureName}/manifest.json is missing an "ink" tolerance block`);
-  }
-  const ink: Record<string, unknown> = { ...inkRaw };
-  const labelsRaw = record.labels;
-  const labels =
-    Array.isArray(labelsRaw) && labelsRaw.every((label): label is string => typeof label === 'string')
-      ? labelsRaw
-      : [];
+/**
+ * Build the fixture's snapshot: its source tree plus the render fields its manifest declares.
+ *
+ * This is the hand-built path, and it is the reason a whole class of defect was invisible here. The
+ * manifest's `render` block RESTATES what `buildProjectSnapshot` is believed to produce, and both
+ * sides of the comparison read that restatement — so a builder that stops agreeing with it changes
+ * neither side and the fixture stays green. A fixture that declares a `projectConfig` takes
+ * {@link derivedSnapshotFor} instead, which runs the real builder.
+ */
+function declaredSnapshotFor(parityCase: ParityCase): ProjectSnapshot {
+  const { files, binaryAssets } = readFixtureSource(path.join(FIXTURES_DIR, parityCase.fixture, 'source'));
+  const mainFile = 'main.adoc';
   return {
-    ink: {
-      dpi: numberField(ink, 'dpi'),
-      minDarkFraction: numberField(ink, 'minDarkFraction'),
-      maxDarkFractionRatioDelta: numberField(ink, 'maxDarkFractionRatioDelta'),
-      maxBboxEdgeDelta: numberField(ink, 'maxBboxEdgeDelta'),
-    },
-    labels,
-  };
-}
-
-/** Read every text file under a fixture's `source/` tree into a project-relative path→content map. */
-function readSourceFiles(sourceDirectory: string): Record<string, string> {
-  const files: Record<string, string> = {};
-  const walk = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const absolute = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        walk(absolute);
-      } else if (statSync(absolute).isFile()) {
-        files[path.relative(sourceDirectory, absolute).split('\\').join('/')] = readFileSync(absolute, 'utf8');
-      }
-    }
-  };
-  walk(sourceDirectory);
-  return files;
-}
-
-function baseSnapshot(fixtureName: string, mainFile: string, extra: Partial<ProjectSnapshot>): ProjectSnapshot {
-  const sourceDirectory = path.join(FIXTURES_DIR, fixtureName, 'source');
-  return {
-    files: readSourceFiles(sourceDirectory),
-    binaryAssets: {},
+    files,
+    binaryAssets,
     rootPath: mainFile,
     openPath: mainFile,
     fontPaths: [],
     attributes: {},
-    ...extra,
+    ...parityCase.render,
   };
 }
 
-function referencePath(fixtureName: string, file: string): string {
-  return path.join(FIXTURES_DIR, fixtureName, file);
+/**
+ * Build the fixture's snapshot the way the APP does: by running `buildProjectSnapshot` over the
+ * project configuration the fixture declares.
+ *
+ * The reference for such a fixture is still generated from its `render` block, independently. So the
+ * comparison now spans the app's own input assembly: if the builder derives a different theme path,
+ * font search path, images dir or attribute set than the reference was built with, the two renders
+ * diverge and the fixture fails. That is the coverage the hand-built path cannot provide, because
+ * there the builder is not on the path at all.
+ */
+function derivedSnapshotFor(parityCase: ParityCase, config: ParityProjectConfig): ProjectSnapshot {
+  const { files, binaryAssets } = readFixtureSource(path.join(FIXTURES_DIR, parityCase.fixture, 'source'));
+  const snapshotFiles: SnapshotFile[] = [
+    ...Object.entries(files).map(([filePath, content]) => ({ path: filePath, kind: 'text' as const, content })),
+    ...Object.entries(binaryAssets).map(([filePath, bytes]) => ({ path: filePath, kind: 'binary' as const, bytes })),
+  ];
+
+  const { snapshot, excluded } = buildProjectSnapshot({
+    files: snapshotFiles,
+    mainPath: config.mainFile,
+    openPath: config.mainFile ?? 'main.adoc',
+    attributes: new Map(Object.entries(config.attributes)),
+    ...(config.extraFontDirs === undefined ? {} : { extraFontDirs: config.extraFontDirs }),
+    ...(config.enabledExtensions === undefined ? {} : { enabledExtensions: config.enabledExtensions }),
+  });
+
+  // A path the sandbox refused never reaches the render, so it would show up as a missing theme or a
+  // substituted font — a confusing pixel difference rather than the configuration error it is.
+  expect(excluded, `${parityCase.fixture}: sandbox excluded ${JSON.stringify(excluded)}`).toEqual([]);
+
+  // The builder's derivation, checked directly against what the reference was built from.
+  //
+  // The render below would catch a divergence anyway, but only as a page count or a text-layer diff —
+  // a symptom several steps removed from "the theme path came out wrong". Comparing here names the
+  // field, which is the difference between a five-minute fix and an afternoon bisecting a PDF.
+  const declared = parityCase.render;
+  if (declared.themePath !== undefined) {
+    expect(snapshot.themePath, `${parityCase.fixture}: derived themePath`).toBe(declared.themePath);
+  }
+  if (declared.imagesDir !== undefined) {
+    expect(snapshot.imagesDir, `${parityCase.fixture}: derived imagesDir`).toBe(declared.imagesDir);
+  }
+  if (declared.fontPaths !== undefined) {
+    // Order-insensitive: these become a font SEARCH PATH, so the set is what matters.
+    expect([...snapshot.fontPaths].toSorted(), `${parityCase.fixture}: derived fontPaths`).toEqual(
+      [...declared.fontPaths].toSorted(),
+    );
+  }
+  return snapshot;
+}
+
+/** The snapshot for a case, derived through the real builder when the fixture declares a config. */
+function snapshotFor(parityCase: ParityCase): ProjectSnapshot {
+  return parityCase.projectConfig === undefined
+    ? declaredSnapshotFor(parityCase)
+    : derivedSnapshotFor(parityCase, parityCase.projectConfig);
+}
+
+/** Both renders must contain every fragment the fixture names — checked against the reference first. */
+function expectSharedText(ours: string, reference: string, fragments: readonly string[]): void {
+  for (const fragment of fragments) {
+    expect(reference, `reference contains ${JSON.stringify(fragment)}`).toContain(fragment);
+    expect(ours, `ours contains ${JSON.stringify(fragment)}`).toContain(fragment);
+  }
+}
+
+/** Non-empty text-layer lines, trimmed with internal runs of whitespace collapsed to one space. */
+function normalizeTextLayer(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim().replaceAll(/\s+/g, ' '))
+    .filter((line) => line !== '');
+}
+
+/**
+ * Every non-empty line of the reference's text layer must survive into ours. Compared line-wise with
+ * internal whitespace collapsed: `pdftotext -layout` pads columns to the glyph positions, so exact
+ * equality would fail on sub-point advance-width differences that are not fidelity defects. What this
+ * does catch — and what a theme regression actually looks like — is text dropped, reordered, or
+ * reflowed onto different lines.
+ */
+function expectTextLayerParity(ours: string, reference: string): void {
+  expect(normalizeTextLayer(ours), 'text layer vs reference').toEqual(normalizeTextLayer(reference));
 }
 
 test.describe('PDF reference parity (render vs external build)', () => {
@@ -127,102 +176,101 @@ test.describe('PDF reference parity (render vs external build)', () => {
     await mathjaxServer?.stop();
   });
 
-  // -------------------------------------------------------------------------
-  // code: highlighted [source,ruby] + [source,js], source-highlighter: rouge.
-  // -------------------------------------------------------------------------
-  test('code: highlighted source text is present and placed', async () => {
-    const referenceFile = referencePath('code', 'reference.pdf');
-    test.skip(!existsSync(referenceFile), 'code/reference.pdf not committed yet.');
-
-    const snapshot = baseSnapshot('code', 'main.adoc', {});
-    const { pdfBytes } = await renderOurs(snapshot, nodeShims(), engine);
-
-    const referenceBytes = new Uint8Array(readFileSync(referenceFile));
-    expect(pageCount(pdfBytes), 'page count vs reference').toBe(pageCount(referenceBytes));
-
-    const oursText = extractText(pdfBytes);
-    const referenceText = extractText(referenceBytes);
-    // Every code fragment the reference render places must survive into our render too.
-    for (const fragment of ['fibonacci', 'console.log', 'def ', 'const ', 'puts', 'return']) {
-      expect(referenceText, `reference contains ${JSON.stringify(fragment)}`).toContain(fragment);
-      expect(oursText, `ours contains ${JSON.stringify(fragment)}`).toContain(fragment);
-    }
+  // A fixture with no committed reference PDF contributes no case at all, so an empty list means the
+  // references have not been generated — which must fail loudly rather than reporting a green run over
+  // nothing. Principle XV is not satisfied by a suite that silently compares zero documents.
+  test('the fixture set yields comparison cases', () => {
+    expect(parityCases.length, 'fixtures with committed reference PDFs').toBeGreaterThan(0);
   });
 
-  // -------------------------------------------------------------------------
-  // citations: numeric + author-date CSL, appearance + alphabetical ordering.
-  // -------------------------------------------------------------------------
-  const CITATION_VARIANTS = [
-    { id: 'numeric-appearance', style: 'vancouver', order: 'appearance' },
-    { id: 'numeric-alphabetical', style: 'vancouver', order: 'alphabetical' },
-    { id: 'author-date-appearance', style: 'apa', order: 'appearance' },
-    { id: 'author-date-alphabetical', style: 'apa', order: 'alphabetical' },
-  ];
+  for (const parityCase of parityCases) {
+    test(`${parityCase.id} matches the reference build`, async ({ page }) => {
+      test.skip(
+        !existsSync(parityCase.referencePath),
+        `${path.relative(FIXTURES_DIR, parityCase.referencePath)} not committed yet.`,
+      );
+      test.skip(
+        parityCase.needsBrowser && !existsSync(MERMAID_BUNDLE),
+        'mermaid bundle not installed.',
+      );
 
-  for (const variant of CITATION_VARIANTS) {
-    test(`citations: ${variant.id} matches the reference bibliography`, async () => {
-      const referenceFile = referencePath('citations', `reference-${variant.id}.pdf`);
-      test.skip(!existsSync(referenceFile), `citations/reference-${variant.id}.pdf not committed yet.`);
-
-      const snapshot = baseSnapshot('citations', 'main.adoc', {
-        bibPath: 'refs.bib',
-        attributes: { 'bibtex-style': variant.style, 'bibtex-order': variant.order },
-      });
-      const { pdfBytes, diagnostics } = await renderOurs(snapshot, nodeShims(), engine);
-      expect(diagnostics, `no citation diagnostics: ${JSON.stringify(diagnostics)}`).toHaveLength(0);
-
-      const referenceBytes = new Uint8Array(readFileSync(referenceFile));
-      const oursFacts = extractCitationFacts(extractText(pdfBytes));
-      const referenceFacts = extractCitationFacts(extractText(referenceBytes));
-
-      // The reference build is correct by construction; assert it parsed as expected before diffing.
-      expect(referenceFacts.referenceOrder, 'reference has all works').toHaveLength(CITED_WORKS.length);
-
-      const mismatches = compareCitationFacts(oursFacts, referenceFacts, isNumericStyle(variant.style));
-      expect(mismatches, `citation divergence(s): ${JSON.stringify(mismatches, null, 2)}`).toHaveLength(0);
-
-      // Self-check: our rewriter emits reference-list back-links (the ↑ glyph), the anchor/back-link
-      // model the reference's forward hyperlinks correspond to.
-      expect(extractText(pdfBytes), 'our reference entries carry back-links').toContain('↑');
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // math + diagrams: shim-rendered SVGs embedded by the engine, compared to the
-  // reference gem embedding the SAME assets, structurally (rasterized ink map).
-  // -------------------------------------------------------------------------
-  for (const fixtureName of ['math', 'diagrams']) {
-    test(`${fixtureName}: shim-rendered artifacts are present and placed`, async ({ page }) => {
-      const referenceFile = referencePath(fixtureName, 'reference.pdf');
-      test.skip(!existsSync(referenceFile), `${fixtureName}/reference.pdf not committed yet.`);
-      test.skip(!existsSync(MERMAID_BUNDLE), 'mermaid bundle not installed.');
-
-      const manifest = readInkManifest(fixtureName);
-      const shims = browserShims(page, {
-        mermaidBundlePath: MERMAID_BUNDLE,
-        mathjaxBaseUrl: mathjaxServer.baseUrl,
-      });
-      const snapshot = baseSnapshot(fixtureName, 'main.adoc', {});
-      const { pdfBytes, diagnostics } = await renderOurs(snapshot, shims, engine);
+      const shims = parityCase.needsBrowser
+        ? browserShims(page as Page, {
+            mermaidBundlePath: MERMAID_BUNDLE,
+            mathjaxBaseUrl: mathjaxServer.baseUrl,
+          })
+        : nodeShims();
+      const { pdfBytes, diagnostics } = await renderOurs(snapshotFor(parityCase), shims, engine);
       expect(diagnostics, `no render diagnostics: ${JSON.stringify(diagnostics)}`).toHaveLength(0);
 
-      const referenceBytes = new Uint8Array(readFileSync(referenceFile));
+      const referenceBytes = new Uint8Array(readFileSync(parityCase.referencePath));
+      const oursText = extractText(pdfBytes);
+      const referenceText = extractText(referenceBytes);
+
+      if (parityCase.kind === 'citations') {
+        const oursFacts = extractCitationFacts(oursText);
+        const referenceFacts = extractCitationFacts(referenceText);
+        // The reference build is correct by construction; assert it parsed as expected before diffing.
+        expect(referenceFacts.referenceOrder, 'reference has all works').toHaveLength(CITED_WORKS.length);
+        const mismatches = compareCitationFacts(oursFacts, referenceFacts, parityCase.numericCitations);
+        expect(mismatches, `citation divergence(s): ${JSON.stringify(mismatches, null, 2)}`).toHaveLength(0);
+        // Self-check: our rewriter emits reference-list back-links (the ↑ glyph), the anchor/back-link
+        // model the reference's forward hyperlinks correspond to.
+        expect(oursText, 'our reference entries carry back-links').toContain('↑');
+        return;
+      }
+
       expect(pageCount(pdfBytes), 'page count vs reference').toBe(pageCount(referenceBytes));
+      expectSharedText(oursText, referenceText, parityCase.requiredText);
 
-      const oursInk = pageInkMaps(pdfBytes, manifest.ink.dpi);
-      const referenceInk = pageInkMaps(referenceBytes, manifest.ink.dpi);
-      const inkMismatches = compareInkMaps(oursInk, referenceInk, manifest.ink);
-      expect(inkMismatches, `ink-map divergence: ${JSON.stringify(inkMismatches, null, 2)}`).toHaveLength(0);
+      if (parityCase.kind === 'ink') {
+        const tolerance = parityCase.ink;
+        expect(tolerance, `${parityCase.fixture} declares an "ink" tolerance block`).toBeDefined();
+        if (tolerance === undefined) return;
+        const inkMismatches = compareInkMaps(
+          pageInkMaps(pdfBytes, tolerance.dpi),
+          pageInkMaps(referenceBytes, tolerance.dpi),
+          tolerance,
+        );
+        expect(inkMismatches, `ink-map divergence: ${JSON.stringify(inkMismatches, null, 2)}`).toHaveLength(0);
+        return;
+      }
 
-      // Text labels the diagram engines emit as SVG <text> must survive into both renders.
-      if (manifest.labels.length > 0) {
-        const oursText = extractText(pdfBytes);
-        const referenceText = extractText(referenceBytes);
-        for (const label of manifest.labels) {
-          expect(referenceText, `reference contains label ${JSON.stringify(label)}`).toContain(label);
-          expect(oursText, `ours contains label ${JSON.stringify(label)}`).toContain(label);
-        }
+      if (parityCase.kind === 'structural') {
+        expectTextLayerParity(oursText, referenceText);
       }
     });
   }
+
+  // Determinism is asserted separately from parity because it is a different property: parity says
+  // our output matches the reference, determinism says our output does not depend on anything that
+  // varies between runs (FR-020, SC-007, Principle XII). A renderer can be reproducibly WRONG, and a
+  // renderer that matches the reference once but not twice would pass every test above.
+  //
+  // One fixture carries it rather than all of them: the property is of the engine, not of any
+  // document, so paying the cost of a second full render on eleven fixtures buys nothing. The theme
+  // fixture is chosen because a theme is the input most likely to introduce iteration-order
+  // dependence — it is a hash of settings applied across every element.
+  const determinismCase = parityCases.find((entry) => entry.fixture === 'theme-editing');
+
+  test('the same theme and document render identically twice', async ({ page }) => {
+    test.skip(determinismCase === undefined, 'theme-editing fixture has no committed reference yet.');
+    if (determinismCase === undefined) return;
+
+    const shims = determinismCase.needsBrowser
+      ? browserShims(page as Page, {
+          mermaidBundlePath: MERMAID_BUNDLE,
+          mathjaxBaseUrl: mathjaxServer.baseUrl,
+        })
+      : nodeShims();
+
+    const first = await renderOurs(snapshotFor(determinismCase), shims, engine);
+    const second = await renderOurs(snapshotFor(determinismCase), shims, engine);
+
+    // Compared on extracted text and page count rather than bytes: the PDF container carries an
+    // object-ordering that the engine is free to vary, and pinning bytes would fail on a change that
+    // alters nothing an author can observe. What must not vary is the rendered document.
+    expect(pageCount(second.pdfBytes), 'page count across runs').toBe(pageCount(first.pdfBytes));
+    expect(extractText(second.pdfBytes), 'text layer across runs').toBe(extractText(first.pdfBytes));
+  });
 });

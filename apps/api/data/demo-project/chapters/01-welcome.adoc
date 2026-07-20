@@ -1,0 +1,70 @@
+[#welcome]
+== Welcome to the tour
+
+This chapter orients you: what {product-name} is, what you are looking at right
+now, and how the pieces of the screen fit together. Later chapters teach the
+AsciiDoc syntax itself and go deeper on collaboration and export.
+
+TIP: Everything you read here is a real {product-name} document. As you scroll
+the editor, watch the preview on the right update — that is the live rendering
+pipeline in action.
+
+=== The three-panel editor
+
+When you open a project you get three panels working together:
+
+. *File tree* (left) — every `.adoc` file, image, and asset in the project.
+  The left rail also hosts *Outline* and *Search* tabs, covered in
+<<collaborating,the Collaborating chapter>>.
+. *Editor* (center) — a CodeMirror surface with AsciiDoc syntax highlighting,
+  code folding, and multi-user cursors.
+. *Preview* (right) — a live HTML rendering that auto-refreshes as you type,
+  including math and syntax-highlighted code.
+
+This split lets you write on the left-of-center and immediately see the
+formatted result, without ever leaving the browser or running a build.
+
+TIP: You never have to save. Every keystroke is persisted automatically and
+synced to your collaborators in real time, so there is no *Save* button and no
+build step — just write.
+
+[#roles]
+=== Roles: who can do what
+
+{product-name} projects have three roles:
+
+Viewer:: Read-only access. Can open files, browse the outline, search, and
+export to PDF — but cannot change the text.
+Editor:: Everything a viewer can do, plus editing content and leaving review
+comments.
+Owner:: Full control, including project settings, the render configuration, the
+main-file designation, and inviting collaborators.
+
+[IMPORTANT]
+====
+*This demo project is read-only for everyone* — you are joining as a *viewer*.
+That is deliberate: it keeps the tour pristine for the next person. To try
+editing, create your own project and paste in snippets you like from here.
+====
+
+=== What you will learn
+
+[cols="1,3",options="header"]
+|===
+| Chapter | Focus
+
+| <<asciidoc-essentials,Essentials>>
+| Core AsciiDoc: text formatting, lists, admonitions, quotes, footnotes.
+
+| <<structure,Structure & Includes>>
+| Multi-file documents, tables, and conditional content.
+
+| <<collaborating,Collaborating>>
+| Real-time editing, presence, outline, search, and review.
+
+| <<exporting,Exporting & Themes>>
+| PDF export, render configuration, code callouts, and live math.
+|===
+
+Ready? Let's start with the language. Continue to
+<<asciidoc-essentials,the essentials>>.

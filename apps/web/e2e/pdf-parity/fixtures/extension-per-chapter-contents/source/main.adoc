@@ -1,0 +1,48 @@
+= A Book With Per-Chapter Contents
+:doctype: book
+:toc:
+:per-chapter-toc:
+
+== The First Chapter
+
+Opening prose for the first chapter, before any subsection heading.
+
+=== Origins
+
+Text about origins.
+
+=== Method
+
+Text about method.
+
+=== Results
+
+Text about results, long enough that the chapter occupies more than a token amount of space.
+
+// The second chapter opts out, so the fixture covers BOTH branches of the targeting rule: a
+// chapter that carries a contents list and one that deliberately does not.
+[per-chapter-toc=false]
+== The Second Chapter
+
+This chapter opts out, so no contents list appears here even though the document enables them.
+
+=== Background
+
+More text.
+
+=== Analysis
+
+More text.
+
+== The Third Chapter
+
+A third chapter, so the page numbers in the per-chapter lists differ from one another and a
+regression that prints the wrong page cannot pass by coincidence.
+
+=== Consequences
+
+Text about consequences.
+
+=== Further Work
+
+Text about further work.

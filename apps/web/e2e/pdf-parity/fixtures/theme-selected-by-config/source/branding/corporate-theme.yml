@@ -1,0 +1,16 @@
+# Deliberately in a subdirectory: a theme at the project root would resolve correctly even with the
+# directory-doubling bug this fixture guards against.
+extends: default
+base:
+  font-color: 1B3A57
+  font-size: 11
+heading:
+  font-color: B03A2E
+  font-style: bold
+link:
+  font-color: 117864
+admonition:
+  column-rule-color: B03A2E
+  column-rule-width: 3
+page:
+  size: A4

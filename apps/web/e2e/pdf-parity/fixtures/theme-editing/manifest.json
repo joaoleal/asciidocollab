@@ -1,0 +1,19 @@
+{
+  "name": "theme-editing",
+  "description": "The theme editor's built-in sample document rendered under a project theme that overrides colours, fonts, page geometry, headings, code, quotes, sidebars, tables, admonitions, the title page and the table of contents. Proves the sample preview an author judges their theme by matches what the canonical toolchain produces for the same theme — the guarantee that makes the live preview trustworthy rather than merely indicative (FR-019, SC-006). Tolerance absorbs sub-pixel antialiasing at glyph edges only; any real divergence in colour, layout or font selection fails.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "preview-theme.yml",
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "preview-theme.yml"
+    }
+  }
+}

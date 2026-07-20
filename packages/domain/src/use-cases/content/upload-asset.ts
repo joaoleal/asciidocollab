@@ -7,6 +7,7 @@ import { FileNodeType } from '../../value-objects/files/file-node-type';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { FileNodeRepository } from '../../ports/file-tree/file-node.repository';
 import { AssetRepository } from '../../ports/file-tree/asset.repository';
+import { DocumentRepository } from '../../ports/file-tree/document.repository';
 import { SystemSettingRepository } from '../../ports/admin/system-setting.repository';
 import { ProjectFileStore } from '../../ports/storage/project-file-store';
 import { PermissionDeniedError } from '../../errors/common/permission-denied';
@@ -16,6 +17,11 @@ import { DomainError } from '../../errors/domain-error';
 import { Result } from '../../types/result';
 import { FileNode } from '../../entities/file-node';
 import { Asset } from '../../entities/asset';
+import { Document } from '../../entities/document';
+import { ContentId } from '../../value-objects/ids/content-id';
+import { YjsStateId } from '../../value-objects/ids/yjs-state-id';
+import { DocumentId } from '../../value-objects/ids/document-id';
+import { isThemeFilePath } from '@asciidocollab/asciidoc-core';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
 import { RequestContext } from '../../types/request-context';
 import { Logger } from '../../ports/observability/logger';
@@ -44,6 +50,7 @@ export class UploadAssetUseCase {
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly assetRepo: AssetRepository,
+    private readonly documentRepo: DocumentRepository,
     private readonly fileStore: ProjectFileStore,
     private readonly systemSettingRepo: SystemSettingRepository,
     private readonly defaultMaxUploadSizeBytes: number,
@@ -61,8 +68,12 @@ export class UploadAssetUseCase {
     bytes: Buffer,
     context?: RequestContext,
   ): Promise<Result<{ fileNodeId: FileNodeId; storagePath: string }, DomainError>> {
+    // Uploading an asset adds a file to the project, so it requires write access
+    // (editor or owner). A viewer — including every member of a read-only shared
+    // project such as the bundled demo — is denied here.
     const member = await this.projectMemberRepo.findByCompositeKey(projectId, actorId);
-    if (!member) {
+    const role = member?.role.value;
+    if (role !== 'owner' && role !== 'editor') {
       return { success: false, error: new PermissionDeniedError() };
     }
 
@@ -97,9 +108,24 @@ export class UploadAssetUseCase {
       const fileNode = new FileNode(fileNodeId, projectId, parentId, filename, FileNodeType.create('file'), filePath);
       await this.fileNodeRepo.save(fileNode);
 
-      // Asset.id == FileNode.id (1:1 FK relationship)
-      const asset = new Asset(fileNodeId, mimeType, BigInt(bytes.length));
-      await this.assetRepo.save(asset);
+      // A theme is an editable text file, not an opaque blob: it must arrive with the Yjs state that
+      // makes it co-editable, exactly as if it had been created in the tree. Recorded as an asset it
+      // would have none, and the editor would silently fall back to its read-only path — so the file
+      // the theme editor exists to serve would be the one file it could not collaboratively edit.
+      if (isThemeFilePath(filename)) {
+        const document = new Document(
+          DocumentId.create(randomUUID()),
+          fileNodeId,
+          ContentId.create(randomUUID()),
+          YjsStateId.create(randomUUID()),
+          mimeType,
+        );
+        await this.documentRepo.save(document);
+      } else {
+        // Asset.id == FileNode.id (1:1 FK relationship)
+        const asset = new Asset(fileNodeId, mimeType, BigInt(bytes.length));
+        await this.assetRepo.save(asset);
+      }
 
       await recordAuditSuccess(
         this.auditLogRepo,

@@ -11,6 +11,7 @@ import {
   tokenizeWords,
   selectMisspelled,
   SPELLCHECK_SKIP_NODES,
+  headerMetadataRanges,
 } from '@/lib/codemirror/asciidoc-spellcheck';
 import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
 
@@ -81,6 +82,26 @@ describe('tokenizeWords', () => {
   });
 });
 
+describe('headerMetadataRanges', () => {
+  test('marks the author and revision lines under a document title', () => {
+    const text = '= Title\nThe Brand Team <a@b.co>\nv1.0, 2026-07-18\n\nBody.\n';
+    const ranges = headerMetadataRanges(text);
+    expect(ranges.map(([from, to]) => text.slice(from, to))).toEqual([
+      'The Brand Team <a@b.co>',
+      'v1.0, 2026-07-18',
+    ]);
+  });
+  test('returns nothing when there is no document title', () => {
+    expect(headerMetadataRanges('Just a paragraph.\nSecond line.\n')).toEqual([]);
+    expect(headerMetadataRanges('== Section heading\nText.\n')).toEqual([]);
+  });
+  test('stops at a blank line, attribute entry, or comment', () => {
+    expect(headerMetadataRanges('= Title\n\nBody.\n')).toEqual([]);
+    expect(headerMetadataRanges('= Title\n:toc:\nBody.\n')).toEqual([]);
+    expect(headerMetadataRanges('= Title\n// note\nBody.\n')).toEqual([]);
+  });
+});
+
 const isCorrect = (word: string) => ['hello', 'world'].includes(word.toLowerCase());
 
 describe('selectMisspelled', () => {
@@ -125,6 +146,31 @@ describe('SPELLCHECK_SKIP_NODES', () => {
       const diagnostics = await asciidocSpellcheckSource(() => [], 'en', true)(view);
       const words = diagnostics.map((diagnostic: Diagnostic) => view.state.sliceDoc(diagnostic.from, diagnostic.to));
       expect(words).not.toContain('exampledomain');
+      view.destroy();
+    });
+  });
+
+  test('the author byline (name/brand/email) is not spell-checked', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      okResponse(String(input).endsWith('.aff') ? FAKE_AFF : FAKE_DIC)) as unknown as typeof fetch;
+    await withFreshModule(async ({ asciidocSpellcheckSource }) => {
+      const view = makeView('= Guided Tour\nThe Zyxwv Team <hello@zyxwv.test>\nv1.0, 2026-07-18\n\nOrdinary prose.\n');
+      const diagnostics = await asciidocSpellcheckSource(() => [], 'en', true)(view);
+      const words = diagnostics.map((diagnostic: Diagnostic) => view.state.sliceDoc(diagnostic.from, diagnostic.to));
+      expect(words).not.toContain('Zyxwv');
+      expect(words).not.toContain('zyxwv');
+      view.destroy();
+    });
+  });
+
+  test('an attribute reference {name} is not flagged as misspelled prose', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      okResponse(String(input).endsWith('.aff') ? FAKE_AFF : FAKE_DIC)) as unknown as typeof fetch;
+    await withFreshModule(async ({ asciidocSpellcheckSource }) => {
+      const view = makeView('Welcome to {product-brandx} today.\n');
+      const diagnostics = await asciidocSpellcheckSource(() => [], 'en', true)(view);
+      const words = diagnostics.map((diagnostic: Diagnostic) => view.state.sliceDoc(diagnostic.from, diagnostic.to));
+      expect(words).not.toContain('brandx');
       view.destroy();
     });
   });

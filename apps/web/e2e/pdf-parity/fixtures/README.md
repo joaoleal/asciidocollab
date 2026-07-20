@@ -42,6 +42,47 @@ A fixture is any immediate sub-directory that contains a `manifest.json`. The `r
 added later — the fixture is discovered as soon as the manifest exists, and its test skips until the
 reference PDF is committed.
 
+### Fixtures whose reference is built from a different document
+
+Some fixtures cannot have their reference rendered from `source/`, because the external toolchain
+cannot consume `source/` as written. Those carry an extra directory holding the input the reference
+was actually built from:
+
+| Fixture | Directory | Why `source/` will not do |
+| --- | --- | --- |
+| `citations` | `reference-src/` | The reference keeps asciidoctor-bibtex macro syntax, not our shim syntax. |
+| `math`, `diagrams` | `reference-build/` | Figures are already rasterised to committed `.gen/*.svg` (producing them needs a browser). |
+| `theme-fonts-woff2` | `reference-build/` | Prawn embeds TTF/OTF only and cannot read WOFF2 at all, so the fonts are decoded to `.ttf`. |
+
+A `reference-build/` is **self-contained**: every render option is a document attribute in its own
+`main.adoc`, so it is rebuilt with one flag-free command and the committed directory is the whole
+auditable input.
+
+Build these with `node tools/build-references.mjs [<fixture> ...]`, **not** with
+`generate-reference.mjs` — which refuses them by name, because rendering `source/` for one of these
+overwrites a committed reference with a plausible PDF of the wrong document. That is not
+hypothetical; it happened to `math`, and only a SHA-256 comparison against the previous corpus caught
+it.
+
+### Fixtures that enable more than one extension
+
+A fixture listing two or more ids in `render.enabledExtensions` is also an input to
+`node tools/check-extension-order.mjs`, which renders it **twice** — once in the order the app loads
+its extensions, once reversed — and requires the two PDFs to be byte-identical. `scripts/ci/pdf-parity.sh`
+runs it after the suite.
+
+It exists because the suite cannot see this class of defect. Extensions customise the converter by
+`prepend`ing a module, so two that override the same hook wrap each other, and which one ends up
+outermost is fixed by whichever was `require`d **first** — in a warm VM, by whichever project rendered
+first in that worker rather than by what the current render selected. A fixture renders one order and
+compares it against a reference rendered the same way, so it agrees with itself whichever order that
+is; only rendering both can tell you the extension does not care.
+
+Worth knowing before dismissing a failure as cosmetic: when this was introduced it found a real
+divergence in `theme-editing-all-extensions` whose committed `reference.pdf` was **completely
+unchanged** by the fix. The forward order happened to be the correct one, so the bug was only ever
+visible from the other side.
+
 ## Manifest format (`manifest.json`)
 
 | Field | Type | Meaning |

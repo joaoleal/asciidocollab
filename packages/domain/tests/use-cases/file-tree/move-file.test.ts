@@ -147,6 +147,16 @@ describe('MoveFileUseCase', () => {
     expect(entries[0].metadata.reason).toBe('not_a_project_member');
   });
 
+  it('denies a viewer and records insufficient_role', async () => {
+    const viewerId = UserId.create('550e8400-e29b-41d4-a716-44665544000a');
+    await projectMemberRepo.addMember(new ProjectMember(projectId, viewerId, Role.create('viewer')));
+    const result = await useCase.execute(viewerId, projectId, fileNodeId, subFolderId);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.name).toBe('PermissionDeniedError');
+    const entries = await auditLogRepo.findAll();
+    expect(entries[0].metadata.reason).toBe('insufficient_role');
+  });
+
   it('returns FileNodeNotFoundError when fileNode belongs to a different project', async () => {
     const otherProjectId = ProjectId.create('ff0e8400-e29b-41d4-a716-446655440099');
     const alienNodeId = FileNodeId.create('ee0e8400-e29b-41d4-a716-446655440011');

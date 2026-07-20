@@ -54,12 +54,31 @@ function flattenPaths(forest: readonly FolderNode[]): string[] {
   return paths;
 }
 
+/** Every FILE path in the tree (folders excluded), sorted — the input theme resolution runs over. */
+function collectFilePaths(root: FileTreeNode): string[] {
+  const paths: string[] = [];
+  const walk = (node: FileTreeNode): void => {
+    for (const child of node.children) {
+      if (child.type === 'folder') walk(child);
+      else paths.push(relativePath(child));
+    }
+  };
+  walk(root);
+  return paths.toSorted();
+}
+
 /** The project's folders and the load state, for the render-config folder pickers. */
 export interface UseProjectFolders {
   /** The folder forest (folders only; the root excluded), for the tree picker. */
   tree: FolderNode[];
   /** Every folder path (flattened), for validating a stored selection still exists. */
   folders: string[];
+  /**
+   * Every file path in the project, sorted. The PDF section resolves the project's theme over this
+   * list with the same rule the renderer uses, so the options page cannot advertise a theme the
+   * export does not apply.
+   */
+  files: string[];
   /** True while the file tree is loading. */
   loading: boolean;
   /** Load error message, or null. */
@@ -70,6 +89,7 @@ export interface UseProjectFolders {
 export function useProjectFolders(projectId: string): UseProjectFolders {
   const [tree, setTree] = useState<FolderNode[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
+  const [files, setFiles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,6 +103,7 @@ export function useProjectFolders(projectId: string): UseProjectFolders {
           const forest = toFolderForest(root);
           setTree(forest);
           setFolders(flattenPaths(forest));
+          setFiles(collectFilePaths(root));
         }
       })
       .catch(() => {
@@ -100,5 +121,5 @@ export function useProjectFolders(projectId: string): UseProjectFolders {
     };
   }, [projectId]);
 
-  return { tree, folders, loading, error };
+  return { tree, folders, files, loading, error };
 }

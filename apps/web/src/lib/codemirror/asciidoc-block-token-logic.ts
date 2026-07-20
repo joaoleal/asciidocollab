@@ -75,6 +75,22 @@ function diagramDeclNotation(input: InputStream): DiagramNotation | null {
 const CONDITIONAL_DIRECTIVES = ['ifdef::', 'ifndef::', 'ifeval::', 'endif::'];
 
 /**
+ * Whether the line at the current position begins a conditional preprocessor directive
+ * (`ifdef::`/`ifndef::`/`ifeval::`/`endif::`).
+ *
+ * Asciidoctor resolves these line-by-line in the PRE-processor, before any block is parsed, so a
+ * directive is always a directive regardless of what surrounds it — in particular a closing
+ * `endif::[]` sits directly under the block content it wraps, with no blank line between. Without
+ * this, that `endif::[]` line trips the mid-paragraph absorption rule and is swallowed as paragraph
+ * text (while the opening `ifdef::`, which usually follows a blank line, highlights) — the exact
+ * asymmetry a reader sees as "endif isn't highlighted like ifdef". Treating a directive line like a
+ * delimited-block delimiter (it terminates an open paragraph) makes both ends highlight identically.
+ */
+function startsConditionalDirective(input: InputStream): boolean {
+  return CONDITIONAL_DIRECTIVES.some((directive) => peekString(input, directive));
+}
+
+/**
  * Build the block-tokenizer read function bound to a term-id map. Term ids are destructured
  * once here; the returned closure (called per token position) reads only free locals.
  */
@@ -156,8 +172,12 @@ export function createBlockTokenLogic(T: Record<string, number>): (input: InputS
     // Checked first so it wins over the block branches; `canShift` is true only inside a paragraph.
     // EXCEPTION (Asciidoctor `block_terminates_paragraph`): a delimited-block delimiter still ends the
     // paragraph with no blank line between them, so `startsDelimitedBlock` lines fall through to the
-    // block branches below instead of being absorbed (e.g. `prose` directly above `****`).
-    if (input.next !== NEWLINE && stack.canShift(paragraphLineToken) && !startsDelimitedBlock(input)) {
+    // block branches below instead of being absorbed (e.g. `prose` directly above `****`). A
+    // conditional preprocessor directive (`endif::[]` closing a region under its content, and the
+    // opening forms) is likewise resolved before block parsing, so it too must not be absorbed —
+    // otherwise `endif::[]` right under a paragraph goes unhighlighted (see startsConditionalDirective).
+    if (input.next !== NEWLINE && stack.canShift(paragraphLineToken) &&
+        !startsDelimitedBlock(input) && !startsConditionalDirective(input)) {
       consumeToEOL(input);
       input.acceptToken(paragraphLineToken);
       return;

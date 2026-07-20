@@ -84,6 +84,55 @@ describe('renderConfigSchema / normalizeRenderConfig', () => {
     expect(safeNormalizeRenderConfig({ extraFontDirs: [''] }).success).toBe(false);
   });
 
+  it('accepts an extension selection', () => {
+    const config = { extensions: { enabled: ['paragraph-numbering', 'per-chapter-contents'] } };
+    expect(normalizeRenderConfig(config)).toEqual(config);
+    expect(safeNormalizeRenderConfig({ extensions: {} }).success).toBe(true);
+    expect(safeNormalizeRenderConfig({ extensions: { enabled: [] } }).success).toBe(true);
+  });
+
+  it('enables nothing for a config that predates extensions (T061, FR-032g, SC-012b)', () => {
+    // Every project created before this feature has a config with no `extensions` key, and adding an
+    // extension to a deployment must not change what any of them render. So the absent case has to
+    // mean "nothing enabled" and never "whatever the deployment now offers" — the opt-in has to be
+    // in the SCHEMA, not only in the UI that writes it, because the renderer reads the config
+    // directly and never sees the toggle.
+    const predatesExtensions = { doctype: 'book', toc: true, pdfPageSize: 'A4' };
+    expect(normalizeRenderConfig(predatesExtensions).extensions).toBeUndefined();
+    // And an empty selection is not silently upgraded into one either.
+    expect(normalizeRenderConfig({ extensions: { enabled: [] } }).extensions?.enabled).toEqual([]);
+  });
+
+  it('keeps an enabled id it does not recognise', () => {
+    // An administrator can remove an extension a project still has enabled. That selection has to
+    // survive normalisation so the owner can be told about it; silently filtering it here would
+    // erase the very state the stale-selection warning exists to report.
+    const config = { extensions: { enabled: ['an-extension-nobody-ships'] } };
+    expect(normalizeRenderConfig(config)).toEqual(config);
+  });
+
+  it('rejects an extension id shaped like a path', () => {
+    // An id is resolved by catalogue lookup, never joined onto a filesystem path. Refusing
+    // separators at the boundary means a selection can never be read as one.
+    expect(safeNormalizeRenderConfig({ extensions: { enabled: ['../../etc/passwd'] } }).success).toBe(
+      false,
+    );
+    expect(safeNormalizeRenderConfig({ extensions: { enabled: ['nested/id'] } }).success).toBe(false);
+    expect(safeNormalizeRenderConfig({ extensions: { enabled: ['with space'] } }).success).toBe(false);
+    expect(safeNormalizeRenderConfig({ extensions: { enabled: [''] } }).success).toBe(false);
+  });
+
+  it('caps the number of enabled extensions', () => {
+    const many = Array.from({ length: 101 }, (_unused, index) => `extension-${index}`);
+    expect(safeNormalizeRenderConfig({ extensions: { enabled: many } }).success).toBe(false);
+  });
+
+  it('rejects unknown keys inside the extension selection (strict)', () => {
+    expect(
+      safeNormalizeRenderConfig({ extensions: { enabled: [], code: 'puts 1' } }).success,
+    ).toBe(false);
+  });
+
   it('trims string option values', () => {
     expect(normalizeRenderConfig({ imagesdir: '  images  ' }).imagesdir).toBe('images');
   });

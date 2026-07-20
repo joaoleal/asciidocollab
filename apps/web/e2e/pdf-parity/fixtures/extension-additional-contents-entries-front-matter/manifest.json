@@ -1,0 +1,14 @@
+{
+  "name": "extension-additional-contents-entries-front-matter",
+  "description": "The additional-contents-entries extension under a NON-DEFAULT page-numbering regime: `page.numbering.start-at: 3` puts the first two body pages in the front matter, where Asciidoctor-PDF labels pages with lowercase Roman numerals rather than Arabic ones. The list of figures must follow that, entry for entry, because it sits beside a contents list that already does. An earlier version printed the physical Arabic page number for a front-matter entry — a number that appears nowhere in the book, and one that looked entirely plausible in a document whose numbering happened to start at page 1. Where the numbering starts is configurable and also depends on the doctype, the presence of a title page and a front cover, and where the contents sit, so the count is taken from the converter's own `num_front_matter_pages` rather than recomputed. This fixture is the one that fails if anyone ever recomputes it.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "theme.yml",
+    "fontPaths": [],
+    "attributes": {},
+    "enabledExtensions": ["additional-contents-entries"]
+  }
+}

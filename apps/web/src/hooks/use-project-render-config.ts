@@ -15,6 +15,17 @@ export interface UseProjectRenderConfig {
   config: RenderConfig;
   /** True while the initial fetch is in flight. */
   loading: boolean;
+  /**
+   * True once the stored configuration has actually been READ.
+   *
+   * Distinct from `!loading`, and the distinction is load-bearing: a failed fetch also ends the
+   * loading state, but leaves `config` at its empty default — indistinguishable from a project that
+   * has stored nothing. Saving is a whole-document replace, so an editor that seeded its draft from
+   * that empty default and let the viewer save would erase every setting the project had. A consumer
+   * must not offer editing until this is true. `error` is NOT a substitute: it is also set by a
+   * failed save, after which the draft is real and editing must remain possible.
+   */
+  loaded: boolean;
   /** True while a save is in flight. */
   saving: boolean;
   /** The last load/save error message, or null. */
@@ -33,18 +44,23 @@ const EMPTY: RenderConfig = {};
 export function useProjectRenderConfig(projectId: string): UseProjectRenderConfig {
   const [config, setConfig] = useState<RenderConfig>(EMPTY);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
+    // Cleared for the new project: leaving it set would let an editor seed its draft from the
+    // PREVIOUS project's configuration while this one's fetch is still in flight.
+    setLoaded(false);
     setError(null);
     renderConfigApi
       .get(projectId)
       .then((response) => {
         if (active) {
           setConfig(response.data);
+          setLoaded(true);
         }
       })
       .catch((error_: unknown) => {
@@ -80,5 +96,5 @@ export function useProjectRenderConfig(projectId: string): UseProjectRenderConfi
     [projectId],
   );
 
-  return { config, loading, saving, error, save };
+  return { config, loading, loaded, saving, error, save };
 }

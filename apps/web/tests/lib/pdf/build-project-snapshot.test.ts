@@ -1,4 +1,4 @@
-import { RENDER_INTRINSIC_ATTRIBUTES } from '@/lib/asciidoc/render-intrinsics';
+import { PDF_RENDER_INTRINSIC_ATTRIBUTES } from '@/lib/asciidoc/render-intrinsics';
 import { resolveImageTarget } from '@/lib/asciidoc/include-path';
 import {
   buildProjectSnapshot,
@@ -94,15 +94,27 @@ describe('buildProjectSnapshot', () => {
   });
 
   describe('attribute merge', () => {
-    it('seeds the render-intrinsic attributes merged with the project attributes', () => {
+    it('seeds the PDF render-intrinsic attributes merged with the project attributes', () => {
       const { snapshot } = buildProjectSnapshot(
         baseInput({ attributes: attributes({ author: 'Ada', version: '2' }) }),
       );
-      for (const [name, value] of RENDER_INTRINSIC_ATTRIBUTES) {
+      for (const [name, value] of PDF_RENDER_INTRINSIC_ATTRIBUTES) {
         expect(snapshot.attributes[name]).toBe(value);
       }
       expect(snapshot.attributes.author).toBe('Ada');
       expect(snapshot.attributes.version).toBe('2');
+    });
+
+    // These attributes reach the engine as API attributes, which OVERRIDE the document header. The
+    // html5 intrinsic set used to be seeded here, so every PDF the app rendered was forced to
+    // `doctype: article` and `backend: html5` — a book lost its title page and its chapters no
+    // matter what its header said, and every `ifdef::backend-pdf[]` gate resolved to false.
+    it('does not force a doctype or an html backend onto the document', () => {
+      const { snapshot } = buildProjectSnapshot(baseInput({ attributes: attributes({}) }));
+      expect(snapshot.attributes.doctype).toBeUndefined();
+      expect(snapshot.attributes.backend).toBe('pdf');
+      expect(snapshot.attributes['backend-html5']).toBeUndefined();
+      expect(snapshot.attributes['doctype-article']).toBeUndefined();
     });
 
     it('lets a project attribute override an intrinsic default', () => {
@@ -151,8 +163,30 @@ describe('buildProjectSnapshot', () => {
       expect(snapshot.themePath).toBe('brand-theme.yaml');
     });
 
+    it('auto-detects a theme whose name is capitalised', () => {
+      // The file tree marks this as a theme and the asset collector resolves its fonts, so the
+      // renderer has to agree — otherwise the author edits a theme that never reaches the export.
+      const { snapshot } = buildProjectSnapshot(
+        baseInput({ files: [text('main.adoc', '= T'), text('Corporate-Theme.yml', 'base:')] }),
+      );
+      expect(snapshot.themePath).toBe('Corporate-Theme.yml');
+    });
+
     it('omits themePath when nothing matches', () => {
       const { snapshot } = buildProjectSnapshot(baseInput({ files: [text('main.adoc', '= T')] }));
+      expect(snapshot.themePath).toBeUndefined();
+    });
+
+    it('omits themePath when a declared :pdf-theme: names a file the project does not contain', () => {
+      // A sandbox-legal but absent declared theme must not become a themePath missing from `files`:
+      // that would skip the alias mount and silently fall back to the default. The sibling collector
+      // (collect-referenced-assets) already treats it as absent, so both must agree.
+      const { snapshot } = buildProjectSnapshot(
+        baseInput({
+          files: [text('main.adoc', '= T')],
+          attributes: attributes({ 'pdf-theme': 'themes/ghost-theme.yml' }),
+        }),
+      );
       expect(snapshot.themePath).toBeUndefined();
     });
 
@@ -290,6 +324,29 @@ describe('buildProjectSnapshot', () => {
     it('surfaces excluded paths without throwing', () => {
       const { excluded } = buildProjectSnapshot(baseInput({ files: [text('/abs/path.adoc', 'x')] }));
       expect(excluded).toContainEqual({ path: '/abs/path.adoc', reason: 'absolute' });
+    });
+  });
+
+  describe('enabled extensions (T061, FR-032g, SC-012b)', () => {
+    // The web end of the same opt-in the config schema and the registry enforce: a project that has
+    // enabled nothing must produce a snapshot that ASKS for nothing, so that adding an extension to
+    // a deployment cannot change what it renders.
+    it('omits the field entirely when the project enables nothing', () => {
+      // Omitted rather than sent as `[]`. Both mean the same thing downstream, and a test pinning
+      // that equivalence lives beside `mountPdfExtensions` — this pins which one is actually sent,
+      // because `undefined` is the shape every pre-feature project produces.
+      expect(buildProjectSnapshot(baseInput()).snapshot.enabledExtensions).toBeUndefined();
+      expect(
+        buildProjectSnapshot(baseInput({ enabledExtensions: [] })).snapshot.enabledExtensions,
+      ).toBeUndefined();
+    });
+
+    it('passes a selection through when the project has made one', () => {
+      // The counterpart, so the test above cannot be satisfied by dropping the field unconditionally.
+      expect(
+        buildProjectSnapshot(baseInput({ enabledExtensions: ['narrow-contents'] })).snapshot
+          .enabledExtensions,
+      ).toEqual(['narrow-contents']);
     });
   });
 });

@@ -92,6 +92,19 @@ RUN set -eu; \
     cp -R /app/apps/api/data    /artifacts/apps/api/data; \
     cp -R /app/packages/db/prisma /artifacts/packages/db/prisma; \
     cp /app/packages/db/prisma.config.ts /artifacts/packages/db/prisma.config.ts; \
+    # The first-party PDF converter extensions, copied in beside the other runtime assets. They are
+    # Ruby, so no dist/ ever contains them, and they live in the engine gem — but `pnpm deploy`
+    # flattens apps/api to the image root and does not bring the monorepo tree along, and the API
+    # deliberately does not depend on the engine package. Copying them here is what puts them
+    # somewhere the API can still read at runtime; apps/api/src/lib/pdf-extensions.ts looks here
+    # first and falls back to the gem for a development checkout.
+    # Fail loudly if absent: the loader reads a missing directory as "nothing ships", which is right
+    # for a checkout without the gem and silently wrong here — it would ship an image on which every
+    # project's stored selection reads back as unavailable and every PDF renders unextended.
+    e=/app/packages/asciidoc-pdf/ruby/extensions/asciidocollab-pdf-extensions/lib; \
+    [ -d "$e" ] || { echo "FATAL: shipped PDF extensions not found at $e." >&2; exit 1; }; \
+    mkdir -p /artifacts/apps/api/pdf-extensions; \
+    cp -R "$e/." /artifacts/apps/api/pdf-extensions/; \
     # The Prisma client is generated INTO THE PNPM STORE, beside @prisma/client —
     # not into /app/node_modules/.prisma. Lift it to a stable path. Fail loudly if
     # it is missing: a silent skip here ships an image whose database layer is dead.

@@ -1,0 +1,15 @@
+= Theme Selected By Project Options
+:doctype: article
+
+This project selects its theme through project options rather than a document header, and the theme
+lives in a SUBDIRECTORY. That combination is what broke: the selection is stored as a project-relative
+path, and the theme directory is derived from that same path, so a renderer that used the raw stored
+value resolved `branding/branding/corporate-theme.yml`, found nothing, and silently fell back to the
+built-in theme.
+
+== A section
+
+Every visible property below comes from the theme. If the theme is not applied, this document renders
+in the default face and colours and the comparison fails.
+
+TIP: An admonition, whose rule colour the theme overrides.

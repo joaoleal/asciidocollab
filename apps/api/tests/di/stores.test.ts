@@ -14,10 +14,29 @@ function fakeConfig(): ReturnType<typeof getConfig> {
       editSecret: '',
       editTls: { cert: '', key: '', ca: '' },
     },
+    // The extension source reads its folder and its bounds from configuration — nothing is hardcoded
+    // at the call site — so the composition root cannot be exercised without them.
+    project: {
+      pdfExtensions: {
+        path: '/tmp/asciidocollab-extensions-test',
+        maxExtensions: 50,
+        maxSourceBytes: 262_144,
+        scanCacheTtl: 30_000,
+      },
+    },
   } as unknown as ReturnType<typeof getConfig>;
 }
 
 describe('createStores', () => {
+  it('wires the PDF extension source, the only route to the administrator folder', () => {
+    // Reading that folder from anywhere else would mean each caller re-deciding the bounds on how
+    // much work an outside party can cause, so the wiring is pinned here alongside the regex engine.
+    const stores = createStores(fakeConfig());
+    expect(stores.pdfExtensionSource).toBeDefined();
+    expect(typeof stores.pdfExtensionSource.list).toBe('function');
+    expect(typeof stores.pdfExtensionSource.readSource).toBe('function');
+  });
+
   it('wires a working linear-time regex engine', () => {
     const stores = createStores(fakeConfig());
     expect(stores.regexEngine).toBeDefined();

@@ -129,6 +129,9 @@ describe('FileTree', () => {
     mockFetch(rootNode);
     (globalThis as unknown as Record<string, unknown>).__lastOnEvent = undefined;
     (globalThis as unknown as Record<string, unknown>).__lastOnReconnect = undefined;
+    // jsdom does not implement scrollIntoView; the reveal-selected effect calls it whenever a node is
+    // selected. Stub it so tests that render with a selection (e.g. a restored selection) don't throw.
+    Element.prototype.scrollIntoView = jest.fn();
   });
 
   it('initial tree is fetched and rendered on mount', async () => {
@@ -136,11 +139,19 @@ describe('FileTree', () => {
     await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
   });
 
-  // canEdit=false hides action buttons
-  it('canEdit=false — no FileTreeActions buttons rendered', async () => {
+  // canEdit=false hides both the per-node action buttons and the header actions menu — a viewer (and,
+  // via the role-based `canModifyFiles` the layout passes here, a global admin who is only a viewer of
+  // the project) sees no file-management controls at all.
+  it('canEdit=false — no per-node FileTreeActions buttons and no header actions menu', async () => {
     render(<FileTree projectId={projectId} canEdit={false} onSelectFile={jest.fn()} selectedNodeId={null} />);
     await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
     expect(screen.queryByTestId('actions-doc.adoc')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tree-root-actions')).not.toBeInTheDocument();
+  });
+
+  it('canEdit=true — the header actions menu renders', async () => {
+    render(<FileTree projectId={projectId} canEdit={true} onSelectFile={jest.fn()} selectedNodeId={null} />);
+    await waitFor(() => expect(screen.getByTestId('tree-root-actions')).toBeInTheDocument());
   });
 
   // onSelectFile called with (nodeId, nodeName, nodePath) on file click
@@ -150,6 +161,95 @@ describe('FileTree', () => {
     await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('node-doc.adoc'));
     expect(onSelectFile).toHaveBeenCalledWith('file-1', 'doc.adoc', '/doc.adoc', 'file');
+  });
+
+  // First-open auto-selection of the main file.
+  describe('first-open auto-selection (autoSelectNodeId)', () => {
+    it('selects the main file once, after the tree loads, when nothing is selected', async () => {
+      const onSelectFile = jest.fn();
+      render(
+        <FileTree
+          projectId={projectId}
+          canEdit={false}
+          onSelectFile={onSelectFile}
+          selectedNodeId={null}
+          autoSelectNodeId="file-1"
+        />,
+      );
+      await waitFor(() => expect(onSelectFile).toHaveBeenCalledWith('file-1', 'doc.adoc', '/doc.adoc', 'file'));
+      expect(onSelectFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT auto-select when a selection is already restored', async () => {
+      const onSelectFile = jest.fn();
+      render(
+        <FileTree
+          projectId={projectId}
+          canEdit={false}
+          onSelectFile={onSelectFile}
+          selectedNodeId="file-1"
+          autoSelectNodeId="file-1"
+        />,
+      );
+      await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
+      expect(onSelectFile).not.toHaveBeenCalled();
+    });
+
+    it('does NOT auto-select when no main file is provided (returning users / no main file)', async () => {
+      const onSelectFile = jest.fn();
+      render(
+        <FileTree
+          projectId={projectId}
+          canEdit={false}
+          onSelectFile={onSelectFile}
+          selectedNodeId={null}
+          autoSelectNodeId={null}
+        />,
+      );
+      await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
+      expect(onSelectFile).not.toHaveBeenCalled();
+    });
+
+    it('leaves the empty state when the main file id matches no node', async () => {
+      const onSelectFile = jest.fn();
+      render(
+        <FileTree
+          projectId={projectId}
+          canEdit={false}
+          onSelectFile={onSelectFile}
+          selectedNodeId={null}
+          autoSelectNodeId="does-not-exist"
+        />,
+      );
+      await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
+      expect(onSelectFile).not.toHaveBeenCalled();
+    });
+
+    it('does not re-select the main file after the user navigates away from it', async () => {
+      const onSelectFile = jest.fn();
+      const { rerender } = render(
+        <FileTree
+          projectId={projectId}
+          canEdit={false}
+          onSelectFile={onSelectFile}
+          selectedNodeId={null}
+          autoSelectNodeId="file-1"
+        />,
+      );
+      await waitFor(() => expect(onSelectFile).toHaveBeenCalledTimes(1));
+      // The parent commits the selection; a later render with a different open file must not re-fire.
+      rerender(
+        <FileTree
+          projectId={projectId}
+          canEdit={false}
+          onSelectFile={onSelectFile}
+          selectedNodeId="file-other"
+          autoSelectNodeId="file-1"
+        />,
+      );
+      await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
+      expect(onSelectFile).toHaveBeenCalledTimes(1);
+    });
   });
 
   // empty children renders "No files yet" text

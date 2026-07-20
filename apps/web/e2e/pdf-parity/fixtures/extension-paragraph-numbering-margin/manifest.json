@@ -1,0 +1,20 @@
+{
+  "name": "extension-paragraph-numbering-margin",
+  "description": "The paragraph-numbering extension with `paragraph-numbering.placement: margin`, which draws the number beside the text instead of inside it. Three things need pinning and none are visible in the inline fixture. (1) Placement per column: the rightmost column's numbers go in the right-hand margin, every other column's on the left, so a two-column region reads outward with nothing in the gutter. (2) The fallback: a three-column region's INTERIOR column has only the 12pt gutter, which cannot hold a number, so those paragraphs number inline instead — a clipped number would be unreadable where an inline one is merely less pretty. (3) The page break: a number drawn before the converter decides where the text lands is stranded at the foot of the previous page. The upstream recipe this extension derives from fails exactly here, with `cannot fit formatted text on page` and a paragraph that renders with no number at all.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": {
+    "pixelThreshold": 0.1,
+    "maxMismatchRatio": 0.01
+  },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "margin-theme.yml",
+    "fontPaths": [],
+    "attributes": {},
+    "enabledExtensions": [
+      "multi-column-sections",
+      "paragraph-numbering"
+    ]
+  }
+}

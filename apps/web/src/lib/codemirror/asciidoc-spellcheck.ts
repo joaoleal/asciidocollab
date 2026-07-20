@@ -44,6 +44,42 @@ export interface WordToken {
   to: number;
 }
 
+/**
+ * Byte ranges of the document-header author and revision lines, which AsciiDoc
+ * treats as metadata (names, emails, brand words, version + date), not prose.
+ *
+ * These lines are only present when the document opens with a level-0 title: the
+ * author line immediately follows it and the optional revision line follows that,
+ * with the header ending at the first blank line, attribute entry (`:`), or
+ * comment (`//`). The block tokenizer never emits the grammar's stub
+ * `AuthorLine`/`RevisionLine` nodes (they need header context it cannot enforce),
+ * so the spell-checker excludes these lines by position instead of by node name.
+ *
+ * @param text - The full document text.
+ * @returns Up to two `[from, to)` ranges (author, then revision), or none.
+ */
+export function headerMetadataRanges(text: string): Array<[number, number]> {
+  // A document header exists only when the first line is a level-0 title (`= `);
+  // `==`+ are section headings, not a title, so require exactly one `=`.
+  if (!/^=[ \t]/.test(text)) return [];
+  const ranges: Array<[number, number]> = [];
+  const firstBreak = text.indexOf('\n');
+  if (firstBreak === -1) return [];
+  let start = firstBreak + 1; // first char of the line after the title
+  for (let line = 0; line < 2; line++) {
+    const nextBreak = text.indexOf('\n', start);
+    const end = nextBreak === -1 ? text.length : nextBreak;
+    const content = text.slice(start, end);
+    // The header ends at a blank line; an attribute entry or comment is not an
+    // author/revision line (attributes are already skipped as their own nodes).
+    if (content.trim() === '' || content.startsWith(':') || content.startsWith('//')) break;
+    ranges.push([start, end]);
+    if (nextBreak === -1) break;
+    start = nextBreak + 1;
+  }
+  return ranges;
+}
+
 /** Tokenise prose text into word tokens with absolute offsets (`base` = text start offset). */
 export function tokenizeWords(text: string, base = 0): WordToken[] {
   const tokens: WordToken[] = [];
@@ -173,6 +209,13 @@ export function asciidocSpellcheckSource(
         for (let index = node.from; index < node.to; index++) cls[index] = BOUNDARY;
       }
     });
+
+    // The author/revision byline is parsed as an ordinary paragraph (the grammar's
+    // AuthorLine/RevisionLine tokens are never emitted), so exclude those header
+    // lines by position — a name or brand word there is metadata, not misspelled prose.
+    for (const [from, to] of headerMetadataRanges(text)) {
+      for (let index = from; index < to; index++) cls[index] = BOUNDARY;
+    }
 
     // Materialise the visible text and a per-char map back to document offsets (boundary runs collapse
     // to a single space — it is only ever a word separator, never part of a flagged word).

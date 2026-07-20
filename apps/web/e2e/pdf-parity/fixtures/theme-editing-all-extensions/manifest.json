@@ -1,0 +1,24 @@
+{
+  "name": "theme-editing-all-extensions",
+  "description": "The theme editor's built-in sample document — the same text and theme as the theme-editing fixture — rendered with EVERY shipped extension enabled at once. Two guarantees ride on this. First, SC-014b: the sample must carry the targeting markup each extension acts on, so enabling one produces a visible difference an author can see; a sample that had lost an attribute would render here identically to theme-editing and the difference between the two references would show it. Second, SC-015b: nine extensions prepended onto one converter must compose, and the back-matter ones must produce the same page order however they were loaded — the licence page and the colophon each drew from the same hook and did NOT, before the ranked back-matter queue. The pair with theme-editing is the whole point: same source, same theme, extensions the only variable.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "preview-theme.yml",
+    "fontPaths": [],
+    "attributes": {},
+    "enabledExtensions": [
+      "additional-contents-entries",
+      "auto-license-page",
+      "colophon-placement",
+      "large-table-page-size",
+      "multi-column-sections",
+      "narrow-contents",
+      "paragraph-numbering",
+      "per-chapter-contents",
+      "title-block-document-details"
+    ]
+  }
+}

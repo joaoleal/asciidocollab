@@ -40,6 +40,18 @@ export ASCIIDOCOLLAB_AUTH_INVITATION_RATE_LIMIT_MAX=500
 # Outline / cross-document suites set a project's main file many times; raise the 50/hour default.
 export ASCIIDOCOLLAB_PROJECT_MAIN_FILE_RATE_LIMIT_MAX=10000
 
+# PDF converter-extension drop folder. The default (/data/pdf-extensions) is a production bind mount
+# that does not exist here, and a missing folder is deliberately the "no extensions offered" case —
+# so without this the administrator-folder flow could never be exercised. The scan cache is dropped
+# from 30s to 1s so `pdf-extensions.spec.ts` can add a directory and see the catalogue pick it up
+# within one test rather than stalling a suite for half a minute per assertion.
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH="${ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH:-$ROOT/.e2e-pdf-extensions}"
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL=1000
+# Start from an empty folder: a leftover extension from a previous run would make the catalogue
+# assertions depend on run history.
+rm -rf "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
+mkdir -p "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
+
 # ─── Cleanup on exit ─────────────────────────────────────────────────────────
 API_PID=""; WEB_PID=""
 cleanup() {

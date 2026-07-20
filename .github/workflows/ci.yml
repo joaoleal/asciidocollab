@@ -6,10 +6,13 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel in-flight runs for the same branch when a new push arrives.
+# Cancel superseded runs for the same branch when a new push arrives — but only for pull requests.
+# On main every push keeps its own run: that commit's CI result is the record of whether the commit
+# is releasable, and cancelling it leaves a merged commit with no verdict. A cancelled run can also
+# abort a cache save mid-write (pdf-wasm's ~15-25 min CRuby compile), making the next run redo it.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least-privilege default for the GITHUB_TOKEN across every job (CWE-275). Jobs that
 # need more must opt in explicitly with their own `permissions:` block.
@@ -165,7 +168,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Make the Asciidoctor-PDF wasm engine available so the live-PDF specs (pdf-preview-responsive,
-      # pdf-image-embed, pdf-parity) run for real instead of test.skip'ing. The web prebuild copies
+      # pdf-image-embed) run for real instead of test.skip'ing. The web prebuild copies
       # ruby/asciidoctor-pdf.wasm into public/vendor/ when present. Two sources, in order of freshness:
       #   1. this run's pdf-wasm artifact, when a wasm-input change rebuilt the engine;
       #   2. otherwise the cache pdf-wasm populated on an earlier build (same gem closure).
@@ -195,9 +198,9 @@ jobs:
         run: pnpm --filter @asciidocollab/web exec playwright install --with-deps chromium
 
       # The live-PDF specs inspect the exported PDF via poppler's CLI: pdf-image-embed reads its text
-      # with `pdftotext`, and the pdf-parity harness (once reference fixtures land) rasterizes pages
-      # with `pdftoppm`. Without poppler those specs error with "spawnSync pdftotext ENOENT" instead
-      # of running. This is the "parity host has poppler" assumption the harness documents.
+      # with `pdftotext`. Without poppler those specs error with "spawnSync pdftotext ENOENT" instead
+      # of running. (The reference-parity suite has its own `pdf-parity` job — it needs no app stack,
+      # so it does not run here.)
       - name: Install poppler-utils (PDF text/raster inspection for the live-PDF specs)
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
 
@@ -321,6 +324,87 @@ jobs:
           # `if: always()` the upload still runs, so don't warn when there is genuinely nothing.
           if-no-files-found: ignore
 
+  # ── PDF reference parity (fidelity oracle) ─────────────────────────────────
+  # Compares the PDFs our in-browser pipeline produces against committed reference PDFs built by the
+  # canonical Asciidoctor-PDF toolchain. Needs NO app stack and NO database — the suite drives the wasm
+  # engine and the rendering shims directly — so it runs in parallel with e2e rather than inside it.
+  #
+  # The engine is always available by construction: pdf-wasm rebuilds it whenever the inputs changed OR
+  # the cached engine was evicted (see the probe in `changes`), so one of the two restore paths below
+  # always produces it. That invariant is what this job's value rests on — without an engine the suite
+  # skips every comparison and reports a green run that verified nothing, the exact failure mode this
+  # job exists to prevent. So a missing engine here is treated as a hard failure, never a benign skip:
+  # it can only mean pdf-wasm failed or was cancelled. scripts/ci/pdf-parity.sh fails hard too.
+  pdf-parity:
+    name: PDF reference parity
+    runs-on: ubuntu-latest
+    needs: [unit, pdf-wasm]
+    if: ${{ always() && needs.unit.result == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same two sources, same precedence, as the e2e job — see the comments there.
+      - name: Download the PDF wasm engine (when pdf-wasm built it this run)
+        if: needs.pdf-wasm.result == 'success'
+        uses: actions/download-artifact@v7
+        with:
+          name: asciidoctor-pdf-wasm
+          path: packages/asciidoc-pdf/ruby/
+
+      - name: Restore the PDF wasm engine from cache (when pdf-wasm was skipped)
+        if: needs.pdf-wasm.result == 'skipped'
+        uses: actions/cache/restore@v6
+        with:
+          path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
+          key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
+
+      # The comparison reads page counts, text layers and rasterized ink through poppler's CLI.
+      - name: Install poppler-utils (PDF text/raster inspection)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      # The math/diagram fixtures drive the DOM-bound mermaid + MathJax shims in a real browser page.
+      - name: Install Playwright browsers
+        run: pnpm --filter @asciidocollab/web exec playwright install --with-deps chromium
+
+      # FAIL, do not skip. `changes` guarantees pdf-wasm runs whenever no cached engine survives, so
+      # reaching this point without an engine means the build failed or was cancelled — a real defect,
+      # not a cold cache. Skipping here instead would report a green "PDF reference parity" job that
+      # compared zero PDFs, which is worse than no job at all: it looks like coverage and is not.
+      - name: Check the wasm engine is present
+        run: |
+          set -euo pipefail
+          if [ ! -f packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm ]; then
+            echo "::error::No wasm engine available, so nothing can be compared against the reference PDFs."
+            echo "The engine is built by the 'pdf-wasm' job (result: ${{ needs.pdf-wasm.result }}) and"
+            echo "restored here from its artifact or cache. Check that job — this is not a cold cache."
+            exit 1
+          fi
+
+      - name: Run the PDF reference-parity suite
+        run: ./scripts/ci/pdf-parity.sh
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report-pdf-parity
+          path: apps/web/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # ── Detect whether the wasm engine inputs changed ──────────────────────────
   # The CRuby→wasm compile below is heavy (~15-25 min), so it must NOT run on every push/PR. This
   # job reports whether the pinned gem closure or the build script changed; pdf-wasm is gated on it.
@@ -333,6 +417,7 @@ jobs:
       contents: read
     outputs:
       wasm: ${{ steps.filter.outputs.wasm }}
+      engine-cached: ${{ steps.engine-cache.outputs.cache-hit }}
 
     steps:
       - uses: actions/checkout@v5
@@ -377,6 +462,21 @@ jobs:
             echo "wasm=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # "Inputs unchanged" is NOT sufficient to skip the engine build, because the cached engine can
+      # disappear on its own: GitHub evicts cache entries after 7 days idle and when the repo passes
+      # its 10 GB budget. Once that happens with the inputs unchanged, pdf-wasm stays skipped, the
+      # e2e/pdf-parity restore finds nothing, and the fidelity oracle verifies NOTHING on every run
+      # from then on — silently, and permanently, until someone happens to touch a wasm input. So
+      # probe for the entry (lookup-only: no download) and rebuild when the engine is gone, changed
+      # or not. The key is identical to the one pdf-wasm saves under and the consumers restore from.
+      - name: Probe the engine cache (is a built engine still available?)
+        id: engine-cache
+        uses: actions/cache/restore@v6
+        with:
+          lookup-only: true
+          path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
+          key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
+
   # ── Build the client-side Asciidoctor-PDF WebAssembly engine ───────────────
   # Runs ONLY when the wasm inputs changed (see `changes`). The engine is gitignored and re-synced
   # from the pinned Gemfile.lock via the ruby.wasm toolchain (rbwasm) running directly on the runner —
@@ -386,7 +486,9 @@ jobs:
     name: PDF wasm engine build
     runs-on: ubuntu-latest
     needs: [quality, changes]
-    if: ${{ needs.changes.outputs.wasm == 'true' }}
+    # Build when the inputs changed OR when no cached engine survives (eviction) — see the probe in
+    # `changes`. The second condition is what stops a silently-empty parity suite becoming permanent.
+    if: ${{ needs.changes.outputs.wasm == 'true' || needs.changes.outputs.engine-cached != 'true' }}
 
     steps:
       - uses: actions/checkout@v5
@@ -442,6 +544,43 @@ jobs:
         with:
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
           key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
+
+  # ── Production image build ─────────────────────────────────────────────────
+  # docker/Dockerfile builds the four runtime images the production stack ships, from a context that
+  # is the whole repository — so almost any source change can break it, while nothing else in CI
+  # compiles it. Without this job a broken Dockerfile is found at deploy time, on the machine least
+  # convenient to debug it on.
+  #
+  # SCOPE, so a green tick is not over-read: this proves the images BUILD. It does not run them, so it
+  # says nothing about whether a service starts, connects, or serves. The e2e job covers runtime
+  # behaviour, but against the dev stack rather than these images.
+  docker:
+    name: Docker images (production targets)
+    runs-on: ubuntu-latest
+    # After quality so a branch that cannot lint or type-check does not spend ~10 minutes here first.
+    needs: quality
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      # SINGLE SOURCE OF TRUTH: the same script the local gate runs (scripts/ci/gate.sh → docker.sh),
+      # which owns the target list and the build flags. Only the cross-run layer cache is passed in
+      # here, because it is CI-specific — locally the Docker daemon's own build cache already does it.
+      #
+      # Cache `mode=min` (final layers only), NOT max: the GitHub cache is a single 10 GB per-repo
+      # budget shared with pdf-wasm's rbwasm build cache and the built engine. Exporting every
+      # intermediate layer could evict those, and an evicted engine now triggers a fresh 15-25 minute
+      # CRuby compile (see the `changes` probe). One scope for all four targets is deliberate — they
+      # share the base/toolchain/manifests/deps stages, so a shared scope is a cache hit, not a clash.
+      - name: Build every production image target
+        run: |
+          bash scripts/ci/docker.sh \
+            --cache-from type=gha,scope=docker-prod \
+            --cache-to type=gha,scope=docker-prod,mode=min
 
   # ── Security scanning: SAST · secrets · dependency CVEs · workflow hardening ─
   security:
@@ -499,8 +638,39 @@ jobs:
       # reported but non-blocking.
       - name: OSV-Scanner (dependency CVEs, gate at High+)
         run: |
+          set -euo pipefail
+
+          # `|| true` is required — osv-scanner exits non-zero when it FINDS advisories, which is not
+          # an error here; the gate below decides. But it also exits non-zero on a genuine failure
+          # (network, unreadable lockfile), and that would leave an empty osv.json that the old jq
+          # expression read as "zero advisories" — a scanner that never ran reporting a clean bill of
+          # health. So the output is validated before any conclusion is drawn from it.
           osv-scanner scan --lockfile=pnpm-lock.yaml --format=json > osv.json || true
           osv-scanner scan --lockfile=pnpm-lock.yaml || true   # human-readable table in the log
-          HIGH=$(jq '[.results[].packages[].groups[].max_severity | select(. != "") | tonumber] | map(select(. >= 7.0)) | length' osv.json)
+
+          if [ ! -s osv.json ] || ! jq -e 'type == "object"' osv.json >/dev/null 2>&1; then
+            echo "::error::OSV-Scanner produced no parsable JSON — treating this as a scan failure."
+            echo "An empty or malformed report must never be read as 'no vulnerabilities found'."
+            exit 1
+          fi
+
+          # `.results` is ABSENT (not empty) when nothing was scanned, so every level is indexed with
+          # `?` to yield nothing rather than error. Severities are strings and some advisory groups
+          # carry a CVSS vector rather than a base score, so `tonumber` is applied only to values that
+          # actually look numeric — an unguarded `tonumber` aborts the whole expression on the first
+          # vector string, which under `set -e` fails the step with no indication of why.
+          SEVERITIES='[ .results[]?.packages[]?.groups[]?.max_severity? // empty | select(. != "") ]'
+          NUMERIC='test("^[0-9]+(\\.[0-9]+)?$")'
+
+          HIGH=$(jq "$SEVERITIES | map(select($NUMERIC) | tonumber) | map(select(. >= 7.0)) | length" osv.json)
           echo "High+ (CVSS >= 7.0) advisories: $HIGH"
+
+          # Anything skipped by the numeric filter is reported rather than silently dropped: a
+          # non-numeric severity may well be a High, and a quiet omission would hide it.
+          UNGATED=$(jq "$SEVERITIES | map(select($NUMERIC | not)) | length" osv.json)
+          if [ "$UNGATED" -gt 0 ]; then
+            echo "::warning::$UNGATED advisory group(s) report a non-numeric max_severity and could"
+            echo "not be gated automatically — review them in the table above."
+          fi
+
           test "$HIGH" -eq 0

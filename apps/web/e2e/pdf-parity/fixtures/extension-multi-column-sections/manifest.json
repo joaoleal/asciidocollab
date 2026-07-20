@@ -1,0 +1,19 @@
+{
+  "name": "extension-multi-column-sections",
+  "description": "The multi-column-sections converter extension applied to a document with two marked regions and full-measure prose around them. Proves the extension's effect matches the canonical toolchain — Principle XV names an extension without passing comparison coverage as not done. The surrounding prose is part of the fixture on purpose: a regression that columnised the entire page rather than the marked region would pass a fixture containing only marked content. The two regions cover the default column count and an explicit one, and they differ in LENGTH on purpose, because the two lengths take different paths: the long region overflows its first column and flows naturally, while the short one is measured and divided evenly. Before that measuring pass existed the short region put every line in column one and left the others empty — it merely looked narrow — and this reference PDF encoded that broken layout, so the parity suite passed by comparing two toolchains that agreed on the wrong output. The regenerated reference pins the balanced layout. The third region crosses a page break and then stops early on the page after it, which is the only case that exercises what a column box does on the way OUT: it leaves the cursor at its own foot, so a spanning region left the cursor at the bottom of the page and pushed everything after it onto a fresh one, wasting most of the region's last page. The trailing prose is what pins that — it must sit directly beneath the region's final line, at the full measure, on the same page. Without the fix this document is four pages; with it, three. The first region carries a footnote because the measuring pass converts the content a second time and a conversion REGISTERS footnotes on the shared document: without a guard the reader got two identical footnotes and a reference pointing at the second. It must appear once, numbered first.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": {
+    "pixelThreshold": 0.1,
+    "maxMismatchRatio": 0.01
+  },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": null,
+    "fontPaths": [],
+    "attributes": {},
+    "enabledExtensions": [
+      "multi-column-sections"
+    ]
+  }
+}

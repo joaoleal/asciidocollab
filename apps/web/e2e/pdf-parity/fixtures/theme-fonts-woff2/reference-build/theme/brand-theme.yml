@@ -1,0 +1,28 @@
+# Custom PDF theme for the WOFF2 custom-font reference-parity fixture.
+#
+# It is the theme-fonts fixture's theme, but its branded heading typeface is registered from WOFF2
+# files instead of raw TTF — the realistic case where a project author ships web fonts. Asciidoctor-PDF
+# embeds only TTF/OTF, so the app decompresses each WOFF2 back to the TTF it wraps before the render;
+# this fixture proves that decode path embeds the branded font faithfully. Both the in-app export and
+# the external reference build consume the SAME decoded glyphs, so any divergence in how the theme or
+# the font is honoured shows up as a content / layout / colour difference in the compared PDFs.
+extends: default
+font:
+  catalog:
+    merge: true
+    Brand Mono:
+      normal: mplus1mn-regular-subset.ttf
+      bold: mplus1mn-bold-subset.ttf
+      italic: mplus1mn-italic-subset.ttf
+      bold_italic: mplus1mn-bold_italic-subset.ttf
+page:
+  background-color: FCFBF7
+base:
+  font-color: '222222'
+heading:
+  font-family: Brand Mono
+  font-color: '2A5CAA'
+title-page:
+  title:
+    font-family: Brand Mono
+    font-color: '2A5CAA'

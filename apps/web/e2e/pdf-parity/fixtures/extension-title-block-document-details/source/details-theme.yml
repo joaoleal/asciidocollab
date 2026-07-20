@@ -1,0 +1,7 @@
+# All three contributed keys set away from their defaults, so a regression that stopped reading any
+# one of them fails rather than passing silently.
+extends: default
+title-block-details:
+  text-align: left
+  font-color: '335577'
+  margin-top: 36

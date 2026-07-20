@@ -6,12 +6,12 @@ import {
   ListOrdered, List, ListChecks, ListTree,
   SquareCode, Box, PanelRight, Quote,
   Info, Lightbulb, TriangleAlert, AlertCircle, Flame, Sigma, MessageSquare,
-  Table, Captions, Link, ArrowRightLeft, Asterisk, Image, Settings, Replace,
+  Table, Captions, Link, ArrowRightLeft, Asterisk, Image, Replace,
 } from 'lucide-react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import type { EditorView } from '@codemirror/view';
 import { EditorToolbarButton } from './editor-toolbar-button';
-import { EditorSettingsPanel } from './editor-settings-panel';
+import { EditorSettingsButton, EditorSettingsSurface } from './editor-settings-control';
 import type { EditorThemeValue } from '@/hooks/use-editor-preferences';
 import { TABLE_SKELETON } from '@/lib/codemirror/asciidoc-completions';
 import { symbolAtCursor, type CursorSymbol } from '@/lib/codemirror/asciidoc-symbol-at-cursor';
@@ -235,28 +235,23 @@ export function EditorToolbar({
               onClick={() => onRefactor(view ? symbolAtCursor(view) : null)}
             />
           )}
-          <EditorToolbarButton
-            icon={<Settings className="h-4 w-4" />}
-            label="Editor settings"
-            shortcut=""
-            active={settingsOpen}
-            onClick={() => setSettingsOpen((previous) => !previous)}
+          <EditorSettingsButton
+            open={settingsOpen}
+            onToggle={() => setSettingsOpen((previous) => !previous)}
           />
         </div>
       </div>
       {settingsOpen && (
-        <div className="border-b bg-background shadow-lg">
-          <EditorSettingsPanel
-            fontSize={fontSize}
-            theme={theme}
-            softWrap={softWrap}
-            minimapEnabled={minimapEnabled}
-            setFontSize={setFontSize}
-            setTheme={setTheme}
-            setSoftWrap={setSoftWrap}
-            setMinimapEnabled={setMinimapEnabled}
-          />
-        </div>
+        <EditorSettingsSurface
+          fontSize={fontSize}
+          theme={theme}
+          softWrap={softWrap}
+          minimapEnabled={minimapEnabled}
+          setFontSize={setFontSize}
+          setTheme={setTheme}
+          setSoftWrap={setSoftWrap}
+          setMinimapEnabled={setMinimapEnabled}
+        />
       )}
     </Tooltip.Provider>
   );

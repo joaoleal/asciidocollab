@@ -1,0 +1,48 @@
+= AsciidoCollab: A Guided Tour
+The AsciidoCollab Team <hello@asciidocollab.example>
+v1.0, 2026-07-18
+:toc: left
+:toclevels: 3
+:icons: font
+:experimental:
+:sectnums:
+:sectnumlevels: 3
+:stem:
+:product-name: AsciidoCollab
+:showcase-version: 1.0
+
+// The document header above lives ONLY in this root file. Each chapter is a
+// plain include that begins at a section heading (==), so every chapter slots
+// neatly beneath this level-0 title. This file is the project's "main file" —
+// see the Collaborating chapter for why that designation matters.
+
+// Start the welcome preamble on a fresh page, after the title page and table of
+// contents. `<<<` is a page break: it paginates the PDF export and is a
+// print-only break that stays invisible in the on-screen HTML preview.
+<<<
+
+Welcome to {product-name} — a browser-based, real-time collaborative AsciiDoc
+editor with a live HTML preview and in-browser PDF export. This guided tour is
+itself an {product-name} project: read it to learn AsciiDoc *and* to learn how
+to drive the app.
+
+.Official AsciiDoc resources
+[TIP]
+====
+This tour covers the essentials, but AsciiDoc has much more. The authoritative
+references (each opens in a new tab):
+
+* The AsciiDoc Language, the official specification — https://asciidoc.org[asciidoc.org^]
+* Asciidoctor documentation — https://docs.asciidoctor.org[docs.asciidoctor.org^]
+* AsciiDoc syntax quick reference — https://docs.asciidoctor.org/asciidoc/latest/syntax-quick-reference/[Quick Reference^]
+====
+
+include::chapters/01-welcome.adoc[]
+
+include::chapters/02-asciidoc-essentials.adoc[]
+
+include::chapters/03-structure-and-includes.adoc[]
+
+include::chapters/04-collaborating.adoc[]
+
+include::chapters/05-exporting-and-themes.adoc[]

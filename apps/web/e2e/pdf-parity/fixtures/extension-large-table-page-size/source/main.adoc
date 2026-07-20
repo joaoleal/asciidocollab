@@ -1,0 +1,43 @@
+= Wide Tables On Their Own Page
+:doctype: article
+
+Prose before the table, on a normal portrait page.
+
+[.wide-page]
+|===
+| Column one row 0 | Column two row 0 | Column three row 0 | Column four row 0 | Column five row 0 | Column six row 0
+| Column one row 1 | Column two row 1 | Column three row 1 | Column four row 1 | Column five row 1 | Column six row 1
+| Column one row 2 | Column two row 2 | Column three row 2 | Column four row 2 | Column five row 2 | Column six row 2
+| Column one row 3 | Column two row 3 | Column three row 3 | Column four row 3 | Column five row 3 | Column six row 3
+| Column one row 4 | Column two row 4 | Column three row 4 | Column four row 4 | Column five row 4 | Column six row 4
+| Column one row 5 | Column two row 5 | Column three row 5 | Column four row 5 | Column five row 5 | Column six row 5
+|===
+
+Prose after the table. This must be back on a normal portrait page — a regression that changed the
+page geometry and never restored it would leave the whole rest of the document landscape.
+
+[.wide-page, page-size=A3]
+|===
+| Column one row 0 | Column two row 0 | Column three row 0 | Column four row 0 | Column five row 0 | Column six row 0
+| Column one row 1 | Column two row 1 | Column three row 1 | Column four row 1 | Column five row 1 | Column six row 1
+| Column one row 2 | Column two row 2 | Column three row 2 | Column four row 2 | Column five row 2 | Column six row 2
+| Column one row 3 | Column two row 3 | Column three row 3 | Column four row 3 | Column five row 3 | Column six row 3
+| Column one row 4 | Column two row 4 | Column three row 4 | Column four row 4 | Column five row 4 | Column six row 4
+| Column one row 5 | Column two row 5 | Column three row 5 | Column four row 5 | Column five row 5 | Column six row 5
+|===
+
+Final prose, portrait again.
+
+// FR-031c: a marked table inside a multi-column region. Multi-column wins and the page geometry is
+// left alone. This is in the fixture because the outcome must be PREDICTABLE, not merely documented.
+[.multi-column]
+--
+Text in columns before the marked table.
+
+[.wide-page]
+|===
+| a | b
+|===
+
+Text in columns after the marked table.
+--

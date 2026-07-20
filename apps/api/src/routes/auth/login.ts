@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { Email, LoginUseCase } from '@asciidocollab/domain';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
+import { ensureDemoProjectMembership } from '../../bootstrap/demo-project';
 import '../../types/session';
 import type { LoginDto, AuthSuccessResponseDto, AuthErrorResponseDto } from '@asciidocollab/shared';
 
@@ -58,6 +59,15 @@ export async function loginRoute(app: FastifyInstance): Promise<void> {
     request.session.userId = result.value.userId;
     request.session.emailVerified = result.value.emailVerified;
     request.session.isAdmin = result.value.isAdmin;
+
+    // Ensure every user can read the bundled demo project. Login is the universal
+    // choke point (all users authenticate however they were provisioned), so this
+    // covers accounts created since the last start-up backfill. Best-effort — it
+    // never throws, so a demo-access hiccup cannot fail an otherwise valid login.
+    await ensureDemoProjectMembership(
+      { repos: { project: request.server.repos.project, projectMember: request.server.repos.projectMember }, logger: request.log },
+      result.value.userId,
+    );
 
     return reply.status(200).send({ message: 'Authenticated' } satisfies AuthSuccessResponseDto);
   });

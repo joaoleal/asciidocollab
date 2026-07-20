@@ -1,0 +1,8 @@
+{
+  "id": "additional-contents-entries",
+  "displayName": "List of figures and tables",
+  "description": "Adds a List of Figures and a List of Tables as their own pages after the main contents, each entry carrying the page its figure or table appears on. Add :list-of-figures: or :list-of-tables: to the document header. Only captioned blocks are listed — a figure with no title has nothing to list it by, so it is skipped rather than given a generated label. A list with no entries is omitted rather than drawn empty.",
+  "targeting": ":list-of-figures:",
+  "themeKeys": [],
+  "sampleContent": "Captioned figures and tables are collected into their own lists after the contents, each showing the page it appears on."
+}

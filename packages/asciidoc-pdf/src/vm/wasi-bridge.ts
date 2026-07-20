@@ -214,8 +214,14 @@ export interface WasiBridge {
 /**
  * The writable in-memory mounts preopened for the VM. `/usr` (Ruby stdlib + pinned gems) is baked
  * read-only into the wasm image via wasi-vfs and therefore needs no manual preopen.
+ *
+ * `/extensions` holds converter-extension source, written by the composition root before a convert
+ * and `require`d by it. It is deliberately SEPARATE from `/project`: project files are member-
+ * writable and must never be loadable as code, so the two live under different mounts and the
+ * extension registry refuses any candidate path under the project one. Splitting the mounts is what
+ * makes that refusal structural rather than a string check nobody notices being relaxed.
  */
-export const WRITABLE_MOUNT_PATHS = ['/project', '/out', '/tmp'] as const;
+export const WRITABLE_MOUNT_PATHS = ['/project', '/out', '/tmp', '/extensions'] as const;
 
 const DEFAULT_ARGS: readonly string[] = ['ruby.wasm', '-EUTF-8', '-e_=0'];
 

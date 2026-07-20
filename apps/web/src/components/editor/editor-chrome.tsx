@@ -5,6 +5,7 @@ import type { EditorThemeValue } from '@/hooks/use-editor-preferences';
 import type { TableContext } from '@/lib/codemirror/asciidoc-table-context';
 import type { CursorSymbol } from '@/lib/codemirror/asciidoc-symbol-at-cursor';
 import { EditorToolbar } from './editor-toolbar';
+import { EditorSettingsControl } from './editor-settings-control';
 import { EditorTableContextToolbar } from './editor-table-context-toolbar';
 import { CollabPresenceBar } from './collab-presence-bar';
 
@@ -27,6 +28,14 @@ interface EditorChromeProperties {
   tableContext: TableContext | null;
   /** Awareness for the collab presence bar; null/undefined on the non-collab path. */
   awareness?: Awareness | null;
+  /**
+   * Content rendered at the leading edge of the settings row, opposite the settings control.
+   *
+   * Exists so a host with something to say about the open file — the theme editor names the file it
+   * is editing — can put it in the SAME row rather than adding a strip of its own above the editor.
+   * Only rendered where the settings row is (non-AsciiDoc files).
+   */
+  trailing?: React.ReactNode;
   /** Opens the Go to Symbol palette. */
   onGoToSymbol?: () => void;
   // Opens the refactor dialog, seeded with the symbol under the cursor.
@@ -52,6 +61,7 @@ export function EditorChrome({
   setMinimapEnabled,
   tableContext,
   awareness,
+  trailing,
   onGoToSymbol,
   onRefactor,
 }: EditorChromeProperties) {
@@ -80,6 +90,24 @@ export function EditorChrome({
           context={tableContext}
           tableText={view.state.doc.sliceString(tableContext.tableFrom, tableContext.tableTo)}
           tableFrom={tableContext.tableFrom}
+        />
+      )}
+      {/*
+        The settings are not AsciiDoc-specific — font size, theme, soft wrap and the minimap apply to
+        whatever the editor is showing. When they lived only inside the AsciiDoc toolbar, opening a
+        YAML theme left the author with no way to reach their own editor settings.
+      */}
+      {!isAsciiDoc && (
+        <EditorSettingsControl
+          leading={trailing}
+          fontSize={fontSize}
+          theme={theme}
+          softWrap={softWrap}
+          minimapEnabled={minimapEnabled}
+          setFontSize={setFontSize}
+          setTheme={setTheme}
+          setSoftWrap={setSoftWrap}
+          setMinimapEnabled={setMinimapEnabled}
         />
       )}
       {awareness != null && <CollabPresenceBar awareness={awareness} />}

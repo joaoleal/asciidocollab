@@ -107,9 +107,23 @@ export async function getEditorText(page: Page): Promise<string> {
  * @param word - The exact word to double-click (its first DOM occurrence).
  * @param replacement - The text typed over the selected word.
  */
+/**
+ * How long to wait for the collaborative editor to become editable (`contenteditable="true"`).
+ *
+ * The editor mounts read-only and only flips editable once its Yjs document has synced through the
+ * collab server. Under full gate load — several parallel browser workers driving Yjs sessions against
+ * one test collab server, on a box that may also be running a dev stack — that handshake occasionally
+ * runs well past the couple of seconds it takes idle. 15s was under-budgeted for that worst case and
+ * surfaced as retried "editor never became editable" timeouts; this is sized for the loaded handshake,
+ * the same worst-case-load reasoning behind the suite's other budgets. One shared constant so every
+ * collab-edit site (these helpers and the specs that inline the guard) waits by the SAME rule, and
+ * widening a wait can never slow a test that meets it quickly — only the starved case waits longer.
+ */
+export const EDITOR_EDITABLE_TIMEOUT = 30_000;
+
 export async function renameFirstWord(page: Page, word: string, replacement: string): Promise<void> {
   const content = editorContent(page);
-  await expect(content).toHaveAttribute('contenteditable', 'true', { timeout: 15_000 });
+  await expect(content).toHaveAttribute('contenteditable', 'true', { timeout: EDITOR_EDITABLE_TIMEOUT });
   await content.getByText(word, { exact: false }).first().dblclick();
   await page.keyboard.type(replacement);
   await expect(content).toContainText(replacement, { timeout: 10_000 }); // the edit registered
@@ -131,7 +145,7 @@ export async function renameFirstWord(page: Page, word: string, replacement: str
  */
 export async function liveReplaceLine(page: Page, matchText: string, newLine: string): Promise<void> {
   const content = editorContent(page);
-  await expect(content).toHaveAttribute('contenteditable', 'true', { timeout: 15_000 });
+  await expect(content).toHaveAttribute('contenteditable', 'true', { timeout: EDITOR_EDITABLE_TIMEOUT });
   await content.getByText(matchText, { exact: false }).first().click();
   await page.keyboard.press('Home');
   await page.keyboard.down('Shift');

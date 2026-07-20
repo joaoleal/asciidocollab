@@ -1,0 +1,72 @@
+[#collaborating]
+== Collaborating in {product-name}
+
+Writing together is the whole point. This chapter explains how many people edit
+the same project at once, and the tools that keep a large document navigable.
+
+.Diagram of the {product-name} editing workflow
+image::images/workflow.svg[Diagram of the AsciidoCollab editing workflow,width=520]
+
+The diagram above traces the flow: several authors type into their own
+CodeMirror editors, their keystrokes flow through the Yjs CRDT layer and the
+collaboration server, and the merged result fans out to everyone's live HTML
+preview and to in-browser PDF export.
+
+=== Real-time editing without merge conflicts
+
+Every collaborator sees the same document update character by character. This is
+powered by *CRDTs*footnote:crdt-note[CRDT — Conflict-free Replicated Data Type: a
+data structure whose concurrent edits always converge to the same result without a
+central lock.], so two people can type in the same paragraph at the same time and
+the edits simply merge — there is no "save", no locking, and no merge conflict to
+resolve.
+
+Presence is built in:
+
+* You see each collaborator's *live cursor* and selection, in their own color.
+* The file tree shows *who has which file open*, so you can tell at a glance
+  where your teammates are working.
+
+NOTE: Because this demo is read-only (you are a viewer — see
+<<roles,Roles: who can do what>>), you will not see other cursors here. In a
+project where you have the editor role, they appear the moment someone else
+joins.
+
+[#outline-search]
+=== Finding your way: outline and search
+
+Two tabs sit alongside *Files* in the left rail:
+
+Outline:: A live table of contents built from your headings. Click any entry to
+jump straight to it in the editor. It tracks the whole document across every
+included file.
+Search:: Project-wide find, with find-and-replace. It searches across all files
+at once, not just the open one.
+
+=== Main-file intelligence
+
+Once an owner designates a <<main-file,main file>>, {product-name} understands
+your project as a single connected document and offers:
+
+* *Cross-document attribute resolution* — an attribute defined in `index.adoc`
+  (like `{product-name}`) resolves correctly inside any included chapter.
+* *Go-to-definition on xrefs* — `Ctrl`+click an `<<anchor>>` to jump to its
+  target, even in another file.
+* *Go to Symbol* — jump to any heading or anchor in the project by name.
+* *Rename / Refactor* — rename an anchor or attribute and every reference across
+  every file updates together.
+
+TIP: These features light up only when a main file is set. This tour ships with
+`index.adoc` already designated, which is why the cross-file links throughout
+these chapters resolve.
+
+=== Review comments and tasks
+
+Reviewers do not have to edit prose to give feedback. Editors and owners can
+attach *review comments* to specific spans of the document and convert them into
+*tasks* to track follow-up. Comments live in a side rail anchored to the text
+they discuss, so a conversation stays pinned to the exact sentence it is about —
+even as the surrounding document changes.
+
+You have now met the collaboration model. The final chapter covers getting your
+work out of the browser: <<exporting,exporting and themes>>.

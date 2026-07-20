@@ -41,6 +41,47 @@ const { createRubyPdfVm } = requirePkg(join(DIST, 'vm', 'ruby-pdf-vm.js'));
 const { populateProject } = requirePkg(join(DIST, 'vfs', 'populate.js'));
 const { createMountAssetsStage } = requirePkg(join(DIST, 'pipeline', 'stages', 'mount-assets.js'));
 const { invokeConvert } = requirePkg(join(DIST, 'convert', 'invoke.js'));
+const { resolvePdfExtensions } = requirePkg(join(DIST, 'extensions', 'registry.js'));
+
+/** The first-party extension gem's lib directory: one directory per shipped extension. */
+const SHIPPED_EXTENSIONS_DIR = join(
+  PACKAGE_ROOT,
+  'ruby',
+  'extensions',
+  'asciidocollab-pdf-extensions',
+  'lib',
+);
+
+/** Every shipped extension directory carrying both a manifest and a source. */
+function shippedDirectories() {
+  if (!existsSync(SHIPPED_EXTENSIONS_DIR)) return [];
+  return readdirSync(SHIPPED_EXTENSIONS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter(
+      (name) =>
+        existsSync(join(SHIPPED_EXTENSIONS_DIR, name, 'manifest.json')) &&
+        existsSync(join(SHIPPED_EXTENSIONS_DIR, name, 'extension.rb')),
+    );
+}
+
+/** The shipped catalogue, as the server would assemble it. */
+function shippedCatalogue() {
+  return shippedDirectories().map((name) => ({
+    manifest: JSON.parse(readFileSync(join(SHIPPED_EXTENSIONS_DIR, name, 'manifest.json'), 'utf8')),
+    origin: 'shipped',
+    available: true,
+  }));
+}
+
+/** Each shipped extension's Ruby source, as the composition root would inject it. */
+function shippedSources() {
+  return shippedDirectories().map((name) => ({
+    id: JSON.parse(readFileSync(join(SHIPPED_EXTENSIONS_DIR, name, 'manifest.json'), 'utf8')).id,
+    origin: 'shipped',
+    source: readFileSync(join(SHIPPED_EXTENSIONS_DIR, name, 'extension.rb'), 'utf8'),
+  }));
+}
 const { assembleIncludes } = requirePkg('@asciidocollab/asciidoc-core');
 
 const requireWeb = createRequire(join(WEB_MODULES, 'placeholder.js'));
@@ -148,6 +189,9 @@ function buildSnapshot(fixtureDir, manifest) {
   };
   if (typeof render.themePath === 'string') snapshot.themePath = render.themePath;
   if (typeof render.imagesDir === 'string') snapshot.imagesDir = render.imagesDir;
+  // Identifiers only, exactly as a real snapshot carries them; the registry resolves each to
+  // deployment-controlled source below.
+  if (Array.isArray(render.enabledExtensions)) snapshot.enabledExtensions = render.enabledExtensions;
 
   return { snapshot, unresolved: assembled.unresolved };
 }
@@ -242,8 +286,36 @@ async function renderWithEngine(snapshot) {
   // The shipping asset-mount stage: decode each WOFF2 already mounted under /project to the TTF it
   // wraps, drop the `.woff2`, and repoint the theme catalogue — all in the VFS the convert reads.
   await mountAssets(vm, snapshot);
-  const request = { requestId: 'parity-render', mode: 'export', snapshot, optimize: false };
-  const result = await invokeConvert({ vm, request });
+
+  // Resolve the fixture's enabled extensions through the SAME registry a real render uses. Reading
+  // the shipped `.rb` files here is this harness standing in for the composition root that injects
+  // them in the app; the registry still decides what is loadable and in what order, so the fixture
+  // exercises the production rule rather than a parallel one.
+  const resolution = resolvePdfExtensions(
+    snapshot.enabledExtensions ?? [],
+    shippedCatalogue(),
+    shippedSources(),
+  );
+  if (resolution.rejected.length > 0) {
+    throw new Error(
+      `Extensions refused: ${resolution.rejected.map((e) => `${e.id} (${e.reason})`).join(', ')}`,
+    );
+  }
+  for (const extension of resolution.loaded) {
+    vm.writeFile(extension.vfsPath, new TextEncoder().encode(extension.source));
+  }
+
+  const request = {
+    requestId: 'parity-render',
+    mode: 'export',
+    snapshot,
+    optimize: false,
+  };
+  const result = await invokeConvert({
+    vm,
+    request,
+    loadedExtensions: resolution.loaded.map(({ id, vfsPath }) => ({ id, vfsPath })),
+  });
   vm.dispose();
   if (!result.ok) {
     throw new Error(`Engine convert failed: ${result.error.phase}/${result.error.code}: ${result.error.message}`);

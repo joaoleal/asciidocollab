@@ -11,6 +11,7 @@ import {
   type RenderPhase,
   type RenderRequest,
   type ToWorker,
+  type PdfExtensionBundle,
 } from '@asciidocollab/asciidoc-pdf';
 import { createPdfWorker } from '@/lib/create-pdf-worker';
 import {
@@ -84,6 +85,11 @@ export interface UsePdfExportDeps {
    * tests inject a deterministic fake so no real (DOM-bound) mermaid render is needed.
    */
   readonly createPrerenderer?: () => MermaidPrerenderer;
+  /**
+   * The catalogue and Ruby source for the extensions the exported snapshot names. Carried on the
+   * request for the same reason the preview does it — see {@link UsePdfPreviewOptions.extensions}.
+   */
+  readonly extensions?: PdfExtensionBundle;
 }
 
 /** Derive a download filename from the render root path (basename with a `.pdf` extension). */
@@ -129,6 +135,11 @@ export function usePdfExport(deps: UsePdfExportDeps = {}): UsePdfExportResult {
   const [phase, setPhase] = useState<RenderPhase | undefined>(undefined);
   const [error, setError] = useState<RenderError | undefined>(undefined);
   const [diagnostics, setDiagnostics] = useState<readonly RenderDiagnostic[]>(NO_DIAGNOSTICS);
+
+  // Read at post time, not captured: `exportPdf` is a stable callback, so closing over the bundle
+  // would pin whichever one existed when the hook first ran.
+  const extensionsReference = useRef(deps.extensions);
+  extensionsReference.current = deps.extensions;
 
   const workerReference = useRef<Worker | null>(null);
   // Monotonic counter feeding the request id, and the latest id issued (the staleness key).
@@ -233,6 +244,9 @@ export function usePdfExport(deps: UsePdfExportDeps = {}): UsePdfExportResult {
         snapshot,
         optimize: true,
         ...(prepass.assets.length > 0 ? { generatedAssets: prepass.assets } : {}),
+        ...(extensionsReference.current === undefined
+          ? {}
+          : { extensions: extensionsReference.current }),
       };
       worker.postMessage({ type: 'render', request } satisfies ToWorker);
     })();

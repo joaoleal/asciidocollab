@@ -1,0 +1,8 @@
+{
+  "id": "per-chapter-contents",
+  "displayName": "Per-chapter contents",
+  "description": "Adds a short contents list of a chapter's own subsections at the start of each chapter, alongside the document-level contents list. Applies to books only; an article is unaffected. Add :per-chapter-toc: to the document header to switch it on, and [per-chapter-toc=false] above a chapter to leave that one out. Styled by the same toc.* theme keys as the document-level list.",
+  "targeting": ":per-chapter-toc:",
+  "themeKeys": [],
+  "sampleContent": "Each chapter opens with a list of its own subsections and their page numbers, in addition to the contents list at the front of the book."
+}

@@ -132,3 +132,27 @@ describe('collectReferencedAssetPaths', () => {
     });
   });
 });
+
+describe('fonts the renderer supplies itself', () => {
+  it('does not ask the project for a GEM_FONTS_DIR font', () => {
+    // `GEM_FONTS_DIR/x.ttf` is a placeholder the renderer expands into its own bundle. It looks
+    // like a project-relative path, so it passed the sandbox check and was reported as missing —
+    // and the default theme (which every new theme is a copy of) names eight of them, so an author
+    // met eight warnings about fonts that were being applied correctly.
+    const paths = collectReferencedAssetPaths({
+      files: {
+        'theme.yml': [
+          'font:',
+          '  catalog:',
+          '    Noto Serif:',
+          '      normal: GEM_FONTS_DIR/notoserif-regular-subset.ttf',
+          '    Brand:',
+          '      normal: fonts/brand.ttf',
+        ].join('\n'),
+      },
+      attributes: new Map([['pdf-theme', 'theme.yml']]),
+    });
+    // The project's own font is still collected — only the renderer-internal one is skipped.
+    expect(paths).toEqual(['fonts/brand.ttf']);
+  });
+});

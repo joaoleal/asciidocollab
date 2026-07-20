@@ -1,0 +1,21 @@
+{
+  "id": "auto-license-page",
+  "displayName": "Automatic license page",
+  "description": "Builds a license and rights page from the document's own attributes, placed after the body and before the back cover. Set :license: to switch it on; :copyright:, :publisher:, :edition: and :isbn: are added beneath it when present and omitted when absent. The page carries no running header or footer, following the convention for a rights page.",
+  "targeting": ":license:",
+  "themeKeys": [
+    {
+      "key": "license-page.text-align",
+      "valueKind": "keyword",
+      "description": "Alignment of the license page's text.",
+      "default": "left"
+    },
+    {
+      "key": "license-page.font-color",
+      "valueKind": "colour",
+      "description": "Colour of the license page's text. Defaults to the document's body colour.",
+      "default": ""
+    }
+  ],
+  "sampleContent": "A license page is generated from the document's :license:, :copyright:, :publisher:, :edition: and :isbn: attributes."
+}

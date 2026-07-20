@@ -19,7 +19,7 @@ test.describe('Project archive and restore', () => {
   });
 
   test('Archive Project button opens confirmation dialog', async ({ page }) => {
-    await page.goto(`/dashboard/projects/${projectId}/settings`);
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=danger`);
 
     await page.getByRole('button', { name: 'Archive Project' }).click();
 
@@ -41,7 +41,7 @@ test.describe('Project archive and restore', () => {
   });
 
   test('Confirming archive shows archived state in settings', async ({ page }) => {
-    await page.goto(`/dashboard/projects/${projectId}/settings`);
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=danger`);
 
     // Open dialog and confirm archive
     await page.getByRole('button', { name: 'Archive Project' }).click();
@@ -65,7 +65,7 @@ test.describe('Project archive and restore', () => {
     // Archive via API so the page starts in the archived state
     await archiveProject(page, projectId);
 
-    await page.goto(`/dashboard/projects/${projectId}/settings`);
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=danger`);
 
     // "Restore Project" button must be present
     await expect(page.getByRole('button', { name: 'Restore Project' })).toBeVisible();
@@ -77,7 +77,10 @@ test.describe('Project archive and restore', () => {
     // After restoring, onRestore calls router.refresh() — wait for the page to update
     await expect(page.getByRole('button', { name: 'Archive Project' })).toBeVisible();
 
-    // Name input must no longer be disabled
+    // Editing must be possible again. The name field lives in the General section, not this one, so
+    // the check has to go there — restoring is only meaningful if it re-enables the settings a
+    // reader could not change while archived.
+    await page.goto(`/dashboard/projects/${projectId}/settings`);
     await expect(page.getByLabel(/project name/i)).not.toBeDisabled();
   });
 });

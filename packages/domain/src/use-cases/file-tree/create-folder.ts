@@ -40,14 +40,18 @@ export class CreateFolderUseCase {
     name: string,
     context?: RequestContext,
   ): Promise<Result<{ fileNodeId: FileNodeId; path: FilePath }, DomainError>> {
+    // Creating a folder mutates the project's structure, so it requires write
+    // access (editor or owner). A viewer — including every member of a read-only
+    // shared project such as the bundled demo — is denied here.
     const member = await this.projectMemberRepo.findByCompositeKey(projectId, actorId);
-    if (!member) {
+    const role = member?.role.value;
+    if (role !== 'owner' && role !== 'editor') {
       await recordAuthorizationDenial(this.auditLogRepo, {
         actorId,
         projectId,
         resourceType: 'Project',
         resourceId: projectId.value,
-        reason: 'not_a_project_member',
+        reason: member ? 'insufficient_role' : 'not_a_project_member',
         context,
       }, this.logger);
       return { success: false, error: new PermissionDeniedError() };

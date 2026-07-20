@@ -1,0 +1,13 @@
+{
+  "name": "theme-selected-by-config",
+  "description": "A theme chosen through PROJECT OPTIONS (not a document header) and living in a subdirectory. The snapshot carries both the resolved themePath and the raw stored selection as a `pdf-theme` attribute — exactly the shape the app builds — because the regression this guards was the two disagreeing: the raw project-relative path overrode the resolved leaf name while `pdf-themesdir` was derived from that same path, so the engine resolved `branding/branding/…`, found nothing, and silently fell back to the built-in theme. A theme that never applies produces no error anywhere, so only a comparison against a themed reference catches it.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "branding/corporate-theme.yml",
+    "fontPaths": [],
+    "attributes": { "pdf-theme": "branding/corporate-theme.yml@" }
+  }
+}

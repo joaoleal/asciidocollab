@@ -89,8 +89,26 @@ info "Installing dependencies …"
 pnpm install --frozen-lockfile
 
 # ─── Build ────────────────────────────────────────────────────────────────────
+# Deliberately NOT `pnpm build` (= `pnpm -r build`). That would include apps/web's
+# `next build` — a full PRODUCTION build — whose output this script then throws
+# away, because it starts `next dev` below and Next compiles on demand in dev.
+#
+# Worse than wasteful: `next build`'s static-generation stage spawns a jest-worker
+# pool sized to the machine's core count (24 cores → "Collecting page data using 23
+# workers"), and each child loads the whole app module graph. On a many-core box the
+# pool has repeatedly grown unbounded here — 588 node processes / 21.7 GB observed —
+# until the kernel OOM-killer fired and took desktop apps down with it.
+#
+# So: build every workspace project EXCEPT the web app, then run only the web app's
+# `prebuild`. prebuild is still required — it generates assets `next dev` needs at
+# runtime (the wasm engine copies, MathJax/pdf.js vendor assets, Hunspell
+# dictionaries and the generated lezer parser). It is normally an implicit npm
+# lifecycle hook of `build`, so skipping `build` means invoking it explicitly.
 info "Building packages …"
-pnpm build
+pnpm -r --filter '!@asciidocollab/web' build
+
+info "Preparing web app assets …"
+pnpm --filter @asciidocollab/web run prebuild
 
 # ─── Database schema ──────────────────────────────────────────────────────────
 # ASCIIDOCOLLAB_DATABASE_URL is already exported from the sourced env file.
@@ -150,8 +168,13 @@ info "Starting collab server …"
 (cd "$ROOT/apps/collab" && NODE_ENV=development node dist/index.js) &
 COLLAB_PID=$!
 
+# NEXT_DIST_DIR keeps the dev server's Turbopack cache out of `.next`, which every build path
+# (pnpm gate, the e2e scripts, CI) fills with a PRODUCTION build. Sharing one directory let a build
+# rewrite .next/server + .next/static under the live dev cache; the next page compile then
+# re-transformed everything, spawning 200 postcss child processes and 12.5 GB before finishing. Set
+# inline rather than exported, so only `next dev` sees it and every build still targets `.next`.
 info "Starting web app …"
-(cd "$ROOT/apps/web" && pnpm dev) &
+(cd "$ROOT/apps/web" && NEXT_DIST_DIR=.next-dev pnpm dev) &
 WEB_PID=$!
 
 echo ""

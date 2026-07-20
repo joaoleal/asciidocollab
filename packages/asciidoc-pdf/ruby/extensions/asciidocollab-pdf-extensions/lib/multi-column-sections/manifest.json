@@ -1,0 +1,8 @@
+{
+  "id": "multi-column-sections",
+  "displayName": "Multi-column regions",
+  "description": "Lays out a marked region in two or more columns while the rest of the page stays full width. Mark an open block with [.multi-column], and set the count with columns=3 (2 by default, 4 at most). Column spacing comes from the page.column-gap theme key, the same one the whole-document setting uses.",
+  "targeting": "[.multi-column]",
+  "themeKeys": [],
+  "sampleContent": "A marked region is laid out in columns while the surrounding prose keeps the full measure of the page."
+}

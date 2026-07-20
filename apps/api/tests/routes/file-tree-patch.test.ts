@@ -11,6 +11,16 @@ const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 const FILE_NODE_ID = '550e8400-e29b-41d4-a716-446655440003';
 const PARENT_ID = '550e8400-e29b-41d4-a716-446655440004';
 
+// A real FileNode always carries Timestamps — the entity constructor defaults them — so `createdAt`
+// is never undefined in production. These mocks omitted it, and rename/move both rebuild the node
+// with `new Timestamps(fileNode.createdAt, new Date())`. With `createdAt` undefined that becomes a
+// RACE: the `new Date()` argument is evaluated at the call site, then the constructor's own
+// `createdAt = new Date()` default runs a moment later. Same millisecond and the `createdAt <=
+// updatedAt` invariant holds; one millisecond later — which is what a descheduled worker under the
+// full parallel suite produces — it throws ValidationError, which escapes the handler as a 500 with
+// no log to show for it. Pinned to a fixed past instant so the mocks match the entity's guarantee.
+const CREATED_AT = new Date('2024-01-01T00:00:00.000Z');
+
 /** A file node that is valid for rename (has parentId, correct projectId). */
 const mockFileNode = {
   id: { value: FILE_NODE_ID },
@@ -19,6 +29,8 @@ const mockFileNode = {
   type: { value: 'file' },
   name: 'doc.adoc',
   path: { value: '/doc.adoc' },
+  createdAt: CREATED_AT,
+  updatedAt: CREATED_AT,
 };
 
 /** A folder node suitable for being a move target. */
@@ -29,6 +41,8 @@ const mockParentFolder = {
   type: { value: 'folder' },
   name: 'root',
   path: { value: '/' },
+  createdAt: CREATED_AT,
+  updatedAt: CREATED_AT,
 };
 
 const PATCH_URL = `/projects/${PROJECT_ID}/files/${FILE_NODE_ID}`;

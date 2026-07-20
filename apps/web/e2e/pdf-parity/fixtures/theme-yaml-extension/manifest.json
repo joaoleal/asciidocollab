@@ -1,0 +1,13 @@
+{
+  "name": "theme-yaml-extension",
+  "description": "A theme file named with a `.yaml` extension, which the app recognises as a theme but Asciidoctor-PDF does not accept as a theme filename — its loader appends `-theme.yml` to anything not already ending in `.yml`, fails to find the file, and REVERTS TO THE DEFAULT THEME with only a log line. The renderer mounts a `.yml` alias so the author's chosen filename keeps working. The reference was produced by the canonical toolchain from the identical theme under a `.yml` name, so this passes only when the alias makes the two renders agree.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "local-theme.yaml",
+    "fontPaths": [],
+    "attributes": { "pdf-theme": "local-theme.yaml@" }
+  }
+}

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import {
+  FilesystemPdfExtensionSource,
   FilesystemProjectFileStore,
   FilesystemYjsStateStore,
   HttpCollaborativeContentEditor,
@@ -36,5 +37,13 @@ export function createStores(
     collaborativeContentEditor: new HttpCollaborativeContentEditor(collabConfig),
     structuredCollaborativeEditor: new HttpStructuredCollaborativeEditor(collabConfig),
     regexEngine: new Re2RegexEngine(),
+    // The ONLY route to the administrator's extension drop folder. Its bounds come from config, so
+    // no call site can decide for itself how much work a catalogue read may cost.
+    pdfExtensionSource: new FilesystemPdfExtensionSource({
+      path: appConfig.project.pdfExtensions.path,
+      maxExtensions: appConfig.project.pdfExtensions.maxExtensions,
+      maxSourceBytes: appConfig.project.pdfExtensions.maxSourceBytes,
+      scanCacheTtl: appConfig.project.pdfExtensions.scanCacheTtl,
+    }),
   };
 }

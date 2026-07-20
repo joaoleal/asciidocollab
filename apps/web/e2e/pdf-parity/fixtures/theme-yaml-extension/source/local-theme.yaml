@@ -1,0 +1,8 @@
+# Named `.yaml` deliberately: this is the extension the engine does not accept directly.
+extends: default
+heading:
+  font-color: B03A2E
+base:
+  font-color: 1B3A57
+admonition:
+  column-rule-color: B03A2E

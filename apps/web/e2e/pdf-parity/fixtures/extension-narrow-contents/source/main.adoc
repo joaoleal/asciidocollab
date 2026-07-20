@@ -1,0 +1,76 @@
+= Narrow Contents
+:doctype: book
+:toc:
+:toclevels: 2
+
+== Section 1
+
+Body text for section 1.
+
+=== Subsection 1.1
+
+Body text.
+
+=== Subsection 1.2
+
+Body text.
+
+== Section 2
+
+Body text for section 2.
+
+=== Subsection 2.1
+
+Body text.
+
+=== Subsection 2.2
+
+Body text.
+
+== Section 3
+
+Body text for section 3.
+
+=== Subsection 3.1
+
+Body text.
+
+=== Subsection 3.2
+
+Body text.
+
+== Section 4
+
+Body text for section 4.
+
+=== Subsection 4.1
+
+Body text.
+
+=== Subsection 4.2
+
+Body text.
+
+== Section 5
+
+Body text for section 5.
+
+=== Subsection 5.1
+
+Body text.
+
+=== Subsection 5.2
+
+Body text.
+
+== Section 6
+
+Body text for section 6.
+
+=== Subsection 6.1
+
+Body text.
+
+=== Subsection 6.2
+
+Body text.
