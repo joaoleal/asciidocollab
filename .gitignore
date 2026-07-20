@@ -3,6 +3,9 @@ dist/
 build/
 coverage/
 .next/
+# scripts/dev.sh points `next dev` here so its Turbopack cache never shares a
+# directory with a production build (see apps/web/next.config.js distDir).
+.next-dev/
 .env
 .env.local
 # Production deployment secrets: generated env file and the internal mTLS PKI
@@ -56,6 +59,8 @@ apps/web/public/workers/
 # Isolated e2e shared file storage (scripts/ci/e2e-local.sh) + divergence-test roots
 .e2e-storage/
 .e2e-storage-*/
+# Isolated e2e PDF converter-extension drop folder, written into by pdf-extensions.spec.ts
+.e2e-pdf-extensions/
 
 # Generated spell-check dictionary assets (copied from dictionary-en at build)
 apps/web/public/dictionaries/

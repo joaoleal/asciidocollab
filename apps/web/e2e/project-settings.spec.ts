@@ -64,6 +64,86 @@ test.describe('Project settings page', () => {
     ).toBeVisible();
   });
 
+  test('each section is reachable and shows only its own settings', async ({ page }) => {
+    await page.goto(`/dashboard/projects/${projectId}/settings`);
+
+    // The default section is General.
+    await expect(page.getByLabel(/project name/i)).toBeVisible();
+    await expect(page.getByLabel('Page size')).toHaveCount(0);
+
+    await page.getByRole('link', { name: 'AsciiDoc', exact: true }).click();
+    await expect(page).toHaveURL(/section=rendering/);
+    await expect(page.getByLabel('Document type')).toBeVisible();
+    await expect(page.getByLabel(/project name/i)).toHaveCount(0);
+
+    await page.getByRole('link', { name: 'PDF Layout & Theme' }).click();
+    await expect(page).toHaveURL(/section=pdf/);
+    await expect(page.getByLabel('Page size')).toBeVisible();
+    await expect(page.getByLabel('Document type')).toHaveCount(0);
+
+    await page.getByRole('link', { name: 'PDF Extensions' }).click();
+    await expect(page).toHaveURL(/section=extensions/);
+
+    await page.getByRole('link', { name: 'Danger Zone' }).click();
+    await expect(page).toHaveURL(/section=danger/);
+    await expect(page.getByRole('button', { name: 'Archive Project' })).toBeVisible();
+  });
+
+  test('a section link opens the page with that section selected', async ({ page }) => {
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=pdf`);
+    await expect(page.getByLabel('Page size')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'PDF Layout & Theme' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  test('an unknown section falls back to the default', async ({ page }) => {
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=not-a-section`);
+    await expect(page.getByLabel(/project name/i)).toBeVisible();
+  });
+
+  test('changing sections does not silently discard unsaved edits', async ({ page }) => {
+    await page.goto(`/dashboard/projects/${projectId}/settings`);
+
+    const nameInput = page.getByLabel(/project name/i);
+    await nameInput.clear();
+    await nameInput.fill('Unsaved Rename');
+
+    await page.getByRole('link', { name: 'PDF Layout & Theme' }).click();
+
+    // The move is held until the viewer decides what happens to the edit.
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText(/unsaved/i);
+    await dialog.getByRole('button', { name: /stay here/i }).click();
+    await expect(nameInput).toHaveValue('Unsaved Rename');
+
+    // Choosing to discard proceeds.
+    await page.getByRole('link', { name: 'PDF Layout & Theme' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: /discard and leave/i }).click();
+    await expect(page).toHaveURL(/section=pdf/);
+  });
+
+  test('render options edited in one section survive a save from another', async ({ page }) => {
+    // `PUT /render-config` is a full replace, so this is the regression that catches a section
+    // sending only its own fields and wiping its siblings.
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=rendering`);
+    await page.getByLabel('Document type').selectOption('book');
+
+    await page.getByRole('link', { name: 'PDF Layout & Theme' }).click();
+    await page.getByLabel('Page size').selectOption('A4');
+    await page.getByRole('button', { name: 'Save render options' }).click();
+    await expect(page.getByText('Render options saved.')).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByLabel('Page size')).toHaveValue('A4');
+    await page.getByRole('link', { name: 'AsciiDoc', exact: true }).click();
+    await expect(page.getByLabel('Document type')).toHaveValue('book');
+  });
+
+  test('the PDF section names the theme file the project renders with', async ({ page }) => {
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=pdf`);
+    // A project with no theme file says so, rather than leaving the question open.
+    await expect(page.getByTestId('resolved-theme')).toContainText(/default theme/i);
+  });
+
   test('archived project shows disabled fields and archive banner', async ({ page }) => {
     await archiveProject(page, projectId);
 

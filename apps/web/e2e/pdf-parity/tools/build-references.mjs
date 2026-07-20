@@ -14,14 +14,21 @@
  *                  reference gem's placement — a real engine-embedding check.
  *   - diagrams   : the real gem embedding the shim-produced SVG assets (engine-embedding parity).
  *
+ *   - theme-fonts-woff2 : the real gem rendering the DECODED fonts, because Prawn embeds TTF/OTF only
+ *                  and cannot read WOFF2 at all. See buildFromReferenceBuild's note below.
+ *
  * The math + diagrams shim SVGs need a browser (mermaid/MathJax), so their rewritten project (root doc
  * + placed `.gen/*.svg`) is produced once by emit-reference-inputs.spec.ts and committed under the
  * fixture's `reference-build/`. This tool renders code + citations directly, and re-renders math +
- * diagrams from that committed `reference-build/` (no browser needed to regenerate the reference PDF).
+ * diagrams + theme-fonts-woff2 from that committed `reference-build/` (no browser needed).
  *
- * All renders pass `-a reproducible` so the committed PDFs carry no wall-clock metadata.
+ * All renders pass `-a reproducible` so the committed PDFs carry no wall-clock metadata, and all run
+ * as the invoking user against the content-addressed image from `reference-image.mjs` — the same
+ * pinned toolchain `generate-reference.mjs` uses. This tool used to ask for `adc-pdf-ref:latest`,
+ * which nothing rebuilds and no definition pins.
  *
- * Usage:  node tools/build-references.mjs [code|citations|math|diagrams ...]   (default: all)
+ * Usage:  node tools/build-references.mjs [code|citations|math|diagrams|theme-fonts-woff2 ...]
+ *         (default: all)
  */
 
 import { execFileSync } from 'node:child_process';
@@ -29,10 +36,11 @@ import { mkdtempSync, mkdirSync, copyFileSync, cpSync, existsSync, rmSync } from
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureReferenceImage, SOURCE_DATE_EPOCH } from './reference-image.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
-const IMAGE = 'adc-pdf-ref:latest';
+const IMAGE = ensureReferenceImage();
 
 /** The (style, order) matrix the citations fixture is verified across: one numeric + one author-date CSL. */
 const CITATION_VARIANTS = [
@@ -49,8 +57,17 @@ function run(args) {
 /** Render one adoc in a throwaway work dir mounted into the reference image; copy the PDF back out. */
 function renderInDocker(workDir, adocName, outName, extraArgs) {
   run([
-    'run', '--rm', '-v', `${workDir}:/work`, '-w', '/work', IMAGE,
-    'asciidoctor-pdf', '-a', 'reproducible', ...extraArgs, '-o', outName, adocName,
+    'run', '--rm',
+    '--network', 'none',
+    // Never root: the render only reads the work dir and writes one PDF into it, and the PDF is
+    // copied back into the developer's checkout. Verified not to affect output — root and host-UID
+    // renders of the same fixture are byte-identical.
+    '--user', `${process.getuid()}:${process.getgid()}`,
+    '-e', `SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}`,
+    '-v', `${workDir}:/work`, '-w', '/work', IMAGE,
+    // Through bundler, so the render resolves the LOCKED gem closure rather than whatever happens to
+    // be installed in the image.
+    'bundle', 'exec', 'asciidoctor-pdf', '-a', 'reproducible', ...extraArgs, '-o', outName, adocName,
   ]);
 }
 
@@ -85,7 +102,25 @@ function buildCitations() {
   }
 }
 
-/** Re-render a fixture's reference PDF from its committed `reference-build/` (rewritten doc + assets). */
+/**
+ * Re-render a fixture's reference PDF from its committed `reference-build/` (rewritten doc + assets).
+ *
+ * A `reference-build/` is a SELF-CONTAINED project: every option the render needs is a document
+ * attribute in its `main.adoc`, so the command below is the same for every fixture and carries no
+ * per-fixture flags. That is what makes these reference builds auditable — the committed directory
+ * IS the input, with nothing supplied out of band by whoever runs the tool.
+ *
+ * `theme-fonts-woff2` is the reason this matters beyond math/diagrams. Its `source/` theme registers
+ * `.woff2` fonts, which Prawn cannot read ("is not a known font"), so the fixture had a committed
+ * reference that no toolchain could regenerate. Its `reference-build/` holds the fonts decoded to TTF
+ * — exactly the bytes the app's own WOFF2 decode path produces at export time — under `.ttf` names,
+ * with the theme pointing at them. The extension is load-bearing: decoded TTF bytes stored at the
+ * original `.woff2` filenames still fail, because Prawn keys the format on the FILE EXTENSION, not on
+ * the sfnt signature. (Spec 040's research note claims the opposite; it is wrong, and following it
+ * reproduces the "is not a known font" failure.)
+ *
+ * Verified byte-identical to the committed reference.
+ */
 function buildFromReferenceBuild(fixtureName) {
   const dir = join(FIXTURES, fixtureName);
   const buildDir = join(dir, 'reference-build');
@@ -98,7 +133,7 @@ function buildFromReferenceBuild(fixtureName) {
   renderInDocker(work, 'main.adoc', 'reference.pdf', []);
   copyFileSync(join(work, 'reference.pdf'), join(dir, 'reference.pdf'));
   rmSync(work, { recursive: true, force: true });
-  console.log(`${fixtureName}: reference.pdf (real gem embedding shim SVG assets from reference-build/)`);
+  console.log(`${fixtureName}: reference.pdf (real gem rendering the committed reference-build/ project)`);
 }
 
 const targets = process.argv.slice(2);
@@ -109,4 +144,5 @@ if (wanted('code')) buildCode();
 if (wanted('citations')) buildCitations();
 if (wanted('math')) buildFromReferenceBuild('math');
 if (wanted('diagrams')) buildFromReferenceBuild('diagrams');
+if (wanted('theme-fonts-woff2')) buildFromReferenceBuild('theme-fonts-woff2');
 console.log('done.');

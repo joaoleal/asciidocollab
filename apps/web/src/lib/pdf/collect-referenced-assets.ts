@@ -19,6 +19,7 @@
  * render pipeline's own image-guard stage warns about those references separately.
  */
 
+import { resolveThemePath } from '@asciidocollab/shared';
 import { resolveImageTarget } from '@/lib/asciidoc/include-path';
 import { resolveSandboxedPath } from '@/lib/asciidoc/sandbox-path';
 
@@ -33,9 +34,6 @@ const IMAGE_MACRO_PATTERN = /image:(:)?((?:(?!image:)[^[\n\r])+)\[[^\][]*\]/g;
 /** A word character preceding `image:` means it is part of a larger token, not a macro. */
 const WORD_CHARACTER = /\w/;
 
-/** The `<name>-theme.<yml|yaml>` auto-discovery convention Asciidoctor-PDF follows for the theme file. */
-const THEME_BASENAME_PATTERN = /-theme\.ya?ml$/i;
-
 /**
  * A path-like token (no whitespace, quotes, colons, or brackets) as a theme font catalog names a font
  * file. A single character class keeps the scan linear-time; the font-extension test is done in code.
@@ -44,6 +42,18 @@ const FONT_TOKEN_PATTERN = /[^\s'":\][]+/g;
 
 /** Embeddable font-file extensions a theme catalog entry may point at. */
 const FONT_FILE_EXTENSIONS: readonly string[] = ['.ttf', '.otf', '.woff', '.woff2'];
+
+/**
+ * Placeholders the RENDERER expands to a directory inside itself, which the project therefore never
+ * contains and must never be asked for.
+ *
+ * `GEM_FONTS_DIR/notoserif-regular-subset.ttf` looks exactly like a project-relative font path — no
+ * scheme, no `..` — so the sandbox check accepts it and it is reported as a font the project is
+ * missing. The gem's own default theme names eight of them, and a newly created theme is a copy of
+ * that file, so without this the first thing an author sees after creating a theme is eight
+ * warnings about fonts that are in fact applied correctly.
+ */
+const RENDERER_FONT_DIR_PLACEHOLDERS: readonly string[] = ['GEM_FONTS_DIR'];
 
 /** Plain, React-free inputs to {@link collectReferencedAssetPaths}. */
 export interface CollectReferencedAssetsInput {
@@ -59,14 +69,13 @@ export interface CollectReferencedAssetsInput {
  */
 function discoverThemePath(input: CollectReferencedAssetsInput): string | null {
   const explicit = input.attributes.get('pdf-theme')?.trim();
-  if (explicit !== undefined && explicit !== '') {
-    const resolved = resolveSandboxedPath('', explicit);
-    return resolved.ok && input.files[resolved.path] !== undefined ? resolved.path : null;
-  }
-  const candidates = Object.keys(input.files)
-    .filter((path) => THEME_BASENAME_PATTERN.test(path))
-    .toSorted();
-  return candidates[0] ?? null;
+  const declared = explicit !== undefined && explicit !== '';
+  const resolved = resolveThemePath(explicit, Object.keys(input.files));
+  if (resolved === undefined) return null;
+  // Only a DECLARED path is untrusted: a discovered one came from the project's own file list.
+  if (!declared) return resolved;
+  const sandboxed = resolveSandboxedPath('', resolved);
+  return sandboxed.ok && input.files[sandboxed.path] !== undefined ? sandboxed.path : null;
 }
 
 /** Add every image macro target in `content`, resolved to its project-relative path, into `paths`. */
@@ -99,6 +108,9 @@ function collectFontPaths(themePath: string, themeContent: string, paths: Set<st
   for (const token of tokens) {
     const lower = token.toLowerCase();
     if (!FONT_FILE_EXTENSIONS.some((extension) => lower.endsWith(extension))) continue;
+    // The renderer resolves these itself, out of its own bundle; the project has no such file and
+    // asking for one produces a warning about a font that is actually working.
+    if (RENDERER_FONT_DIR_PLACEHOLDERS.some((placeholder) => token.startsWith(placeholder))) continue;
     const resolved = resolveSandboxedPath(themePath, token);
     if (resolved.ok) paths.add(resolved.path);
   }

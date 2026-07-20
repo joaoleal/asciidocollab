@@ -16,6 +16,9 @@ import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index'
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { ImagePreview } from '@/components/image-preview';
 import { isImageFile } from '@/lib/codemirror/asciidoc-image-extensions';
+import { isThemeFilePath } from '@asciidocollab/shared';
+import { ThemeEditor } from '@/components/theme-editor/theme-editor';
+import { useThemeSettings } from '@/hooks/use-theme-settings';
 import { useFileSelection } from '@/hooks/use-file-selection';
 import { useFileHistory } from '@/hooks/use-file-history';
 import { useEditorPreferences } from '@/hooks/use-editor-preferences';
@@ -53,6 +56,7 @@ import { useProjectEditorState } from '@/app/(dashboard)/dashboard/projects/[id]
 import { useManagedCollab } from '@/app/(dashboard)/dashboard/projects/[id]/use-managed-collab';
 import { useEditorNavigation } from '@/app/(dashboard)/dashboard/projects/[id]/use-editor-navigation';
 import { useEditorRestoration } from '@/app/(dashboard)/dashboard/projects/[id]/use-editor-restoration';
+import { readLastSelection } from '@/hooks/use-last-selection';
 import { PdfExportButton } from '@/components/pdf-export-button';
 import { PdfDiagnostics } from '@/components/pdf-diagnostics';
 import { PdfPreviewPanel } from '@/components/pdf-preview-panel';
@@ -60,8 +64,13 @@ import { usePdfExport } from '@/hooks/use-pdf-export';
 import { usePdfPreview } from '@/hooks/use-pdf-preview';
 import { buildProjectSnapshot, type SnapshotFile } from '@/lib/pdf/build-project-snapshot';
 import { collectReferencedAssetPaths } from '@/lib/pdf/collect-referenced-assets';
-import { useProjectAssetCache } from '@/hooks/use-project-asset-cache';
+import { useProjectAssetCache, type ProjectAssetCache } from '@/hooks/use-project-asset-cache';
+import { useProjectAuxiliaryTextCache } from '@/hooks/use-auxiliary-text-cache';
 import { useProjectRenderConfig } from '@/hooks/use-project-render-config';
+import { usePdfExtensionBundle } from '@/hooks/use-pdf-extension-bundle';
+
+/** No extensions enabled. Shared so the memo keeps a stable identity across renders. */
+const NO_EXTENSION_IDS: readonly string[] = [];
 import { resolveRenderAttributes, SOFT_DEFAULT_SUFFIX } from '@asciidocollab/shared';
 import type { ProjectSnapshot, RenderDiagnostic } from '@asciidocollab/asciidoc-pdf';
 
@@ -79,6 +88,12 @@ interface ContentAreaProperties {
   contentState: FileContentState;
   canEdit: boolean;
   projectId: string;
+  /**
+   * The project's binary-asset cache, forwarded to the theme editor so a theme's fonts are fetched
+   * and embedded in its preview. The SAME instance the document preview and the export use, so a
+   * font is fetched once per project however many renders reference it.
+   */
+  assetCache: ProjectAssetCache;
   /** Project document language (ISO 639-1) driving the spellchecker, or null when unset. */
   projectLanguage: string | null;
   onScrollLine?: (line: number) => void;
@@ -162,6 +177,7 @@ function ContentArea({
   contentState,
   canEdit,
   projectId,
+  assetCache,
   projectLanguage,
   onScrollLine,
   onSelectionLine,
@@ -193,6 +209,10 @@ function ContentArea({
   onReviewMarkerHover,
   onCreateCommentFromSelection,
 }: ContentAreaProperties) {
+  // Called before the early returns below, because a hook cannot be conditional. The result is only
+  // consumed on the theme-file branch, but computing it here keeps the branch a plain render.
+  const { settings: themeSettings, enabledExtensions } = useThemeSettings(projectId);
+
   if (selectedFile === null) {
     return <p className="text-muted-foreground text-sm p-4">Select a file from the tree to view its content.</p>;
   }
@@ -219,6 +239,31 @@ function ContentArea({
   }
   if (contentState.error) {
     return <p className="text-destructive text-sm p-4">{contentState.error}</p>;
+  }
+  // A theme is YAML, and opened on the AsciiDoc path it got AsciiDoc highlighting, AsciiDoc
+  // completions and AsciiDoc diagnostics — the last of which reported a valid theme as broken
+  // prose. Routing it to its own editor is as much a bug fix as a feature (FR-009, FR-009a). The
+  // recognition rule is the SHARED one, so the editor and the renderer cannot disagree about which
+  // files are themes.
+  if (isThemeFilePath(selectedFile.nodeName)) {
+    return (
+      <ThemeEditor
+        key={selectedFile.nodeId}
+        themeSettings={themeSettings}
+        enabledExtensions={enabledExtensions}
+        assetCache={assetCache}
+        content={contentOverride ?? contentState.content ?? ''}
+        canEdit={canEdit}
+        path={selectedFile.path}
+        projectId={projectId}
+        fileNodeId={selectedFile.nodeId}
+        initialEtag={contentState.etag}
+        collab={collab ? { doc: collab.doc, awareness: collab.awareness } : null}
+        connectionState={connectionState}
+        collabUnavailable={collabUnavailable}
+        onChange={onChange}
+      />
+    );
   }
   return (
     <AsciiDocEditor
@@ -271,6 +316,13 @@ interface ProjectEditorLayoutProperties {
   mainFileNodeId: string | null;
   canManage: boolean;
   canEdit: boolean;
+  /**
+   * Whether the user may mutate the file structure (create/rename/move/delete/upload). Distinct from
+   * `canEdit`: it excludes the admin bypass, matching the file-tree API which authorizes on project
+   * role only — so a global admin who is merely a viewer here sees no file-mutation buttons that would
+   * 403. See page.tsx.
+   */
+  canModifyFiles: boolean;
   /** Authenticated user id — scopes the persisted last-selection so accounts stay isolated. */
   userId: string;
 }
@@ -284,9 +336,18 @@ export function ProjectEditorLayout({
   mainFileNodeId,
   canManage,
   canEdit,
+  canModifyFiles,
   userId,
 }: ProjectEditorLayoutProperties) {
   const { selectedFile, contentState, selectFile, clearSelection } = useFileSelection(projectId);
+
+  // Whether this is the user's FIRST time opening this project on this browser — i.e. nothing was
+  // ever remembered. Read once at mount (before the restoration effect writes anything), so it
+  // reflects the pristine state. Drives the file tree's first-open auto-selection of the main file:
+  // when there IS a remembered selection, restoration handles it and this stays false so nothing is
+  // auto-selected over it. `readLastSelection` is guarded against an absent localStorage (SSR), where
+  // it reads as "first open" — harmless, because the auto-select is an effect that only runs client-side.
+  const [isFirstOpen] = useState(() => readLastSelection(userId, projectId) === null);
 
   // Layout-shell + live-content state: main-file selection, sidebar + preview visibility, and the
   // live editor buffer that feeds the preview.
@@ -328,8 +389,15 @@ export function ProjectEditorLayout({
   // by the true connection edges (dropped ⇒ non-live, (re)established ⇒ live), not by a rebuild, so it
   // stays steadily on through an outage and clears exactly when the stream actually recovers.
   const [nonLive, setNonLive] = useState(false);
+  // The file node named by the most recent content-changed frame, so the auxiliary cache refetches
+  // exactly that file. Shares this subscription's unfiltered reach for the same reason: a theme is
+  // never include-reachable, so a reachability-filtered handler would never see a theme edit at all.
+  const [changedFileNodeId, setChangedFileNodeId] = useState<string | null>(null);
   useFileTreeEvents(projectId, {
-    onContentChanged: () => setRenameRefreshNonce((nonce) => nonce + 1),
+    onContentChanged: (event) => {
+      setRenameRefreshNonce((nonce) => nonce + 1);
+      setChangedFileNodeId(event.fileNodeId);
+    },
     // A collaborator changed the project's main file: update the single source of truth so BOTH the
     // symbol index's root and the preview root re-resolve against the new anchor (no split-brain).
     onMainFileChanged: (event) => setMainFile(event.mainFileNodeId),
@@ -571,7 +639,32 @@ export function ProjectEditorLayout({
   // Fully client-side one-click export. The render root mirrors the symbol-index root: the
   // configured main file, else the open file. Both are resolved to project-relative paths; the
   // control is disabled until a root path is known.
-  const { exportPdf, isExporting: isExportingPdf, phase: exportPhase, error: exportError, diagnostics: exportDiagnostics } = usePdfExport();
+  const { config: renderConfig, loading: renderConfigLoading } = useProjectRenderConfig(projectId);
+  // The extensions this project renders with, and the Ruby that implements them. Both the preview and
+  // the export read the SAME two values, so a document exported from here matches what was previewed.
+  const projectExtensionIds = useMemo(
+    () => renderConfig.extensions?.enabled ?? NO_EXTENSION_IDS,
+    [renderConfig.extensions?.enabled],
+  );
+  const { bundle: projectExtensionBundle, ready: projectExtensionsReady } = usePdfExtensionBundle(
+    projectId,
+    projectExtensionIds,
+  );
+  /**
+   * Whether an export would render the project's ACTUAL configuration.
+   *
+   * Both halves start empty and fill in asynchronously, and neither failure is visible in the
+   * result: an export taken before the render config arrives silently drops the project's theme,
+   * page size and extension selection, and one taken before the extension sources arrive drops the
+   * extensions alone. The document renders perfectly either way, which is what makes gating the
+   * control the only honest fix — there is nothing to detect afterwards.
+   *
+   * The live preview needs no such gate: it re-renders when these settle.
+   */
+  const exportConfigurationReady = !renderConfigLoading && projectExtensionsReady;
+
+  const { exportPdf, isExporting: isExportingPdf, phase: exportPhase, error: exportError, diagnostics: exportDiagnostics } =
+    usePdfExport({ extensions: projectExtensionBundle });
   const exportRootFileId = mainFile ?? selectedFile?.nodeId ?? null;
   const exportMainPath = mainFile && projectIndex ? projectIndex.pathOf(mainFile) : null;
   const exportOpenPath =
@@ -579,7 +672,6 @@ export function ProjectEditorLayout({
   // Project-level render configuration: the options a project applies to every render. Resolved to an
   // attribute map (soft-defaults, so a document header still wins) plus the extra project-relative font
   // directories to append to the PDF font search path.
-  const { config: renderConfig } = useProjectRenderConfig(projectId);
   const projectRenderAttributes = useMemo(() => {
     const resolved = resolveRenderAttributes(renderConfig);
     // The project's own "Language" setting (which drives the editor spell checker) is ALSO the render
@@ -629,7 +721,17 @@ export function ProjectEditorLayout({
   // server-side and are reached over the authenticated image endpoint; their bytes are not in the
   // editor's text cache. The cache fetches them once each and feeds them into the render snapshot as
   // `kind: 'binary'` files so the engine embeds the picture instead of its not-found placeholder.
-  const { getAssets, ensureAssets, loadAssets, assetVersion } = useProjectAssetCache(projectId);
+  const assetCache = useProjectAssetCache(projectId);
+  const { getAssets, ensureAssets, loadAssets, assetVersion } = assetCache;
+
+  // The theme and `.bib` contents, which the include-graph cache above can never reach. Without this
+  // the snapshot has no theme content, and theme DISCOVERY — which filters the snapshot's own text
+  // paths — cannot even see the theme's path, so the export renders unthemed.
+  const { getAuxiliaryFiles, auxiliaryVersion } = useProjectAuxiliaryTextCache(
+    projectId,
+    renameRefreshNonce,
+    changedFileNodeId,
+  );
 
   // Shared snapshot builder: the single seam that captures the editor's project state into an
   // immutable render snapshot. Both the one-click export and the live preview build from it so the
@@ -646,19 +748,30 @@ export function ProjectEditorLayout({
       // Text project files (AsciiDoc, YAML theme, .bib) from the symbol index's content cache, plus the
       // fetched binary assets keyed by the SAME project-relative path the engine resolves them to (so
       // `image::` targets — including paths with spaces, e.g. `New Folder/x.png` — find their bytes).
-      const textFiles: SnapshotFile[] = Object.entries(getProjectFiles()).map(
-        ([path, content]): SnapshotFile => ({ path, kind: 'text', content }),
-      );
+      // Auxiliary files first so a path the editor is also holding live (an open theme) wins — the
+      // preview must show what is on screen, not the last-fetched copy.
+      const textFiles: SnapshotFile[] = Object.entries({
+        ...getAuxiliaryFiles(),
+        ...getProjectFiles(),
+      }).map(([path, content]): SnapshotFile => ({ path, kind: 'text', content }));
       const { snapshot } = buildProjectSnapshot({
         files: [...textFiles, ...binaryFiles],
         mainPath: snapshotMainPath,
         openPath: exportOpenPath,
         attributes: snapshotAttributes,
         extraFontDirs: projectRenderAttributes.extraFontDirs,
+        enabledExtensions: projectExtensionIds,
       });
       return snapshot;
     },
-    [exportOpenPath, projectRenderAttributes, getProjectFiles],
+    [
+      exportOpenPath,
+      projectRenderAttributes,
+      projectExtensionIds,
+      getProjectFiles,
+      getAuxiliaryFiles,
+      auxiliaryVersion,
+    ],
   );
 
   // One-click export: enumerate the referenced assets, AWAIT their bytes (so nothing renders as a
@@ -684,7 +797,15 @@ export function ProjectEditorLayout({
   // `changedPaths` is intentionally omitted — the layout tracks no per-render path delta — so each
   // render repopulates the whole VFS.
   const [previewMode, setPreviewMode] = useState<'html' | 'pdf'>('html');
-  const pdfPreviewActive = previewOpen && previewMode === 'pdf';
+  // Whether the OPEN FILE is something the document preview can render.
+  //
+  // A theme is not: it is YAML, it has its own preview inside the theme editor, and rendering it as a
+  // document produces a PDF of raw YAML text. Leaving the document preview active for it did exactly
+  // that — and because the last successful render is retained, that page of YAML was then shown for a
+  // few seconds the moment the author opened a real document, until the first real render landed.
+  const openFilePreviewable = selectedFile !== null && isAsciiDocFile(selectedFile.nodeName);
+
+  const pdfPreviewActive = previewOpen && previewMode === 'pdf' && openFilePreviewable;
   // The binary assets the live PDF preview references. Enumerated only while the preview is active
   // (a cheap macro scan), and recomputed on the same content signals as the snapshot so a
   // newly-referenced image is discovered as soon as it is typed.
@@ -712,7 +833,11 @@ export function ProjectEditorLayout({
     phase: previewPhase,
     diagnostics: previewDiagnostics,
     sourceMap: previewSourceMap,
-  } = usePdfPreview({ snapshot: previewSnapshot, isEnabled: pdfPreviewActive });
+  } = usePdfPreview({
+    snapshot: previewSnapshot,
+    isEnabled: pdfPreviewActive,
+    extensions: projectExtensionBundle,
+  });
 
   // Source-line count of the live buffer, driving the PDF preview's proportional scroll-sync fallback
   // (used whenever the engine emitted no source map — the editor's line maps onto the same fraction of
@@ -854,7 +979,7 @@ export function ProjectEditorLayout({
     [selectedFile, revealLine, handleLineClick, handleNavigateToFile, pendingXrefLine, previewOpen, scrollSyncEnabled],
   );
 
-  const showPreview = selectedFile !== null && isAsciiDocFile(selectedFile.nodeName);
+  const showPreview = openFilePreviewable;
 
   return (
     // The editor is full-bleed: it cancels the dashboard <main>'s `p-6` with a negative margin and adds
@@ -878,7 +1003,7 @@ export function ProjectEditorLayout({
             onExport={handleExportPdf}
             isExporting={isExportingPdf}
             phase={exportPhase}
-            disabled={exportOpenPath === null}
+            disabled={exportOpenPath === null || !exportConfigurationReady}
           />
           {commentsAvailable && (
             <div className="flex items-center gap-1">
@@ -972,11 +1097,13 @@ export function ProjectEditorLayout({
             filesSlot={
               <FileTree
                 projectId={projectId}
-                canEdit={canEdit}
+                canEdit={canModifyFiles}
                 onSelectFile={handleSelectFile}
                 selectedNodeId={selectedFile?.nodeId ?? null}
                 presenceByFile={presenceByFile}
                 openPathRequest={openPathRequest}
+                // Only on a genuine first open (nothing remembered) — never override a restored selection.
+                autoSelectNodeId={isFirstOpen ? mainFileNodeId : null}
               />
             }
             outlineSlot={
@@ -1035,6 +1162,7 @@ export function ProjectEditorLayout({
               contentState={contentState}
               canEdit={editorCanEdit}
               projectId={projectId}
+              assetCache={assetCache}
               projectLanguage={projectLanguage}
               onScrollLine={previewOpen && scrollSyncEnabled ? handleScrollLine : undefined}
               onSelectionLine={previewOpen && scrollSyncEnabled ? handleScrollLine : undefined}

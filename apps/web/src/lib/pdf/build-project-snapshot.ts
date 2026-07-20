@@ -11,9 +11,9 @@
  */
 
 import type { ProjectSnapshot } from '@asciidocollab/asciidoc-pdf';
-import { stripSoftDefault } from '@asciidocollab/shared';
+import { resolveThemePath, stripSoftDefault } from '@asciidocollab/shared';
 import { imagesDirectory } from '@/lib/asciidoc/include-path';
-import { RENDER_INTRINSIC_ATTRIBUTES } from '@/lib/asciidoc/render-intrinsics';
+import { PDF_RENDER_INTRINSIC_ATTRIBUTES } from '@/lib/asciidoc/render-intrinsics';
 import { resolveSandboxedPath, type SandboxedPathResult } from '@/lib/asciidoc/sandbox-path';
 
 /** Why a referenced path was rejected by the sandbox guard. */
@@ -51,6 +51,14 @@ export interface BuildProjectSnapshotInput {
    * search path. Each is sandbox-validated here; escaping entries are dropped into `excluded`.
    */
   readonly extraFontDirs?: readonly string[];
+  /**
+   * The converter extensions the project has enabled, as ids.
+   *
+   * Ids only, never code and never paths — the renderer resolves each one against the deployment's
+   * own catalogue, so a snapshot travelling from the browser to the worker carries nothing executable
+   * however the project is configured (FR-034, FR-035).
+   */
+  readonly enabledExtensions?: readonly string[];
 }
 
 /** The captured snapshot plus every path the sandbox refused. */
@@ -78,12 +86,8 @@ const BIBTEX_ATTRIBUTE = 'bibtex-file';
  * render pipeline's asset-mount stage, so a fetched WOFF2 theme font is derived here as a font too.
  */
 const FONT_EXTENSIONS: ReadonlySet<string> = new Set(['ttf', 'otf', 'woff2']);
-/** File extensions recognised as a PDF theme document. */
-const THEME_EXTENSIONS: ReadonlySet<string> = new Set(['yml', 'yaml']);
 /** The bibliography source extension. */
 const BIBTEX_EXTENSION = 'bib';
-/** Asciidoctor-PDF theme files follow the `<name>-theme.<yml|yaml>` naming convention. */
-const THEME_BASENAME_SUFFIX = '-theme';
 
 /** The lowercase extension of a path (without the dot), or `''` when it has none. */
 function extensionOf(path: string): string {
@@ -95,12 +99,6 @@ function extensionOf(path: string): string {
 /** The final path segment. */
 function basenameOf(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
-}
-
-/** A basename with its extension removed. */
-function stripExtension(base: string): string {
-  const dot = base.lastIndexOf('.');
-  return dot <= 0 ? base : base.slice(0, dot);
 }
 
 /**
@@ -140,7 +138,11 @@ export function buildProjectSnapshot(input: BuildProjectSnapshotInput): BuildPro
   // Seed the render attributes: the intrinsic defaults first, project attributes overriding. The
   // same merged map drives :imagesdir:/discovery so the snapshot's attributes and the paths derived
   // from them stay consistent.
-  const merged = new Map<string, string>(RENDER_INTRINSIC_ATTRIBUTES);
+  //
+  // The PDF set, not the html5 one. These become API attributes, which OVERRIDE the document header,
+  // so seeding `doctype: article` here silently demoted every book the app rendered — no title page,
+  // no chapters, whatever the author declared. See PDF_RENDER_INTRINSIC_ATTRIBUTES.
+  const merged = new Map<string, string>(PDF_RENDER_INTRINSIC_ATTRIBUTES);
   for (const [name, value] of input.attributes) merged.set(name, value);
   const attributes: Record<string, string> = Object.fromEntries(merged);
 
@@ -192,6 +194,9 @@ export function buildProjectSnapshot(input: BuildProjectSnapshotInput): BuildPro
     ...(imagesDirectoryPath === undefined ? {} : { imagesDir: imagesDirectoryPath }),
     ...(bibPath === undefined ? {} : { bibPath }),
     attributes,
+    ...((input.enabledExtensions ?? []).length === 0
+      ? {}
+      : { enabledExtensions: input.enabledExtensions }),
   };
 
   return { snapshot, excluded };
@@ -208,17 +213,19 @@ function discoverThemePath(
   sandbox: (path: string) => string | null,
 ): string | undefined {
   const declared = explicit?.trim();
-  if (declared !== undefined && declared !== '') {
-    return sandbox(declared) ?? undefined;
-  }
-  const candidates = textPaths
-    .filter(
-      (path) =>
-        THEME_EXTENSIONS.has(extensionOf(path)) &&
-        stripExtension(basenameOf(path)).endsWith(THEME_BASENAME_SUFFIX),
-    )
-    .toSorted();
-  return candidates[0];
+  const resolved = resolveThemePath(explicit, textPaths);
+  if (resolved === undefined) return undefined;
+  // Only a DECLARED path is untrusted and needs the sandbox check; a discovered one is by
+  // construction a path out of this project's own tree.
+  if (declared === undefined || declared === '') return resolved;
+  // A DECLARED path is untrusted: sandbox it, and require it to actually be one of the project's
+  // files. A theme the config names but the project does not contain is "no theme", not a snapshot
+  // carrying a themePath absent from `files` — which would skip the alias mount and silently fall
+  // back to the default while the sibling collector (collect-referenced-assets) already treats it as
+  // absent. Both must agree.
+  const safe = sandbox(resolved);
+  if (safe === null || !textPaths.includes(safe)) return undefined;
+  return safe;
 }
 
 /**

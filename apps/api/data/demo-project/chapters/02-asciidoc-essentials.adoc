@@ -1,0 +1,134 @@
+[#asciidoc-essentials]
+== AsciiDoc essentials
+
+AsciiDoc is a plain-text writing format that reads naturally as source yet
+renders as a fully structured document. This chapter is a hands-on reference for
+the marks you will reach for daily in {product-name}.
+
+=== Section levels
+
+Headings use equals signs. One `=` per level, growing as you go deeper:
+
+* `==` is a chapter (level 1)
+* `===` is a section (level 2)
+* `====` is a subsection (level 3)
+
+==== A level-3 subsection
+
+This heading was written with four equals signs. Notice how it nests under the
+section above it in the outline and the table of contents.
+
+=== Inline formatting
+
+You can make text *bold*, _italic_, and `monospaced`. Combine them for
+*_bold italic_*. Mark a phrase with #a highlight#, raise text with H~2~O
+(subscript) or E = mc^2^ (superscript). Because `:experimental:` is enabled in
+the document header, you can also render UI keys and buttons: press
+kbd:[Ctrl+F] to search the open file, or click the btn:[Export] button. Menu
+paths render too, e.g. menu:File[Export > PDF].
+
+NOTE: There is no *Save* command in {product-name}. Your edits are saved
+continuously and shared with collaborators in real time as you type — kbd:[Ctrl+S]
+does nothing here. See <<collaborating>> for how that works.
+
+TIP: Wrap literal file names like `index.adoc` and any markup you want shown
+verbatim in backticks, so readers can tell prose from live formatting at a glance.
+
+[#admonitions]
+=== Admonitions
+
+Admonitions call out information. The shorthand form is a label, a colon, and
+your text on one line:
+
+NOTE: A note holds neutral, supplementary information.
+
+TIP: A tip offers helpful, practical advice.
+
+IMPORTANT: An important admonition highlights something you should not miss.
+
+WARNING: A warning flags a risk of a bad outcome.
+
+CAUTION: A caution asks the reader to proceed carefully.
+
+For anything longer than a sentence, use the block form — a `[LABEL]` attribute
+above a delimited `====` block, which can contain lists, code, and more:
+
+[NOTE]
+====
+Block admonitions can hold rich content:
+
+* multiple paragraphs,
+* lists, and
+* even code blocks.
+
+That makes them ideal for callouts that need structure.
+====
+
+[#lists]
+=== Lists
+
+Unordered lists use `*`, and you nest them by adding more markers:
+
+* Editing
+** Live preview
+** Syntax highlighting
+* Collaboration
+** Presence and cursors
+** Review comments
+
+Ordered lists use `.`, and also nest. You can force a numbering style with a
+block attribute such as `[loweralpha]`:
+
+. First, open a project.
+. Then pick a file.
+.. Read it, or
+.. edit it (if you have the editor role).
+. Finally, export.
+
+[loweralpha]
+. This list is numbered a, b, c.
+. Handy for legal-style sub-clauses.
+
+A description (definition) list pairs a term with its meaning using `::` :
+
+CRDT:: Conflict-free Replicated Data Type — the technology that lets many
+people edit the same file with no merge conflicts.
+Main file:: The root of the include tree, which unlocks cross-file
+intelligence.
+
+=== Footnotes
+
+Footnotes attach a note to a point in the text.footnote:[Like this one — it
+renders at the bottom of the page or article.] You can also name a footnote and
+reuse it later.footnote:sync-note[A named footnote is defined once and can be
+cited again by its name.] When the same point comes up again, reference the named
+footnote by name without repeating the text.footnote:sync-note[]
+
+=== Quotes and sidebars
+
+Use a `[quote]` block with an author and source for attributed quotations:
+
+[quote,Donald Knuth,The Art of Computer Programming]
+____
+Programs are meant to be read by humans and only incidentally for computers to
+execute.
+____
+
+A shorter inline-style quote works too:
+
+"Plain text outlives every proprietary format."
+
+Sidebars set tangential material apart with `****` delimiters:
+
+.Why plain text?
+****
+Because your document is just text, it diffs cleanly, survives decades, and
+plays nicely with the CRDT engine that powers real-time editing in
+{product-name}.
+****
+
+'''
+
+That horizontal rule above marks the end of the core syntax. Next, learn how to
+compose many files into one document in
+<<structure,Structure and includes>>.

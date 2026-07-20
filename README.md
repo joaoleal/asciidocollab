@@ -48,6 +48,17 @@ self-hosted web application.
   custom fonts (including WOFF2), PDF themes, citations, STEM math (block and inline), and diagrams
   (mermaid, graphviz/DOT, vega/vega-lite) are all rendered. Diagrams also render in the on-screen HTML preview,
   and diagram blocks get their own syntax highlighting in the editor.
+- PDF theme editor — edit your project's theme as YAML beside a live preview of a sample document that
+  exercises every element a theme can style, so a change to almost any setting visibly moves something.
+  The editor knows the whole Asciidoctor-PDF theme vocabulary: completion for every setting and its
+  permitted values, hover documentation for the ones already in the file, inline colour swatches and
+  font samples, and warnings for settings the renderer will not read. Themes are ordinary project
+  files, so two people can edit one together like any other document.
+- PDF converter extensions — opt-in changes to how the PDF is produced: numbered paragraphs, a generated
+  licence page, multi-column sections, per-chapter contents lists, landscape pages for wide tables, and
+  more. Enable them per project in the project's options; each is off until you turn it on, and turning
+  one off returns the document exactly as it was. Administrators can add their own — see
+  [`CONFIGURATION.md`](CONFIGURATION.md#pdf-converter-extensions).
 
 **Not yet built (MVP blockers)**
 

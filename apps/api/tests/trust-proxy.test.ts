@@ -6,7 +6,7 @@ import { setupTestEnvironment } from './helpers/test-environment';
  * the https-redirect plugin but never passed to the Fastify factory, so behind a
  * TLS-terminating reverse proxy `request.protocol` stayed 'http'.
  *
- * That silently broke authentication — @fastify/session refuses to issue a
+ * That silently broke authentication — `@fastify/session` refuses to issue a
  * cookie marked `secure` unless `request.protocol === 'https'`, so login
  * answered 200 with no Set-Cookie and no user could ever sign in — and it
  * collapsed every per-IP rate limit into a single bucket keyed on the proxy.

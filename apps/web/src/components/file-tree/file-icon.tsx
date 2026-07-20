@@ -1,8 +1,9 @@
 import type { ComponentType } from 'react';
-import { File, FileText, FileSpreadsheet, FileImage } from 'lucide-react';
+import { File, FileText, FileSpreadsheet, FileImage, Palette } from 'lucide-react';
 import { cn } from '@/lib/utilities';
 import { isAsciiDocumentFile } from '@/lib/asciidoc/file-name';
 import { isImageFile } from '@/lib/codemirror/asciidoc-image-extensions';
+import { isThemeFilePath } from '@asciidocollab/shared';
 
 /**
  * A document icon marked with an "A" for AsciiDoc. Lucide's FileType glyph draws
@@ -54,6 +55,11 @@ function isPlainTextFile(nodeName: string): boolean {
  * unrecognised falls back to the generic file icon.
  */
 function iconForName(nodeName: string): { Icon: ComponentType<{ className?: string }>; className: string } {
+  // Themes are checked BEFORE the generic extension tests: a theme is a `.yml`, but it opens in a
+  // different editor and governs how every export looks, so it is worth telling apart from the
+  // project's other YAML at a glance (FR-009c). The rule is the SHARED one, so a file the tree marks
+  // as a theme is exactly the file the renderer will apply.
+  if (isThemeFilePath(nodeName)) return { Icon: Palette, className: 'text-amber-500' };
   if (isAsciiDocumentFile(nodeName)) return { Icon: AsciiDocIcon, className: 'text-primary' };
   if (isImageFile(nodeName)) return { Icon: FileImage, className: 'text-violet-500' };
   if (isCsvFile(nodeName)) return { Icon: FileSpreadsheet, className: 'text-emerald-500' };

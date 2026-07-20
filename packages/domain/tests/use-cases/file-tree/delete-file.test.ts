@@ -214,6 +214,16 @@ describe('DeleteFileUseCase', () => {
     expect(entries[0].metadata.reason).toBe('not_a_project_member');
   });
 
+  it('denies a viewer and records insufficient_role', async () => {
+    const viewerId = UserId.create('550e8400-e29b-41d4-a716-44665544000a');
+    await projectMemberRepo.addMember(new ProjectMember(projectId, viewerId, Role.create('viewer')));
+    const result = await useCase.execute(viewerId, fileNodeId, projectId);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.name).toBe('PermissionDeniedError');
+    const entries = await auditLogRepo.findAll();
+    expect(entries[0].metadata.reason).toBe('insufficient_role');
+  });
+
   test('file.deleted audit log carries request origin metadata', async () => {
     const result = await useCase.execute(actorId, fileNodeId, projectId, {
       ipAddress: '203.0.113.7',

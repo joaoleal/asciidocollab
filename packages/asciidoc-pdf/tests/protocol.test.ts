@@ -54,6 +54,7 @@ describe('render phase constants', () => {
       'malformed-citation',
       'unresolved-include',
       'optimize-unavailable',
+      'extension-not-loaded',
     ]);
     expect(Object.isFrozen(DIAGNOSTIC_CODES)).toBe(true);
   });

@@ -2,6 +2,7 @@ import { UploadAssetUseCase } from '../../../src/use-cases/content/upload-asset'
 import { InMemoryProjectMemberRepository } from '../../ports/project/in-memory-project-member.repository';
 import { InMemoryFileNodeRepository } from '../../ports/file-tree/in-memory-file-node.repository';
 import { InMemoryAssetRepository } from '../../ports/file-tree/in-memory-asset.repository';
+import { InMemoryDocumentRepository } from '../../ports/file-tree/in-memory-document.repository';
 import { InMemoryProjectFileStore } from '../../ports/storage/in-memory-project-file-store';
 import { InMemorySystemSettingRepository } from '../../ports/admin/in-memory-system-setting.repository';
 import { InMemoryAuditLogRepository } from '../../ports/admin/in-memory-audit-log.repository';
@@ -30,6 +31,7 @@ describe('UploadAssetUseCase', () => {
   let projectMemberRepo: InMemoryProjectMemberRepository;
   let fileNodeRepo: InMemoryFileNodeRepository;
   let assetRepo: InMemoryAssetRepository;
+  let documentRepo: InMemoryDocumentRepository;
   let fileStore: InMemoryProjectFileStore;
   let systemSettingRepo: InMemorySystemSettingRepository;
   let auditLogRepo: InMemoryAuditLogRepository;
@@ -46,11 +48,12 @@ describe('UploadAssetUseCase', () => {
     projectMemberRepo = new InMemoryProjectMemberRepository();
     fileNodeRepo = new InMemoryFileNodeRepository();
     assetRepo = new InMemoryAssetRepository();
+    documentRepo = new InMemoryDocumentRepository();
     fileStore = new InMemoryProjectFileStore();
     systemSettingRepo = new InMemorySystemSettingRepository();
     auditLogRepo = new InMemoryAuditLogRepository();
 
-    useCase = new UploadAssetUseCase(projectMemberRepo, fileNodeRepo, assetRepo, fileStore, systemSettingRepo, DEFAULT_MAX, auditLogRepo);
+    useCase = new UploadAssetUseCase(projectMemberRepo, fileNodeRepo, assetRepo, documentRepo, fileStore, systemSettingRepo, DEFAULT_MAX, auditLogRepo);
 
     const project = new Project(projectId, ProjectName.create('Test'), null, [], rootFolderId);
     await projectRepo.save(project);
@@ -89,7 +92,7 @@ describe('UploadAssetUseCase', () => {
   });
 
   it('rejects bytes over defaultMaxUploadSizeBytes when no DB setting', async () => {
-    const smallMax = new UploadAssetUseCase(projectMemberRepo, fileNodeRepo, assetRepo, fileStore, systemSettingRepo, 50, auditLogRepo);
+    const smallMax = new UploadAssetUseCase(projectMemberRepo, fileNodeRepo, assetRepo, documentRepo, fileStore, systemSettingRepo, 50, auditLogRepo);
     const tooBig = Buffer.alloc(100, 0x00);
     const result = await smallMax.execute(actorId, projectId, rootFolderId, 'big.png', MimeType.create('image/png'), tooBig);
     expect(result.success).toBe(false);
@@ -100,7 +103,7 @@ describe('UploadAssetUseCase', () => {
 
   it('admin-set limit overrides the default', async () => {
     await systemSettingRepo.set(SETTING_MAX_UPLOAD_SIZE_BYTES, '200');
-    const smallDefault = new UploadAssetUseCase(projectMemberRepo, fileNodeRepo, assetRepo, fileStore, systemSettingRepo, 50, auditLogRepo);
+    const smallDefault = new UploadAssetUseCase(projectMemberRepo, fileNodeRepo, assetRepo, documentRepo, fileStore, systemSettingRepo, 50, auditLogRepo);
     const medBytes = Buffer.alloc(150, 0x00);
     const result = await smallDefault.execute(actorId, projectId, rootFolderId, 'med.png', MimeType.create('image/png'), medBytes);
     expect(result.success).toBe(true);
@@ -108,6 +111,16 @@ describe('UploadAssetUseCase', () => {
 
   it('rejects non-member with PermissionDeniedError', async () => {
     const result = await useCase.execute(nonMemberId, projectId, rootFolderId, 'x.png', MimeType.create('image/png'), smallBytes);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(PermissionDeniedError);
+    }
+  });
+
+  it('rejects a viewer with PermissionDeniedError', async () => {
+    const viewerId = UserId.create('550e8400-e29b-41d4-a716-44665544000a');
+    await projectMemberRepo.addMember(new ProjectMember(projectId, viewerId, Role.create('viewer')));
+    const result = await useCase.execute(viewerId, projectId, rootFolderId, 'x.png', MimeType.create('image/png'), smallBytes);
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toBeInstanceOf(PermissionDeniedError);
@@ -196,6 +209,7 @@ describe('UploadAssetUseCase', () => {
       projectMemberRepo,
       fileNodeRepo,
       assetRepo,
+      documentRepo,
       fileStore,
       systemSettingRepo,
       50, // tiny default — any file > 50 bytes must be rejected
@@ -224,6 +238,7 @@ describe('UploadAssetUseCase', () => {
       projectMemberRepo,
       fileNodeRepo,
       assetRepo,
+      documentRepo,
       fileStore,
       systemSettingRepo,
       50,
@@ -276,6 +291,75 @@ describe('UploadAssetUseCase', () => {
     expect(result.success).toBe(true);
   });
 
+  describe('uploaded theme files', () => {
+    it('records an uploaded theme as a co-editable document, not an opaque asset', async () => {
+      // A theme dragged into the tree has to co-edit exactly like one created in it. Recording it as
+      // an asset gives it no Yjs state, so the editor falls back to the read-only REST path and the
+      // author silently loses collaborative editing on the file the theme editor exists to serve.
+      const result = await useCase.execute(
+        actorId,
+        projectId,
+        rootFolderId,
+        'corporate-theme.yml',
+        MimeType.create('text/plain'),
+        Buffer.from('base:\n  font-color: #333333\n'),
+      );
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      const document = await documentRepo.findByFileNodeId(result.value.fileNodeId);
+      expect(document).not.toBeNull();
+      expect(document?.yjsStateId).toBeDefined();
+      expect(await assetRepo.findById(result.value.fileNodeId)).toBeNull();
+    });
+
+    it('recognises a theme however its name is capitalised', async () => {
+      const result = await useCase.execute(
+        actorId,
+        projectId,
+        rootFolderId,
+        'Corporate-Theme.YAML',
+        MimeType.create('application/octet-stream'),
+        Buffer.from('base:\n'),
+      );
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(await documentRepo.findByFileNodeId(result.value.fileNodeId)).not.toBeNull();
+    });
+
+    it('still records a non-theme upload as an asset', async () => {
+      const result = await useCase.execute(
+        actorId,
+        projectId,
+        rootFolderId,
+        'settings.yml',
+        MimeType.create('text/plain'),
+        smallBytes,
+      );
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(await documentRepo.findByFileNodeId(result.value.fileNodeId)).toBeNull();
+      expect(await assetRepo.findById(result.value.fileNodeId)).not.toBeNull();
+    });
+
+    it('cleans up the disk file when the document write fails', async () => {
+      documentRepo.save = jest.fn().mockRejectedValue(new Error('DB down'));
+
+      await expect(
+        useCase.execute(
+          actorId,
+          projectId,
+          rootFolderId,
+          'brand-theme.yml',
+          MimeType.create('text/plain'),
+          smallBytes,
+        ),
+      ).rejects.toThrow('DB down');
+
+      expect(await fileStore.read(projectId, FilePath.create('/brand-theme.yml'))).toBeNull();
+    });
+  });
+
   it('cleans up the disk file when assetRepo.save throws after createExclusive succeeds', async () => {
     assetRepo.save = jest.fn().mockRejectedValue(new Error('DB down'));
 
@@ -308,6 +392,7 @@ describe('UploadAssetUseCase', () => {
       projectMemberRepo,
       fileNodeRepo,
       assetRepo,
+      documentRepo,
       fileStore,
       systemSettingRepo,
       DEFAULT_MAX,

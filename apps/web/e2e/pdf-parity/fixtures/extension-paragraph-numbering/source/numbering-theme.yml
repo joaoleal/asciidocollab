@@ -1,0 +1,5 @@
+# Sets the extension's contributed theme key to a value clearly distinct from its default, so a
+# regression that stops reading the key shows up as a colour difference rather than passing silently.
+extends: default
+paragraph-numbering:
+  font-color: CC0000

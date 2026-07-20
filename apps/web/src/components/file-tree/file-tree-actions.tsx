@@ -31,6 +31,9 @@ import { ConfirmationDialog } from '@/components/confirmation-dialog';
 import { UploadProgressPanel } from './upload-progress-panel';
 import { useDropUpload } from '@/hooks/use-drop-upload';
 import { createFolder, createFileNode, renameFileNode, deleteFileNode, FileTreeApiError } from '@/lib/api/file-tree';
+import { isThemeFilePath } from '@asciidocollab/shared';
+import { saveDocumentContent } from '@/lib/api/file-content';
+import { themeSeedContent } from '@/lib/pdf/theme-seed';
 import { API_BASE_URL } from '@/lib/api/base-url';
 
 type DialogKind =
@@ -141,7 +144,29 @@ export function FileTreeActions({
     break;
     }
     case 'create-file': {
-      ok = await handleAction(async () => { await createFileNode(projectId, fileNodeId, inputValue); });
+      ok = await handleAction(async () => {
+        const created = await createFileNode(projectId, fileNodeId, inputValue);
+        // A theme starts as a copy of the renderer's own default rather than empty, so an author has
+        // something to edit and their first preview matches what they saw before creating it
+        // (FR-010). Seeding is best-effort: a file that exists but could not be seeded is recoverable
+        // (the author types into it), whereas failing the whole creation over it is not.
+        if (isThemeFilePath(inputValue)) {
+          try {
+            await saveDocumentContent(projectId, created.fileNodeId, themeSeedContent());
+          } catch {
+            // Reported rather than swallowed. The file is now EMPTY, and an empty theme is not
+            // inert: theme discovery picks it up by name, and the loader turns empty YAML into a
+            // theme with no font catalogue rather than falling back — so every export from this
+            // project silently renders unstyled until the author acts. Creation still counts as
+            // successful, because the file does exist and typing into it is the fix.
+            onError?.(
+              `${inputValue} was created but could not be filled with the default theme, so it is ` +
+                'empty. An empty theme file is still applied to this project and will render it ' +
+                'unstyled — open it and add a theme, or delete it.',
+            );
+          }
+        }
+      });
 
     break;
     }

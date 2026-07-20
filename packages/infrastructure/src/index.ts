@@ -41,3 +41,7 @@ export { PrismaSystemSettingRepository } from './persistence/admin/prisma-system
 
 export * from './services';
 export { PrismaEditorPreferencesRepository } from './persistence/user/prisma-editor-preferences.repository';
+export {
+  FilesystemPdfExtensionSource,
+  type FilesystemPdfExtensionSourceOptions,
+} from './persistence/pdf-extensions/filesystem-pdf-extension-source';

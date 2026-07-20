@@ -1,0 +1,21 @@
+{
+  "id": "narrow-contents",
+  "displayName": "Narrow contents list",
+  "description": "Draws the contents list in a narrower measure than the page, so each entry sits closer to its page number instead of being separated by the full width of the page. The built-in toc.indent only indents nested levels and never moves the right edge, so this adds the two settings that were missing.",
+  "targeting": "",
+  "themeKeys": [
+    {
+      "key": "narrow-contents.left",
+      "valueKind": "measurement",
+      "description": "Space between the left margin and the contents list.",
+      "default": "72"
+    },
+    {
+      "key": "narrow-contents.right",
+      "valueKind": "measurement",
+      "description": "Space between the contents list and the right margin. This is the one that pulls page numbers in toward their entries.",
+      "default": "72"
+    }
+  ],
+  "sampleContent": "The contents list is drawn in a narrower measure, so entries and their page numbers sit closer together."
+}

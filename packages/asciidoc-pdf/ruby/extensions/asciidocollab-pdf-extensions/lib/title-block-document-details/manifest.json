@@ -1,0 +1,27 @@
+{
+  "id": "title-block-document-details",
+  "displayName": "Document details on the title page",
+  "description": "Draws a block of labelled document details on the title page, one per line. List them with :title-block-details: Document ID=document-id, Classification=classification — a bare attribute name renders without a label, and a detail whose attribute is unset is omitted. Note the narrow scope: interpolating attributes into the title block onto ONE line is already possible with the built-in title-page.authors.content theme key, so enable this only when you need the details laid out on separate lines.",
+  "targeting": ":title-block-details:",
+  "themeKeys": [
+    {
+      "key": "title-block-details.text-align",
+      "valueKind": "keyword",
+      "description": "Alignment of the details block. Follows the title page's alignment by default.",
+      "default": ""
+    },
+    {
+      "key": "title-block-details.font-color",
+      "valueKind": "colour",
+      "description": "Colour of the details block's text.",
+      "default": ""
+    },
+    {
+      "key": "title-block-details.margin-top",
+      "valueKind": "measurement",
+      "description": "Space between the rest of the title page and the details block.",
+      "default": "12"
+    }
+  ],
+  "sampleContent": "Labelled document details — identifier, classification, organisation — are laid out on the title page, one per line."
+}

@@ -1,0 +1,10 @@
+= Theme Named With A .yaml Extension
+:doctype: article
+
+This project's theme file is named `local-theme.yaml`. The app recognises both `.yml` and `.yaml` as
+theme documents, so the author gets the theme editor, the file-tree marking and the live preview —
+but Asciidoctor-PDF only accepts `.yml` as a theme filename and appends `-theme.yml` to anything else.
+
+== A heading the theme colours
+
+Without the alias this renders in the default theme and the engine merely logs that it reverted.

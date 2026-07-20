@@ -1,0 +1,71 @@
+= A Book With Lists Of Figures And Tables
+:doctype: book
+:toc:
+:list-of-figures:
+:list-of-tables:
+
+// Three chapters so entries in the generated lists cite DIFFERENT pages from one another; a
+// regression that printed one page number for every entry cannot pass this fixture.
+
+== Chapter 1
+
+Body text for chapter 1.
+
+.Figure caption 1A describing the diagram
+image::box.png[Box,90,90]
+
+.Table caption 1B
+|===
+| a | b
+| c | d
+|===
+
+.Figure caption 1C, a second figure in this chapter
+image::box.png[Box,90,90]
+
+// An UNCAPTIONED figure, which must NOT appear in the list: there is nothing to list it by.
+image::box.png[Box,60,60]
+
+More body text.
+
+== Chapter 2
+
+Body text for chapter 2.
+
+.Figure caption 2A describing the diagram
+image::box.png[Box,90,90]
+
+.Table caption 2B
+|===
+| a | b
+| c | d
+|===
+
+.Figure caption 2C, a second figure in this chapter
+image::box.png[Box,90,90]
+
+// An UNCAPTIONED figure, which must NOT appear in the list: there is nothing to list it by.
+image::box.png[Box,60,60]
+
+More body text.
+
+== Chapter 3
+
+Body text for chapter 3.
+
+.Figure caption 3A describing the diagram
+image::box.png[Box,90,90]
+
+.Table caption 3B
+|===
+| a | b
+| c | d
+|===
+
+.Figure caption 3C, a second figure in this chapter
+image::box.png[Box,90,90]
+
+// An UNCAPTIONED figure, which must NOT appear in the list: there is nothing to list it by.
+image::box.png[Box,60,60]
+
+More body text.

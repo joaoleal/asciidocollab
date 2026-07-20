@@ -86,6 +86,89 @@ depend on it.
 For local development, `scripts/dev.sh` starts [Mailpit](https://mailpit.axllent.org)
 and captures everything at `http://localhost:8025`; nothing reaches real addresses.
 
+## PDF converter extensions
+
+Projects can enable converter extensions that change how their PDF is produced —
+numbered paragraphs, a generated licence page, multi-column sections. The
+application ships a set of these. You can add your own by dropping them into a
+folder; no rebuild and no restart is needed.
+
+> **These extensions are as trusted as the application's own code.**
+> An extension is Ruby that runs inside the PDF engine **in every project
+> member's browser**. It is not sandboxed from the page. Treat adding one exactly
+> as you would treat deploying a patch to AsciiDoCollab itself: read it, know
+> where it came from, and control write access to the folder.
+>
+> This is why the folder is the *only* way to add one. A project's stored
+> selection is a list of **identifiers**, never code, and nothing under a
+> project's own files is ever executed — project content is member-writable, so
+> if it were executable, any member with write access could run code in every
+> other member's browser.
+
+| Variable                                                | Purpose                                                                                                   |
+|---------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH`             | Folder to read extensions from (default `/data/pdf-extensions`)                                           |
+| `ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_MAX`              | Most extensions read from the folder (default 50)                                                         |
+| `ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_MAX_SOURCE_BYTES` | Largest single extension source (default 256 KiB)                                                         |
+| `ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL`   | How long a folder scan is reused, in ms (default 30000) — bounds how long a new extension takes to appear |
+
+### Adding an extension
+
+One directory per extension, each carrying two files:
+
+```
+/data/pdf-extensions/
+└── my-extension/
+    ├── manifest.json
+    └── extension.rb
+```
+
+`manifest.json` needs `id`, `displayName` and `description`; `targeting`,
+`themeKeys` and `sampleContent` are optional. The `id` is what a project stores
+when it enables the extension, so **it must never change** — renaming it silently
+disables the extension for every project that had selected it.
+
+Add the directory and it appears in each project's extension list within the scan
+cache TTL. Nothing is restarted, and no image is rebuilt.
+
+With Docker, bind-mount the folder:
+
+```yaml
+services:
+  api:
+    volumes:
+      - ./pdf-extensions:/data/pdf-extensions:ro
+```
+
+Mounting it read-only is worth doing: the application only ever reads from it.
+
+A missing folder is not an error — it simply means no extensions beyond the
+shipped ones are offered.
+
+### When something is wrong with an extension
+
+Anything the folder scan rejects is **reported, not silently skipped**. A
+malformed `manifest.json`, an oversized source, or an `id` that collides with a
+shipped extension all surface in the project's extension list with a reason
+attached. One bad directory does not hide the good ones beside it.
+
+### Debugging a misbehaving extension
+
+**An extension that hangs freezes that member's PDF render, and only a page
+reload clears it.**
+
+The PDF convert runs under a synchronous `vm.eval` call inside the render worker.
+While Ruby is executing, the worker cannot process any message — including its
+own cancel. So an extension that loops forever, or blocks on something that never
+completes, leaves the render stuck until the browser tab is reloaded or the tab
+is closed. There is no timeout that will rescue it.
+
+This is an operational concern rather than a security one — extensions are
+deployment-controlled code — but it means the safe place to try a new extension
+is a staging deployment, not the one your team is working in. If a render stalls
+after you add an extension, remove its directory from the folder and have
+affected members reload; the next render will not load it.
+
 ## Behind a reverse proxy
 
 | Variable                           | Purpose                                                                                                                                                                |

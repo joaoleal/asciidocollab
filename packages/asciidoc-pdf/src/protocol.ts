@@ -9,6 +9,9 @@
  * the compile-time types cannot drift apart, and so no consumer has to repeat a bare string literal.
  */
 
+import type { PdfExtensionCatalogueEntry } from '@asciidocollab/asciidoc-core';
+import type { PdfExtensionSource } from './extensions/registry';
+
 /**
  * Which artifact a render produces: `export` returns a downloadable full PDF Blob; `preview` may
  * return a page-limited or rasterized rendering for on-screen display.
@@ -57,6 +60,14 @@ export interface ProjectSnapshot {
   readonly bibPath?: string;
   /** Seeded/intrinsic attributes (render-intrinsic set merged with project attributes). */
   readonly attributes: Readonly<Record<string, string>>;
+  /**
+   * The converter extensions this project applies, as IDENTIFIERS ONLY.
+   *
+   * Never code, never paths. Every extension's source lives in the deployment — the shipped gem or
+   * the administrator's folder — and is resolved from an id by the registry, so a snapshot travelling
+   * from the browser to the worker can carry nothing executable no matter what a project stores.
+   */
+  readonly enabledExtensions?: readonly string[];
 }
 
 /**
@@ -82,6 +93,26 @@ export interface RenderRequest {
    * {@link GeneratedAsset.sourceHash}, so a pre-seeded hit skips re-rendering the matching block.
    */
   readonly generatedAssets?: readonly GeneratedAsset[];
+  /**
+   * What the worker needs to turn {@link ProjectSnapshot.enabledExtensions} into loadable code.
+   *
+   * Carried on the REQUEST rather than held as worker state, deliberately. Worker state would have to
+   * arrive in its own message, and a render posted before that message landed would render silently
+   * without its extensions — output that looks correct and is not. There is no ordering to get wrong
+   * if every request carries what it needs.
+   *
+   * Absent means no extensions, which is what a caller with no project context (the theme preview
+   * outside a project, a test) supplies.
+   */
+  readonly extensions?: PdfExtensionBundle;
+}
+
+/** The catalogue and code a render needs to resolve its enabled extension ids. */
+export interface PdfExtensionBundle {
+  /** Every extension currently on offer, for checking availability and origin. */
+  readonly catalogue: readonly PdfExtensionCatalogueEntry[];
+  /** The Ruby source for each id the caller could supply, injected by the composition root. */
+  readonly sources: readonly PdfExtensionSource[];
 }
 
 /**
@@ -131,6 +162,7 @@ export const DIAGNOSTIC_CODES = Object.freeze([
   'malformed-citation',
   'unresolved-include',
   'optimize-unavailable',
+  'extension-not-loaded',
 ] as const);
 
 /** A machine-readable diagnostic code drawn from {@link DIAGNOSTIC_CODES}. */

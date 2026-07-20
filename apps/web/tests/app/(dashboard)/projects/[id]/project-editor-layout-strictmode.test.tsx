@@ -63,6 +63,8 @@ jest.mock('@/hooks/use-editor-preferences', () => ({
 
 const mockClearLastSelection = jest.fn();
 jest.mock('@/hooks/use-last-selection', () => ({
+  // Standalone export used by the layout's first-open flag; a stored selection ⇒ not a first open.
+  readLastSelection: () => ({ nodeId: 'f1', nodeName: 'doc.adoc', nodeType: 'file', path: '/doc.adoc' }),
   useLastSelection: () => ({
     readLastSelection: () => ({ nodeId: 'f1', nodeName: 'doc.adoc', nodeType: 'file', path: '/doc.adoc' }),
     rememberFile: jest.fn(),
@@ -81,6 +83,7 @@ const defaultProps = {
   mainFileNodeId: null,
   canManage: true,
   canEdit: true,
+  canModifyFiles: true,
   userId: 'user-1',
 };
 

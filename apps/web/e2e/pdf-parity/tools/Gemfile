@@ -1,0 +1,35 @@
+# frozen_string_literal: true
+
+# The reference toolchain's gem closure, pinned EXACTLY.
+#
+# These gems decide the bytes of every committed reference PDF, so a version that is free to drift is
+# a reference that is free to drift. `prawn`, `pdf-core` and `ttfunk` lay out the PDF objects and
+# subset the fonts; `prawn-svg` rasterises figures; `rouge` colours source blocks. A machine that
+# resolved any of them differently would regenerate references that no longer match the corpus, and
+# the parity suite would report a fidelity regression that is really just a different gem.
+#
+# Every version here is the one the closure ALREADY resolved to when this was pinned, verified by
+# regenerating a fixture and comparing SHA-256 against the committed reference — so pinning changed
+# nothing. Transitive versions are frozen by the committed `Gemfile.lock` beside this file; the image
+# installs with `--frozen`, so a lock that no longer matches this file fails the build instead of
+# silently resolving something new.
+#
+# Bump deliberately, and regenerate the whole corpus in the same commit.
+source "https://rubygems.org"
+
+# The engine. MUST stay in lockstep with the version the wasm build bundles (packages/asciidoc-pdf),
+# because parity compares the two toolchains against each other.
+gem "asciidoctor-pdf", "2.3.24"
+
+# SVG figures. Note this is NOT the newest release: it is the version asciidoctor-pdf 2.3.24 resolves
+# to, and the one the wasm engine loads. Installing it unpinned put TWO copies in the image.
+gem "prawn-svg", "0.34.2"
+
+# Source-block highlighting.
+gem "rouge", "5.0.0"
+
+# Citations and diagrams, for the two fixtures whose references cannot be built without them. Kept in
+# the same closure rather than a second image so there is ONE reference toolchain: a second image is
+# a second set of resolved versions, which is exactly how the corpus would drift apart.
+gem "asciidoctor-bibtex", "0.9.0"
+gem "asciidoctor-diagram", "3.2.1"

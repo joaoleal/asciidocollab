@@ -13,6 +13,7 @@ import {
   cancellationToken,
   createCitationsStage,
   createDiagramsMathStage,
+  createMountAssetsStage,
   PROJECT_ROOT,
   type PipelineVfs,
   type AssetCachePort,
@@ -26,6 +27,8 @@ import {
   type IncludeAssembler,
 } from '@asciidocollab/asciidoc-pdf';
 import type { ParityEngine } from './engine';
+import { nodeFontConverter } from './font-converter';
+import { BINARY_EXTENSIONS } from './manifest';
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -72,6 +75,8 @@ const unusedIncludeAssembler: IncludeAssembler = {
 export interface PreprocessResult {
   /** The rewritten project, project-relative path → UTF-8 content (root doc + placed `.gen/*.svg`). */
   readonly files: Readonly<Record<string, string>>;
+  /** The binary assets carried through unchanged (fonts, images) — never decoded as text. */
+  readonly binaryAssets: Readonly<Record<string, Uint8Array>>;
   /** Diagnostics the stages raised (a divergence or malformed-block skip is visible here). */
   readonly diagnostics: readonly RenderDiagnostic[];
 }
@@ -107,16 +112,34 @@ export async function preprocessOurs(
     cancellation: cancellationToken(() => false),
   };
 
-  const stages: PipelineStage[] = [createCitationsStage(), createDiagramsMathStage()];
+  // The asset-mount stage is what makes a custom WOFF2 theme font embeddable: prawn dispatches font
+  // loading by file extension, so without the decode-and-repoint this stage performs the engine aborts
+  // with "…`.woff2`… is not a known font". Production runs it too — omitting it here would make a
+  // WOFF2 fixture untestable, which is precisely what had happened.
+  const stages: PipelineStage[] = [
+    createCitationsStage(),
+    createDiagramsMathStage(),
+    createMountAssetsStage({ fontConverter: nodeFontConverter() }),
+  ];
   await runPipeline(stages, context);
 
-  // Every VFS entry is UTF-8 text here (AsciiDoc + SVG), so it goes through `files`.
+  // Split the rewritten project back into text and bytes. Classification is by EXTENSION rather than
+  // by "was it binary on the way in", because the asset-mount stage emits a decoded `.ttf` that was
+  // never in the input. Decoding any of these as UTF-8 silently corrupts the font or image, and the
+  // engine then falls back to a default face — quietly defeating the fidelity the fixture asserts.
   const files: Record<string, string> = {};
+  const binaryAssets: Record<string, Uint8Array> = {};
   const prefix = `${PROJECT_ROOT}/`;
   for (const [path, bytes] of vfs.entries()) {
-    files[path.slice(prefix.length)] = decoder.decode(bytes);
+    const relativePath = path.slice(prefix.length);
+    const extension = relativePath.slice(relativePath.lastIndexOf('.')).toLowerCase();
+    if (relativePath in snapshot.binaryAssets || BINARY_EXTENSIONS.has(extension)) {
+      binaryAssets[relativePath] = bytes;
+    } else {
+      files[relativePath] = decoder.decode(bytes);
+    }
   }
-  return { files, diagnostics: diagnostics.all() };
+  return { files, binaryAssets, diagnostics: diagnostics.all() };
 }
 
 /** The outcome of the full our-side render: the produced PDF bytes plus any stage diagnostics. */
@@ -134,8 +157,8 @@ export async function renderOurs(
   shims: readonly RenderShim[],
   engine: ParityEngine,
 ): Promise<OursRenderResult> {
-  const { files, diagnostics } = await preprocessOurs(snapshot, shims);
-  const convertSnapshot: ProjectSnapshot = { ...snapshot, files, binaryAssets: {} };
+  const { files, binaryAssets, diagnostics } = await preprocessOurs(snapshot, shims);
+  const convertSnapshot: ProjectSnapshot = { ...snapshot, files, binaryAssets };
   const pdfBytes = await engine.convert(convertSnapshot);
   return { pdfBytes, diagnostics };
 }

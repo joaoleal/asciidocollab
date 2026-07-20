@@ -81,6 +81,7 @@ jest.mock('@/lib/api/members', () => ({
 }));
 
 jest.mock('@/hooks/use-last-selection', () => ({
+  readLastSelection: () => null,
   useLastSelection: () => ({
     readLastSelection: () => null,
     rememberFile: jest.fn(),
@@ -124,6 +125,7 @@ const defaultProps = {
   mainFileNodeId: null,
   canManage: false,
   canEdit: true,
+  canModifyFiles: true,
   userId: 'u-test',
 };
 

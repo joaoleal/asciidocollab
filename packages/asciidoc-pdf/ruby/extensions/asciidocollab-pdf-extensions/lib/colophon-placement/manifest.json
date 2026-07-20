@@ -1,0 +1,8 @@
+{
+  "id": "colophon-placement",
+  "displayName": "Colophon as back matter",
+  "description": "Moves a [colophon] section to the back of the book and renders it as back matter — after every chapter, with no page number and absent from the contents list. Asciidoctor already renders a [colophon] section, but as an ordinary numbered chapter wherever it was written; reordering the source cannot make it back matter. Set :colophon-placement: document to leave it exactly where it was written.",
+  "targeting": "[colophon]",
+  "themeKeys": [],
+  "sampleContent": "A [colophon] section is moved to the back of the book, unnumbered and absent from the contents list."
+}

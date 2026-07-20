@@ -1,0 +1,27 @@
+= Paragraph Numbering
+:doctype: article
+
+Body paragraphs at document level are numbered in document order, including the prose that appears
+before the first section heading.
+
+A second paragraph, so the sequence is visibly continuous rather than a single number.
+
+== A section
+
+Paragraphs inside a section continue the same sequence — the numbering is document-wide, not
+per-section.
+
+NOTE: An admonition's paragraph is part of the admonition, not body prose, so it is not numbered.
+
+* A list item is part of its list, so it is not numbered either.
+* A second item.
+
+****
+A sidebar's paragraph is not numbered.
+****
+
+|===
+| A table cell's paragraph is not numbered.
+|===
+
+The final body paragraph, which must carry the next number in sequence.

@@ -82,6 +82,7 @@ export async function assetsRoutes(app: FastifyInstance): Promise<void> {
         request.server.repos.projectMember,
         request.server.repos.fileNode,
         request.server.repos.asset,
+        request.server.repos.document,
         request.server.stores.fileStore,
         request.server.repos.systemSetting,
         request.server.config.storage.maxUploadSizeBytes,

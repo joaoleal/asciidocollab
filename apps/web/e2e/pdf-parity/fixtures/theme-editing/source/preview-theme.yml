@@ -1,0 +1,64 @@
+# A theme exercising the settings the editor previews: colours, fonts, page geometry, and the
+# per-element overrides an author reaches for first. Every value differs visibly from the default so
+# a regression that silently drops the theme shows up as a parity failure rather than passing.
+extends: default
+page:
+  layout: portrait
+  margin: [0.75in, 0.75in, 0.75in, 0.75in]
+  size: A4
+  background-color: FFFFFF
+base:
+  font-color: 2E2E2E
+  font-size: 10.5
+  line-height: 1.4
+  text-align: left
+heading:
+  font-color: 1A4E8A
+  font-style: bold
+  line-height: 1.2
+  margin-top: 12
+  margin-bottom: 6
+link:
+  font-color: 0B7285
+code:
+  background-color: F2F4F6
+  border-color: D6DBE0
+  border-width: 0.5
+  font-size: 9
+quote:
+  border-color: 1A4E8A
+  border-left-width: 3
+  font-size: 10
+  padding: [6, 12, 6, 14]
+sidebar:
+  background-color: F7F3EA
+  border-color: D9CFB8
+  border-width: 0.5
+  border-radius: 4
+example:
+  background-color: FBFBFB
+  border-color: DDDDDD
+table:
+  border-color: C8CDD3
+  border-width: 0.5
+  grid-width: 0.5
+  head:
+    font-style: bold
+admonition:
+  column-rule-color: 1A4E8A
+  column-rule-width: 2
+thematic-break:
+  border-color: 1A4E8A
+  border-width: 1
+title-page:
+  text-align: center
+  title:
+    font-color: 1A4E8A
+    font-size: 30
+  subtitle:
+    font-size: 16
+toc:
+  indent: 16
+  line-height: 1.4
+footer:
+  font-size: 8

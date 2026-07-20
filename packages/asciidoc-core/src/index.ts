@@ -19,6 +19,7 @@ export type {
 } from './types';
 export { substitutePathAttributes } from './attribute-substitution';
 export { isValidNewName, type RenamableSymbolKind } from './name-validation';
+export { isThemeFilePath, resolveThemePath, themeFilePaths, THEME_FILENAME_CONVENTION } from './theme-file';
 export {
   ENDIF_LINE_RE,
   CONDITIONAL_REGION_OPENER_RE,
@@ -33,3 +34,15 @@ export * from './extraction';
 // The environment-agnostic include-assembly primitive (I/O + sandbox path policy injected) shared by
 // every rendering path so include semantics never drift between them.
 export * from './assembly';
+// The PDF converter-extension shape + ordering rule. Here rather than in `shared` because the
+// renderer is bundled into a Web Worker and may not pull the domain ring in for a few interfaces;
+// `shared` re-exports these alongside the manifest validation that needs a schema library.
+export {
+  orderPdfExtensions,
+  compareExtensionIds,
+  type PdfExtensionOrigin,
+  type PdfExtensionManifest,
+  type PdfExtensionThemeKey,
+  type PdfExtensionThemeValueKind,
+  type PdfExtensionCatalogueEntry,
+} from './pdf-extensions';

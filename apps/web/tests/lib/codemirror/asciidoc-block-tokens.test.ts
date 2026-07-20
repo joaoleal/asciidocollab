@@ -187,6 +187,16 @@ describe('createBlockTokenLogic block detection', () => {
     // A delimiter at EOF (no trailing newline) still terminates the paragraph.
     test('**** at end of input → sidebarDelim', () => expectDelim('****', 'sidebarDelim'));
 
+    // Conditional preprocessor directives are resolved before block parsing, so a directive line
+    // under paragraph content (with no blank line) is NOT absorbed — it terminates the paragraph and
+    // tokenizes as a conditional. This is the fix for `endif::[]` (which closes a region directly
+    // under its content) rendering unhighlighted while the opening `ifdef::` highlighted.
+    test('endif::[] under a paragraph → conditionalToken', () => expectDelim('endif::[]\n', 'conditionalToken'));
+    test('endif::[] at end of input → conditionalToken', () => expectDelim('endif::[]', 'conditionalToken'));
+    test('ifdef::env[] under a paragraph → conditionalToken', () => expectDelim('ifdef::env[]\n', 'conditionalToken'));
+    test('ifndef::env[] under a paragraph → conditionalToken', () => expectDelim('ifndef::env[]\n', 'conditionalToken'));
+    test('ifeval::[...] under a paragraph → conditionalToken', () => expectDelim('ifeval::["{v}"=="1"]\n', 'conditionalToken'));
+
     // Look-alikes a paragraph DOES still absorb: a heading (`== `), a too-short run (`===`),
     // a single dash bullet context, and a `|` that is not a table fence — startsDelimitedBlock
     // returns false for these, so they stay paragraph continuation text.

@@ -39,6 +39,19 @@ gem "js", "~> 2.7"
 # no-native-extension gate.
 gem "asciidoctor-pdf-wasm-shims", path: "shims/asciidoctor-pdf-wasm-shims"
 
+# ── Deliberately NOT declared here: the first-party converter extensions ──────────────────────────
+#
+# extensions/asciidocollab-pdf-extensions is a gem by layout, but declaring it as a bundle dependency
+# would bake nine files into the engine that nothing ever requires. Neither consumer loads it as a
+# gem: the app writes each selected extension's source into the VM's VFS under /extensions/<origin>
+# and requires it BY PATH, and the parity reference build bind-mounts the same directory into the
+# canonical asciidoctor-pdf container and passes `-r /extensions/<id>/extension.rb`. There is also no
+# lib/asciidocollab-pdf-extensions.rb, so `require "asciidocollab-pdf-extensions"` could not succeed
+# even if it were bundled.
+#
+# The gemspec still earns its place: it is what makes `s.files`/`require_paths` describe the layout,
+# and it carries the licensing and idempotency constraints every file here is bound by.
+
 # ── Intentionally NOT baked into the wasm engine ──────────────────────────────────────────────────
 #
 # Post-convert PDF optimization (the "hexapdf" gem) is deliberately left OUT of this closure. hexapdf

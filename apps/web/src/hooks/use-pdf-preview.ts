@@ -10,6 +10,7 @@ import type {
   RenderPhase,
   RenderRequest,
   ToWorker,
+  PdfExtensionBundle,
 } from '@asciidocollab/asciidoc-pdf';
 import { isProgressMessage, isResultMessage, isErrorMessage } from '@asciidocollab/asciidoc-pdf';
 import { PREVIEW_DEBOUNCE_MS } from '@/lib/editor-config';
@@ -42,6 +43,14 @@ export interface UsePdfPreviewOptions {
    * prerenderer; unit tests inject a deterministic one (fake engine + synchronous idle scheduler).
    */
   prerenderer?: MermaidPrerenderer;
+  /**
+   * The catalogue and Ruby source for the extensions `snapshot.enabledExtensions` names.
+   *
+   * Rides on the request rather than being worker state: a render posted before a separate
+   * "here are the extensions" message landed would render silently without them, which is output
+   * that looks correct and is not. Omit when the caller has no project context.
+   */
+  extensions?: PdfExtensionBundle;
 }
 
 /** Return value of {@link usePdfPreview}, shaped for the PDF preview panel. */
@@ -76,6 +85,7 @@ export function usePdfPreview({
   isEnabled,
   changedPaths,
   prerenderer,
+  extensions,
 }: UsePdfPreviewOptions): UsePdfPreviewResult {
   const [pdf, setPdf] = useState<Blob | undefined>(undefined);
   const [isRendering, setIsRendering] = useState(false);
@@ -83,6 +93,11 @@ export function usePdfPreview({
   const [diagnostics, setDiagnostics] = useState<readonly RenderDiagnostic[]>([]);
   const [error, setError] = useState<RenderError | undefined>(undefined);
   const [sourceMap, setSourceMap] = useState<PdfSourceMap | undefined>(undefined);
+
+  // Read at post time rather than captured, so the debounced render that eventually fires carries the
+  // CURRENT bundle. A bundle arriving while a render was already queued must not send stale sources.
+  const extensionsReference = useRef(extensions);
+  extensionsReference.current = extensions;
 
   // The changed-path delta is read lazily at render time so supplying it never independently triggers
   // a render — the snapshot's identity change is the sole render trigger, matching the editor's flow.
@@ -174,6 +189,9 @@ export function usePdfPreview({
             optimize: PREVIEW_OPTIMIZE,
             ...(delta === undefined ? {} : { changedPaths: delta }),
             ...(prerendered.assets.length > 0 ? { generatedAssets: prerendered.assets } : {}),
+            ...(extensionsReference.current === undefined
+              ? {}
+              : { extensions: extensionsReference.current }),
           };
           workerReference.current?.postMessage({ type: 'render', request } satisfies ToWorker);
         });

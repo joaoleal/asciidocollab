@@ -38,6 +38,26 @@ export ASCIIDOCOLLAB_ADMIN_OPEN_REGISTRATION_RATE_LIMIT_MAX=10000
 export ASCIIDOCOLLAB_AUTH_EMAIL_VERIFICATION_RATE_LIMIT_MAX=500
 export ASCIIDOCOLLAB_AUTH_INVITATION_RATE_LIMIT_MAX=500
 export ASCIIDOCOLLAB_PROJECT_MAIN_FILE_RATE_LIMIT_MAX=10000
+# The render config and the extension catalogue are read on EVERY project page open (the editor
+# layout, the theme settings and the options page each ask), so the suite makes hundreds of these
+# reads. At the 120/hour default ~70% of them came back 429 — which is silent: the config simply
+# arrives empty and the page shows unset values, so tests failed on assertions about saved settings
+# rather than on anything that looked like rate limiting.
+export ASCIIDOCOLLAB_PROJECT_RENDER_CONFIG_RATE_LIMIT_MAX=10000
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_RATE_LIMIT_MAX=10000
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SOURCE_RATE_LIMIT_MAX=10000
+
+# PDF converter-extension drop folder. The default (/data/pdf-extensions) is a production bind mount
+# that does not exist here, and a missing folder is deliberately the "no extensions offered" case —
+# so without this the administrator-folder flow could never be exercised. The scan cache is dropped
+# from 30s to 1s so `pdf-extensions.spec.ts` can add a directory and see the catalogue pick it up
+# within one test rather than stalling a suite for half a minute per assertion.
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH="${ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH:-$ROOT/.e2e-pdf-extensions}"
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL=1000
+# Start from an empty folder: a leftover extension from a previous run would make the catalogue
+# assertions depend on run history.
+rm -rf "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
+mkdir -p "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
 
 API_PID=""; WEB_PID=""; COLLAB_PID=""
 cleanup() {

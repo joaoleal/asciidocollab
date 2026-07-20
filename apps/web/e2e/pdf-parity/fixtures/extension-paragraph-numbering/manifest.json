@@ -1,0 +1,14 @@
+{
+  "name": "extension-paragraph-numbering",
+  "description": "The paragraph-numbering converter extension applied to a document mixing body prose, an admonition, a list, a sidebar and a table. Proves the extension's effect matches the canonical toolchain — Principle XV names an extension without passing comparison coverage as not done — and that the exclusions hold: only document- and section-level paragraphs carry a number. The theme sets the extension's contributed key to a non-default colour so a regression that stops reading it fails rather than passing silently.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "numbering-theme.yml",
+    "fontPaths": [],
+    "attributes": {},
+    "enabledExtensions": ["paragraph-numbering"]
+  }
+}

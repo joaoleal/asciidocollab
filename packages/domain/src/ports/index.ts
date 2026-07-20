@@ -50,3 +50,11 @@ export {
   ListByProjectFilters,
 } from './review/review-comment.repository';
 export { ReviewReactionRepository } from './review/review-reaction.repository';
+
+// pdf-extensions/
+export type {
+  PdfExtensionSourcePort,
+  PdfExtensionListing,
+  DiscoveredPdfExtension,
+  ExcludedPdfExtension,
+} from './pdf-extensions/pdf-extension-source.port';

@@ -24,6 +24,7 @@ import {
   createWasiBridge,
   GeneratedAssetCache,
   invokeConvert,
+  mountPdfExtensions,
   populateProject,
   type AssetCachePort,
   type GeneratedAsset,
@@ -142,15 +143,51 @@ function createIncludeAssembler(): IncludeAssembler {
   };
 }
 
+/** Machine code for an extension the project enabled that this render did not apply. */
+const EXTENSION_NOT_LOADED_CODE = 'extension-not-loaded' as const;
+
+/** A built controller together with the VM it owns. */
+interface WorkerInstance {
+  /** The wired controller every message is handed to. */
+  readonly controller: PdfRenderController;
+  /** The warm VM this controller renders through. */
+  readonly vm: RubyPdfVm;
+}
+
 /** Assemble the whole worker over a compiled wasm module and return the wired controller. */
-function buildController(module: WebAssembly.Module): PdfRenderController {
+function buildController(module: WebAssembly.Module): WorkerInstance {
   const vm = createRubyPdfVm({ createBridge: () => createWasiBridge({ module }) });
   const vfs = createPipelineVfs(vm);
 
   const populate = (snapshot: ProjectSnapshot, changedPaths?: readonly string[]): ReturnType<typeof populateProject> =>
     populateProject(vm, snapshot, { changedPaths });
 
-  const runConvert = (request: RenderRequest): Promise<ConvertOutcome> => invokeConvert({ vm, request });
+  const runConvert = async (request: RenderRequest): Promise<ConvertOutcome> => {
+    // Extension source is written into the VM immediately before the convert requires it, from the
+    // request itself. Nothing about what an EARLIER render loaded matters: the convert publishes
+    // this request's selection as the enabled set, and every extension gates its hooks on it, so a
+    // module left in the ancestor chain by a previous render declines to act.
+    const mounted = mountPdfExtensions(vm, request);
+
+    const outcome = await invokeConvert({ vm, request, loadedExtensions: mounted.loadedExtensions });
+    if (!outcome.ok || mounted.rejected.length === 0) return outcome;
+
+    // A refusal rides out with the render rather than being logged and forgotten. An extension the
+    // project enabled that did not load changes the document, and an author told nothing about it
+    // would read the result as correct — which is the failure this whole feature is most exposed to.
+    return {
+      ...outcome,
+      diagnostics: [
+        ...outcome.diagnostics,
+        ...mounted.rejected.map((rejection) => ({
+          severity: 'warning' as const,
+          code: EXTENSION_NOT_LOADED_CODE,
+          resource: rejection.id,
+          message: `The "${rejection.id}" extension was not applied: ${rejection.reason}`,
+        })),
+      ],
+    };
+  };
 
   // One WOFF2 codec, initialized on first use and reused across renders (fonts embed rarely).
   const fontConverter = createWoff2FontConverter();
@@ -188,38 +225,74 @@ function buildController(module: WebAssembly.Module): PdfRenderController {
     return { stages, context };
   };
 
-  return new PdfRenderController({
+  return {
     vm,
-    populate,
-    runConvert,
-    buildPipeline,
-    resolveSandboxedPath,
-    buildIncludeAssembler: createIncludeAssembler,
-    cache: createCacheAdapter(),
-    postMessage: (message) => postMessage(message),
-  });
+    controller: new PdfRenderController({
+      vm,
+      populate,
+      runConvert,
+      buildPipeline,
+      resolveSandboxedPath,
+      buildIncludeAssembler: createIncludeAssembler,
+      cache: createCacheAdapter(),
+      postMessage: (message) => postMessage(message),
+    }),
+  };
 }
 
-// The wasm module is compiled once on the first message and the resulting controller is memoized (its
-// warm VM sees the compiled module synchronously in `createBridge`). A FAILED compile is not memoized —
-// the slot is reset so the next message retries — see `getController`.
-let controllerPromise: Promise<PdfRenderController> | null = null;
+// The wasm module is compiled once and REUSED across VMs. Compiling costs seconds and tens of MiB;
+// building a VM over an already-compiled module is comparatively cheap, which is what makes discarding
+// a VM (see below) an acceptable price for correctness rather than a reason to avoid it.
+//
+// A FAILED compile is not memoized — the slot is reset so the next message retries.
+let modulePromise: Promise<WebAssembly.Module> | null = null;
 
-function getController(): Promise<PdfRenderController> {
-  if (controllerPromise === null) {
-    const pending = compileModule().then(buildController);
+/** The current VM and its controller, or null before the first message and after a discard. */
+let instancePromise: Promise<WorkerInstance> | null = null;
+
+function getModule(): Promise<WebAssembly.Module> {
+  if (modulePromise === null) {
+    const pending = compileModule();
     // Do NOT poison the memoized slot on failure: a transient compile abort would otherwise be replayed
     // forever, wedging every later render. Clear the slot (only if it still holds THIS attempt) so the
     // next message re-attempts a clean compile. This runs on a DETACHED catch chain whose own rejection
     // is swallowed, so `pending` — the promise returned to the current caller — still rejects for it.
     pending.catch(() => {
-      if (controllerPromise === pending) {
-        controllerPromise = null;
+      if (modulePromise === pending) {
+        modulePromise = null;
       }
     });
-    controllerPromise = pending;
+    modulePromise = pending;
   }
-  return controllerPromise;
+  return modulePromise;
+}
+
+/**
+ * The instance to serve this message with — a plain memoized getter, which it was not able to be
+ * until extensions started gating themselves at render time.
+ *
+ * It used to discard the VM whenever a request asked for fewer extensions than were loaded, because
+ * `Module#prepend` cannot be undone and a reused VM would apply an extension nobody asked for.
+ * Extensions now read the per-render enabled set the convert publishes, so a module left in the
+ * ancestor chain declines to act and the VM can be reused unconditionally. SC-015a and FR-031b1 are
+ * satisfied by the gate rather than by throwing the VM away.
+ *
+ * Removing the discard also removes a defect it carried: the superset check ran for EVERY message,
+ * and a non-render message reports an empty selection — so any non-render arriving after a render
+ * with extensions failed the check and destroyed a perfectly good warm VM, forcing a full wasm
+ * rebuild on the next render.
+ */
+function getInstance(): Promise<WorkerInstance> {
+  if (instancePromise !== null) return instancePromise;
+
+  const pending = getModule().then(buildController);
+  pending.catch(() => {
+    if (instancePromise === pending) {
+      instancePromise = null;
+    }
+  });
+  instancePromise = pending;
+  return pending;
 }
 
 /** Machine code for a render that never started because the wasm engine could not be initialized. */
@@ -227,10 +300,10 @@ const ENGINE_INIT_FAILED_CODE = 'engine-init-failed';
 
 onmessage = function (event: MessageEvent<ToWorker>): void {
   const message = event.data;
-  void getController()
-    .then((controller) => controller.handleMessage(message))
+  void getInstance()
+    .then((instance) => instance.controller.handleMessage(message))
     .catch((error: unknown) => {
-      // `getController()` rejects when the wasm engine fails to compile after every retry. Surface it as
+      // `getInstance()` rejects when the wasm engine fails to compile after every retry. Surface it as
       // a fatal `vm-init` error for a render request (which carries a requestId) so the UI stops waiting
       // instead of hanging on the pending label; `warmup`/`cancel` have no request to fail, and the next
       // render re-attempts a clean compile because the memoized slot was cleared.

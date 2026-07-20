@@ -72,7 +72,12 @@ const DOC = [
 ].join('\n');
 
 test.describe('PDF image embedding', () => {
-  test.describe.configure({ timeout: 180_000 });
+  // A cold wasm export (tens of MiB engine + a warm Ruby VM, then a full render, optimize and
+  // download) is the binding constraint here, not any single step. Under gate load on a contended box
+  // it can approach several minutes; 180s was tighter than the identical work next door in
+  // pdf-extensions.spec.ts (which budgets 600s), so the whole test hit its own deadline mid-export and
+  // surfaced as a retried `download`-event timeout. Sized to the same worst-case wasm-export reasoning.
+  test.describe.configure({ timeout: 300_000 });
   test.beforeAll(async () => {
     await ensureTestUser();
   });
@@ -95,10 +100,12 @@ test.describe('PDF image embedding', () => {
 
       await openProject(page, projectId);
       const exportButton = page.getByRole('button', { name: /export to pdf/i });
-      await expect(exportButton).toBeEnabled({ timeout: 20_000 });
+      await expect(exportButton).toBeEnabled({ timeout: 30_000 });
 
+      // Kept below the test-level budget above so a genuinely stalled export fails HERE with a clear
+      // "download never arrived" message rather than tripping the overall test deadline mid-wait.
       const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 120_000 }),
+        page.waitForEvent('download', { timeout: 240_000 }),
         exportButton.click(),
       ]);
       const pdfPath = path.join(mkdtempSync(path.join(tmpdir(), 'pdf-image-embed-')), 'export.pdf');

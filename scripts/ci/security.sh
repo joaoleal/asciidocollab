@@ -73,16 +73,44 @@ if ! command -v osv-scanner >/dev/null 2>&1; then
   fi
 else
   OSV_JSON="$(mktemp)"
+  # `|| true` is required — osv-scanner exits non-zero when it FINDS advisories, which is not an
+  # error here; the gate below decides. But it also exits non-zero on a genuine failure (network,
+  # unreadable lockfile), which leaves an empty report. Validate before drawing any conclusion: an
+  # unparsable report read as "zero advisories" is a scan that never ran reporting a clean result.
   osv-scanner scan --lockfile=pnpm-lock.yaml --format=json > "$OSV_JSON" || true
   osv-scanner scan --lockfile=pnpm-lock.yaml || true   # human-readable table
-  HIGH=$(jq '[.results[].packages[].groups[].max_severity | select(. != "") | tonumber] | map(select(. >= 7.0)) | length' "$OSV_JSON")
-  rm -f "$OSV_JSON"
-  echo "High+ (CVSS >= 7.0) advisories: $HIGH"
-  if [ "$HIGH" -eq 0 ]; then
-    ok "osv-scanner passed (no High+ advisories)."
-  else
-    fail "osv-scanner found $HIGH High+ advisory(ies)."
+
+  if [ ! -s "$OSV_JSON" ] || ! jq -e 'type == "object"' "$OSV_JSON" >/dev/null 2>&1; then
+    rm -f "$OSV_JSON"
+    fail "osv-scanner produced no parsable JSON — treating as a scan failure, not a clean result."
     FAILED=1
+  else
+    # `.results` is ABSENT (not empty) when nothing was scanned, so every level is indexed with `?`
+    # to yield nothing rather than error. Severities are strings and some advisory groups carry a
+    # CVSS vector rather than a base score, so `tonumber` is applied only to values that actually
+    # look numeric — an unguarded `tonumber` aborts on the first vector string and, under `set -e`,
+    # kills the whole gate with no indication of why.
+    SEVERITIES='[ .results[]?.packages[]?.groups[]?.max_severity? // empty | select(. != "") ]'
+    NUMERIC='test("^[0-9]+(\\.[0-9]+)?$")'
+
+    HIGH=$(jq "$SEVERITIES | map(select($NUMERIC) | tonumber) | map(select(. >= 7.0)) | length" "$OSV_JSON")
+    UNGATED=$(jq "$SEVERITIES | map(select($NUMERIC | not)) | length" "$OSV_JSON")
+    rm -f "$OSV_JSON"
+
+    echo "High+ (CVSS >= 7.0) advisories: $HIGH"
+    # Reported rather than silently dropped: a non-numeric severity may well be a High. Written as a
+    # full `if` rather than `[ ... ] && warn` — the latter makes the whole line exit 1 when the test
+    # is false, which would abort the script the moment anyone adds `-e` to the `set` line above.
+    if [ "$UNGATED" -gt 0 ]; then
+      warn "$UNGATED advisory group(s) report a non-numeric max_severity and were not gated — review the table above."
+    fi
+
+    if [ "$HIGH" -eq 0 ]; then
+      ok "osv-scanner passed (no High+ advisories)."
+    else
+      fail "osv-scanner found $HIGH High+ advisory(ies)."
+      FAILED=1
+    fi
   fi
 fi
 

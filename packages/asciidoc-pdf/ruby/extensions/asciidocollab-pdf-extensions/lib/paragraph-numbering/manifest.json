@@ -1,0 +1,27 @@
+{
+  "id": "paragraph-numbering",
+  "displayName": "Paragraph numbering",
+  "description": "Prefixes each body paragraph with its sequential position in the document. Numbers are assigned when the PDF is produced and are not stored, so inserting a paragraph renumbers everything after it — do not cite them across revisions.",
+  "targeting": "",
+  "themeKeys": [
+    {
+      "key": "paragraph-numbering.font-color",
+      "valueKind": "colour",
+      "description": "Colour of the generated paragraph number.",
+      "default": "999999"
+    },
+    {
+      "key": "paragraph-numbering.placement",
+      "valueKind": "keyword",
+      "description": "Where the number is drawn: `margin` sets it beside the text, outside the measure, so the prose keeps its position — a document numbered this way paginates identically to one with numbering switched off. `inline` prefixes it to the paragraph's first line instead, indenting that line and reflowing the paragraph around it. In a multi-column region a margin number goes in the right-hand margin for the rightmost column and on the left for every other one; where the gutter is too narrow to hold it, that paragraph falls back to `inline`.",
+      "default": "margin"
+    },
+    {
+      "key": "paragraph-numbering.gap",
+      "valueKind": "measurement",
+      "description": "Separation between a margin-placed number and the text it belongs to. Ignored when placement is `inline`.",
+      "default": "6"
+    }
+  ],
+  "sampleContent": "Body paragraphs at document and section level are numbered; paragraphs inside admonitions, sidebars, tables and list items are not."
+}

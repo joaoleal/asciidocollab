@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 380" width="520" height="380" font-family="Helvetica, Arial, sans-serif" role="img" aria-label="Diagram of the AsciidoCollab editing workflow">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B6B7B"/>
+    </marker>
+    <style>
+      .box { rx: 10; ry: 10; }
+      .lbl { fill: #21313F; font-size: 13px; font-weight: 600; }
+      .sub { fill: #5B6B7B; font-size: 11px; }
+      .white { fill: #FFFFFF; font-size: 13px; font-weight: 600; }
+      .whitesub { fill: #DCE6F0; font-size: 11px; }
+      .cap { fill: #21313F; font-size: 15px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="520" height="380" fill="#F4F6F8"/>
+  <text x="260" y="30" text-anchor="middle" class="cap">The AsciidoCollab workflow</text>
+
+  <!-- Collaborators -->
+  <g>
+    <circle cx="52" cy="96" r="16" fill="#1A4E8A"/>
+    <circle cx="52" cy="90" r="6" fill="#FFFFFF"/>
+    <path d="M40,104 a12,10 0 0 1 24,0 z" fill="#FFFFFF"/>
+    <circle cx="52" cy="164" r="16" fill="#0B7285"/>
+    <circle cx="52" cy="158" r="6" fill="#FFFFFF"/>
+    <path d="M40,172 a12,10 0 0 1 24,0 z" fill="#FFFFFF"/>
+    <circle cx="52" cy="232" r="16" fill="#C77D0A"/>
+    <circle cx="52" cy="226" r="6" fill="#FFFFFF"/>
+    <path d="M40,240 a12,10 0 0 1 24,0 z" fill="#FFFFFF"/>
+    <text x="52" y="272" text-anchor="middle" class="sub">Collaborators</text>
+  </g>
+
+  <!-- arrows collaborators -> editor -->
+  <path d="M70,96 C104,110 108,140 126,158" fill="none" stroke="#5B6B7B" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M70,164 L124,164" fill="none" stroke="#5B6B7B" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M70,232 C104,218 108,188 126,170" fill="none" stroke="#5B6B7B" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- Editor -->
+  <rect x="128" y="138" width="126" height="54" rx="10" fill="#FFFFFF" stroke="#1A4E8A" stroke-width="2"/>
+  <text x="191" y="162" text-anchor="middle" class="lbl">Author</text>
+  <text x="191" y="180" text-anchor="middle" class="sub">CodeMirror editor</text>
+
+  <!-- Editor -> CRDT -->
+  <path d="M254,165 L292,165" fill="none" stroke="#5B6B7B" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+
+  <!-- CRDT / server -->
+  <rect x="294" y="132" width="128" height="66" rx="10" fill="#1A4E8A"/>
+  <text x="358" y="158" text-anchor="middle" class="white">Yjs CRDT</text>
+  <text x="358" y="176" text-anchor="middle" class="whitesub">Collaboration server</text>
+  <text x="358" y="190" text-anchor="middle" class="whitesub">no merge conflicts</text>
+
+  <!-- CRDT -> outputs -->
+  <path d="M422,150 C448,150 452,108 470,100" fill="none" stroke="#5B6B7B" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <path d="M422,182 C448,182 452,232 470,244" fill="none" stroke="#5B6B7B" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- Live preview -->
+  <rect x="360" y="66" width="150" height="52" rx="10" fill="#FFFFFF" stroke="#0B7285" stroke-width="2"/>
+  <text x="435" y="90" text-anchor="middle" class="lbl">Live HTML preview</text>
+  <text x="435" y="107" text-anchor="middle" class="sub">math + code, live</text>
+
+  <!-- PDF export -->
+  <rect x="360" y="226" width="150" height="52" rx="10" fill="#FFFFFF" stroke="#0B7285" stroke-width="2"/>
+  <text x="435" y="250" text-anchor="middle" class="lbl">In-browser PDF</text>
+  <text x="435" y="267" text-anchor="middle" class="sub">Asciidoctor-PDF / wasm</text>
+
+  <!-- legend footer -->
+  <line x1="30" y1="316" x2="490" y2="316" stroke="#D3DBE3" stroke-width="1"/>
+  <circle cx="40" cy="338" r="6" fill="#1A4E8A"/>
+  <text x="52" y="342" class="sub">Editing &amp; sync</text>
+  <circle cx="170" cy="338" r="6" fill="#0B7285"/>
+  <text x="182" y="342" class="sub">Rendered output</text>
+  <circle cx="320" cy="338" r="6" fill="#C77D0A"/>
+  <text x="332" y="342" class="sub">Every collaborator, in real time</text>
+</svg>

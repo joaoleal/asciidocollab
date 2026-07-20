@@ -1,0 +1,30 @@
+= Front Matter Page Numbers
+:doctype: book
+:toc:
+:list-of-figures:
+:list-of-tables:
+
+== Chapter 1
+
+.Figure on the first body page, before numbering starts
+image::box.png[Box,90,90]
+
+.Table on the first body page, before numbering starts
+|===
+| a | b
+|===
+
+<<<
+
+.Figure on the second body page, still before numbering starts
+image::box.png[Box,90,90]
+
+<<<
+
+.Figure on the third body page, the first numbered one
+image::box.png[Box,90,90]
+
+<<<
+
+.Figure on the fourth body page
+image::box.png[Box,90,90]

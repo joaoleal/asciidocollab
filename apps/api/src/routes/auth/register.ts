@@ -3,6 +3,7 @@ import { Email, RegisterUseCase, RegistrationClosedError } from '@asciidocollab/
 import { buildPasswordPolicy } from '../../services/password-policy';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
+import { ensureDemoProjectMembership } from '../../bootstrap/demo-project';
 import '../../types/session';
 import type { RegisterDto, AuthSuccessResponseDto, AuthErrorResponseDto } from '@asciidocollab/shared';
 
@@ -61,6 +62,13 @@ export async function registerRoute(app: FastifyInstance): Promise<void> {
       request.session.userId = result.value.userId.value;
       request.session.emailVerified = true;
       request.session.isAdmin = true;
+      // The first admin is auto-logged-in without hitting /auth/login, so grant
+      // demo read access here too. Later self-registered users pass through
+      // /auth/login after verifying their email, where the same hook runs.
+      await ensureDemoProjectMembership(
+        { repos: { project: request.server.repos.project, projectMember: request.server.repos.projectMember }, logger: request.log },
+        result.value.userId.value,
+      );
       return reply.status(201).send({ message: 'Account created' } satisfies AuthSuccessResponseDto);
     }
 

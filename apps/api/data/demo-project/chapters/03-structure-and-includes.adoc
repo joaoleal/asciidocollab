@@ -1,0 +1,144 @@
+[#structure]
+== Structure and includes
+
+Real documents are rarely one file. This chapter shows how {product-name}
+assembles a book from many chapters, how tables work, and how content can adapt
+itself with conditional regions.
+
+[#main-file]
+=== Includes and the main file
+
+The `include::[]` directive pulls another file in at that exact spot. This very
+document is built that way — `index.adoc` is nothing but a header followed by:
+
+[source,asciidoc]
+----
+\include::chapters/01-welcome.adoc[]
+\include::chapters/02-asciidoc-essentials.adoc[]
+\include::chapters/03-structure-and-includes.adoc[]
+----
+
+NOTE: The leading backslash above only escapes the directives so they display as
+example code instead of being executed. In a real document you write them without
+the backslash. Paths are resolved *relative to the including file*: because
+`index.adoc` sits at the project root, it uses `include::chapters/01-welcome.adoc[]`,
+whereas a file already inside `chapters/` would include a sibling with just
+`include::01-welcome.adoc[]`.
+
+Each included file starts at a `==` heading and carries *no* level-0 `=` title,
+so it slots cleanly under the root document's title.
+
+The file you point the project at is called the *main file*. Designating one
+tells {product-name} which file is the root of the include tree, which in turn
+unlocks project-wide intelligence — attribute resolution, cross-file
+`<<xrefs>>`, and Rename across files. See <<collaborating>> for the full list.
+
+[#tables]
+=== Tables
+
+Tables are delimited with `|===`. A `[cols]` spec sets relative column widths,
+`options="header"` promotes the first row, and a `.Title` line adds a caption:
+
+.Panels of the project editor
+[cols="1,2,3",options="header"]
+|===
+| Panel | Location | Purpose
+
+| Files
+| Left
+| Browse the file tree, outline, and search.
+
+| Editor
+| Center
+| Write AsciiDoc with live syntax highlighting.
+
+| Preview
+| Right
+| See rendered HTML update as you type.
+|===
+
+A cell can itself contain AsciiDoc when you prefix it with `a|`:
+
+.A cell with rich AsciiDoc content
+[cols="1,2",options="header"]
+|===
+| Feature | Details
+
+| Admonitions
+a| The five kinds are:
+
+* NOTE
+* TIP
+* WARNING
+
+...and rendered right inside a table cell.
+
+| Export
+a| Produces a PDF *in your browser* — no server round-trip. See
+<<exporting,Exporting and themes>>.
+|===
+
+==== Formatting a whole column
+
+You rarely want to mark up every cell by hand. The `cols` spec can style an
+*entire column* by appending a *style operator* to that column's width. Here the
+second column is monospaced simply because its spec is `1m`:
+
+.Keyboard shortcuts — the whole second column is monospaced by `cols="1,1m"`
+[cols="1,1m",options="header"]
+|===
+| Action | Shortcut
+
+| Find in the open file | Ctrl+F
+| Go to Symbol | Ctrl+Shift+O
+| Project-wide search | Ctrl+Shift+F
+|===
+
+The style operators you can append to a column width are:
+
+[cols="1h,3",options="header"]
+|===
+| Operator | Meaning
+
+| `d` | Default (normal paragraph text)
+| `s` | *Strong* (bold)
+| `e` | _Emphasis_ (italic)
+| `m` | `Monospace`
+| `l` | Literal (verbatim, preserves whitespace)
+| `h` | Header (styled like the header row)
+| `a` | AsciiDoc (the cell is parsed as full AsciiDoc, like a per-cell `a\|`)
+|===
+
+Alignment is set the same way: prefix the width with `<`, `^`, or `>` for
+left / center / right, and add `.<`, `.^`, or `.>` for top / middle / bottom.
+For example, `cols="^1,>1m"` centers the first column and right-aligns a
+monospaced second column.
+
+=== Conditional regions
+
+AsciiDoc can include or drop content based on whether an attribute is set.
+Because `:showcase-version:` is defined in the header, the region below renders;
+if it were undefined, it would vanish:
+
+ifdef::showcase-version[]
+NOTE: You are reading showcase version *{showcase-version}* of this tour. This
+sentence exists only because `showcase-version` is defined.
+endif::[]
+
+ifndef::draft[]
+This line appears because the `draft` attribute is *not* set — that is what
+`ifndef` checks.
+endif::[]
+
+`ifeval` compares values. Here it confirms the showcase version numerically:
+
+ifeval::[{showcase-version} == 1.0]
+TIP: `ifeval` evaluated `{showcase-version} == 1.0` as true, so this tip shows.
+endif::[]
+
+Conditional regions are perfect for maintaining one source with several
+outputs — for example a public edition and an internal edition — from the same
+files.
+
+Next: what makes {product-name} come alive — real-time
+<<collaborating,collaboration>>.

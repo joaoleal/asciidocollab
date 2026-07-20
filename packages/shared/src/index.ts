@@ -11,3 +11,4 @@ export * from './room-names';
 export * from './asciidoc-model';
 export * from './review';
 export * from './render-config';
+export * from './pdf-extensions';

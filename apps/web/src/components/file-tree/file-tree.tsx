@@ -40,6 +40,12 @@ interface Properties {
   // on an include or image macro in the editor. The nonce makes repeat requests for the same path
   // distinct so they re-fire.
   openPathRequest?: { path: string; nonce: number } | null;
+  // The project's main file node id, to select automatically the FIRST time this user opens the
+  // project — when no previous selection was remembered, the editor would otherwise open on an empty
+  // "no file selected" state. The parent passes this ONLY on a genuine first open (nothing stored),
+  // so it never overrides a restored selection. Once the tree has loaded the node is selected once;
+  // thereafter the user's own navigation is remembered and restored instead.
+  autoSelectNodeId?: string | null;
 }
 
 function applyEvent(tree: FileTreeNodeType | null, event: FileTreeEventDto): FileTreeNodeType | null {
@@ -147,7 +153,7 @@ function findNodeByPath(node: FileTreeNodeType, path: string): FileTreeNodeType 
 }
 
 /** Renders the full file tree for a project, with real-time SSE updates and keyboard shortcut support. */
-export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, presenceByFile, onCollapse, openPathRequest }: Properties) {
+export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, presenceByFile, onCollapse, openPathRequest, autoSelectNodeId }: Properties) {
   const [tree, setTree] = useState<FileTreeNodeType | null>(null);
   const [fetchError, setFetchError] = useState(false);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
@@ -163,6 +169,9 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
   // Last handled openPathRequest nonce, so the resolve effect fires once per request (and not
   // again merely because the tree re-rendered).
   const openPathNonceReference = useRef<number>(-1);
+  // Whether the first-open auto-selection has already been resolved (one way or the other), so it
+  // never fires twice or fights a later user navigation.
+  const autoSelectedReference = useRef(false);
 
   const userBindings = useKeyBindings('file-tree');
   const bindings = useMemo(() => new Map(userBindings), [userBindings]);
@@ -248,6 +257,27 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
       pendingScrollReference.current = null;
     }
   }, [selectedNodeId, expandedState, tree]);
+
+  // First-open auto-selection: the FIRST time this user opens the project (the parent passes
+  // `autoSelectNodeId` only when nothing was previously remembered), open the project's main file
+  // rather than the empty "no file selected" state. Waits for the tree so the node's name/path are
+  // known, resolves exactly once, and yields to any selection that has already been made (a restore,
+  // a Ctrl+click) so it can only ever ADD a selection, never replace one. A missing or non-file main
+  // file simply leaves the editor on the empty state, as before.
+  useEffect(() => {
+    if (autoSelectedReference.current) return;
+    if (!tree || !autoSelectNodeId) return;
+    if (selectedNodeId) {
+      autoSelectedReference.current = true;
+      return;
+    }
+    const node = findNodeInTree(tree, autoSelectNodeId);
+    if (!node) return;
+    autoSelectedReference.current = true;
+    if (node.type === 'file') {
+      onSelectFile(node.id, node.name, node.path, node.type);
+    }
+  }, [tree, autoSelectNodeId, selectedNodeId, onSelectFile]);
 
   const onEvent = useCallback((event: FileTreeEventDto) => {
     setTree((previous) => applyEvent(previous, event));
@@ -408,6 +438,11 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
       <div className="flex items-center justify-between px-2 border-b shrink-0 h-9">
         <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Files</span>
         <div className="flex items-center gap-0.5">
+          {/* The header actions menu is shown only to users who can modify the file tree. `canEdit`
+              here is the file-mutation permission (editor/owner) — it EXCLUDES the global-admin bypass
+              (see page.tsx / `canModifyFiles`), so a global admin who is only a viewer of this project
+              (e.g. the read-only demo) is treated like any other viewer and sees no menu, rather than
+              New File / Upload buttons the API would then reject. */}
           {tree && canEdit && (
             <span data-testid="tree-root-actions">
               <FileTreeActions

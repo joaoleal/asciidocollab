@@ -40,8 +40,10 @@ WEB_PORT="${E2E_WEB_PORT:-3100}"
 
 # Isolate from a running dev stack (scripts/dev.sh): the API also binds an
 # internal collab port (default 4001, already held by the dev API), so offset it.
-# The Next `.next` build dir is intentionally shared with dev — only containers
-# and ports are isolated.
+# The Next build dir needs no isolation: this script builds into apps/web/.next while
+# dev.sh runs `next dev` against .next-dev (NEXT_DIST_DIR), so they cannot collide.
+# They shared `.next` until it was found to wreck the dev server's incremental cache —
+# see the distDir note in apps/web/next.config.js.
 export ASCIIDOCOLLAB_COLLAB_INTERNAL_PORT="${E2E_COLLAB_INTERNAL_PORT:-4101}"
 # Browser-facing collaboration WebSocket (offset from the dev default 4002).
 COLLAB_PORT="${E2E_COLLAB_PORT:-4102}"
@@ -78,6 +80,26 @@ export ASCIIDOCOLLAB_AUTH_INVITATION_RATE_LIMIT_MAX=500
 # The cross-document / outline suites set a project's main file many times; the default 50/hour is
 # easily exceeded by the shared-IP workers (× CI retries), so raise it well above the suite's volume.
 export ASCIIDOCOLLAB_PROJECT_MAIN_FILE_RATE_LIMIT_MAX=10000
+# The render config and the extension catalogue are read on EVERY project page open (the editor
+# layout, the theme settings and the options page each ask), so the suite makes hundreds of these
+# reads. At the 120/hour default ~70% of them came back 429 — which is silent: the config simply
+# arrives empty and the page shows unset values, so tests failed on assertions about saved settings
+# rather than on anything that looked like rate limiting.
+export ASCIIDOCOLLAB_PROJECT_RENDER_CONFIG_RATE_LIMIT_MAX=10000
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_RATE_LIMIT_MAX=10000
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SOURCE_RATE_LIMIT_MAX=10000
+
+# PDF converter-extension drop folder. The default (/data/pdf-extensions) is a production bind mount
+# that does not exist here, and a missing folder is deliberately the "no extensions offered" case —
+# so without this the administrator-folder flow could never be exercised. The scan cache is dropped
+# from 30s to 1s so `pdf-extensions.spec.ts` can add a directory and see the catalogue pick it up
+# within one test rather than stalling a suite for half a minute per assertion.
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH="${ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH:-$ROOT/.e2e-pdf-extensions}"
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL=1000
+# Start from an empty folder: a leftover extension from a previous run would make the catalogue
+# assertions depend on run history.
+rm -rf "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
+mkdir -p "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
 
 # ─── Cleanup on exit ─────────────────────────────────────────────────────────
 API_PID=""; WEB_PID=""; COLLAB_PID=""

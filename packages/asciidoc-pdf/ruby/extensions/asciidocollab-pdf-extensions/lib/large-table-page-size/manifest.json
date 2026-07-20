@@ -1,0 +1,8 @@
+{
+  "id": "large-table-page-size",
+  "displayName": "Wide tables on their own page",
+  "description": "Renders a table marked [.wide-page] on a page of its own orientation or size, then returns the document to normal. Landscape by default; set page-size=A3 for a larger sheet, or page-layout=portrait to keep the orientation and change only the size. A marked table inside a [.multi-column] region is left alone — the column layout wins, because changing page size under a column box draws text off the sheet.",
+  "targeting": "[.wide-page]",
+  "themeKeys": [],
+  "sampleContent": "A table marked as wide is moved onto a landscape page of its own, and the prose after it resumes on a normal portrait page."
+}

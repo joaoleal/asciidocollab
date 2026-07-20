@@ -1,0 +1,20 @@
+= A Book With A Colophon And A Licence
+:doctype: book
+:toc:
+:license: Licensed under the Apache License, Version 2.0.
+:copyright: 2026 The Authors
+
+// Written FIRST on purpose. The extension must move it to the back, so a reference in which the
+// colophon still appears here would mean the extension did nothing.
+[colophon]
+== Colophon
+
+This book was set in Noto Serif. Produced 2026.
+
+== First Chapter
+
+Body text for the first chapter.
+
+== Second Chapter
+
+Body text for the second chapter.

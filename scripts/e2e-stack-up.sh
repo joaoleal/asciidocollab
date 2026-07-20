@@ -29,8 +29,9 @@ WEB_PORT="${E2E_WEB_PORT:-3100}"
 export ASCIIDOCOLLAB_DATABASE_URL="postgresql://asciidocollab:asciidocollab@localhost:${PG_PORT}/asciidocollab_e2e"
 export ASCIIDOCOLLAB_API_PORT="$API_PORT"
 # Internal collab port — offset from the API port so it never clashes with a
-# stray dev API still holding the default 4001. (The `.next` build dir is shared
-# with dev on purpose; only containers and ports are isolated.)
+# stray dev API still holding the default 4001. (The `.next` build dir needs no
+# isolation — dev.sh points `next dev` at .next-dev via NEXT_DIST_DIR, so a build
+# here cannot disturb it. See the distDir note in apps/web/next.config.js.)
 export ASCIIDOCOLLAB_COLLAB_INTERNAL_PORT="${E2E_COLLAB_INTERNAL_PORT:-4101}"
 # Collab internal edit endpoint — offset from the default 4003 so it never clashes with a dev
 # collab still holding it; the API reaches it via this URL to rewrite references in live docs.
@@ -51,6 +52,23 @@ export ASCIIDOCOLLAB_ADMIN_INVITE_RATE_LIMIT_MAX=500
 export ASCIIDOCOLLAB_ADMIN_OPEN_REGISTRATION_RATE_LIMIT_MAX=10000
 export ASCIIDOCOLLAB_AUTH_EMAIL_VERIFICATION_RATE_LIMIT_MAX=500
 export ASCIIDOCOLLAB_AUTH_INVITATION_RATE_LIMIT_MAX=500
+# Read on every project page open; the 120/hour default is far below what a suite run makes, and a
+# 429 arrives as an empty config rather than a visible error.
+export ASCIIDOCOLLAB_PROJECT_RENDER_CONFIG_RATE_LIMIT_MAX=10000
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_RATE_LIMIT_MAX=10000
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SOURCE_RATE_LIMIT_MAX=10000
+
+# PDF converter-extension drop folder. The default (/data/pdf-extensions) is a production bind mount
+# that does not exist here, and a missing folder is deliberately the "no extensions offered" case —
+# so without this the administrator-folder flow could never be exercised. The scan cache is dropped
+# from 30s to 1s so `pdf-extensions.spec.ts` can add a directory and see the catalogue pick it up
+# within one test rather than stalling a suite for half a minute per assertion.
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH="${ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH:-$ROOT/.e2e-pdf-extensions}"
+export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL=1000
+# Start from an empty folder: a leftover extension from a previous run would make the catalogue
+# assertions depend on run history.
+rm -rf "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
+mkdir -p "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
 
 API_PID=""; WEB_PID=""
 cleanup() {

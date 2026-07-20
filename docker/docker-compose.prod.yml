@@ -138,6 +138,11 @@ services:
       # collab, or collab's startup check fails and live edits would diverge.
       ASCIIDOCOLLAB_STORAGE_PATH: /data/storage
 
+      # Administrator-provided PDF converter extensions, bind-mounted read-only below. Extensions
+      # placed there run in every project member's browser with the same trust as the shipped code —
+      # see docker/pdf-extensions/README.md before adding one.
+      ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH: /data/pdf-extensions
+
       # Internal auth server that collab calls. Containerisation moves this off
       # loopback, so it is protected by network isolation PLUS mTLS below.
       ASCIIDOCOLLAB_COLLAB_INTERNAL_HOST: 0.0.0.0
@@ -161,6 +166,9 @@ services:
     volumes:
       - project_storage:/data/storage
       - ./pki:/run/pki:ro
+      # A bind mount, not a baked image path: the whole point is that an administrator can add an
+      # extension without rebuilding. Read-only, because the api only ever scans and reads here.
+      - ./pdf-extensions:/data/pdf-extensions:ro
     healthcheck:
       # The forwarded-proto header is not strictly needed now that the api's own
       # httpsRedirect is off, but it is kept so the probe still reports honestly

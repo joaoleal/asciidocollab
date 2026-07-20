@@ -1,0 +1,16 @@
+= A Licensed Book
+:doctype: book
+:license: Licensed under the Apache License, Version 2.0. You may obtain a copy of the License at the address printed above.
+:copyright: 2026 The Authors
+:publisher: Example Press
+:edition: Second edition
+:isbn: 978-0-000000-0-0
+
+== First Chapter
+
+Body text for the first chapter.
+
+== Second Chapter
+
+Body text for the second chapter, so the generated page is demonstrably after ALL body content
+rather than merely after the first chapter.

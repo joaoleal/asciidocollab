@@ -1,0 +1,73 @@
+= Paragraph numbers in the margin
+:doctype: article
+
+Ordinary prose at the full measure, whose number belongs in the left page margin.
+
+[.multi-column]
+--
+Two item A sits inside the region and wraps within the narrow column measure, running on a little so the column boundary is unambiguous.
+
+Two item B sits inside the region and wraps within the narrow column measure, running on a little so the column boundary is unambiguous.
+
+Two item C sits inside the region and wraps within the narrow column measure, running on a little so the column boundary is unambiguous.
+
+Two item D sits inside the region and wraps within the narrow column measure, running on a little so the column boundary is unambiguous.
+
+Two item E sits inside the region and wraps within the narrow column measure, running on a little so the column boundary is unambiguous.
+
+Two item F sits inside the region and wraps within the narrow column measure, running on a little so the column boundary is unambiguous.
+--
+
+Prose between the regions, back at the full measure. The three-column region below is short enough to
+balance across all three columns, so the rightmost one is populated and its right-margin numbers are
+pinned alongside the interior column's inline fallback.
+
+[.multi-column, columns=3]
+--
+Three item A is deliberately short.
+
+Three item B is deliberately short.
+
+Three item C is deliberately short.
+
+Three item D is deliberately short.
+
+Three item E is deliberately short.
+
+Three item F is deliberately short.
+--
+
+// Filler positions the paragraph below so that it does NOT fit at the foot of the page. The number
+// is drawn beside the text rather than in it, so nothing about the paragraph carries it to the next
+// page — it has to be placed only after the converter has decided where the text lands.
+Filler paragraph 1, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 2, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 3, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 4, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 5, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 6, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 7, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 8, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 9, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 10, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 11, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 12, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 13, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+Filler paragraph 14, long enough to wrap across the full measure and consume a predictable amount of vertical space as the page fills toward its foot.
+
+This paragraph is pushed onto a page of its own by the filler above. Its number must travel with it and appear beside it, not stranded at the foot of the previous page.
+
+Final prose.

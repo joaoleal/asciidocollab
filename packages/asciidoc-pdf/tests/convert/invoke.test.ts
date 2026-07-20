@@ -3,6 +3,7 @@ import {
   buildConvertAttributes,
   CONVERT_ATTRIBUTE_KEYS,
   CONVERT_ERROR_CODES,
+  engineThemePath,
   invokeConvert,
   OPTIMIZE_UNAVAILABLE_CODE,
   PDF_CONTENT_TYPE,
@@ -34,6 +35,14 @@ function makeValue(text: string): RubyValue {
 
 /** The VFS path the convert's tracking hook serializes the block source map to. */
 const SOURCEMAP_PATH = '/out/sourcemap.json';
+/**
+ * The VFS paths the convert and optimize programs serialize their JSON results to. The production code
+ * reads these back through `readFile` rather than the eval's return value, so the fake serves them from
+ * `readFile` too — mirroring the real memory-safe result path.
+ */
+const RESULT_PATH = '/out/result.json';
+const OPTIMIZE_RESULT_PATH = '/out/optimize-result.json';
+const PROBE_RESULT_PATH = '/out/optimize-probe.txt';
 
 interface FakeConfig {
   convertReject?: boolean;
@@ -43,6 +52,8 @@ interface FakeConfig {
   outEntries?: string[];
   fileBytes?: Uint8Array;
   readFileThrows?: boolean;
+  /** Force a throw when the convert RESULT file is read back (models the eval producing no result). */
+  resultReadThrows?: boolean;
   readdirThrows?: boolean;
   /** Raw bytes served for the source-map file; when set, the file also reports as existing. */
   sourceMapFile?: Uint8Array | null;
@@ -70,15 +81,13 @@ class FakeVm implements RubyPdfVm {
     return { coldStart: false };
   }
 
-  // The convert program runs synchronously (on the VM's main stack, not a fiber), so the fake serves
-  // its response from `eval`.
+  // The convert program runs synchronously (on the VM's main stack, not a fiber). Its RESULT is read
+  // back from the VFS (see readFile), not the eval's return value — which the production code discards
+  // — so the fake's eval only records the program and models a hard VM abort via `convertReject`.
   eval(code: string): RubyValue {
     this.evalCalls.push(code);
-    if (code.includes('convert_file')) {
-      if (this.config.convertReject === true) {
-        throw new Error('vm exploded during convert');
-      }
-      return makeValue(this.config.convertJson ?? OK_CONVERT_JSON);
+    if (code.includes('convert_file') && this.config.convertReject === true) {
+      throw new Error('vm exploded during convert');
     }
     return makeValue('');
   }
@@ -86,10 +95,9 @@ class FakeVm implements RubyPdfVm {
   async evalAsync(code: string): Promise<RubyValue> {
     this.evalCalls.push(code);
     this.evalAsyncCalls.push(code);
-    if (code.includes('HexaPDF::Document')) {
-      return makeValue(this.config.optimizeJson ?? JSON.stringify({ ok: true }));
-    }
-    return makeValue(this.config.probe ?? 'false');
+    // Both the optimize result and the capability-probe result are read from the VFS (see readFile);
+    // the return value is discarded, so the fake's evalAsync only records the program.
+    return makeValue('');
   }
 
   writeFile(): void {}
@@ -101,6 +109,20 @@ class FakeVm implements RubyPdfVm {
         throw new Error('cannot read source map');
       }
       return this.config.sourceMapFile ?? new Uint8Array();
+    }
+    // The convert/optimize JSON results are served here, ahead of the PDF read, so `readFileThrows`
+    // (which models the PDF read-back failing) still leaves the convert result readable.
+    if (path === RESULT_PATH) {
+      if (this.config.resultReadThrows === true) {
+        throw new Error('no result file');
+      }
+      return encodeText(this.config.convertJson ?? OK_CONVERT_JSON);
+    }
+    if (path === OPTIMIZE_RESULT_PATH) {
+      return encodeText(this.config.optimizeJson ?? JSON.stringify({ ok: true }));
+    }
+    if (path === PROBE_RESULT_PATH) {
+      return encodeText(this.config.probe ?? 'false');
     }
     if (this.config.readFileThrows === true) {
       throw new Error('no output file');
@@ -157,6 +179,25 @@ function request(overrides: Partial<RenderRequest> = {}): RenderRequest {
 // Attribute builder.
 // ---------------------------------------------------------------------------
 
+describe('engineThemePath', () => {
+  it('leaves a .yml theme untouched', () => {
+    expect(engineThemePath('branding/corporate-theme.yml')).toBe('branding/corporate-theme.yml');
+  });
+
+  it('rewrites a .yaml theme to the extension the engine accepts', () => {
+    expect(engineThemePath('local-theme.yaml')).toBe('local-theme.yml');
+    expect(engineThemePath('branding/house-theme.yaml')).toBe('branding/house-theme.yml');
+  });
+
+  it('matches the extension case-insensitively, as the app’s recognition rule does', () => {
+    expect(engineThemePath('Corporate-Theme.YAML')).toBe('Corporate-Theme.yml');
+  });
+
+  it('does not touch a path that merely contains the extension', () => {
+    expect(engineThemePath('yaml/corporate-theme.yml')).toBe('yaml/corporate-theme.yml');
+  });
+});
+
 describe('buildConvertAttributes', () => {
   it('wires source-highlighter: rouge and folds in the project attributes (source of truth)', () => {
     const attributes = buildConvertAttributes(
@@ -184,7 +225,9 @@ describe('buildConvertAttributes', () => {
       }),
     );
 
-    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBe('brand-theme.yml');
+    // Soft-set (`@`), so a document header's own `:pdf-theme:` still wins — the override the
+    // project-level config model promises everywhere else.
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBe('brand-theme.yml@');
     expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEMESDIR]).toBe('/project/themes');
     expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_FONTSDIR]).toContain('/project/fonts');
     expect(attributes[CONVERT_ATTRIBUTE_KEYS.IMAGESDIR]).toBe('images');
@@ -237,7 +280,7 @@ describe('buildConvertAttributes', () => {
     expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_FONTSDIR]).toBeUndefined();
   });
 
-  it('lets the project attributes override the wired theme/imagesdir/highlighter defaults', () => {
+  it('lets the project attributes override the wired imagesdir/highlighter defaults', () => {
     const attributes = buildConvertAttributes(
       snapshot({
         themePath: 'themes/brand-theme.yml',
@@ -246,14 +289,74 @@ describe('buildConvertAttributes', () => {
           doctype: 'book',
           [CONVERT_ATTRIBUTE_KEYS.SOURCE_HIGHLIGHTER]: 'pygments',
           [CONVERT_ATTRIBUTE_KEYS.IMAGESDIR]: 'assets',
-          [CONVERT_ATTRIBUTE_KEYS.PDF_THEME]: 'override-theme.yml',
         },
       }),
     );
 
     expect(attributes[CONVERT_ATTRIBUTE_KEYS.SOURCE_HIGHLIGHTER]).toBe('pygments');
     expect(attributes[CONVERT_ATTRIBUTE_KEYS.IMAGESDIR]).toBe('assets');
-    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBe('override-theme.yml');
+  });
+
+  it('resolves the theme from themePath, not from the raw stored selection', () => {
+    // THE regression: the project's `pdf-theme` is stored as a project-relative PATH, and
+    // `pdf-themesdir` is derived from that same path. Letting the raw value through made the engine
+    // resolve `<dir>/<dir>/<file>`, find nothing, and fall back to the built-in theme — so a
+    // project's theme silently never applied, with no error anywhere.
+    //
+    // `themePath` is not a competing opinion about which theme to use: it IS this selection, already
+    // resolved to a real file and sandbox-checked by the snapshot builder.
+    const attributes = buildConvertAttributes(
+      snapshot({
+        themePath: 'branding/corporate-theme.yml',
+        attributes: { [CONVERT_ATTRIBUTE_KEYS.PDF_THEME]: 'branding/corporate-theme.yml@' },
+      }),
+    );
+
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBe('corporate-theme.yml@');
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEMESDIR]).toBe('/project/branding');
+  });
+
+  it('keeps the theme pair consistent for a theme at the project root', () => {
+    const attributes = buildConvertAttributes(
+      snapshot({
+        themePath: 'corporate-theme.yml',
+        attributes: { [CONVERT_ATTRIBUTE_KEYS.PDF_THEME]: 'corporate-theme.yml@' },
+      }),
+    );
+
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBe('corporate-theme.yml@');
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEMESDIR]).toBe('/project');
+  });
+
+  it('points the engine at a .yml alias for a .yaml theme', () => {
+    // Asciidoctor-PDF's loader tests `end_with? '.yml'` and appends `-theme.yml` otherwise, so a
+    // `.yaml` theme is looked for at `local-theme.yaml-theme.yml`, is not found, and the engine
+    // REVERTS TO THE DEFAULT THEME — a log line, and a perfectly good unthemed PDF.
+    const attributes = buildConvertAttributes(
+      snapshot({
+        themePath: 'local-theme.yaml',
+        attributes: { [CONVERT_ATTRIBUTE_KEYS.PDF_THEME]: 'local-theme.yaml@' },
+      }),
+    );
+
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBe('local-theme.yml@');
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEMESDIR]).toBe('/project');
+  });
+
+  it('aliases a .yaml theme in a subfolder without moving it', () => {
+    const attributes = buildConvertAttributes(
+      snapshot({ themePath: 'branding/house-theme.yaml' }),
+    );
+
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBe('house-theme.yml@');
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEMESDIR]).toBe('/project/branding');
+  });
+
+  it('leaves the theme attributes alone when the project has no theme', () => {
+    const attributes = buildConvertAttributes(snapshot({ themePath: undefined }));
+
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEME]).toBeUndefined();
+    expect(attributes[CONVERT_ATTRIBUTE_KEYS.PDF_THEMESDIR]).toBeUndefined();
   });
 });
 
@@ -291,6 +394,76 @@ describe('invokeConvert — invocation shape', () => {
     expect(code).toContain("File.write('/out/sourcemap.json'");
   });
 
+  it('requires each selected extension and publishes the same ids as the enabled set', async () => {
+    const vm = new FakeVm();
+    await invokeConvert({
+      vm,
+      request: request({}),
+      loadedExtensions: [
+        { id: 'narrow-contents', vfsPath: '/extensions/shipped/narrow-contents.rb' },
+        { id: 'paragraph-numbering', vfsPath: '/extensions/shipped/paragraph-numbering.rb' },
+      ],
+    });
+
+    const code = vm.evalCalls.find((call) => call.includes('convert_file')) ?? '';
+    // Each extension is loaded as an [id, path] pair inside a guarded `.each` (so a broken extension is
+    // skipped, not fatal), rather than a bare top-level `require`.
+    expect(code).toContain("['narrow-contents', '/extensions/shipped/narrow-contents.rb']");
+    expect(code).toContain("['paragraph-numbering', '/extensions/shipped/paragraph-numbering.rb']");
+    expect(code).toContain('require __ext_path');
+    // The individual `require` is guarded so a load-time raise is caught and the id dropped from the
+    // enabled set, never aborting the whole render.
+    expect(code).toContain('rescue ::ScriptError, ::StandardError');
+    expect(code).toContain('$__asciidocollab_enabled_extensions.delete(__ext_id)');
+    // The ids are what each extension gates its hooks on. Requiring code without publishing its id
+    // would load an extension that then never activates.
+    expect(code).toContain(
+      "$__asciidocollab_enabled_extensions = ['narrow-contents', 'paragraph-numbering']",
+    );
+  });
+
+  it('publishes an EMPTY enabled set when the render selected nothing', async () => {
+    // The load-bearing case, and the whole reason the assignment is unconditional. `Module#prepend`
+    // cannot be undone and the VM is warm, so a render following one that enabled extensions still
+    // has them in the converter's ancestor chain. This assignment is the only thing that switches
+    // them off — omitting it for an empty selection would leave the previous render's set in place
+    // and silently render this document WITH extensions it did not ask for (SC-015a, FR-031b1).
+    const vm = new FakeVm();
+    await invokeConvert({ vm, request: request({}) });
+
+    const code = vm.evalCalls.find((call) => call.includes('convert_file')) ?? '';
+    expect(code).toContain('$__asciidocollab_enabled_extensions = []');
+    expect(code).not.toContain('require /extensions');
+  });
+
+  it('renders successfully and reports a warning when an extension fails to load', async () => {
+    // A broken administrator-provided extension must degrade to "skipped and named", never fail the
+    // export. The convert program catches the load-time raise, records it under `extension_failures`,
+    // and the render proceeds — surfacing a per-extension `extension-not-loaded` warning.
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: [],
+        extension_failures: [{ id: 'narrow-contents', message: 'SyntaxError: boom' }],
+      }),
+    });
+    const result = await invokeConvert({
+      vm,
+      request: request({}),
+      loadedExtensions: [{ id: 'narrow-contents', vfsPath: '/extensions/shipped/narrow-contents.rb' }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error('expected success');
+    }
+    const failure = result.diagnostics.find((diagnostic) => diagnostic.code === 'extension-not-loaded');
+    expect(failure).toBeDefined();
+    expect(failure?.severity).toBe('warning');
+    expect(failure && 'resource' in failure ? failure.resource : undefined).toBe('narrow-contents');
+    expect(failure?.message).toContain('SyntaxError: boom');
+  });
+
   it('only issues the convert eval when optimize is not requested', async () => {
     const vm = new FakeVm();
     await invokeConvert({ vm, request: request({ optimize: false }) });
@@ -315,7 +488,8 @@ describe('invokeConvert — read-back & determinism', () => {
     if (!result.ok) {
       throw new Error('expected success');
     }
-    expect(vm.reads).toEqual(['/out/book.pdf']);
+    // The convert result is read from the VFS first, then the PDF bytes.
+    expect(vm.reads).toEqual([RESULT_PATH, '/out/book.pdf']);
     expect([...result.bytes]).toEqual([...normalizePdfBytes(RAW_PDF_BYTES)]);
     expect(result.pdf).toBeInstanceOf(Blob);
     expect(result.pdf.type).toBe(PDF_CONTENT_TYPE);
@@ -398,8 +572,8 @@ describe('invokeConvert — source map read-back', () => {
       throw new Error('expected success');
     }
     expect(result.sourceMap).toBeUndefined();
-    // The absent file is never read, so the read log stays limited to the PDF.
-    expect(vm.reads).toEqual(['/out/book.pdf']);
+    // The absent map file is never read, so the read log stays limited to the result and the PDF.
+    expect(vm.reads).toEqual([RESULT_PATH, '/out/book.pdf']);
   });
 
   it('degrades to no map when the source-map file is present but not valid JSON', async () => {
@@ -535,6 +709,23 @@ describe('invokeConvert — failure', () => {
     }
     expect(result.error.phase).toBe('convert');
     expect(result.error.code).toBe(CONVERT_ERROR_CODES.CONVERT_FAILED);
+  });
+
+  it('returns a RenderError{phase:convert} when the eval leaves no readable result file', async () => {
+    // The convert program writes its result to the VFS in BOTH its success and rescue branches, so an
+    // unreadable result means the eval never reached either — a VM-level failure. (This is the path
+    // that used to surface as an intermittent `Start offset … outside the bounds of the buffer` from
+    // marshalling the eval's return value under memory pressure; it is now a VFS read.)
+    const vm = new FakeVm({ resultReadThrows: true });
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error('expected failure');
+    }
+    expect(result.error.phase).toBe('convert');
+    expect(result.error.code).toBe(CONVERT_ERROR_CODES.CONVERT_FAILED);
+    expect(result.error.message).toContain('no readable result');
   });
 
   it('returns a RenderError{phase:read-output} when the output cannot be read back', async () => {

@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "test": "pnpm -r test",
     "test:coverage": "pnpm -r test -- --coverage",
-    "typecheck": "tsc --noEmit && pnpm --filter @asciidocollab/api typecheck && pnpm --filter @asciidocollab/web typecheck",
+    "typecheck": "tsc -b --noEmit && pnpm --filter @asciidocollab/api typecheck && pnpm --filter @asciidocollab/web typecheck",
     "fresh-onion": "fresh-onion",
     "knip": "knip",
     "semgrep": "semgrep --config p/security-audit --config p/owasp-top-ten --config .semgrep.yml --error --quiet .",

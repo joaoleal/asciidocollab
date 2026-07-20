@@ -104,6 +104,16 @@ describe('resolveRenderAttributes', () => {
       expect(PINNED_ATTRIBUTE_KEYS.has(descriptor.attribute)).toBe(false);
     }
   });
+
+  it('emits no attribute for an extension selection', () => {
+    // Extensions are loaded by the renderer from the deployment; they are not an attribute channel.
+    // If a selection ever resolved to an attribute it would become a second route to the pinned keys
+    // the blocklist exists to protect.
+    const { attributes } = resolveRenderAttributes({
+      extensions: { enabled: ['paragraph-numbering'] },
+    });
+    expect(attributes).toEqual({});
+  });
 });
 
 describe('stripSoftDefault', () => {

@@ -1,0 +1,6 @@
+# Asymmetric on purpose: equal indents would let a regression that applied one value to both sides
+# pass. The right indent is the one that pulls page numbers in toward their entries.
+extends: default
+narrow-contents:
+  left: 36
+  right: 144

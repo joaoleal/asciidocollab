@@ -1,0 +1,149 @@
+<<<
+
+[#exporting]
+== Exporting and themes
+
+The last stop on the tour: turning your live document into a polished PDF, and
+the two rendering features that make {product-name} feel alive — syntax
+highlighting and live math.
+
+[#pdf-export]
+=== In-browser PDF export
+
+{product-name} exports to PDF *entirely in your browser*. There is no server
+round-trip: a WebAssembly build of Asciidoctor-PDF (via ruby.wasm) runs locally,
+so your content never has to leave the page to become a document.
+
+Each project carries its own *render configuration*, which an owner sets in
+project settings:
+
+.Per-project render options
+[cols="1,2",options="header"]
+|===
+| Option | What it controls
+
+| PDF theme | The visual style — fonts, colors, page margins.
+| Page size | For example A4 or Letter.
+| Table of contents | Whether a TOC is generated, and how deep.
+| Section numbering | Whether headings are numbered.
+| Custom attributes | Document attributes injected at render time.
+|===
+
+IMPORTANT: This tour ships a custom PDF theme at `theme/showcase-theme.yml`. When
+you export this project, that theme — not the Asciidoctor default — styles the
+result.
+
+=== Syntax-highlighted code
+
+Code blocks use `----` delimiters with a `[source,LANGUAGE]` attribute, and a
+`.Caption` gives them a title. The preview highlights them live, in many
+languages:
+
+.Ruby
+[source,ruby]
+----
+# The PDF pipeline runs Asciidoctor-PDF compiled to WebAssembly.
+converter = Asciidoctor::PDF.new(theme: "showcase-theme")
+converter.convert_file("index.adoc")
+----
+
+.TypeScript
+[source,typescript]
+----
+export function renderPreview(doc: string): string {
+  const html = asciidoctor.convert(doc, { safe: "safe" });
+  return html as string;
+}
+----
+
+.YAML — an excerpt of a PDF theme
+[source,yaml]
+----
+base:
+  font_family: Noto Serif
+  font_size: 10.5
+heading:
+  font_color: 1A4E8A
+----
+
+.Bash
+[source,bash]
+----
+# There is nothing to install to export — it all runs in the browser.
+echo "Open the project, then choose Export > PDF."
+----
+
+[#code-callouts]
+=== Callouts (conums)
+
+*Callouts*, or conums, annotate specific lines of a code block with numbered
+markers, explained in a list below. This is one of AsciiDoc's most useful
+teaching tools:
+
+[source,typescript]
+----
+import { Doc } from "yjs";
+
+const doc = new Doc();                 // <1>
+const text = doc.getText("index.adoc"); // <2>
+text.insert(0, "= Hello, collaborators!"); // <3>
+----
+<1> Create the shared CRDT document — the single source of truth.
+<2> Get the shared text type for one file in the project.
+<3> Insert content; every connected collaborator receives this change.
+
+=== Live STEM / math
+
+With `:stem:` set in the document header, {product-name} renders mathematical
+notation live in the preview. Write inline math with `stem:[...]`, such as
+stem:[sqrt(4) = 2] or the mass-energy relation stem:[E = m c^2]. For a
+displayed equation, use a `[stem]` block:
+
+[stem]
+++++
+sum_(i=1)^n i = (n(n+1)) / 2
+++++
+
+And a fraction, rendered on its own line:
+
+[stem]
+++++
+f(x) = (1) / (sqrt(2 pi sigma^2)) e^(-((x - mu)^2) / (2 sigma^2))
+++++
+
+TIP: The notation above is AsciiMath. It renders the same way in the live HTML
+preview and in the exported PDF, so what you draft is what you ship.
+
+=== Other useful blocks
+
+An `[example]` block frames a worked illustration:
+
+.A minimal chapter file
+[example]
+====
+A chapter is just a `==` heading and its content — no document header. That is
+what makes it safe to `include::[]`.
+====
+
+A *listing* block shows literal text verbatim (here, a file tree):
+
+----
+demo-project/
+  index.adoc
+  chapters/
+    01-welcome.adoc
+  images/
+    workflow.svg
+----
+
+And a *literal* block, indented or marked with `....`, preserves spacing exactly:
+
+....
+main file  ->  include tree  ->  cross-file intelligence
+....
+
+=== Where to go next
+
+That is the tour. To recap the map, jump back to
+<<welcome,the welcome chapter>>, or better yet: create your own project, invite
+a teammate, and start writing together. Welcome aboard {product-name}.

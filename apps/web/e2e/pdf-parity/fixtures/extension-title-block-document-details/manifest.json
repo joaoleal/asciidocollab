@@ -1,0 +1,14 @@
+{
+  "name": "extension-title-block-document-details",
+  "description": "The title-block-document-details extension drawing a labelled details block on a title page. Proves the extension's effect matches the canonical toolchain — Principle XV names an extension without passing comparison coverage as not done. The details list covers all three forms in one document: a labelled detail, a detail whose attribute is unset (omitted rather than drawn empty), and a bare attribute name rendered without a label. The theme sets all three contributed keys away from their defaults. Worth recording why this fixture is about LAYOUT rather than content: interpolating attributes into the title block is already native via title-page.authors.content, which is attribute-substituted; what is not reachable by theme alone is putting each detail on its own line, because ink_prose normalizes whitespace and collapses any multi-line template onto one line.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "details-theme.yml",
+    "fontPaths": [],
+    "attributes": {},
+    "enabledExtensions": ["title-block-document-details"]
+  }
+}

@@ -1,0 +1,210 @@
+# =============================================================================
+# AsciidoCollab — "Showcase" PDF theme (Asciidoctor-PDF)
+# -----------------------------------------------------------------------------
+# A polished, corporate-grade theme that ships with the bundled demo project. It
+# is deliberately restrained: one navy accent, one teal for links, a warm sidebar
+# and generous whitespace. The goal is a document that looks publication-ready in
+# a screenshot without any custom fonts (so it renders identically on every
+# install — no font files to mount, no WOFF2 conversion step).
+#
+# WHY `extends: default`:
+#   Inheriting the vendored default theme means every key we DON'T override keeps
+#   a sane, tested value, and we get its registered font catalogue (Noto Serif for
+#   text, M+ 1mn for code) for free. We only restyle what changes the visual tone.
+#
+# KEY VALIDITY:
+#   Every key below is a real Asciidoctor-PDF theme key. The vast majority are
+#   present in the app's generated descriptor set
+#   (packages/shared/src/render-config/theme-descriptors.generated.ts), which is
+#   derived from asciidoctor-pdf 2.3.24's own base-theme.yml + default-theme.yml.
+#   Colours are quoted where they are all-digits so YAML does not read them as
+#   numbers (e.g. '1A4E8A' is safe unquoted because of the letters, but we quote
+#   the odd all-digit value to be defensive).
+# =============================================================================
+extends: default
+
+# --- Page ---------------------------------------------------------------------
+# A4 with a comfortable 0.85in margin gives a roomy, unhurried text block. The
+# background stays pure white so the accent colours carry the whole palette.
+page:
+  layout: portrait
+  size: A4
+  margin: [0.85in, 0.8in, 0.9in, 0.8in]
+  background-color: FFFFFF
+
+# --- Body text ----------------------------------------------------------------
+# 10.5pt Noto Serif at a 1.45 line-height reads well both on screen and in print.
+# A dark slate (not pure black) is easier on the eye than #000000.
+base:
+  font-family: Noto Serif
+  font-color: 23303B
+  font-size: 10.5
+  line-height: 1.45
+  text-align: justify
+  border-color: DCE1E7
+
+# Tighten the default paragraph rhythm very slightly for a denser, book-like feel.
+prose:
+  margin-bottom: 10
+
+# --- Headings -----------------------------------------------------------------
+# One navy accent across every level, bold, with a clear size ramp. Extra space
+# above and a little below sets sections apart without a heavy rule.
+heading:
+  font-color: 1A4E8A
+  font-style: bold
+  line-height: 1.2
+  margin-top: 14
+  margin-bottom: 6
+  h2:
+    font-size: 20
+  h3:
+    font-size: 15.5
+  h4:
+    font-size: 12.5
+
+# --- Links --------------------------------------------------------------------
+# Teal, distinct from the navy headings so cross-references never look like titles.
+link:
+  font-color: 0B7285
+
+# --- Lists --------------------------------------------------------------------
+list:
+  marker:
+    font-color: 1A4E8A
+
+# --- Inline code (codespan) ---------------------------------------------------
+codespan:
+  font-color: 9B2C64
+  background-color: F4F6F8
+  border-color: E1E6EB
+
+# --- Code / listing blocks ----------------------------------------------------
+# A soft blue-grey panel with a hairline border and rounded corners. Slightly
+# smaller mono type keeps long lines from wrapping.
+code:
+  font-family: M+ 1mn
+  font-size: 8.8
+  font-color: 23303B
+  line-height: 1.35
+  background-color: F4F6F8
+  border-color: DCE1E7
+  border-radius: 4
+  padding: [8, 10, 8, 10]
+
+# Callout numbers (conums) pick up the navy so they read as part of the brand.
+conum:
+  font-color: 1A4E8A
+
+# --- Block quotes -------------------------------------------------------------
+# A navy left rule and a muted attribution line — a classic pull-quote look.
+quote:
+  border-color: 1A4E8A
+  border-left-width: 3
+  font-size: 11
+  padding: [4, 12, 4, 16]
+  cite:
+    font-color: 5C6672
+    font-size: 9
+
+# --- Sidebars -----------------------------------------------------------------
+# The one warm note in the palette: a soft parchment panel for asides/tips.
+sidebar:
+  background-color: F6F1E7
+  border-color: E2D8C3
+  border-width: 0.5
+  border-radius: 4
+  title:
+    font-color: 8A5A1E
+    font-style: bold
+
+# --- Example blocks -----------------------------------------------------------
+example:
+  background-color: FBFCFD
+  border-color: E3E8ED
+  border-radius: 4
+
+# --- Admonitions (NOTE/TIP/IMPORTANT/WARNING/CAUTION) -------------------------
+# A 2pt navy rule between the icon column and the body makes admonitions feel
+# intentional rather than boxed-in.
+admonition:
+  column-rule-color: 1A4E8A
+  column-rule-width: 2
+  label:
+    font-style: bold
+
+# --- Tables -------------------------------------------------------------------
+# Centered on the page, with a hairline grid, bold heading row, and a very light
+# zebra stripe for scanability.
+table:
+  align: center
+  border-color: C9D0D7
+  border-width: 0.5
+  grid-color: DDE2E7
+  cell:
+    padding: [5, 6, 5, 6]
+  head:
+    font-style: bold
+    background-color: EEF2F6
+  body:
+    stripe-background-color: F4F7F9
+
+# --- Figures / images ---------------------------------------------------------
+# Block images sit centered on the page, so a diagram is framed by equal margins
+# rather than hugging the left edge.
+image:
+  align: center
+
+# --- Captions (figure/table titles) -------------------------------------------
+# Captions are centered under their (centered) figure or table, italic and muted.
+caption:
+  font-style: italic
+  font-size: 9
+  align: center
+  text-align: center
+
+# --- Thematic break (horizontal rule '''') ------------------------------------
+thematic-break:
+  border-color: 1A4E8A
+  border-style: solid
+  border-width: 0.5
+
+# --- Keyboard + button macros (experimental UI macros) ------------------------
+kbd:
+  background-color: F0F2F5
+  border-color: C9D0D7
+button:
+  background-color: 1A4E8A
+  font-color: FFFFFF
+
+# --- Footnotes ----------------------------------------------------------------
+footnotes:
+  font-size: 8.5
+
+# --- Title page ---------------------------------------------------------------
+# Big navy title, an italic teal-grey subtitle and a muted author line — the
+# cover a reader sees first, and the thing most worth screenshotting.
+title-page:
+  title:
+    font-color: 1A4E8A
+    font-size: 32
+  subtitle:
+    font-size: 15
+    font-style: italic
+  authors:
+    font-color: 5C6672
+    font-size: 11
+
+# --- Table of contents --------------------------------------------------------
+toc:
+  indent: 18
+  line-height: 1.5
+  dot-leader:
+    font-color: AAB2BB
+
+# --- Running footer -----------------------------------------------------------
+# A thin rule above a small footer keeps page numbers unobtrusive.
+footer:
+  font-size: 8
+  border-width: 0.5
+  border-color: DCE1E7

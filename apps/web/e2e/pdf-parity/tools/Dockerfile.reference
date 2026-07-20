@@ -1,16 +1,47 @@
-# Reference-build toolchain for PDF parity fixtures. This is the canonical, external Asciidoctor-PDF
-# reference engine (never the in-app wasm export): the real gem plus the citation and diagram
-# extensions the fixtures exercise. Built once into an image so each fixture's reference render is
-# fast and reproducible. See tools/build-references.mjs for how it is driven.
-FROM ruby:3.3
+# Reference-build toolchain for PDF parity fixtures.
+#
+# This is the canonical, external Asciidoctor-PDF reference engine — never the in-app wasm export.
+# Every committed `reference.pdf` is produced here, so this image's job is to be IDENTICAL on every
+# machine and at every point in time. Three things are pinned to make that true, and all three had to
+# be, because each was previously free to drift:
+#
+#   1. THE BASE IMAGE, BY DIGEST. `ruby:3.3` is a moving tag: it resolved to 3.3.11 here and will
+#      resolve to something else elsewhere or later. The Ruby patch level reaches the output through
+#      float formatting and hash ordering.
+#   2. THE GEM CLOSURE, BY LOCKFILE. `Gemfile`/`Gemfile.lock` beside this file pin every direct AND
+#      transitive gem. `prawn`, `pdf-core` and `ttfunk` lay out PDF objects and subset fonts, so an
+#      unpinned transitive is an unpinned reference. Installing gems unpinned had already put two
+#      different prawn-svg versions in the image, with the loaded one decided by the resolver.
+#   3. LOCALE AND TIME ZONE. Set explicitly rather than inherited from whoever runs the build.
+#
+# `--frozen` makes a lock that disagrees with the Gemfile a BUILD failure rather than a quiet
+# re-resolve, which is the whole point: the failure has to happen here, not in a reference PDF that
+# looks plausible and no longer matches the corpus.
+#
+# Bump deliberately, and regenerate the corpus in the same commit. Driven by generate-reference.mjs,
+# which tags the built image with a hash of this file and the lock, so a stale image built from an
+# older definition can never be silently reused.
+FROM ruby@sha256:8d62d05359e370f55c2710645c976d7f04c9f5811378c7acc340ff416986da1e
 
+# Graphviz backs the `diagrams` fixture's Graphviz figure.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends graphviz \
   && rm -rf /var/lib/apt/lists/*
 
-# Pinned so the committed reference PDFs are reproducible. Bump deliberately, regenerate the corpus.
-RUN gem install --no-document \
-  asciidoctor-pdf:2.3.24 \
-  rouge:5.0.0 \
-  asciidoctor-bibtex:0.9.0 \
-  asciidoctor-diagram:3.2.1
+ENV BUNDLE_GEMFILE=/gems/Gemfile \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC
+
+WORKDIR /gems
+COPY Gemfile Gemfile.lock ./
+# World-readable so the image still works when run with `--user <host uid>`, which is how
+# generate-reference.mjs invokes it: the host UID owns nothing inside the image, and without this the
+# gems it needs to read would be unreachable.
+RUN bundle install --frozen \
+  && chmod -R a+rX /usr/local/bundle
+
+# NEVER root. A render only ever needs to read the fixture and write one PDF into it; running as root
+# additionally leaves every regenerated reference owned by root in the developer's checkout. Verified
+# not to affect output: the same fixture rendered as root and as a host UID is byte-identical.
+USER 1000:1000

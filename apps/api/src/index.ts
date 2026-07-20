@@ -35,6 +35,7 @@ import type {
   CollaborativeContentReader,
   StructuredCollaborativeEditor,
   RegexEngine,
+  PdfExtensionSourcePort,
   PasswordHasher,
   BreachChecker,
   CommonPasswordChecker,
@@ -52,6 +53,7 @@ import { createServices } from './di/services';
 import { registerPlugins } from './di/plugins';
 import { registerRoutes } from './di/routes';
 import { createInternalServer } from './internal-server';
+import { provisionDemoProject } from './bootstrap/demo-project';
 
 /** Dependency container passed to `buildServer` to wire repositories and services. */
 export interface AppContainer {
@@ -116,6 +118,8 @@ export interface AppContainer {
     structuredCollaborativeEditor: StructuredCollaborativeEditor;
     /** Linear-time (RE2) engine for compiling and matching untrusted user regexes. */
     regexEngine: RegexEngine;
+    /** Reads administrator-provided PDF converter extensions; the only route to that folder. */
+    pdfExtensionSource: PdfExtensionSourcePort;
   };
   /** Collection of domain service implementations. */
   services: {
@@ -225,6 +229,29 @@ async function start() {
   const prisma = new PrismaClient({ adapter: new PrismaPg(databaseUrl) });
   const app = await buildServer({ prisma });
   await registerAllRoutes(app);
+
+  // Seed (once) and reconcile the bundled read-only demo project, and grant read
+  // access to existing users. Runs before we start listening so the tour is in
+  // place the first time anyone loads the dashboard after an upgrade. It never
+  // throws — a demo must not be able to block the API from booting.
+  if (app.stores) {
+    await provisionDemoProject({
+      repos: {
+        project: app.repos.project,
+        projectMember: app.repos.projectMember,
+        fileNode: app.repos.fileNode,
+        document: app.repos.document,
+        asset: app.repos.asset,
+        projectRenderConfig: app.repos.projectRenderConfig,
+        systemSetting: app.repos.systemSetting,
+      },
+      fileStore: app.stores.fileStore,
+      prisma,
+      dataDir: path.join(__dirname, '..', 'data', 'demo-project'),
+      logger: app.log,
+    });
+  }
+
   await app.listen({ port: appConfig.api.port, host: appConfig.api.host });
 
   const internalServer = await createInternalServer({
@@ -289,6 +316,8 @@ declare module 'fastify' {
       collaborativeContentEditor: CollaborativeContentEditor & CollaborativeContentReader;
       structuredCollaborativeEditor: StructuredCollaborativeEditor;
       regexEngine: RegexEngine;
+    /** Reads administrator-provided PDF converter extensions; the only route to that folder. */
+    pdfExtensionSource: PdfExtensionSourcePort;
     };
     services: {
       passwordHasher: PasswordHasher;

@@ -7,13 +7,17 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "jest",
+    "generate:theme-descriptors": "node scripts/generate-theme-descriptors.mjs",
+    "prebuild": "node scripts/generate-theme-descriptors.mjs --if-available"
   },
   "dependencies": {
+    "@asciidocollab/asciidoc-core": "workspace:*",
     "@asciidocollab/domain": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^24.12.4"
+    "@types/node": "^24.12.4",
+    "yaml": "^2.9.0"
   }
 }

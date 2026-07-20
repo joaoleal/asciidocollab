@@ -28,3 +28,5 @@ export * from './pipeline/stages/image-guard';
 export * from './pipeline/stages/mount-assets';
 export * from './convert/invoke';
 export * from './convert/normalize-pdf';
+export * from './extensions/registry';
+export * from './extensions/mount';

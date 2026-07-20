@@ -13,7 +13,7 @@ test.describe('Project deletion', () => {
     await signIn(page);
     const projectId = await createProject(page, PROJECT_NAME);
 
-    await page.goto(`/dashboard/projects/${projectId}/settings`);
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=danger`);
 
     // Open the delete dialog via the trigger button
     await page.getByRole('button', { name: /delete project/i }).first().click();
@@ -39,7 +39,7 @@ test.describe('Project deletion', () => {
     await signIn(page);
     const projectId = await createProject(page, PROJECT_NAME);
 
-    await page.goto(`/dashboard/projects/${projectId}/settings`);
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=danger`);
 
     // Open the delete dialog
     await page.getByRole('button', { name: /delete project/i }).first().click();

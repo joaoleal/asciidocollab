@@ -8,6 +8,7 @@ import {
   openFile,
   expandPreview,
   editorContent,
+  EDITOR_EDITABLE_TIMEOUT,
 } from './helpers/editor';
 
 // Conditional preprocessor directives:
@@ -60,9 +61,20 @@ test.describe('preview conditionals across files', () => {
     await expect(output).toContainText('Always here.');
 
     // Unset the flag — the conditional block disappears, the always-on content stays.
-    await editorContent(page).click();
+    // The editor is collaborative (Yjs): it mounts read-only and only becomes editable once its
+    // document has synced. Under parallel gate load a `select-all` + `type` issued before then is
+    // silently dropped, leaving the buffer EMPTY — and since the preview never renders empty content
+    // (it holds its last good render) it keeps showing the pre-edit GATED CONTENT, so `not.toContainText`
+    // times out on a preview that is faithfully reflecting a buffer whose edit never registered. Wait for
+    // the editor to be editable, then confirm the edit actually landed (the `:flag:` entry line is gone
+    // from the source) BEFORE asserting on the preview — the same collab-edit guard `liveReplaceLine`
+    // uses. This is a deterministic wait on the edit registering, not a longer preview timeout.
+    const editor = editorContent(page);
+    await expect(editor).toHaveAttribute('contenteditable', 'true', { timeout: EDITOR_EDITABLE_TIMEOUT });
+    await editor.click();
     await page.keyboard.press('Control+a');
     await page.keyboard.type('= Book\n\nifdef::flag[]\nGATED CONTENT\nendif::[]\n\nAlways here.\n');
+    await expect(editor).not.toContainText(':flag:', { timeout: 15_000 }); // the edit registered
     await expect(output).not.toContainText('GATED CONTENT', { timeout: 15_000 });
     await expect(output).toContainText('Always here.');
   });
@@ -88,9 +100,16 @@ test.describe('preview conditionals across files', () => {
     await expect(output).toContainText('Chapter body text.', { timeout: 15_000 });
 
     // Unset the flag — the assembler no longer expands the gated include, so the chapter vanishes.
-    await editorContent(page).click();
+    // Same collab-sync guard as the sibling test above: wait for the editor to be editable and confirm
+    // the edit registered (the `:flag:` entry line is gone) before asserting on the preview, so a
+    // keystroke dropped against a not-yet-synced editor can't leave the preview stuck on the pre-edit
+    // render and time out. A deterministic wait on the edit landing, not a longer preview timeout.
+    const editor = editorContent(page);
+    await expect(editor).toHaveAttribute('contenteditable', 'true', { timeout: EDITOR_EDITABLE_TIMEOUT });
+    await editor.click();
     await page.keyboard.press('Control+a');
     await page.keyboard.type('= Book\n\nifdef::flag[]\ninclude::chapter.adoc[]\nendif::[]\n');
+    await expect(editor).not.toContainText(':flag:', { timeout: 15_000 }); // the edit registered
     await expect(output).not.toContainText('Chapter body text.', { timeout: 15_000 });
   });
 });

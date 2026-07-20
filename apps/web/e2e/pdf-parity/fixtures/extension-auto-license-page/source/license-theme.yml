@@ -1,0 +1,6 @@
+# Both contributed keys set away from their defaults, so a regression that stopped reading either one
+# fails rather than passing silently.
+extends: default
+license-page:
+  text-align: center
+  font-color: '556677'

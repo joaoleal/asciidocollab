@@ -35,6 +35,7 @@ import { fileContentRoutes } from '../routes/projects/file-content';
 import { fileTreeRoutes } from '../routes/projects/file-tree';
 import { projectMainFileRoutes } from '../routes/projects/main-file';
 import { renderConfigRoutes } from '../routes/projects/render-config';
+import { pdfExtensionRoutes } from '../routes/projects/pdf-extensions';
 import { projectRefactoringRoutes } from '../routes/projects/refactoring';
 import { projectSearchRoutes } from '../routes/projects/search';
 import { assetsRoutes } from '../routes/projects/assets';
@@ -88,6 +89,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(fileTreeRoutes);
       await innerApp.register(projectMainFileRoutes);
       await innerApp.register(renderConfigRoutes);
+      await innerApp.register(pdfExtensionRoutes);
       await innerApp.register(projectRefactoringRoutes);
       await innerApp.register(projectSearchRoutes);
       await innerApp.register(assetsRoutes);

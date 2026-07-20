@@ -253,6 +253,9 @@
   width: 1px;
   white-space: nowrap;
   padding-right: 0;
+  /* Centre the icon against the admonition's content instead of pinning it to the
+     first line — on a multi-line admonition the top-aligned icon looked stranded. */
+  vertical-align: middle;
 }
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .title {
   margin: 0;
@@ -495,3 +498,79 @@
   outline: none;
   box-shadow: 0 0 0 2px hsl(var(--ring));
 }
+
+/* ── Admonition icons (self-contained, no Font Awesome) ─────────────────────
+   With `:icons: font` (the default for the bundled tour), Asciidoctor renders an
+   admonition's icon cell as `<i class="fa icon-<type>">`, whose glyph needs the
+   Font Awesome web font. The app never loads that font, and the vendored
+   Asciidoctor stylesheet still sets `content:"\f05a"` etc., so the cell came up
+   empty (or as a tofu box) in BOTH preview styles. These rules drop the glyph and
+   paint an inline SVG instead — a CSS mask, so the icon takes the accent colour —
+   giving the HTML preview the same icons as the PDF export. Deliberately
+   UN-scoped so it fixes the Asciidoctor style too; the AsciidoCollab style then
+   recolours with theme-aware design tokens below.
+
+   PLACEMENT: this block lives AFTER the "Asciidoctor preview style." marker
+   ON PURPOSE, beside the page-break and include-placeholder rules — the region
+   for structural fixes that legitimately apply to BOTH styles. Its bare
+   `.asciidoc-preview-content …` selectors are exempt from the brand-leak guard
+   (tests/styles/asciidoctor-list-and-table.test.ts) only here; moving it up into
+   the brand section would fail that test. Keep it below the marker. */
+.asciidoc-preview-content .admonitionblock td.icon [class*="icon-"] {
+  text-shadow: none;
+}
+.asciidoc-preview-content .admonitionblock td.icon [class*="icon-"]::before {
+  /* Kill any Font Awesome glyph. The vendored (Asciidoctor-style) sheet sets a per-type
+     `content:"\fNNN"` on `.icon-<type>::before`, and because it is scoped with an extra
+     `[data-preview-style="asciidoctor"]` it OUT-SPECIFIES our `content:""` — so in the
+     Asciidoctor style the codepoint survives and, with Font Awesome never loaded, renders
+     as a coloured tofu box overlapping the SVG. Rather than fight that specificity, we
+     render the glyph at zero size: `font-size:0` shrinks the character (and its tofu
+     fallback) to nothing, while the mask below is sized in `rem` and is unaffected. This
+     wins in both styles because no other rule sets a `::before` font-size. */
+  content: "";
+  font-size: 0;
+  display: inline-block;
+  width: 1.6rem;
+  height: 1.6rem;
+  vertical-align: middle;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+.asciidoc-preview-content .admonitionblock td.icon .icon-note::before {
+  background-color: #1f6feb;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z'/%3E%3C/svg%3E");
+}
+.asciidoc-preview-content .admonitionblock td.icon .icon-tip::before {
+  background-color: #1a936f;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M2 6a6 6 0 1 1 10.174 4.31c-.203.196-.359.4-.453.619l-.762 1.769A.5.5 0 0 1 10.5 13a.5.5 0 0 1 0 1 .5.5 0 0 1 0 1l-.224.447a1 1 0 0 1-.894.553H6.618a1 1 0 0 1-.894-.553L5.5 15a.5.5 0 0 1 0-1 .5.5 0 0 1 0-1 .5.5 0 0 1-.46-.302l-.761-1.77a1.964 1.964 0 0 0-.453-.618A5.984 5.984 0 0 1 2 6z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M2 6a6 6 0 1 1 10.174 4.31c-.203.196-.359.4-.453.619l-.762 1.769A.5.5 0 0 1 10.5 13a.5.5 0 0 1 0 1 .5.5 0 0 1 0 1l-.224.447a1 1 0 0 1-.894.553H6.618a1 1 0 0 1-.894-.553L5.5 15a.5.5 0 0 1 0-1 .5.5 0 0 1 0-1 .5.5 0 0 1-.46-.302l-.761-1.77a1.964 1.964 0 0 0-.453-.618A5.984 5.984 0 0 1 2 6z'/%3E%3C/svg%3E");
+}
+.asciidoc-preview-content .admonitionblock td.icon .icon-important::before {
+  background-color: #8b5cf6;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8 4a.905.905 0 0 0-.9.995l.35 3.507a.552.552 0 0 0 1.1 0l.35-3.507A.905.905 0 0 0 8 4zm.002 6a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8 4a.905.905 0 0 0-.9.995l.35 3.507a.552.552 0 0 0 1.1 0l.35-3.507A.905.905 0 0 0 8 4zm.002 6a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/svg%3E");
+}
+.asciidoc-preview-content .admonitionblock td.icon .icon-warning::before {
+  background-color: #d97706;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z'/%3E%3C/svg%3E");
+}
+.asciidoc-preview-content .admonitionblock td.icon .icon-caution::before {
+  background-color: #dc2626;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 16c3.314 0 6-2 6-5.5 0-1.5-.5-4-2.5-6 .25 1.5-1.25 2-1.25 2C11 4 9 .5 6 0c.357 2 .5 4-2 6-1.25 1-2 2.729-2 4.5C2 14 4.686 16 8 16zm0-1c-1.657 0-3-1-3-2.75 0-.75.25-2 1.25-3C6.125 10 7 10.5 7 10.5c-.375-1.25.5-3.25 2-3.5-.179 1-.25 2 1 3 .625.5 1 1.364 1 2.25C11 14 9.657 15 8 15z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 16c3.314 0 6-2 6-5.5 0-1.5-.5-4-2.5-6 .25 1.5-1.25 2-1.25 2C11 4 9 .5 6 0c.357 2 .5 4-2 6-1.25 1-2 2.729-2 4.5C2 14 4.686 16 8 16zm0-1c-1.657 0-3-1-3-2.75 0-.75.25-2 1.25-3C6.125 10 7 10.5 7 10.5c-.375-1.25.5-3.25 2-3.5-.179 1-.25 2 1 3 .625.5 1 1.364 1 2.25C11 14 9.657 15 8 15z'/%3E%3C/svg%3E");
+}
+/* AsciidoCollab style: recolour the icons with theme-aware design tokens so they
+   match each admonition's accent border (and adapt to light/dark). */
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-note::before { background-color: hsl(var(--primary)); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-tip::before { background-color: hsl(152 46% 42%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-important::before { background-color: hsl(280 40% 56%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-warning::before { background-color: hsl(34 88% 48%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-caution::before { background-color: hsl(0 72% 50%); }

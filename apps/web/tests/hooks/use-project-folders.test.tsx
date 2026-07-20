@@ -45,6 +45,8 @@ describe('useProjectFolders', () => {
       { path: 'assets', name: 'assets', children: [] },
       { path: 'branding', name: 'branding', children: [{ path: 'branding/fonts', name: 'fonts', children: [] }] },
     ]);
+    // File paths (folders pruned, sorted) — what the PDF section resolves the theme over.
+    expect(result.current.files).toEqual(['branding/logo.png', 'main.adoc']);
     expect(mockFetch).toHaveBeenCalledWith('p1');
   });
 

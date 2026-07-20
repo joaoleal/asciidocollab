@@ -79,6 +79,7 @@ export default defineConfig({
         // just serialized — NOT excluded from the run.
         '**/pdf-preview-responsive.spec.ts',
         '**/pdf-image-embed.spec.ts',
+        '**/pdf-extensions.spec.ts',
       ],
       dependencies: ['setup'],
     },
@@ -91,10 +92,28 @@ export default defineConfig({
     {
       name: 'chromium-pdf',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: ['**/pdf-preview-responsive.spec.ts', '**/pdf-image-embed.spec.ts'],
+      testMatch: [
+        '**/pdf-preview-responsive.spec.ts',
+        '**/pdf-image-embed.spec.ts',
+        // Exports a real PDF per assertion, so it boots the same engine — and additionally shares one
+        // administrator drop folder across its tests, which only a single worker can be trusted with.
+        // Left in the default project it failed all three retries under gate load while passing alone,
+        // which is precisely the starvation this project exists to prevent.
+        '**/pdf-extensions.spec.ts',
+      ],
       workers: 1,
       fullyParallel: false,
-      dependencies: ['setup'],
+      // Under the gate (CI=1) this project runs AFTER `chromium`, not concurrently with it. `workers:
+      // 1` keeps only one wasm engine alive WITHIN this project, but nothing stopped the whole project
+      // from overlapping the 3-worker `chromium` project — so a tens-of-MiB engine rendering a PDF
+      // export competed with the preview/editor suite for the same cores. Under peak gate load that
+      // mutual starvation surfaced as retried timeouts on BOTH sides: the export's `download` event
+      // (here) and, over in `chromium`, cold preview renders and editor mounts (preview-conditionals,
+      // rename-suggestion-timing). Serializing the two phases removes the contention at its source
+      // rather than widening timeouts around it. Locally (CI unset) the dependency stays light so a
+      // single `npx playwright test pdf-extensions.spec.ts` does not drag the whole `chromium` suite in
+      // first — the box is not contended there, which is the only reason the overlap was ever safe.
+      dependencies: process.env.CI ? ['chromium'] : ['setup'],
     },
   ],
 });

@@ -3,7 +3,10 @@
   "description": "Custom PDF theme (extends default) + a branded monospace heading font + an embedded PNG mounted from the project images dir. Verifies the export honours the project's own theme, fonts, and imagery, plus print-readiness: fonts embedded, text selectable, page geometry matching the reference. Tolerance absorbs sub-pixel antialiasing at glyph and image edges only.",
   "mainFile": "main.adoc",
   "scale": 2,
-  "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },
+  "tolerance": {
+    "pixelThreshold": 0.1,
+    "maxMismatchRatio": 0.01
+  },
   "referencePdf": "reference.pdf",
   "render": {
     "themePath": "theme/brand-theme.yml",
@@ -15,5 +18,12 @@
     ],
     "imagesDir": "images",
     "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "theme/brand-theme.yml",
+      "imagesdir": "images"
+    }
   }
 }
