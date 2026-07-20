@@ -43,6 +43,14 @@ fi
 step "Building shared packages …"
 pnpm --filter '!@asciidocollab/web' -r build
 
+# The WOFF2 theme-font fixture decodes .woff2 through the vendored codec at
+# apps/web/public/vendor/woff2/woff2.wasm. That artifact is gitignored and normally produced by the
+# web `prebuild` hook — which we deliberately skip above (the app is not built here). Build JUST the
+# codec so the parity render can embed WOFF2 fonts; without it the engine aborts with
+# Prawn::Errors::UnknownFont. Cheap and self-contained, so it also covers a clean local checkout.
+step "Building the WOFF2 codec …"
+pnpm --filter @asciidocollab/web run build:woff2-wasm
+
 # ─── Suite ───────────────────────────────────────────────────────────────────
 step "Running the PDF reference-parity suite …"
 pnpm --filter @asciidocollab/web pdf-parity

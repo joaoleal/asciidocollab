@@ -251,6 +251,13 @@ jobs:
           ASCIIDOCOLLAB_PROJECT_MAIN_FILE_RATE_LIMIT_MAX: 10000
           # Editor-open hits GET .../collab per document; 12 workers share one IP, so raise the 600/hour default.
           ASCIIDOCOLLAB_PROJECT_FILE_CONTENT_RATE_LIMIT_MAX: 10000
+          # The project-settings suite reads render-config and the PDF-extension catalogue/sources on
+          # every section; at 120/120/240 per hour across 12 shared-IP workers those 429, the settings
+          # page then renders empty, and the reads look like save bugs (e.g. resolved-theme missing).
+          # Matches the overrides already in scripts/ci/e2e-local.sh (which is why local e2e passed).
+          ASCIIDOCOLLAB_PROJECT_RENDER_CONFIG_RATE_LIMIT_MAX: 10000
+          ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_RATE_LIMIT_MAX: 10000
+          ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SOURCE_RATE_LIMIT_MAX: 10000
 
       - name: Wait for API to be ready
         run: |
