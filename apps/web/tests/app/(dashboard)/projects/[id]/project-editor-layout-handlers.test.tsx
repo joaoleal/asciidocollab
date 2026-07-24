@@ -304,6 +304,8 @@ beforeEach(() => {
   mockCollabDoc = { doc: null, awareness: null, connectionState: 'synced' };
   mockSelectFile.mockReset();
   mockRefreshIndex.mockReset();
+  mockGetFiles.mockReset();
+  mockGetFiles.mockReturnValue([]);
   mockExportPdf.mockReset();
   mockGetCollabInfo.mockReset();
   mockGetDocumentContent.mockReset();
@@ -381,6 +383,46 @@ describe('ProjectEditorLayout — PDF export', () => {
     // asset fetch and hands the resulting snapshot to the render hook.
     await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
     expect(mockExportPdf.mock.calls[0][0]).toEqual(expect.objectContaining({ rootPath: expect.any(String) }));
+  });
+
+  // Race guard: the render root's content is fetched asynchronously by the symbol index, so it can be
+  // transiently absent from `getFiles()` even while the main-file path is known and the button is
+  // enabled (at first load, or for a frame after an SSE invalidation refetches it). Dispatching then
+  // produces a snapshot whose rootPath has no content and the engine fails with "root document is
+  // missing from the project snapshot" — the flake this test pins closed.
+  test('the export waits for a transiently-absent render root to (re)load before dispatching', async () => {
+    mockFileSelection = adocFile('mainfile-1');
+    const rootPath = '/path/mainfile-1.adoc';
+    // The root is missing from the snapshot source until a rebuild (re)loads it.
+    let rootAvailable = false;
+    mockGetFiles.mockImplementation(() => (rootAvailable ? { [rootPath]: '= Doc' } : {}));
+    mockRefreshIndex.mockImplementation(() => {
+      rootAvailable = true;
+      return Promise.resolve();
+    });
+
+    render(<ProjectEditorLayout {...defaultProps} mainFileNodeId="mainfile-1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /export to pdf/i }));
+    });
+
+    // The guard forced a rebuild and only dispatched once the root content had arrived.
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+    expect(mockRefreshIndex).toHaveBeenCalled();
+    expect(mockExportPdf.mock.calls[0][0]).toEqual(expect.objectContaining({ rootPath }));
+  });
+
+  test('the export does not force a rebuild when the render root is already loaded', async () => {
+    mockFileSelection = adocFile('mainfile-1');
+    mockGetFiles.mockReturnValue({ '/path/mainfile-1.adoc': '= Doc' });
+
+    render(<ProjectEditorLayout {...defaultProps} mainFileNodeId="mainfile-1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /export to pdf/i }));
+    });
+
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+    expect(mockRefreshIndex).not.toHaveBeenCalled();
   });
 });
 

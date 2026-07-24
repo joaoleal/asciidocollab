@@ -83,6 +83,26 @@ const NO_EXPORT_ATTRIBUTES: ReadonlyMap<string, string> = new Map();
 /** Stable empty asset-path list used while the PDF preview is inactive (keeps memo identity stable). */
 const NO_ASSET_PATHS: readonly string[] = [];
 
+/** How long the export waits for a transiently-absent render root to (re)load before giving up. */
+const EXPORT_ROOT_WAIT_TIMEOUT_MS = 10_000;
+/** Poll cadence while waiting for the render root's content to arrive. */
+const EXPORT_ROOT_WAIT_INTERVAL_MS = 100;
+
+/**
+ * Poll `predicate` until it is true or the timeout elapses. Used to wait for the render root's content
+ * to land in the symbol index before an export dispatches. Returns the final predicate result.
+ */
+async function waitUntil(
+  predicate: () => boolean,
+  { timeoutMs, intervalMs }: { timeoutMs: number; intervalMs: number },
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return predicate();
+}
+
 interface ContentAreaProperties {
   selectedFile: SelectedFile | null;
   contentState: FileContentState;
@@ -778,6 +798,30 @@ export function ProjectEditorLayout({
   // placeholder in the downloaded file), then build the snapshot with them and render.
   const handleExportPdf = useCallback(async () => {
     if (exportOpenPath === null) return;
+
+    // Guarantee the render root's content is present before dispatching. buildProjectSnapshot names
+    // `rootPath` = the main document, but the engine fails with "root document is missing from the
+    // project snapshot" if that path carries no content in `files`. The symbol index fetches file
+    // content asynchronously, so the root can be transiently absent even while `exportMainPath` is
+    // already known and the button is enabled: at first load, or for a frame after a file-tree /
+    // content-changed SSE event invalidates and refetches it (exactly the shape the E2E export test
+    // hit — a fresh project whose main file was just created/configured). A memo-based button gate
+    // cannot close the SSE window (the invalidation does not change `projectIndex`'s identity), so the
+    // click handler is authoritative: if the root content is missing, force a rebuild and wait for it.
+    const rootLoaded = (): boolean =>
+      exportMainPath === null ||
+      Object.prototype.hasOwnProperty.call(getProjectFiles(), exportMainPath);
+    if (!rootLoaded()) {
+      await refreshProjectIndex();
+      await waitUntil(rootLoaded, {
+        timeoutMs: EXPORT_ROOT_WAIT_TIMEOUT_MS,
+        intervalMs: EXPORT_ROOT_WAIT_INTERVAL_MS,
+      });
+      // If it still has not arrived we fall through: buildSnapshot below still produces a snapshot and
+      // the engine surfaces its specific, user-visible error rather than the click silently doing
+      // nothing.
+    }
+
     const assetPaths = collectReferencedAssetPaths({ files: getProjectFiles(), attributes: exportAttributes });
     const binaryFiles = await loadAssets(assetPaths);
     // The export/download ALWAYS renders from the configured main document (root = exportMainPath, or the
@@ -785,7 +829,7 @@ export function ProjectEditorLayout({
     const snapshot = buildSnapshot(binaryFiles, exportMainPath, exportAttributes);
     if (snapshot === null) return;
     exportPdf(snapshot);
-  }, [exportOpenPath, getProjectFiles, exportAttributes, exportMainPath, loadAssets, buildSnapshot, exportPdf]);
+  }, [exportOpenPath, getProjectFiles, exportAttributes, exportMainPath, loadAssets, buildSnapshot, exportPdf, refreshProjectIndex]);
 
   // ── Live PDF preview ─────────────────────────────────────────────────────────────────────────
   // The single preview panel switches between its HTML and PDF renderings via the header's segmented

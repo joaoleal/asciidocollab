@@ -55,9 +55,10 @@ interface UseProjectSymbolIndexResult {
   /**
    * Force a full rebuild from the server, discarding the cached file contents and
    * tree. This is needed after an operation that rewrites persisted content
-   * without a file-tree event, such as a project-wide symbol rename.
+   * without a file-tree event, such as a project-wide symbol rename. Resolves when the
+   * rebuild (and its content fetch) has settled, so a caller can await the refreshed content.
    */
-  refresh: () => void;
+  refresh: () => Promise<void>;
   /**
    * Looks up the file node id for a project-relative path (reverse of pathOf).
    *
@@ -276,10 +277,12 @@ export function useProjectSymbolIndex({
 
   // Discard all cached content + the tree and rebuild from the server (used after a symbol rename
   // rewrites persisted files without emitting a file-tree event). Mirrors the reconnect path.
-  const refresh = useCallback(() => {
+  // Returns the rebuild's promise so a caller that needs the refreshed content (e.g. an export that
+  // must not dispatch before the render root is loaded) can await it.
+  const refresh = useCallback((): Promise<void> => {
     treeLoaded.current = false;
     contentCache.current.clear();
-    build();
+    return build();
   }, [build]);
 
   const getIndex = useCallback(() => indexReference.current, []);
