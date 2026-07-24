@@ -60,6 +60,13 @@ function shippedSources(): PdfExtensionSource[] {
   }));
 }
 
+/**
+ * How many converts one VM serves before it is torn down and re-booted. Low enough that no fixture
+ * renders on a heavily-grown heap, high enough that the ~1s boot is amortized across several
+ * fixtures. The compiled module is retained across recycles, so only the VM is rebuilt.
+ */
+const CONVERTS_PER_VM = 5;
+
 /** A warmed engine that converts project snapshots to normalized PDF bytes. */
 export interface ParityEngine {
   /**
@@ -80,13 +87,39 @@ export interface ParityEngine {
 export async function createParityEngine(wasmPath: string): Promise<ParityEngine> {
   const wasmBytes = readFileSync(wasmPath);
   const wasmModule = await WebAssembly.compile(wasmBytes);
-  const vm = createRubyPdfVm({ createBridge: () => createWasiBridge({ module: wasmModule }) });
-  await vm.warmup();
 
+  // Boot a VM from the ALREADY-COMPILED module. Compiling the ~71 MB wasm is the expensive part and
+  // is done once above; booting and warming a fresh VM from it costs about a second, which is what
+  // makes recycling affordable.
+  const boot = async () => {
+    const booted = createRubyPdfVm({ createBridge: () => createWasiBridge({ module: wasmModule }) });
+    await booted.warmup();
+    return booted;
+  };
+
+  let vm = await boot();
   let requestCounter = 0;
+  let convertsOnThisVm = 0;
 
   return {
     async convert(snapshot: ProjectSnapshot): Promise<Uint8Array> {
+      // Recycle the VM periodically. A single VM reused across the whole fixture set degrades
+      // steeply: its wasm heap only grows (Ruby cannot un-prepend converter modules, and nothing
+      // reclaims a previous fixture's allocations), and the cost shows up in proportion to how much
+      // work a render does. Measured on this suite, the final determinism test — two renders of the
+      // `theme-editing` fixture — took 4.0s alone on a fresh VM but 210s at the end of a full run, a
+      // 52x penalty; small fixtures in between stayed fast, which is why the degradation is easy to
+      // miss. Beyond the wall-clock cost it is also a correctness hazard: the bigger the heap, the
+      // more `memory.grow` events during a convert, and a grow intermittently invalidates a pointer
+      // mid-eval and fails the render with `RangeError: Start offset … is outside the bounds of the
+      // buffer`. That is what turned this suite red on CI while passing locally on the same commit.
+      if (convertsOnThisVm >= CONVERTS_PER_VM) {
+        vm.dispose();
+        vm = await boot();
+        convertsOnThisVm = 0;
+      }
+      convertsOnThisVm += 1;
+
       populateProject(vm, snapshot);
 
       // Resolve the fixture's enabled extensions through the SAME registry a real render uses, and

@@ -432,6 +432,12 @@ test.describe('Editor left panel: Outline view (028)', () => {
       await pageB.getByTestId('tree-node-main-presence.adoc').click();
       await waitCollabSynced(pageB);
 
+      // Opening the file is itself enough to publish presence, so wait for B's marker to reach A
+      // BEFORE touching the cursor. Without this the cursor-move assertions below race initial
+      // presence propagation, which under CI's parallel workers can take longer than their timeout —
+      // the marker then never "appears" because it had not arrived in the first place.
+      await expect(outlineMarker).toBeVisible({ timeout: 30_000 });
+
       // B places cursor on the "Child Section" heading line by clicking in the editor around line 7.
       const editorB = pageB.locator('.cm-editor .cm-content');
       await editorB.click();
