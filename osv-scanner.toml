@@ -1,0 +1,14 @@
+# OSV-Scanner filter — read by CI's "Security scan" job (see .github/workflows/ci.yml,
+# `osv-scanner scan --lockfile=pnpm-lock.yaml`; auto-discovered because it sits beside the lockfile).
+# Only add entries here for advisories with NO available remediation; everything fixable is patched
+# in pnpm-workspace.yaml `overrides` instead. Keep this in sync with `auditConfig.ignoreGhsas` there.
+
+[[IgnoredVulns]]
+id = "GHSA-mh99-v99m-4gvg"
+# brace-expansion DoS/OOM (CVSS 7.5). Flagged on the 1.1.16 and 2.1.2 pins. Its ONLY patched release
+# is 5.0.8, whose CommonJS export changed from a callable function to `{ expand }` — incompatible with
+# minimatch@3.1.5 (`require('brace-expansion')(pattern)`) which eslint and jest still pull, and with the
+# other minimatch majors that request brace-expansion ^2.0.1. No 1.x/2.x backport exists, so there is no
+# remediation path. The v3–v5 line IS bumped to the patched 5.0.8 via the override; only the un-fixable
+# minimatch majors remain. Drop this once the ecosystem's minimatch chain ships a compatible release.
+reason = "brace-expansion DoS: only fix (5.0.8) has a breaking export change incompatible with minimatch@3.x (eslint/jest); no 1.x/2.x backport exists."
