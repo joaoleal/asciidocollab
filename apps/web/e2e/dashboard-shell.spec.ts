@@ -15,7 +15,9 @@ test.describe('Dashboard shell', () => {
 
     await expect(page.locator('text=Something went wrong')).not.toBeVisible();
     // Header brand link is SSR-rendered by the dashboard layout — confirms the layout rendered without crashing.
-    await expect(page.getByRole('link', { name: 'AsciiDoCollab' })).toBeVisible({ timeout: 10_000 });
+    // exact: true so we match only the brand link and not other links whose accessible name contains
+    // "AsciiDoCollab" as a substring (e.g. a "Guided Tour — AsciidoCollab" project card overlay).
+    await expect(page.getByRole('link', { name: 'AsciiDoCollab', exact: true })).toBeVisible({ timeout: 10_000 });
     expect(pageErrors, `Unhandled JS errors: ${pageErrors.join('\n')}`).toHaveLength(0);
   });
 
