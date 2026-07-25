@@ -4,16 +4,16 @@ packages:
 overrides:
   # Force the patched esbuild (GHSA-gv7w-rqvm-qjhr); only pulled transitively via tsx.
   esbuild@<0.28.1: ">=0.28.1"
-  # Force patched brace-expansion (ReDoS, GHSA-3jxr-9vmj-r5cp); pulled transitively via jest and
-  # eslint, all through minimatch. Each MAJOR must stay on its own line: the majors are NOT API
-  # compatible (v1 exports the expand function as module.exports; v2+ do not), and minimatch 3.x still
-  # requests ^1.1.7 — an unversioned `brace-expansion: ">=5.0.7"` drags it to v5 and breaks it with
-  # `TypeError: expand is not a function` (eslint config-array resolution dies on it). The selector is
-  # the advisory's vulnerable range and the target is the exact patched version for that major, so each
-  # consumer is patched in place without a cross-major bump.
+  # Force patched brace-expansion (ReDoS GHSA-3jxr-9vmj-r5cp; DoS/OOM GHSA-mh99-v99m-4gvg fixed in
+  # 5.0.8); pulled transitively via jest and eslint, all through minimatch. Each MAJOR must stay on its
+  # own line: the majors are NOT API compatible (v1 exports the expand function as module.exports; v2+
+  # do not), and minimatch 3.x still requests ^1.1.7 — an unversioned `brace-expansion: ">=5.0.8"` drags
+  # it to v5 and breaks it with `TypeError: expand is not a function` (eslint config-array resolution
+  # dies on it). The selector is the advisory's vulnerable range and the target is the exact patched
+  # version for that major, so each consumer is patched in place without a cross-major bump.
   brace-expansion@<1.1.16: 1.1.16
   brace-expansion@>=2.0.0 <2.1.2: 2.1.2
-  brace-expansion@>=3.0.0 <5.0.7: 5.0.7
+  brace-expansion@>=3.0.0 <5.0.8: 5.0.8
   # Transitive high-severity advisories with no clean parent-bump path — force the patched version.
   # Each stays within its installed major (safe) except @fastify/static (see below). Selector = the
   # advisory's vulnerable range, target = the real patched version on the registry.
@@ -39,6 +39,16 @@ allowBuilds:
   sharp: true
   ssh2: true
   unrs-resolver: true
+auditConfig:
+  ignoreGhsas:
+    # brace-expansion DoS/OOM (GHSA-mh99-v99m-4gvg). Its ONLY patched release is 5.0.8, whose CJS
+    # export changed from a callable function to `{ expand }` — incompatible with minimatch@3.1.5
+    # (`require('brace-expansion')(pattern)`), which eslint (config-array) and jest (glob) still pull.
+    # No 1.x/2.x backport exists, so the required 1.1.16/2.1.2 pins above stay flagged with no
+    # remediation path. The v3–v5 line IS bumped to the patched 5.0.8 (see the override above); this
+    # ignore covers only the un-fixable minimatch-3.x majors. Drop it once the ecosystem's minimatch
+    # chain moves to a brace-expansion release that keeps the callable API.
+    - GHSA-mh99-v99m-4gvg
 minimumReleaseAgeExclude:
   - nodemailer@9.0.1
   - '@hocuspocus/common@4.1.1'
