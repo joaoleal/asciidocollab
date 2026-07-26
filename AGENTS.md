@@ -41,7 +41,7 @@ A production self-hosting stack lives in `docker/` (see `docker/README.md`): Pos
 | Email                   | Nodemailer (SMTP)                                                                               |
 | Monorepo                | pnpm workspaces                                                                                 |
 | Tests                   | Jest + Testing Library + Playwright (E2E)                                                       |
-| Architecture validation | fresh-onion                                                                                     |
+| Architecture validation | `scripts/ci/architecture-guard.mjs` (layer rules in `onion.config.json`)                        |
 | Security scanning       | Semgrep · zizmor · gitleaks · OSV-Scanner · knip (CI `security` job / `scripts/ci/security.sh`) |
 
 ## Monorepo Structure
@@ -154,7 +154,7 @@ pnpm test --filter=domain # run tests for a specific package
 pnpm test:coverage        # run tests with coverage
 pnpm typecheck            # TypeScript type-checking
 pnpm lint                 # lint all packages
-pnpm fresh-onion          # validate architecture boundaries
+pnpm architecture         # validate architecture boundaries (layer rules)
 pnpm semgrep              # SAST scan (Semgrep packs + first-party .semgrep.yml rules)
 pnpm knip                 # dead-code / unused-dependency report (non-gating)
 ```
@@ -250,8 +250,10 @@ Dependencies flow strictly inward: `domain` ← `infrastructure` ← `apps/*`.
 - `packages/domain` has **zero external dependencies** — no Prisma, no Fastify, no filesystem imports.
 - `packages/infrastructure` implements domain interfaces; domain never imports infrastructure.
 - Cross-boundary communication uses DTOs from `packages/shared`.
+- `packages/asciidoc-core` is the innermost ring: zero dependencies, pure AsciiDoc policy, no I/O. It exists so the server and the browser apply identical document semantics, so **any** layer may depend inward on it — `shared` included.
+- `packages/shared` is a **boundary-contracts** package (wire DTOs, zod schemas, wire constants), not a kernel of primitives. It must stay **browser-safe**: `apps/web` depends on it, so it may never import `domain`, or every web consumer is forced to depend on server business rules it does not need. That is a component-cohesion rule, not the dependency rule — when a value is owned by the domain and also needed at the wire (e.g. `REVIEW_BODY_MAX_LEN`), shared MIRRORS it and `apps/api/tests/architecture/layer-mirror-parity.test.ts` holds the two together. A layer that may read the domain directly (api, collab, infrastructure) should read the domain, not the mirror.
 - Dependency injection wires concrete implementations to domain interfaces at startup in `apps/`.
-- Architectural boundaries are enforced by fresh-onion in CI.
+- Architectural boundaries are enforced by `scripts/ci/architecture-guard.mjs` in CI (gate Job 1). It checks BARE workspace specifiers as well as relative ones — the previous tool, fresh-onion, skipped bare specifiers and so inspected nothing in this repo.
 
 ### Error handling
 
@@ -442,16 +444,16 @@ v4 migration notes: `new Server()` replaces `Server.configure()`; the live-docum
 
 ## Speckit Architecture Files
 
-| File                            | Purpose                                                  |
-|---------------------------------|----------------------------------------------------------|
-| `specs/<feature>/spec.md`       | Product specification (non-technical, user-facing)       |
-| `specs/<feature>/plan.md`       | Implementation plan (tech stack, architecture decisions) |
-| `specs/<feature>/data-model.md` | Frontend/backend data shapes for the feature             |
-| `specs/<feature>/contracts/`    | Component prop contracts and hook interfaces             |
-| `specs/<feature>/tasks.md`      | Ordered, dependency-tracked task list for implementation |
-| `specs/<feature>/research.md`   | Technical research and ADRs                              |
-| `.specify/`                     | Speckit internal configuration and extensions            |
-| `onion.config.json`             | Architecture boundary configuration (fresh-onion)        |
+| File                            | Purpose                                                       |
+|---------------------------------|---------------------------------------------------------------|
+| `specs/<feature>/spec.md`       | Product specification (non-technical, user-facing)            |
+| `specs/<feature>/plan.md`       | Implementation plan (tech stack, architecture decisions)      |
+| `specs/<feature>/data-model.md` | Frontend/backend data shapes for the feature                  |
+| `specs/<feature>/contracts/`    | Component prop contracts and hook interfaces                  |
+| `specs/<feature>/tasks.md`      | Ordered, dependency-tracked task list for implementation      |
+| `specs/<feature>/research.md`   | Technical research and ADRs                                   |
+| `.specify/`                     | Speckit internal configuration and extensions                 |
+| `onion.config.json`             | Layer definitions + allowed-import rules (architecture guard) |
 
 The active plan is always referenced in the SPECKIT block at the top of this file. Run `/speckit-implement` to execute tasks from the current plan.
 

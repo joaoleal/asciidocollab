@@ -111,6 +111,31 @@ export interface UnresolvedInclude {
   range: TextRange;
 }
 
+/**
+ * A validation finding produced over the document tree.
+ *
+ * Owned here rather than in `@asciidocollab/domain` because BOTH sides produce these independently
+ * over the same structural model — the server when it validates a project, and the editor when it
+ * lints the open buffer (`apps/web/src/lib/codemirror/asciidoc-diagnostics.ts`) — and every `code`
+ * below names a rule this package defines. It previously lived in the domain and reached the editor
+ * through a `shared` re-export, which pointed `shared` UP at the domain for one type.
+ */
+export interface Diagnostic {
+  /** Finding severity. */
+  severity: 'error' | 'warning' | 'info';
+  /** Human-readable message. */
+  message: string;
+  /** Location of the finding. */
+  range: TextRange;
+  /** Machine-readable code. */
+  code:
+    | 'unterminated-block'
+    | 'unknown-xref'
+    | 'duplicate-id'
+    | 'undefined-attribute'
+    | 'unresolved-include';
+}
+
 /** The transitive include graph rooted at a main (or current) file. */
 export interface DocumentTree {
   /** The root file (the configured main file, or the open file when none). */

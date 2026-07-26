@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@asciidocollab/asciidoc-core": "workspace:*",
-    "@asciidocollab/domain": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

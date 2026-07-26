@@ -52,9 +52,6 @@ importers:
       eslint-plugin-unicorn:
         specifier: ^64.0.0
         version: 64.0.0(eslint@10.4.0(jiti@2.7.0))
-      fresh-onion:
-        specifier: 1.0.10
-        version: 1.0.10
       globals:
         specifier: ^17.6.0
         version: 17.6.0
@@ -640,9 +637,6 @@ importers:
       '@asciidocollab/asciidoc-core':
         specifier: workspace:*
         version: link:../asciidoc-core
-      '@asciidocollab/domain':
-        specifier: workspace:*
-        version: link:../domain
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -5201,10 +5195,6 @@ packages:
     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
     engines: {node: '>= 0.6'}
 
-  fresh-onion@1.0.10:
-    resolution: {integrity: sha512-BCPptIa0Z+1dDMryqd8pMYPDsKDlQHlWyz3phTC93KaUH8Z/KpOStX9E31ld8UIGX4sy0evupioTJCxfFPoUnQ==}
-    hasBin: true
-
   fresh@2.0.0:
     resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
     engines: {node: '>= 0.8'}
@@ -7799,11 +7789,6 @@ packages:
     peerDependencies:
       eslint: ^8.57.0 || ^9.0.0 || ^10.0.0
       typescript: '>=4.8.4 <6.1.0'
-
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
-    engines: {node: '>=14.17'}
-    hasBin: true
 
   typescript@6.0.3:
     resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
@@ -13307,10 +13292,6 @@ snapshots:
 
   forwarded@0.2.0: {}
 
-  fresh-onion@1.0.10:
-    dependencies:
-      typescript: 5.9.3
-
   fresh@2.0.0: {}
 
   fs-constants@1.0.0: {}
@@ -16269,8 +16250,6 @@ snapshots:
       typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
-
-  typescript@5.9.3: {}
 
   typescript@6.0.3: {}
 

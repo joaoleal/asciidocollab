@@ -33,36 +33,16 @@ npx tsc -p apps/collab/tsconfig.json --noEmit
 step "Type-checking web …"
 npx tsc -p apps/web/tsconfig.json --noEmit
 
-step "Architecture guard (fresh-onion) …"
-# fresh-onion finds onion.config.json by DESCENDING from the cwd, taking the first hit in readdir
-# order, and then treating that file's own directory as the tree to check. So any nested copy can win
-# — and one did: `.claude/worktrees/<agent>/onion.config.json`, left behind by an agent worktree, was
-# picked ahead of the root config. The guard then validated that stale worktree's sources against an
-# outdated config with no asciidoc-pdf layer at all, and still printed "Fresh". Worse, readdir order
-# is not stable, so which tree got checked varied between machines and runs.
-#
-# The tool has no --config flag, so stage the check instead: a scratch directory holding the real
-# config plus SYMLINKS to apps/ and packages/. readdir reports a symlink as not-a-directory, so the
-# search cannot descend past the config — resolution becomes deterministic — while the layer paths
-# still resolve through the links to the real sources. Import paths stay self-consistent because the
-# tool compares them with plain path arithmetic and never calls realpath.
-ONION_STAGE="$(mktemp -d)"
-cleanup_onion() { rm -rf "$ONION_STAGE"; }
-trap cleanup_onion EXIT
-cp "$ROOT/onion.config.json" "$ONION_STAGE/onion.config.json"
-ln -s "$ROOT/apps" "$ONION_STAGE/apps"
-ln -s "$ROOT/packages" "$ONION_STAGE/packages"
-ONION_BIN="$(node -p "require.resolve('fresh-onion/dist/src/index.js', { paths: ['$ROOT'] })")"
-ONION_OUT="$(cd "$ONION_STAGE" && node "$ONION_BIN")" || { echo "$ONION_OUT"; exit 1; }
-echo "$ONION_OUT"
-# Belt and braces: fail loudly if a future change lets it wander off the staged config again, rather
-# than passing on whatever tree it happened to find.
-case "$ONION_OUT" in
-  *"Using config $ONION_STAGE/onion.config.json"*) ;;
-  *) echo "Architecture guard read the wrong config — refusing to trust this result." >&2; exit 1 ;;
-esac
-cleanup_onion
-trap - EXIT
+step "Architecture guard (layer boundaries) …"
+# Enforces onion.config.json. This replaced `fresh-onion`, which could not check anything here: it
+# skipped every import specifier that does not begin with `.` or `/`, and this monorepo crosses layers
+# exclusively by workspace name (`@asciidocollab/domain`) — a scan found ZERO relative cross-package
+# imports. It also located its config by DESCENDING from the cwd and taking the first readdir hit, so a
+# leftover config inside an agent worktree could win and get a stale tree validated instead, and did.
+# Both faults were structural, so the check is now ours: it resolves bare specifiers through each
+# package's declared name, still checks relative ones, and derives the config path from its own
+# location. See the header of the script for the full account.
+node "$ROOT/scripts/ci/architecture-guard.mjs"
 
 step "Security audit (high+ severity) …"
 # `pnpm audit` calls the npm advisories endpoint, which is outside this repo's control. It has been
