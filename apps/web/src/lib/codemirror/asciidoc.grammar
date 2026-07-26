@@ -5,6 +5,14 @@
 
 @skip {}
 
+// Document-header position (before the title / after it / after the author line / past the header).
+// The byline is positional, but the position CANNOT be a grammar sequence: Asciidoctor allows
+// attribute entries and comment lines between the title, the author line and the revision line, and
+// spelling those runs out makes `AttributeEntry` ambiguous between header metadata and the next block
+// (a shift/reduce conflict lezer rejects). The tracker states the position directly, which also lets
+// it tell THE document title from a level-0 title appearing mid-document.
+@context blockContext from "./asciidoc-block-context"
+
 @external tokens blockTokenizer from "./asciidoc-block-tokens" {
   docTitleToken,
   heading1Token, heading2Token, heading3Token, heading4Token, heading5Token,
@@ -34,8 +42,10 @@
 }
 
 block {
-  DocumentTitle |
-  AuthorLine | RevisionLine |
+  // Document header. The implicit author line and the revision line are metadata ONLY in the header,
+  // but that position is tracked by `@context` above (see it for why a grammar sequence cannot express
+  // it), so here they are plain block alternatives the tokenizer emits only where the context allows.
+  DocumentTitle | AuthorLine | RevisionLine |
   Heading5 | Heading4 | Heading3 | Heading2 | Heading1 |
   AttributeEntry |
   CommentBlock |
@@ -263,7 +273,11 @@ AttributeReference { attrRef }
 // label are distinct sub-nodes (FR-045) so the theme can colour them differently (target = link,
 // label = body text). The interior tokens come from the scoped `@local tokens` group (below the main
 // `@tokens` block): `xrefChunkChars` is the target (first chunk) or label (after the `,` separator).
-CrossReference     { xrefOpen XrefTarget (xrefSep XrefLabel)? xrefClose }
+// `XrefTarget` is OPTIONAL because `xrefOpen` already consumed the target's first character as its
+// guard (see `xrefOpen`): a single-character target like `<<x>>` therefore leaves nothing for the
+// target chunk to match. Requiring it made that xref fail to parse, so the node stopped at `<<x` and
+// the trailing `>>` leaked out as ordinary prose (reaching the spell/grammar checker as markup).
+CrossReference     { xrefOpen XrefTarget? (xrefSep XrefLabel)? xrefClose }
 XrefTarget         { xrefChunkChars }
 XrefLabel          { xrefChunkChars }
 // The external tokenizer only fires at line start, so footnotes / inline macros that appear

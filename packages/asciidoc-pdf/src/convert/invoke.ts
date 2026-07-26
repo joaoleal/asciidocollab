@@ -28,6 +28,7 @@ import type {
   RenderRequest,
 } from '../protocol';
 import type { RubyPdfVm } from '../vm/ruby-pdf-vm';
+import { SOURCE_PROVENANCE_PATH } from '../vfs/populate';
 
 // ---------------------------------------------------------------------------
 // Named paths, keys and literals (no magic strings).
@@ -526,7 +527,7 @@ function toSourceMapEntry(item: unknown): PdfSourceMapEntry | null {
   if (!isRecord(item)) {
     return null;
   }
-  const { line, page, yFraction } = item;
+  const { line, page, yFraction, path, sourceLine } = item;
   if (
     typeof line !== 'number' ||
     typeof page !== 'number' ||
@@ -537,7 +538,15 @@ function toSourceMapEntry(item: unknown): PdfSourceMapEntry | null {
   ) {
     return null;
   }
-  return { line, page, yFraction: Math.min(1, Math.max(0, yFraction)) };
+  // The exact source origin is optional (present only for preview renders that carried provenance): keep
+  // it only when BOTH a non-empty path and a finite line are present, so a partial stamp never half-fills.
+  const hasOrigin = typeof path === 'string' && path.length > 0 && typeof sourceLine === 'number' && Number.isFinite(sourceLine);
+  return {
+    line,
+    page,
+    yFraction: Math.min(1, Math.max(0, yFraction)),
+    ...(hasOrigin ? { path, sourceLine } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +578,23 @@ const READABLE_SHIM = [
 const SOURCEMAP_GLOBAL = '$__asciidocollab_source_map';
 
 /**
+ * The global (in the Ruby VM) holding the assembly line→source provenance for the current render: a JSON
+ * array where index `i` is the origin `{ 'path', 'sourceLine' }` of assembled line `i + 1`. Loaded from
+ * {@link SOURCE_PROVENANCE_PATH} before each convert (empty array for exports, which write no provenance),
+ * and read by the source-map hook to stamp each block's exact source location onto its entry.
+ */
+const PROVENANCE_GLOBAL = '$__asciidocollab_provenance';
+
+/**
+ * The global (in the Ruby VM) holding the REAL page count of the document just laid out, published by the
+ * hook's `convert_document` wrapper. It backstops the scratch-document guard in
+ * {@link SOURCEMAP_SHIM}: any entry claiming a page beyond the finished document cannot describe a real
+ * position, so {@link SOURCEMAP_WRITE} drops it. Reset per convert so a warm VM never filters against a
+ * previous render's page count.
+ */
+const PAGE_COUNT_GLOBAL = '$__asciidocollab_page_count';
+
+/**
  * Ruby prelude that PREPENDS a tracking module onto `Asciidoctor::PDF::Converter` so the block source
  * map can be built as the PDF is laid out. The converter IS a `Prawn::Document` subclass, so inside the
  * wrapped `convert` dispatch `page_number`, `page` and `y` describe the live layout cursor. Because the
@@ -585,28 +611,196 @@ const SOURCEMAP_SHIM = [
   // Defining (reopening) the module every run is harmless; the prepend below is guarded so it happens
   // exactly once per warm VM (Ruby forbids `def <Const::Path>.method`, so an ancestor check is the guard).
   'module ::AsciidocollabSourceMap',
+  // `convert` fires for every block node. Record the node's own line at its top position.
   '  def convert(node, *rest)',
-  '    __asciidocollab_record_source_map(node)',
+  '    __asciidocollab_record_node(node)',
   '    super',
   '  end',
-  '  def __asciidocollab_record_source_map(node)',
-  `    sink = ${SOURCEMAP_GLOBAL}`,
-  '    return if sink.nil?',
-  '    loc = (node.respond_to?(:source_location) ? node.source_location : nil)',
-  '    return if loc.nil?',
-  '    lineno = (loc.respond_to?(:lineno) ? loc.lineno : nil)',
-  '    return unless lineno.is_a?(::Integer) && lineno > 0',
+  // `traverse_list_item` is the single choke point that lays out list-item principal text (ulist,
+  // olist, colist), dlist descriptions, and qanda terms/answers — none of which pass through
+  // `convert`. Record at the live cursor (the item's top) BEFORE `super` so the entry is accurate.
+  //
+  // It also delimits the DESCRIPTION region of a dlist: everything a description inks happens inside
+  // it, so a non-zero depth is what tells the term hook below that an `ink_prose` is not a term.
+  '  def traverse_list_item(node, list_type, *rest)',
+  '    __asciidocollab_record_list_item(node, list_type)',
+  '    return super if @__asciidocollab_dlist_terms.nil?',
+  '    @__asciidocollab_desc_depth = (@__asciidocollab_desc_depth || 0) + 1',
+  '    begin',
+  '      super',
+  '    ensure',
+  '      @__asciidocollab_desc_depth -= 1',
+  '    end',
+  '  end',
+  // A dlist's TERMS are inked directly by `convert_dlist` — never dispatched through `convert`, and
+  // never routed through `traverse_list_item` (which only takes the description). Publishing the
+  // list's terms in layout order for the duration of the call lets the `ink_prose` hook below stamp
+  // each one at the position it is actually inked at, instead of the whole list sharing its top.
+  //
+  // Saved and restored rather than assigned, so a dlist nested inside another list's description
+  // restores its parent's pending terms (and its own description depth starts at zero).
+  //
+  // Whatever is still pending after the list has laid out is a term no hook recognised (a style that
+  // inks terms some other way). Those — and only those — fall back to the list's top, so a term line
+  // always has SOME rendered position for the editor to scroll to.
+  '  def convert_dlist(node, *rest)',
+  '    prev_terms = @__asciidocollab_dlist_terms',
+  '    prev_depth = @__asciidocollab_desc_depth',
+  '    @__asciidocollab_dlist_terms = __asciidocollab_flatten_terms(node)',
+  '    @__asciidocollab_desc_depth = 0',
+  '    pos = __asciidocollab_position',
+  '    begin',
+  '      super',
+  '    ensure',
+  '      __asciidocollab_record_leftover_terms(pos) if pos',
+  '      @__asciidocollab_dlist_terms = prev_terms',
+  '      @__asciidocollab_desc_depth = prev_depth',
+  '    end',
+  '  end',
+  // Every line of prose the converter lays out passes through `ink_prose`. Inside a dlist and outside
+  // any description, it is a term — matched against the pending queue by text so a string the hook
+  // does not recognise is left alone rather than mis-attributed.
+  '  def ink_prose(string, *rest)',
+  '    __asciidocollab_record_dlist_term(string)',
+  '    super',
+  '  end',
+  // The document's final page count, published for the out-of-range backstop in SOURCEMAP_WRITE. Taken
+  // after `super` has laid the whole document out, so it is the real total rather than a running value.
+  '  def convert_document(node, *rest)',
+  '    result = super',
+  '    begin',
+  `      ${PAGE_COUNT_GLOBAL} = page_count if page_count.is_a?(::Integer) && page_count > 0`,
+  '    rescue ::StandardError',
+  '    end',
+  '    result',
+  '  end',
+  '  def __asciidocollab_sink',
+  `    ${SOURCEMAP_GLOBAL}`,
+  '  end',
+  // The live layout cursor as [page_number, top-as-fraction-of-page-height]. Prawn's `y` is measured up
+  // from the page bottom, so `(page_height - y) / page_height` is the distance down from the top.
+  //
+  // Returns nil inside a SCRATCH document. Asciidoctor-PDF measures every keep-together block (example,
+  // sidebar, admonition, quote, block image, table cell…) by converting it a first time into a throwaway
+  // scratch `Prawn::Document` — a Marshal copy of the converter, so it carries these hooks too. Its page
+  // numbering is its own: it starts a fresh page per `dry_run` and accumulates across the render, which
+  // is why a six-page document produced entries claiming pages 9, 10, 11, 19, 20 with plausible-looking
+  // y positions. Worse than being out of range, those captures come FIRST (the measuring pass precedes
+  // the real one) and the write-out keeps the first entry per line, so the measured block's line ended up
+  // pinned to a position that exists nowhere in the PDF. `scratch?` is the engine's own predicate
+  // (`@label == :scratch`); it is called defensively in case a future engine version drops it.
+  '  def __asciidocollab_position',
+  '    return nil if respond_to?(:scratch?) && scratch?',
   '    pnum = page_number',
-  '    return unless pnum.is_a?(::Integer) && pnum > 0',
+  '    return nil unless pnum.is_a?(::Integer) && pnum > 0',
   '    dims = page.dimensions',
   '    height = (dims[3] - dims[1]).to_f',
-  '    return unless height > 0',
-  '    top_offset = (dims[3] - y) / height',
-  '    top_offset = 0.0 if top_offset < 0',
-  '    top_offset = 1.0 if top_offset > 1',
-  "    sink << { 'line' => lineno, 'page' => pnum, 'yFraction' => top_offset }",
+  '    return nil unless height > 0',
+  '    top = (dims[3] - y) / height',
+  '    top = 0.0 if top < 0',
+  '    top = 1.0 if top > 1',
+  '    [pnum, top]',
+  '  rescue ::StandardError',
+  '    nil',
+  '  end',
+  '  def __asciidocollab_lineno_of(obj)',
+  '    return nil unless obj.respond_to?(:source_location)',
+  '    loc = obj.source_location',
+  '    return nil if loc.nil?',
+  '    lineno = (loc.respond_to?(:lineno) ? loc.lineno : nil)',
+  '    (lineno.is_a?(::Integer) && lineno > 0) ? lineno : nil',
+  '  rescue ::StandardError',
+  '    nil',
+  '  end',
+  // Build, provenance-stamp, and push one entry. `lineno` is the 1-based ASSEMBLED line, so its origin
+  // (preview renders only) is provenance[lineno - 1]; absent/short → no stamp. A nil line is a no-op.
+  '  def __asciidocollab_emit(lineno, pnum, top)',
+  '    sink = __asciidocollab_sink',
+  '    return if sink.nil? || lineno.nil?',
+  "    entry = { 'line' => lineno, 'page' => pnum, 'yFraction' => top }",
+  `    prov = ${PROVENANCE_GLOBAL}`,
+  '    if prov.is_a?(::Array)',
+  '      origin = prov[lineno - 1]',
+  "      if origin.is_a?(::Hash) && origin['path'] && origin['sourceLine']",
+  "        entry['path'] = origin['path']",
+  "        entry['sourceLine'] = origin['sourceLine']",
+  '      end',
+  '    end',
+  '    sink << entry',
   '  rescue ::StandardError',
   '    # A source-map capture must never abort a render; drop this entry silently.',
+  '  end',
+  '  def __asciidocollab_record_node(node)',
+  '    return if __asciidocollab_sink.nil?',
+  '    lineno = __asciidocollab_lineno_of(node)',
+  '    return if lineno.nil?',
+  '    pos = __asciidocollab_position',
+  '    return if pos.nil?',
+  '    __asciidocollab_emit(lineno, pos[0], pos[1])',
+  '  rescue ::StandardError',
+  '  end',
+  // The list's term nodes, flattened into layout order (`items` is an array of [terms, description]).
+  '  def __asciidocollab_flatten_terms(node)',
+  '    items = (node.respond_to?(:items) ? node.items : nil)',
+  '    return [] unless items.is_a?(::Array)',
+  '    flat = []',
+  '    items.each do |pair|',
+  '      next unless pair.is_a?(::Array)',
+  '      terms = pair[0]',
+  '      next unless terms.is_a?(::Array)',
+  '      terms.each { |term| flat << term }',
+  '    end',
+  '    flat',
+  '  rescue ::StandardError',
+  '    []',
+  '  end',
+  // Whether an inked string IS the given term. The `horizontal` dlist style inks a case-transformed
+  // copy of the term, so an exact match is tried first and a case-insensitive one second.
+  '  def __asciidocollab_same_text?(string, term)',
+  '    return false unless term.respond_to?(:text)',
+  '    inked = string.to_s.strip',
+  '    text = term.text.to_s.strip',
+  '    return false if text.empty?',
+  '    inked == text || inked.downcase == text.downcase',
+  '  rescue ::StandardError',
+  '    false',
+  '  end',
+  // Stamp the next pending term at the live cursor, which is where it is about to be inked. A string
+  // that is not the next term consumes nothing, so an unrecognised layout simply falls back to the
+  // approximate list-top entries emitted after the list is laid out.
+  '  def __asciidocollab_record_dlist_term(string)',
+  '    pending = @__asciidocollab_dlist_terms',
+  '    return if pending.nil? || pending.empty?',
+  '    return unless (@__asciidocollab_desc_depth || 0) == 0',
+  '    term = pending[0]',
+  '    return unless __asciidocollab_same_text?(string, term)',
+  '    pending.shift',
+  '    pos = __asciidocollab_position',
+  '    __asciidocollab_emit(__asciidocollab_lineno_of(term), pos[0], pos[1]) if pos',
+  '  rescue ::StandardError',
+  '  end',
+  // Terms the `ink_prose` hook never claimed, emitted at the list's top as a coverage backstop. Runs
+  // AFTER the list is laid out, so every accurately-placed entry already won the keep-first dedup.
+  '  def __asciidocollab_record_leftover_terms(pos)',
+  '    pending = @__asciidocollab_dlist_terms',
+  '    return if pending.nil? || __asciidocollab_sink.nil?',
+  '    pending.each { |term| __asciidocollab_emit(__asciidocollab_lineno_of(term), pos[0], pos[1]) }',
+  '  rescue ::StandardError',
+  '  end',
+  // For a qanda item `list_type == :dlist` the node is a [terms, description] pair; for every other
+  // list it is the ListItem itself. Record the term/item line (and the qanda description line) at top.
+  '  def __asciidocollab_record_list_item(node, list_type)',
+  '    return if __asciidocollab_sink.nil?',
+  '    pos = __asciidocollab_position',
+  '    return if pos.nil?',
+  '    if list_type == :dlist && node.is_a?(::Array)',
+  '      terms = node[0]',
+  '      __asciidocollab_emit(__asciidocollab_lineno_of(terms[0]), pos[0], pos[1]) if terms.is_a?(::Array) && !terms.empty?',
+  '      __asciidocollab_emit(__asciidocollab_lineno_of(node[1]), pos[0], pos[1])',
+  '    else',
+  '      __asciidocollab_emit(__asciidocollab_lineno_of(node), pos[0], pos[1])',
+  '    end',
+  '  rescue ::StandardError',
   '  end',
   'end',
   'unless ::Asciidoctor::PDF::Converter.ancestors.include?(::AsciidocollabSourceMap)',
@@ -615,17 +809,27 @@ const SOURCEMAP_SHIM = [
 ].join('\n');
 
 /**
- * Ruby that serializes the collected source-map entries to {@link SOURCEMAP_PATH}: de-duplicate in
- * render order (keep the first entry per line), then sort by line. Wrapped so a serialization failure
- * leaves the render untouched (the client just gets no map).
+ * Ruby that serializes the collected source-map entries to {@link SOURCEMAP_PATH}: drop entries that
+ * land beyond the finished document, de-duplicate in render order (keep the first entry per line), then
+ * sort by line. Wrapped so a serialization failure leaves the render untouched (the client just gets no
+ * map).
+ *
+ * The out-of-range drop happens BEFORE the de-duplication, never after: a bogus entry recorded ahead of
+ * the real one would otherwise win the keep-first pass and then be removed, leaving that line with no
+ * entry at all. It is a backstop for the scratch-document guard in {@link SOURCEMAP_SHIM}, not a
+ * replacement for it — a scratch capture whose page happens to fall inside the real range is invisible
+ * here and must be prevented at the source.
  */
 const SOURCEMAP_WRITE = [
   'begin',
   `  collected = (${SOURCEMAP_GLOBAL} || [])`,
   `  ${SOURCEMAP_GLOBAL} = nil`,
+  `  max_page = ${PAGE_COUNT_GLOBAL}`,
+  '  max_page = nil unless max_page.is_a?(::Integer) && max_page > 0',
   '  seen = {}',
   '  deduped = []',
   '  collected.each do |entry|',
+  "    next if max_page && entry['page'].is_a?(::Integer) && entry['page'] > max_page",
   "    key = entry['line']",
   '    next if seen[key]',
   '    seen[key] = true',
@@ -737,6 +941,16 @@ function buildConvertCode(
     '  logger = Asciidoctor::MemoryLogger.new',
     '  Asciidoctor::LoggerManager.logger = logger',
     `  ${SOURCEMAP_GLOBAL} = []`,
+    // Cleared per convert so the out-of-range backstop never filters against a prior render's page count.
+    `  ${PAGE_COUNT_GLOBAL} = nil`,
+    // Load the assembly line→source provenance the include-resolve stage wrote (a JSON array; `[]` for
+    // exports). The source-map hook reads it to stamp each block's exact origin. Best-effort: any read/parse
+    // failure leaves an empty provenance, so the map simply carries no origins.
+    `  ${PROVENANCE_GLOBAL} = begin`,
+    `    File.exist?(${rubyString(SOURCE_PROVENANCE_PATH)}) ? JSON.parse(File.read(${rubyString(SOURCE_PROVENANCE_PATH)})) : []`,
+    '  rescue ::StandardError',
+    '    []',
+    '  end',
     // `base_dir` is pinned to the project mount root, NOT left to default to the root document's own
     // directory. Image (and `imagesdir`) targets are project-root-relative throughout the app — that is
     // how the snapshot mounts them into the VFS, how `collectReferencedAssetPaths` keys them, and how

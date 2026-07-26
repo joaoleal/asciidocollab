@@ -13,10 +13,10 @@
     { "from": "asciidoc-core", "allowedImports": [] },
     { "from": "asciidoc-pdf", "allowedImports": ["asciidoc-core"] },
     { "from": "domain", "allowedImports": ["asciidoc-core"] },
-    { "from": "shared", "allowedImports": [] },
+    { "from": "shared", "allowedImports": ["asciidoc-core"] },
     { "from": "infrastructure", "allowedImports": ["domain", "shared"] },
     { "from": "api", "allowedImports": ["domain", "infrastructure", "shared"] },
     { "from": "collab", "allowedImports": ["domain", "infrastructure", "shared"] },
-    { "from": "web", "allowedImports": ["shared", "asciidoc-core"] }
+    { "from": "web", "allowedImports": ["shared", "asciidoc-core", "asciidoc-pdf"] }
   ]
 }

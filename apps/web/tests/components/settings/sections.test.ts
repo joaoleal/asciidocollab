@@ -14,6 +14,7 @@ describe('settings section registry', () => {
       'rendering',
       'pdf',
       'extensions',
+      'html',
       'danger',
     ]);
   });
@@ -48,6 +49,7 @@ describe('visibleSettingsSections', () => {
       'rendering',
       'pdf',
       'extensions',
+      'html',
     ]);
   });
 });

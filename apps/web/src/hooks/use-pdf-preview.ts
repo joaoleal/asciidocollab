@@ -13,8 +13,9 @@ import type {
   PdfExtensionBundle,
 } from '@asciidocollab/asciidoc-pdf';
 import { isProgressMessage, isResultMessage, isErrorMessage } from '@asciidocollab/asciidoc-pdf';
-import { PREVIEW_DEBOUNCE_MS } from '@/lib/editor-config';
+import { PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS } from '@/lib/editor-config';
 import { createPdfWorker } from '@/lib/create-pdf-worker';
+import { createMaxWaitDebounce, type MaxWaitDebounce } from '@/lib/max-wait-debounce';
 import { createMermaidPrerenderer, type MermaidPrerenderer } from '@/lib/pdf/prerender-mermaid';
 import { documentTextOf } from '@/lib/pdf/document-text';
 
@@ -108,7 +109,10 @@ export function usePdfPreview({
   // Monotonic counter; its stringified value is the current request's staleness key.
   const requestCounterReference = useRef(0);
   const latestRequestIdReference = useRef<string | null>(null);
-  const debounceReference = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debounceReference = useRef<MaxWaitDebounce | null>(null);
+  if (debounceReference.current === null) {
+    debounceReference.current = createMaxWaitDebounce(PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS);
+  }
 
   // One stable, coalescing mermaid pre-pass for the hook's lifetime (its token state must persist so a
   // newer invocation supersedes an in-flight one). Injected in tests; a real one otherwise.
@@ -161,9 +165,7 @@ export function usePdfPreview({
   // aborts the previous pre-pass, and a resolved pre-pass posts only while it is still the latest — so a
   // superseded pre-pass can never overwrite a newer preview.
   const scheduleRender = (pending: ProjectSnapshot) => {
-    if (debounceReference.current !== null) clearTimeout(debounceReference.current);
-    debounceReference.current = setTimeout(() => {
-      debounceReference.current = null;
+    debounceReference.current?.schedule(() => {
       requestCounterReference.current += 1;
       const requestId = String(requestCounterReference.current);
       latestRequestIdReference.current = requestId;
@@ -195,17 +197,14 @@ export function usePdfPreview({
           };
           workerReference.current?.postMessage({ type: 'render', request } satisfies ToWorker);
         });
-    }, PREVIEW_DEBOUNCE_MS);
+    });
   };
 
   // Enable/disable: cancel any pending render and stop rendering when the panel closes; start a fresh
   // render when it (re)opens with a snapshot available.
   useEffect(() => {
     if (!isEnabled) {
-      if (debounceReference.current !== null) {
-        clearTimeout(debounceReference.current);
-        debounceReference.current = null;
-      }
+      debounceReference.current?.cancel();
       // Cancel a pre-pass that already started so it can't post after the panel closes.
       prerenderAbortReference.current?.abort();
       setIsRendering(false);
@@ -221,10 +220,7 @@ export function usePdfPreview({
     scheduleRender(snapshot);
 
     return () => {
-      if (debounceReference.current !== null) {
-        clearTimeout(debounceReference.current);
-        debounceReference.current = null;
-      }
+      debounceReference.current?.cancel();
     };
   }, [snapshot]);
 

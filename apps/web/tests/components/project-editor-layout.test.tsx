@@ -13,6 +13,9 @@ jest.mock('@/contexts/current-user-context', () => ({
 jest.mock('@/hooks/use-pdf-export', () => ({
   usePdfExport: () => ({ exportPdf: jest.fn(), isExporting: false, diagnostics: [] }),
 }));
+jest.mock('@/hooks/use-html-export', () => ({
+  useHtmlExport: () => ({ exportHtml: jest.fn(), isExporting: false, failures: [] }),
+}));
 jest.mock('@/hooks/use-project-render-config', () => ({
   useProjectRenderConfig: () => ({ config: {}, loading: false, saving: false, error: null, save: jest.fn() }),
 }));

@@ -10,7 +10,7 @@ import {
   formatKeymap,
   wrapWith,
 } from '@/lib/codemirror/asciidoc-format-keymap';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 /**
  * Coverage for the formatting keymap: the pure `wrapWith`
@@ -26,6 +26,7 @@ const grammarPath = path.resolve(__dirname, '../../../src/lib/codemirror/asciido
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const lezerParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 const asciidocLang = new LanguageSupport(
   LRLanguage.define({

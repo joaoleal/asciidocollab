@@ -16,6 +16,7 @@ import { PreviewStyleControl, type PreviewStyleValue } from '@/components/previe
 import { PreviewModeToggle, type PreviewMode } from '@/components/preview-mode-toggle';
 import { ShowIncludesControl } from '@/components/show-includes-control';
 import { API_BASE_URL } from '@/lib/api/base-url';
+import { isSelectionDragClick } from '@/lib/preview-selection';
 import {
   INCLUDE_PLACEHOLDER_CLASS,
   INCLUDE_PLACEHOLDER_TARGET_ATTR,
@@ -51,6 +52,29 @@ function toPreviewDiagnostic(warning: DiagramWarning, filePath = 'diagram'): Ren
     resource: warning.sourceLine === null ? filePath : `${filePath}:${warning.sourceLine}`,
     message: `${warning.engine}: ${warning.message}`,
   };
+}
+
+/**
+ * Follow a link clicked inside the rendered preview. An internal cross-reference (`#id`) scrolls the
+ * preview to its target element; any other link opens in a hardened new tab. Default navigation is always
+ * prevented — the preview is injected into the app document, so a same-tab navigation would unload the
+ * editor.
+ *
+ * @param event - The originating click event (its default is prevented).
+ * @param anchor - The anchor element that was clicked.
+ * @param container - The preview output container to resolve internal `#id` targets within.
+ */
+function followPreviewLink(event: MouseEvent, anchor: HTMLAnchorElement, container: HTMLElement): void {
+  const href = anchor.getAttribute('href') ?? '';
+  if (!href) return;
+  event.preventDefault();
+  if (href.startsWith('#')) {
+    const id = decodeURIComponent(href.slice(1));
+    const target = id ? container.querySelector(`[id="${CSS.escape(id)}"]`) : null;
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  window.open(href, '_blank', 'noopener,noreferrer');
 }
 
 function SyncIndicator({ state, isEnabled }: { state: PreviewState; isEnabled: boolean }) {
@@ -125,6 +149,14 @@ interface AsciiDocPreviewProperties {
    */
   onOpenInclude?: (path: string) => void;
   /**
+   * Called when the user clicks a rendered block (not a link) so the editor can reveal that block's
+   * source. Receives the block's `data-source-line` — a line in the ASSEMBLED (open-file-rooted)
+   * document the worker converts; the layout reverse-maps it to a `{file, line}` and jumps there.
+   *
+   * @param assembledLine - The clicked block's 1-based assembled-document line.
+   */
+  onNavigateToSource?: (assembledLine: number) => void;
+  /**
    * Called when the user toggles the show-included-files control; when provided, the control renders.
    *
    * @param value - The new value (true = show bodies inline, false = hide behind placeholders).
@@ -160,6 +192,7 @@ export function AsciiDocPreview({
   onPreviewStyleChange,
   showIncludedFiles = false,
   onOpenInclude,
+  onNavigateToSource,
   onShowIncludedFilesChange,
   previewMode = 'html',
   onPreviewModeChange,
@@ -195,6 +228,8 @@ export function AsciiDocPreview({
   // identity changed, while still calling the most-recent version on each interaction).
   const onOpenIncludeReference = useRef(onOpenInclude);
   onOpenIncludeReference.current = onOpenInclude;
+  const onNavigateToSourceReference = useRef(onNavigateToSource);
+  onNavigateToSourceReference.current = onNavigateToSource;
 
   // Stable `dangerouslySetInnerHTML` payload, keyed on `html`. A fresh `{ __html }` object literal
   // every render would make React treat the prop as changed and RE-APPLY innerHTML on every re-render
@@ -279,16 +314,36 @@ export function AsciiDocPreview({
   // above ensures handlers always call the latest `onOpenInclude` without needing it in deps.
   useEffect(() => {
     const container = outputReference.current;
-    if (!container || !onOpenIncludeReference.current) return;
+    if (!container) return;
 
     const handleClick = (event: MouseEvent) => {
-      const target =
-        event.target instanceof Element
-          ? event.target.closest(`.${INCLUDE_PLACEHOLDER_CLASS}[${INCLUDE_PLACEHOLDER_TARGET_ATTR}]`)
-          : null;
-      if (!target) return;
-      const path = target.getAttribute(INCLUDE_PLACEHOLDER_TARGET_ATTR);
-      if (path) onOpenIncludeReference.current?.(path);
+      if (!(event.target instanceof Element)) return;
+
+      // A link inside the preview is followed (internal xref scroll / external new tab) rather than
+      // treated as a jump-to-source click.
+      const anchor = event.target.closest('a[href]');
+      if (anchor instanceof HTMLAnchorElement) {
+        followPreviewLink(event, anchor, container);
+        return;
+      }
+
+      // An include placeholder opens the included file.
+      const placeholder = event.target.closest(
+        `.${INCLUDE_PLACEHOLDER_CLASS}[${INCLUDE_PLACEHOLDER_TARGET_ATTR}]`,
+      );
+      if (placeholder) {
+        const path = placeholder.getAttribute(INCLUDE_PLACEHOLDER_TARGET_ATTR);
+        if (path) onOpenIncludeReference.current?.(path);
+        return;
+      }
+
+      // Any other rendered block jumps the editor to that block's source line — unless the click was
+      // the end of a drag-selection, in which case the reader is copying text, not navigating.
+      const sourced = event.target.closest('[data-source-line]');
+      if (sourced instanceof HTMLElement && !isSelectionDragClick(sourced)) {
+        const line = Number(sourced.dataset['sourceLine']);
+        if (Number.isFinite(line) && line > 0) onNavigateToSourceReference.current?.(line);
+      }
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {

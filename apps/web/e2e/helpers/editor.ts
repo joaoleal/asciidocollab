@@ -121,6 +121,19 @@ export async function getEditorText(page: Page): Promise<string> {
  */
 export const EDITOR_EDITABLE_TIMEOUT = 30_000;
 
+/**
+ * Test budget for a spec that live-edits the collaborative editor.
+ *
+ * `EDITOR_EDITABLE_TIMEOUT` alone can consume 30s of a test's allowance waiting for the Yjs
+ * handshake, so on Playwright's default 45s a spec has under 15s left for the edit itself — the
+ * double-click, the typing, and the assertions that follow. Under gate load that ran out mid-edit and
+ * surfaced as a flaky `Test timeout of 45000ms exceeded` in whichever rename spec happened to be
+ * slowest that run, never in the same place twice. Budget for the starved case instead: waits that are
+ * met quickly still finish quickly, so raising this cannot slow a healthy run — it only stops a loaded
+ * one from being cut off partway through the interaction it is testing.
+ */
+export const COLLAB_EDIT_TEST_TIMEOUT = 90_000;
+
 export async function renameFirstWord(page: Page, word: string, replacement: string): Promise<void> {
   const content = editorContent(page);
   await expect(content).toHaveAttribute('contenteditable', 'true', { timeout: EDITOR_EDITABLE_TIMEOUT });

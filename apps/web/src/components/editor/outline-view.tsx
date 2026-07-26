@@ -4,6 +4,7 @@ import { Files, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { SectionOutlineEntry } from '@/lib/codemirror/asciidoc-outline';
 import { EditorSectionOutline } from './editor-section-outline';
+import { PanelViewHeader } from './panel-view-header';
 import { currentHeadingIndex } from '@/lib/editor/current-heading';
 import type { OutlineScope } from '@/hooks/use-editor-preferences';
 import type { ParticipantPresence } from '@/hooks/use-collab-presence';
@@ -65,10 +66,9 @@ export function OutlineView({ entries, currentLine, hasDocument, onHeadingClick,
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Header mirrors the file tree's header (fixed h-9, same padding/border/typography) so the two
-          left-panel views line up exactly. */}
-      <div className="flex items-center px-2 border-b shrink-0 h-9">
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Outline</span>
+      {/* Shared panel header (fixed h-9, same padding/border/typography as every other view on both
+          sides of the editor). */}
+      <PanelViewHeader title="Outline">
         {onScopeChange && outlineScope !== undefined && (
           // Icon-only toggle matching the rail/header icon buttons: the glyph shows the CURRENT scope
           // (stacked files = full document, single file = current file); the accessible name + tooltip
@@ -77,7 +77,7 @@ export function OutlineView({ entries, currentLine, hasDocument, onHeadingClick,
             type="button"
             variant="ghost"
             size="icon"
-            className="ml-auto h-6 w-6 text-muted-foreground hover:text-foreground"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
             onClick={() => onScopeChange(outlineScope === 'full' ? 'current' : 'full')}
             aria-label={outlineScope === 'full' ? 'Current file' : 'Full document'}
             title={
@@ -89,7 +89,7 @@ export function OutlineView({ entries, currentLine, hasDocument, onHeadingClick,
             {outlineScope === 'full' ? <Files className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
           </Button>
         )}
-      </div>
+      </PanelViewHeader>
       {hasDocument && visibleEntries.length > 0 ? (
         <EditorSectionOutline entries={visibleEntries} currentIndex={currentIndex} onHeadingClick={onHeadingClick} outlinePresence={outlinePresence} />
       ) : (

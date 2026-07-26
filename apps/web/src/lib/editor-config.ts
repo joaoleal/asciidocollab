@@ -15,7 +15,17 @@ export const AUTOSAVE_DEBOUNCE_MS = Number(
 
 /** Milliseconds of inactivity before the live preview panel auto-refreshes. */
 export const PREVIEW_DEBOUNCE_MS = Number(
-  process.env.NEXT_PUBLIC_PREVIEW_DEBOUNCE_MS ?? 1500,
+  process.env.NEXT_PUBLIC_PREVIEW_DEBOUNCE_MS ?? 500,
+);
+
+/**
+ * Upper bound, in milliseconds, on how long the live preview may be postponed while the user keeps
+ * typing. The preview uses a trailing debounce of {@link PREVIEW_DEBOUNCE_MS}, but continuous typing
+ * would otherwise defer the render indefinitely; this caps that so the preview refreshes at least
+ * once every {@link PREVIEW_MAX_WAIT_MS} during a sustained edit.
+ */
+export const PREVIEW_MAX_WAIT_MS = Number(
+  process.env.NEXT_PUBLIC_PREVIEW_MAX_WAIT_MS ?? 2000,
 );
 
 /** Milliseconds between external-change HEAD polls when the editor is open. */

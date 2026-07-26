@@ -5,7 +5,7 @@ import { highlightTree } from '@lezer/highlight';
 import type { LRParser } from '@lezer/lr';
 import { asciidocHighlightStyle } from '@/lib/codemirror/asciidoc-theme';
 import { asciidocHighlightTags } from '@/lib/codemirror/asciidoc-highlight-tags';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 import { hasToken, tokenAt } from './helpers/tokenize';
 
 /**
@@ -21,6 +21,7 @@ const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 
 const parser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 }).configure({ props: [asciidocHighlightTags] }) as LRParser;
 
 /** Returns the highlight class string applied at `pos` when `source` is parsed + highlighted. */

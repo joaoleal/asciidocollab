@@ -8,9 +8,10 @@ import {
   UserId,
   ProjectId,
 } from '@asciidocollab/domain';
+import { exportFileName } from '@asciidocollab/shared';
 import { requireAuth, getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestLogger } from '../../lib/request-logger';
-import { sanitizeContentDispositionFilename, buildAttachmentDisposition } from '../../lib/sanitize-filename';
+import { buildAttachmentDisposition } from '../../lib/sanitize-filename';
 import { flushFastifyHeadersToRaw } from '../../lib/flush-fastify-headers';
 
 /** Streams a ZIP archive of all project files, serving live Yjs text for actively-edited documents. */
@@ -54,13 +55,19 @@ export async function projectDownloadRoute(app: FastifyInstance): Promise<void> 
       }
 
       const { projectName, files } = result.value;
-      const date = new Date().toISOString().slice(0, 10);
-      const asciiName = `${sanitizeContentDispositionFilename(projectName) || 'project'}-${date}.zip`;
-      const fullName = `${projectName}-${date}.zip`;
+      // The same naming rule the client-side exports use (`exportFileName` in @asciidocollab/shared):
+      // project-derived, lower case, ASCII, dash-separated, dated. Previously this route emitted the raw
+      // project name, so a project called "Café Ürünler" produced a non-ASCII archive name here while
+      // its PDF/HTML/zip exports produced `cafe-urunler-…` — the same project, two conventions.
+      //
+      // The slug is ASCII by construction, so the RFC 5987 UTF-8 name and its ASCII fallback are now the
+      // same string. `buildAttachmentDisposition` is kept rather than hand-writing the header so this
+      // route stays identical in shape to the other download routes (and keeps their quoting/escaping).
+      const archiveName = exportFileName(projectName, 'zip');
 
       flushFastifyHeadersToRaw(reply);
       reply.raw.setHeader('Content-Type', 'application/zip');
-      reply.raw.setHeader('Content-Disposition', buildAttachmentDisposition(fullName, asciiName));
+      reply.raw.setHeader('Content-Disposition', buildAttachmentDisposition(archiveName, archiveName));
 
       const archive = archiver('zip', { zlib: { level: 6 } });
       // archiveError races against finalize() so an entry-stream error doesn't leave the

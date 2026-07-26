@@ -8,6 +8,7 @@ import type {
   DocumentRepository,
   AssetRepository,
   ProjectRenderConfigRepository,
+  ProjectDictionaryRepository,
   ProjectFileStore,
   Project,
   ProjectMember,
@@ -15,6 +16,7 @@ import type {
   Document,
   Asset,
   ProjectRenderConfig,
+  ProjectDictionaryTerm,
 } from '@asciidocollab/domain';
 import { ProjectId, UserId, FilePath } from '@asciidocollab/domain';
 import {
@@ -26,6 +28,8 @@ import {
   DEMO_MAIN_FILE_ID,
   DEMO_FOLDERS,
   DEMO_FILES,
+  DEMO_DICTIONARY_TERMS,
+  DEMO_DICTIONARY_AUTHOR_ID,
   DEMO_CONTENT_HASH_KEY,
   loadDemoAssetBytes,
   computeDemoContentHash,
@@ -44,6 +48,7 @@ interface FakeState {
   documents: Map<string, Document>;
   assets: Map<string, Asset>;
   renderConfigs: Map<string, ProjectRenderConfig>;
+  dictionaryTerms: Map<string, ProjectDictionaryTerm>;
   fileBytes: Map<string, Buffer>;
   settings: Map<string, string>;
   users: string[];
@@ -69,6 +74,7 @@ function makeDeps(overrides?: { failDocumentSave?: string; failWith?: unknown })
     documents: new Map(),
     assets: new Map(),
     renderConfigs: new Map(),
+    dictionaryTerms: new Map(),
     fileBytes: new Map(),
     settings: new Map(),
     users: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'],
@@ -85,6 +91,11 @@ function makeDeps(overrides?: { failDocumentSave?: string; failWith?: unknown })
     restore: async () => undefined,
     delete: async (id) => {
       state.projects.delete(id.value);
+      // `ProjectDictionaryTerm.projectId` is `onDelete: Cascade`, so a torn-down demo takes its
+      // seeded terms with it — model that, or a "rebuild" test would silently assert stale rows.
+      for (const [termId, term] of state.dictionaryTerms) {
+        if (term.projectId.value === id.value) state.dictionaryTerms.delete(termId);
+      }
       state.removedProjects.push(id.value);
     },
   };
@@ -130,6 +141,12 @@ function makeDeps(overrides?: { failDocumentSave?: string; failWith?: unknown })
       state.renderConfigs.set(config.projectId.value, config);
     },
   } as unknown as ProjectRenderConfigRepository;
+
+  const dictionaryRepo = {
+    add: async (term: ProjectDictionaryTerm) => {
+      state.dictionaryTerms.set(term.id.value, term);
+    },
+  } as unknown as ProjectDictionaryRepository;
 
   const systemSettingRepo = {
     get: async (key: string) => state.settings.get(key) ?? null,
@@ -179,6 +196,7 @@ function makeDeps(overrides?: { failDocumentSave?: string; failWith?: unknown })
       document: documentRepo,
       asset: assetRepo,
       projectRenderConfig: renderConfigRepo,
+      projectDictionary: dictionaryRepo,
       systemSetting: systemSettingRepo,
     },
     fileStore,
@@ -205,6 +223,8 @@ describe('demo-project manifest integrity', () => {
       ...DEMO_FILES.flatMap((f) =>
         f.kind === 'text' ? [f.id, f.documentId, f.contentId, f.yjsStateId] : [f.id],
       ),
+      ...DEMO_DICTIONARY_TERMS.map((t) => t.id),
+      DEMO_DICTIONARY_AUTHOR_ID,
     ];
     for (const id of ids) expect(id).toMatch(UUID_V4);
 
@@ -252,6 +272,41 @@ describe('provisionDemoProject', () => {
     expect(members.every((m) => m.role.value === 'viewer')).toBe(true);
   });
 
+  it('ships the tutorial vocabulary in the project dictionary, so the checker does not flag it', async () => {
+    // The three names the tour repeats on nearly every page. They MUST be seeded: the demo grants
+    // every user `VIEWER`, and adding a term needs editor/owner, so there is no one who could accept
+    // them afterwards — an unseeded demo would underline its own subject matter forever.
+    const { deps, state } = makeDeps();
+
+    await provisionDemoProject(deps);
+
+    const terms = [...state.dictionaryTerms.values()]
+      .filter((term) => term.projectId.value === DEMO_PROJECT_ID)
+      .map((term) => term.term);
+    expect(terms).toEqual(expect.arrayContaining(['AsciiDoc', 'Asciidoctor', 'AsciidoCollab']));
+    expect(terms).toHaveLength(DEMO_DICTIONARY_TERMS.length);
+  });
+
+  it('attributes the seeded terms to the fixed bootstrap identity, not to a real account', async () => {
+    const { deps, state } = makeDeps();
+    await provisionDemoProject(deps);
+    for (const term of state.dictionaryTerms.values()) {
+      expect(term.createdByUserId.value).toBe(DEMO_DICTIONARY_AUTHOR_ID);
+    }
+  });
+
+  it('re-seeds the dictionary exactly once when the demo is rebuilt', async () => {
+    // The terms carry fixed ids and the project delete cascades, so a refresh must leave the same
+    // three rows — not six, and not none.
+    const { deps, state } = makeDeps();
+    await provisionDemoProject(deps);
+    state.settings.set(DEMO_CONTENT_HASH_KEY, 'stale-hash-from-an-older-version');
+
+    await provisionDemoProject(deps);
+
+    expect(state.dictionaryTerms.size).toBe(DEMO_DICTIONARY_TERMS.length);
+  });
+
   it('stores the content hash on seed and leaves the demo untouched when it matches', async () => {
     const { deps, state } = makeDeps();
 
@@ -288,6 +343,9 @@ describe('provisionDemoProject', () => {
     expect(state.projects.has(DEMO_PROJECT_ID)).toBe(true); // rebuilt
     expect(state.fileBytes.size).toBe(DEMO_FILES.length); // fresh bytes rewritten
     expect(state.settings.get(DEMO_CONTENT_HASH_KEY)).toBe(currentHash); // hash brought current
+    // The dictionary is part of the fingerprint, so this rebuild is also how an install that ALREADY
+    // has the Guided Tour receives a newly-added term.
+    expect(state.dictionaryTerms.size).toBe(DEMO_DICTIONARY_TERMS.length);
     expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ refreshed: true }), expect.any(String));
   });
 

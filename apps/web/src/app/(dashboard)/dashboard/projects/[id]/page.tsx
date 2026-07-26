@@ -19,6 +19,13 @@ export default async function ProjectPage({ params }: ProjectPageProperties) {
   // The document editor needs no equivalent split: the collaboration server already forces a viewer's
   // session to read-only (observer) regardless of admin, so its affordances match the server there.
   const canModifyFiles = currentUserRole === "editor" || currentUserRole === "owner";
+  // The project's shared dictionary is the same shape of permission as the file tree, and needs the
+  // same narrowing: `requireDictionaryEditor` authorizes on project membership alone (editor/owner)
+  // with no admin bypass, so passing the admin-inclusive `canEdit` would offer a global admin who is
+  // only a viewer here an Add-to-dictionary control the API then rejects with 403. Unlike the file
+  // tree, the collaboration server does NOT cover this case — a dictionary write is a project-scoped
+  // REST call with no collab session in the path, so nothing else forces the admin read-only.
+  const canManageDictionary = canModifyFiles;
 
   return (
     <ProjectEditorLayout
@@ -30,6 +37,7 @@ export default async function ProjectPage({ params }: ProjectPageProperties) {
       canManage={canManage}
       canEdit={canEdit}
       canModifyFiles={canModifyFiles}
+      canManageDictionary={canManageDictionary}
       userId={currentUserId}
     />
   );

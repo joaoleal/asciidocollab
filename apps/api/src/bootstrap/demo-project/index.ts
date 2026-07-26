@@ -20,6 +20,8 @@ export {
   DEMO_MAIN_FILE_ID,
   DEMO_FOLDERS,
   DEMO_FILES,
+  DEMO_DICTIONARY_TERMS,
+  DEMO_DICTIONARY_AUTHOR_ID,
   DEMO_CONTENT_HASH_KEY,
   loadDemoAssetBytes,
   computeDemoContentHash,

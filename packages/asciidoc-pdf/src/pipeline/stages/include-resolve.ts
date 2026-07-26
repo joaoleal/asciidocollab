@@ -17,7 +17,7 @@
 import type { DiagnosticCode, DiagnosticSeverity, RenderDiagnostic } from '../../protocol';
 import type { SandboxPathResolver, UnresolvedInclude } from '../../ports/include-assembler';
 import type { PipelineStage, StageContext, StageResult } from '../orchestrator';
-import { PROJECT_ROOT } from '../../vfs/populate';
+import { PROJECT_ROOT, SOURCE_PROVENANCE_PATH } from '../../vfs/populate';
 
 /** The environment-specific dependencies the include-resolve stage needs beyond the shared context. */
 export interface IncludeResolveDeps {
@@ -79,13 +79,22 @@ export function createIncludeResolveStage(deps: IncludeResolveDeps): PipelineSta
     kind: STAGE_KIND,
     run: (context: StageContext): Promise<StageResult> => {
       const { snapshot } = context.request;
+      // Preview renders request the line→source provenance so the source-map hook can stamp each block's
+      // exact origin file+line onto its map entry (click-to-source). Exports don't need it.
+      const wantsProvenance = context.request.mode === 'preview';
       const assembled = context.includeAssembler.assemble({
         rootPath: snapshot.rootPath,
         readFile: context.readFile,
         resolveSandboxedPath: deps.resolveSandboxedPath,
-        options: { seedAttributes: new Map(Object.entries(snapshot.attributes)) },
+        options: { seedAttributes: new Map(Object.entries(snapshot.attributes)), withSourceMap: wantsProvenance },
       });
       context.vfs.writeText(projectVfsPath(snapshot.rootPath), assembled.content);
+      // Publish (or clear, for exports) the provenance sidecar. Always writing it — as `[]` when absent —
+      // guarantees a warm VM never carries a prior preview's provenance into an export render.
+      context.vfs.writeText(
+        SOURCE_PROVENANCE_PATH,
+        JSON.stringify(wantsProvenance && assembled.sourceMap ? assembled.sourceMap.lineToSource : []),
+      );
       return Promise.resolve({ diagnostics: assembled.unresolved.map(toDiagnostic) });
     },
   };

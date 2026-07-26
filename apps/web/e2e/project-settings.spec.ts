@@ -70,11 +70,15 @@ test.describe('Project settings page', () => {
     // The default section is General.
     await expect(page.getByLabel(/project name/i)).toBeVisible();
     await expect(page.getByLabel('Page size')).toHaveCount(0);
+    // Grammar checking is gated on the project language, so it is shown with it rather than in a
+    // section of its own.
+    await expect(page.getByRole('checkbox', { name: 'Enable grammar checking' })).toBeVisible();
 
     await page.getByRole('link', { name: 'AsciiDoc', exact: true }).click();
     await expect(page).toHaveURL(/section=rendering/);
     await expect(page.getByLabel('Document type')).toBeVisible();
     await expect(page.getByLabel(/project name/i)).toHaveCount(0);
+    await expect(page.getByLabel('English dialect')).toHaveCount(0);
 
     await page.getByRole('link', { name: 'PDF Layout & Theme' }).click();
     await expect(page).toHaveURL(/section=pdf/);
@@ -134,6 +138,38 @@ test.describe('Project settings page', () => {
 
     await page.reload();
     await expect(page.getByLabel('Page size')).toHaveValue('A4');
+    await page.getByRole('link', { name: 'AsciiDoc', exact: true }).click();
+    await expect(page.getByLabel('Document type')).toHaveValue('book');
+  });
+
+  test('grammar checking follows the language chosen in the General form', async ({ page }) => {
+    // The reason the two sit together: the dependency has to be visible at the point of decision,
+    // not discovered later when checking has silently stopped running.
+    await page.goto(`/dashboard/projects/${projectId}/settings`);
+
+    const grammarToggle = page.getByRole('checkbox', { name: 'Enable grammar checking' });
+    await page.getByLabel('Language').selectOption('en');
+    await expect(grammarToggle).toBeEnabled();
+
+    await page.getByLabel('Language').selectOption('fr');
+    await expect(grammarToggle).toBeDisabled();
+    await expect(page.getByText(/set the project language to english/i)).toBeVisible();
+  });
+
+  test('grammar settings saved from General survive a save from another section', async ({ page }) => {
+    // General now writes the SAME full-replace render-config document as the other sections, so this
+    // is the regression that catches its save dropping their fields — or theirs dropping its.
+    await page.goto(`/dashboard/projects/${projectId}/settings?section=rendering`);
+    await page.getByLabel('Document type').selectOption('book');
+
+    await page.getByRole('link', { name: 'General' }).click();
+    await page.getByLabel('Language').selectOption('en');
+    await page.getByLabel('English dialect').selectOption('en-US');
+    await page.getByRole('button', { name: /save changes/i }).click();
+    await expect(page.getByText(/project settings updated successfully/i)).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByLabel('English dialect')).toHaveValue('en-US');
     await page.getByRole('link', { name: 'AsciiDoc', exact: true }).click();
     await expect(page.getByLabel('Document type')).toHaveValue('book');
   });

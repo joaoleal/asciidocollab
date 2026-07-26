@@ -58,6 +58,14 @@ export const PROJECT_ROOT = '/project';
 /** The writable, in-memory mount that holds the produced PDF, cleared per render. */
 export const OUT_ROOT = '/out';
 
+/**
+ * VFS path where the include-resolve stage writes the assembly line→source provenance for PREVIEW renders
+ * (a JSON array: index `i` is the origin `{ path, sourceLine }` of assembled line `i + 1`). The render-time
+ * source-map hook reads it to stamp each block's exact source location onto its map entry. Written as `[]`
+ * for exports so a warm VM never leaks a prior preview's provenance into an export.
+ */
+export const SOURCE_PROVENANCE_PATH = `${PROJECT_ROOT}/.asciidocollab-source-provenance.json`;
+
 const PATH_SEPARATOR = '/';
 const TRAVERSAL_SEGMENT = '..';
 const NUL_CHARACTER = '\u0000';

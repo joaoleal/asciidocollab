@@ -38,6 +38,8 @@ import { asciidocInlineStyleEmphasis } from '@/lib/codemirror/inline-style-regis
 import { tableContextField } from '@/lib/codemirror/asciidoc-table-context';
 import { listContinuationKeymap } from '@/lib/codemirror/asciidoc-list-continuation';
 import { createSpellcheckLinter } from '@/lib/codemirror/editor-spellcheck-linter';
+import { createGrammarLinter } from '@/lib/codemirror/editor-grammar-linter';
+import type { HarperLintSourceDeps } from '@/lib/codemirror/harper/harper-linter-source';
 
 /** The compartments the hook reconfigures live; created once per (re)mount and passed in here. */
 export interface EditorCompartments {
@@ -49,6 +51,12 @@ export interface EditorCompartments {
   lineWrap: Compartment;
   /** Spell-check lint compartment, reconfigured when the language/enabled/ignore prefs change. */
   spellcheck: Compartment;
+  /**
+   * Harper grammar-check lint compartment. Empty at mount (the WASM engine loads asynchronously) and
+   * reconfigured to the live source once the engine is ready; while it is active the spell-check
+   * compartment is emptied so the two never double-flag the same misspelling.
+   */
+  grammar: Compartment;
   /** Minimap (document text-preview) compartment, reconfigured when the minimap preference toggles. */
   minimap: Compartment;
 }
@@ -82,6 +90,12 @@ export interface BuildEditorExtensionsOptions {
   spellcheckLanguage: string;
   /** When false, spell-check produces no diagnostics regardless of language. */
   spellcheckEnabled: boolean;
+  /**
+   * The Harper grammar-linter dependencies at mount, or null when grammar checking is inactive (the
+   * usual mount state — the engine has not loaded yet, so the compartment starts empty and the hook
+   * reconfigures it once the engine is ready).
+   */
+  grammarLinterDeps: HarperLintSourceDeps | null;
   /**
    * Uploads a pasted/dropped image.
    *
@@ -152,6 +166,7 @@ export function buildEditorExtensions(options: BuildEditorExtensionsOptions): Ex
     getSpellIgnore,
     spellcheckLanguage,
     spellcheckEnabled,
+    grammarLinterDeps,
     uploadImage,
     getIncludePaths,
     getImagePaths,
@@ -226,6 +241,9 @@ export function buildEditorExtensions(options: BuildEditorExtensionsOptions): Ex
     compartments.spellcheck.of(
       createSpellcheckLinter(getSpellIgnore, spellcheckLanguage, spellcheckEnabled),
     ),
+    // Grammar check (Harper): empty until the engine loads, then reconfigured live by the mount hook,
+    // which also empties the spell-check compartment while grammar is active (research R8).
+    compartments.grammar.of(createGrammarLinter(grammarLinterDeps)),
     linter(asciidocDiagnosticsSource(projectIndexAccessor)),
     // Effective heading-level styling: raw level + in-file :leveloffset:.
     // Inherited (cross-file) offset is wired from the symbol index.

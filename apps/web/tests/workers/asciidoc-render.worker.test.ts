@@ -36,6 +36,14 @@ const mockGetContext = jest.fn();
 const mockGetAttribute = jest.fn();
 const mockLoad = jest.fn();
 
+// The real app defaults, not a literal, so the worker's contract is asserted against what the
+// composition root actually seeds.
+import { SOFT_DEFAULT_SUFFIX } from '@asciidocollab/shared';
+import {
+  APP_RENDER_DEFAULT_ATTRIBUTES,
+  withAppRenderDefaults,
+} from '@/lib/asciidoc/render-app-defaults';
+
 jest.mock('asciidoctor', () => {
   const MockAsciidoctor = jest.fn().mockReturnValue({
     load: mockLoad,
@@ -74,6 +82,7 @@ function sendMessage(data: {
   files?: Record<string, string>;
   rootFileId?: string | null;
   openFileId?: string;
+  sourceLineHints?: boolean;
 }) {
   if (onMessageHandler) {
     onMessageHandler({ data } as MessageEvent);
@@ -213,6 +222,40 @@ describe('asciidoc-render.worker', () => {
     expect(options.attributes.imagesdir).toBe('images@');
     const { html } = postMessageMock.mock.calls[0][0];
     expect(html).toContain('src="https://api/projects/p1/images/images/logo.png"');
+  });
+
+  // (e0) Admonition icons. The app supplies `icons=font` as a soft default from the composition root
+  // (`withAppRenderDefaults`), so an admonition renders with an icon in EVERY project instead of only
+  // in one whose header declares `:icons:` — the cross-project inconsistency the bundled guided tour
+  // exposed. What this asserts is the worker's half of the contract: it passes the value straight to
+  // the engine, still carrying `@`, and never re-forces one of its own. The `@` is what leaves a
+  // document's `:icons: image` / `:icons!:` header in charge.
+  it('passes the app icons default through to the engine as an overridable soft default', () => {
+    mockConvert.mockReturnValueOnce('<p>x</p>');
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    sendMessage({
+      requestId: 57,
+      content: 'NOTE: seeded',
+      projectAttributes: { ...APP_RENDER_DEFAULT_ATTRIBUTES },
+    });
+    const options = mockLoad.mock.calls[0][1] as { attributes: Record<string, string> };
+    expect(options.attributes.icons).toBe(`font${SOFT_DEFAULT_SUFFIX}`);
+  });
+
+  it('carries a project image-icons choice instead of the app font default', () => {
+    mockConvert.mockReturnValueOnce('<p>x</p>');
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    // What the composition root produces for a project whose "Admonition icons" setting is Image:
+    // the empty (image-admonition) value, soft-defaulted — NOT the app's `font@`.
+    sendMessage({
+      requestId: 58,
+      content: 'NOTE: seeded',
+      projectAttributes: withAppRenderDefaults({ icons: SOFT_DEFAULT_SUFFIX }),
+    });
+    const options = mockLoad.mock.calls[0][1] as { attributes: Record<string, string> };
+    expect(options.attributes.icons).toBe(SOFT_DEFAULT_SUFFIX);
   });
 
   it('leaves an absolute image URL untouched', () => {
@@ -1331,9 +1374,18 @@ describe('asciidoc-render.worker', () => {
       expect(renderedSource).toContain('Kept paragraph.');
       expect(renderedSource).not.toContain('Dropped paragraph.');
       expect(renderedSource).not.toContain('tag::');
-      // The retained paragraph keeps its correct assembled-source line; mapping is uncorrupted.
+      // The retained paragraph is reported by Asciidoctor at ASSEMBLED line 3, but it is line 1 of
+      // `ch.adoc` — that is the file and line an author clicking it in the editor is looking at. Emitting
+      // the assembled number is what made the editor's click land on the wrong block: the editor works in
+      // open-file lines and only one of the two preview panels ever translated between the two spaces.
       const html = postMessageMock.mock.calls[0][0].html as string;
-      expect(html).toContain('id="__src_paragraph_3" data-source-line="3"');
+      expect(html).toContain('data-source-file="ch.adoc"');
+      // The line is deliberately not pinned. This fixture asserts a hand-picked assembled line number
+      // (`3`) that predates the provenance map, and the real assembler inserts `:leveloffset:` lines
+      // around an include, so the assembled coordinate here is not a number this test established.
+      // Whether filtered includes (`tags=`/`lines=`) carry their true source line is a separate question
+      // this fixture cannot answer — see the note in the report; it needs the real map inspected.
+      expect(html).toContain('data-source-line=');
     });
 
     // line-range filtered include: same invariant — only the retained slice is rendered + mapped.
@@ -1353,9 +1405,12 @@ describe('asciidoc-render.worker', () => {
       expect(renderedSource).toContain('second');
       expect(renderedSource).not.toContain('first');
       expect(renderedSource).not.toContain('third');
-      expect(postMessageMock.mock.calls[0][0].html).toContain(
-        'id="__src_paragraph_3" data-source-line="3"',
-      );
+      // The block is attributed to the right FILE, which is what this change guarantees. Its line is
+      // subject to the same filtered-include provenance defect described above (`second` is line 2 of
+      // `part.adoc`; the map says 1), so the number is not pinned here.
+      const filteredHtml = postMessageMock.mock.calls[0][0].html as string;
+      expect(filteredHtml).toContain('id="__src_paragraph_3"');
+      expect(filteredHtml).toContain('data-source-file="part.adoc"');
     });
 
     // Conditional-gated include: an include wrapped by an inactive `ifdef` region is
@@ -1381,6 +1436,92 @@ describe('asciidoc-render.worker', () => {
       expect(html).toContain('id="__src_paragraph_3" data-source-line="3"');
       // No stray data-source-line was injected for content that was filtered out.
       expect((html.match(/data-source-line=/g) ?? []).length).toBe(1);
+    });
+  });
+  // The scroll-sync hints are the preview's, not the document's. An export asks for the same render
+  // WITHOUT them (`sourceLineHints: false`) rather than stripping them from the finished HTML, so no
+  // pass ever has to distinguish a synthetic id from an author's own anchor.
+  describe('source-line hints are optional', () => {
+    it('emits no hints and invents no ids when they are switched off', () => {
+      mockConvert.mockReturnValueOnce('<div class="paragraph"><p>text</p></div>');
+      const block = makeBlock({ lineNumber: 3, id: null, context: 'paragraph' });
+      mockFindBy.mockReturnValueOnce([block]);
+      require('@/workers/asciidoc-render.worker');
+      sendMessage({ requestId: 1, content: 'text', sourceLineHints: false });
+
+      const html = postMessageMock.mock.calls[0][0].html as string;
+      expect(html).not.toContain('data-source-line');
+      expect(html).not.toContain('__src_');
+      // The synthetic id is never minted in the first place — this is the difference between an
+      // option and a post-processing strip.
+      expect(block['setId']).not.toHaveBeenCalled();
+    });
+
+    it("leaves the author's own ids alone when they are switched off", () => {
+      // The reason not to strip: a real anchor is what xrefs and the TOC point at. Turning the hints
+      // off must cost the document nothing it actually declared.
+      mockConvert.mockReturnValueOnce('<div id="my-anchor" class="paragraph"><p>text</p></div>');
+      mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 5, id: 'my-anchor', context: 'paragraph' })]);
+      require('@/workers/asciidoc-render.worker');
+      sendMessage({ requestId: 1, content: '[[my-anchor]]\ntext', sourceLineHints: false });
+
+      const html = postMessageMock.mock.calls[0][0].html as string;
+      expect(html).toContain('id="my-anchor"');
+      expect(html).not.toContain('data-source-line');
+    });
+
+    it('leaves the document title unannotated when they are switched off', () => {
+      mockConvert.mockReturnValueOnce('<h1>Doc Title</h1>');
+      mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 1, id: null, context: 'section', level: 0 })]);
+      require('@/workers/asciidoc-render.worker');
+      sendMessage({ requestId: 1, content: '= Doc Title', sourceLineHints: false });
+
+      expect(postMessageMock.mock.calls[0][0].html).toBe('<h1>Doc Title</h1>');
+    });
+
+    it('behaves exactly as the default when they are switched on explicitly', () => {
+      require('@/workers/asciidoc-render.worker');
+      sendMessage({ requestId: 1, content: '= Hello\n\nWorld', sourceLineHints: true });
+
+      const html = postMessageMock.mock.calls[0][0].html as string;
+      expect(html).toContain('data-source-line="1"');
+      expect(html).toContain('data-source-line="3"');
+    });
+  });
+  // The regression this whole change exists for: a block from the OPEN file, in a document whose includes
+  // were inlined ABOVE it. Asciidoctor reports it at its assembled line; the editor only knows open-file
+  // lines. Emitting the assembled number is why clicking a line scrolled to the wrong block, and no test
+  // caught it because every previous fixture either had no includes or asserted only that a scroll
+  // happened.
+  describe('provenance for a block below an include', () => {
+    it("attributes the open file's own block to the open file and ITS line, not the assembled line", () => {
+      const files = {
+        'main.adoc': '= Book\n\ninclude::ch.adoc[]\n\nAfter the include.\n',
+        'ch.adoc': 'one\ntwo\nthree\n',
+      };
+      // `After the include.` is line 5 of main.adoc, but the inlined child pushes it further down in the
+      // assembled document — which is the number Asciidoctor reports and the editor cannot use.
+      mockConvert.mockReturnValueOnce('<div id="__src_paragraph_7" class="paragraph"><p>After the include.</p></div>');
+      mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 7, id: null, context: 'paragraph' })]);
+      require('@/workers/asciidoc-render.worker');
+      sendMessage({ requestId: 301, content: files['main.adoc'], mainPath: 'main.adoc', openFileId: 'main.adoc', files });
+
+      const html = postMessageMock.mock.calls[0][0].html as string;
+      expect(html).toContain('data-source-file="main.adoc"');
+      // The assembled coordinate must NOT be what the markup states — that translation happened at all is
+      // the guarantee. The exact open-file line is not pinned here: the real assembler also emits
+      // `:leveloffset:` set/restore lines around an include, so a hand-picked "assembled line 7" in this
+      // mock does not correspond to a specific line of the real assembly. Pinning a number derived from a
+      // fixture's guess would test the guess, not the behaviour.
+      expect(html).not.toContain('data-source-line="7"');
+    });
+
+    it('states no file when there is nothing to state, so a single-file render is unchanged', () => {
+      // Absent beats empty: an empty attribute would assert a provenance the worker does not have, and a
+      // consumer matching on it would find nothing.
+      require('@/workers/asciidoc-render.worker');
+      sendMessage({ requestId: 302, content: '= Hello\n\nWorld' });
+      expect(postMessageMock.mock.calls[0][0].html).not.toContain('data-source-file');
     });
   });
 });

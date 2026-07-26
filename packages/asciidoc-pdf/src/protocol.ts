@@ -205,6 +205,15 @@ export interface PdfSourceMapEntry {
   readonly page: number;
   /** Vertical position of the block's TOP as a fraction of page height from the top, clamped to `[0, 1]`. */
   readonly yFraction: number;
+  /**
+   * Project-relative path of the SOURCE file this block originated in, resolved at render time from the
+   * assembly provenance (preview renders only). Lets a click on the rendered block jump to the exact
+   * source file — including an included file — with no client-side reverse mapping. Absent when the
+   * render carried no provenance, as for an export.
+   */
+  readonly path?: string;
+  /** The 1-based line of this block within {@link path} (its origin source line). Paired with {@link path}. */
+  readonly sourceLine?: number;
 }
 
 /**

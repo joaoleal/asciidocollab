@@ -152,6 +152,39 @@ describe('CommentRail', () => {
     expect(screen.queryByTestId('review-thread-card')).not.toBeInTheDocument();
   });
 
+  test('renders the cards in document order, not in the order the server returned them', () => {
+    primeHook(
+      [
+        thread({ id: 'bottom', createdAt: '2026-01-01T00:00:00.000Z' }),
+        thread({ id: 'top', createdAt: '2026-01-03T00:00:00.000Z' }),
+        thread({ id: 'middle', createdAt: '2026-01-02T00:00:00.000Z' }),
+      ],
+      {
+        ranges: [
+          { id: 'bottom', from: 900, to: 910 },
+          { id: 'top', from: 4, to: 9 },
+          { id: 'middle', from: 120, to: 130 },
+        ],
+      },
+    );
+    renderRail();
+    const ids = screen.getAllByTestId('review-thread-card').map((card) => card.dataset.itemId);
+    expect(ids).toEqual(['top', 'middle', 'bottom']);
+  });
+
+  test('a card whose anchor has not resolved sorts after every located card', () => {
+    primeHook(
+      [
+        thread({ id: 'unresolved', createdAt: '2026-01-01T00:00:00.000Z' }),
+        thread({ id: 'located', createdAt: '2026-01-05T00:00:00.000Z' }),
+      ],
+      { ranges: [{ id: 'located', from: 50, to: 60 }] },
+    );
+    renderRail();
+    const ids = screen.getAllByTestId('review-thread-card').map((card) => card.dataset.itemId);
+    expect(ids).toEqual(['located', 'unresolved']);
+  });
+
   test('the signed-in author gets an Edit control on their own item', () => {
     primeHook([thread({ id: 'mine', author: { id: 'me', displayName: 'Me', avatarKey: null } })]);
     render(<CommentRail projectId="p1" documentId="d1" ydoc={null} role="editor" currentUserId="me" />);

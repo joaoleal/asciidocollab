@@ -33,11 +33,46 @@ npx tsc -p apps/collab/tsconfig.json --noEmit
 step "Type-checking web …"
 npx tsc -p apps/web/tsconfig.json --noEmit
 
-step "Architecture guard (fresh-onion) …"
-npx fresh-onion
+step "Architecture guard (layer boundaries) …"
+# Enforces onion.config.json. This replaced `fresh-onion`, which could not check anything here: it
+# skipped every import specifier that does not begin with `.` or `/`, and this monorepo crosses layers
+# exclusively by workspace name (`@asciidocollab/domain`) — a scan found ZERO relative cross-package
+# imports. It also located its config by DESCENDING from the cwd and taking the first readdir hit, so a
+# leftover config inside an agent worktree could win and get a stale tree validated instead, and did.
+# Both faults were structural, so the check is now ours: it resolves bare specifiers through each
+# package's declared name, still checks relative ones, and derives the config path from its own
+# location. See the header of the script for the full account.
+node "$ROOT/scripts/ci/architecture-guard.mjs"
 
 step "Security audit (high+ severity) …"
-pnpm audit --audit-level=high
+# `pnpm audit` calls the npm advisories endpoint, which is outside this repo's control. It has been
+# observed returning HTTP 200 with a gzip-compressed body and NO `Content-Encoding` header, so every
+# header-respecting client — pnpm included — fails to parse it (ERR_PNPM_AUDIT_BAD_RESPONSE). A defect
+# in someone else's CDN is not a security finding about this repository, and failing the gate on it
+# reports nothing actionable while blocking every build.
+#
+# So separate the two outcomes. A real advisory result still fails the gate, unchanged. A transport or
+# parse failure warns loudly and defers to Job 4's OSV-Scanner, which gates dependency CVEs at the SAME
+# High+ threshold over the same pnpm-lock.yaml from an independent source (osv.dev) — so the signal is
+# not lost, only its second opinion. Never broaden this to swallow a non-empty advisory list.
+AUDIT_OUT="$(pnpm audit --audit-level=high 2>&1)" && AUDIT_OK=1 || AUDIT_OK=0
+if [ "$AUDIT_OK" = "1" ]; then
+  echo "$AUDIT_OUT" | tail -3
+else
+  case "$AUDIT_OUT" in
+    *ERR_PNPM_AUDIT_BAD_RESPONSE*|*ERR_PNPM_AUDIT_ENDPOINT*|*ENOTFOUND*|*ETIMEDOUT*|*ECONNRESET*|*ECONNREFUSED*|*EAI_AGAIN*)
+      # Truncate: the unparseable body is binary and floods the log.
+      echo "$AUDIT_OUT" | head -c 400
+      echo ""
+      echo "[ci-quality] WARNING: the npm advisories endpoint is unusable (transport/parse failure, not a finding)."
+      echo "[ci-quality] Dependency CVEs remain gated at High+ by OSV-Scanner in Job 4 (scripts/ci/security.sh)."
+      ;;
+    *)
+      echo "$AUDIT_OUT"
+      exit 1
+      ;;
+  esac
+fi
 
 # Development applies the schema with `db push`; production runs `migrate deploy`.
 # This catches a schema change that never got a migration — which would pass every

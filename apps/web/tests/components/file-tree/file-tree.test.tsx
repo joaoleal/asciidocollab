@@ -465,6 +465,31 @@ describe('FileTree', () => {
     expect(names).toEqual(sorted);
   });
 
+  // folders are grouped before files, regardless of name
+  it('renders all folders before any files on initial load', async () => {
+    const mixedRoot = {
+      id: 'root-1',
+      name: 'root',
+      type: 'folder' as const,
+      path: '/',
+      parentId: null,
+      children: [
+        { id: 'f-a', name: 'apple.adoc', type: 'file' as const, path: '/apple.adoc', parentId: 'root-1', children: [] },
+        { id: 'd-z', name: 'zzz-folder', type: 'folder' as const, path: '/zzz-folder', parentId: 'root-1', children: [] },
+        { id: 'f-b', name: 'banana.adoc', type: 'file' as const, path: '/banana.adoc', parentId: 'root-1', children: [] },
+        { id: 'd-a', name: 'aaa-folder', type: 'folder' as const, path: '/aaa-folder', parentId: 'root-1', children: [] },
+      ],
+    };
+    mockFetch(mixedRoot);
+    render(<FileTree projectId={projectId} canEdit={false} onSelectFile={jest.fn()} selectedNodeId={null} />);
+    await waitFor(() => expect(screen.getByTestId('node-apple.adoc')).toBeInTheDocument());
+
+    const nodes = screen.getAllByTestId(/^node-/);
+    const names = nodes.map((n) => n.dataset['testid']!.replace('node-', ''));
+    // Folders first (alphabetical among themselves), then files (alphabetical among themselves).
+    expect(names).toEqual(['aaa-folder', 'zzz-folder', 'apple.adoc', 'banana.adoc']);
+  });
+
   // created SSE event inserts file at correct alphabetical position
   it('created SSE event inserts file at correct alphabetical position', async () => {
     const treeRoot = {

@@ -15,6 +15,8 @@ export { PrismaTemplateRepository } from './persistence/project/prisma-template.
 export { PrismaGitRepositoryRepository } from './persistence/project/prisma-git-repository.repository';
 export { PrismaCollaborationSessionRepository } from './persistence/project/prisma-collaboration-session-repository';
 export { PrismaProjectRenderConfigRepository } from './persistence/project/prisma-project-render-config.repository';
+export { PrismaProjectDictionaryRepository } from './persistence/grammar/prisma-project-dictionary.repository';
+export { PrismaIgnoredLintRepository } from './persistence/grammar/prisma-ignored-lint.repository';
 
 // file-tree/
 export { PrismaFileNodeRepository } from './persistence/file-tree/prisma-file-node.repository';

@@ -22,7 +22,12 @@ export interface AnchorDto {
   relPos?: string;
   /** Text-quote selector for durable re-anchoring. */
   quote?: AnchorQuoteDto;
-  /** 1-based line number at creation time, a coarse hint for re-anchoring. */
+  /**
+   * The 1-based line the anchored passage sits on: a coarse fallback for re-anchoring, and the only
+   * position available to a reader with no shared document loaded (the cross-file comments & tasks
+   * panel). Captured at creation and re-measured by the collaboration server on every write-back, so
+   * it tracks the document rather than freezing where the passage once was.
+   */
   lineHint?: number;
   /** Enclosing section symbol id — the structural fallback. */
   sectionId?: string;

@@ -4,13 +4,14 @@ import { buildParser } from '@lezer/generator';
 import { EditorState } from '@codemirror/state';
 import { LRLanguage, LanguageSupport, foldable, foldService } from '@codemirror/language';
 import { asciidocFold } from '@/lib/codemirror/asciidoc-fold';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 const grammarPath = path.resolve(__dirname, '../../../src/lib/codemirror/asciidoc.grammar');
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 
 const lezerParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 
 const asciidocLang = LRLanguage.define({ name: 'asciidoc', parser: lezerParser });

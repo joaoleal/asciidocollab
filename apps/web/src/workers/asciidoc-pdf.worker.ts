@@ -138,7 +138,13 @@ function createIncludeAssembler(): IncludeAssembler {
   return {
     assemble: (request) => {
       const assembled = assembleIncludes(request.rootPath, request.readFile, request.options);
-      return { content: assembled.content, unresolved: assembled.unresolved };
+      return {
+        content: assembled.content,
+        unresolved: assembled.unresolved,
+        // Threaded through for PREVIEW renders (withSourceMap) so the source-map hook can stamp each
+        // block's exact origin; absent for exports, which don't request it.
+        ...(assembled.sourceMap ? { sourceMap: assembled.sourceMap } : {}),
+      };
     },
   };
 }

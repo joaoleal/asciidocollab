@@ -10,7 +10,7 @@ import {
   registerInlineStyle,
   resetCustomInlineStyles,
 } from '@/lib/codemirror/inline-style-registry';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 /**
  * Highlight-consistency tests: each list/block construct added by feature 021 must receive the
@@ -26,6 +26,7 @@ const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 
 const parser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 }).configure({ props: [asciidocHighlightTags] }) as LRParser;
 
 /** Returns the highlight class string applied at `pos` when `source` is parsed + highlighted. */

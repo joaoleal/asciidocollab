@@ -3,7 +3,7 @@ import path from 'node:path';
 import { buildParser } from '@lezer/generator';
 import type { LRParser } from '@lezer/lr';
 import type { Tree } from '@lezer/common';
-import { createTestBlockTokenizer } from '../../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../../helpers/asciidoc-test-tokenizer';
 
 /**
  * Shared Lezer tokenizer test harness. Builds the AsciiDoc parser from
@@ -34,6 +34,8 @@ function getParser(): LRParser {
       cachedParser = buildParser(grammarSource, {
         externalTokenizer: (_name: string, terms: Record<string, number>) =>
           createTestBlockTokenizer(terms),
+        contextTracker: (terms: Record<string, number>) =>
+          createTestBlockContext(terms),
       }) as LRParser;
     } catch {
       cachedParser = null;

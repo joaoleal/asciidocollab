@@ -15,7 +15,6 @@ export {
   type ReplyComposerProperties,
 } from './composer';
 export { CommentRail, type CommentRailProperties } from './comment-rail';
-export { ReviewToggle, type ReviewToggleProperties } from './review-toggle';
 export { ReviewTaskControls, type ReviewTaskControlsProperties, type TaskMember } from './task-controls';
 export {
   TaskPanel,

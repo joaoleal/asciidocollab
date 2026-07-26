@@ -5,6 +5,7 @@ import type * as Y from 'yjs';
 import { MessagesSquare, MoreHorizontal } from 'lucide-react';
 import type { CollabAuthRole, CreateAnchorInput, ThreadDto } from '@asciidocollab/shared';
 import { useReviewItems } from '@/hooks/use-review-items';
+import { sortThreadsByDocumentOrder } from '@/lib/review/order';
 import { cn } from '@/lib/utilities';
 import {
   DropdownMenu,
@@ -92,14 +93,13 @@ function filterThreads(threads: ThreadDto[], mode: FilterMode): ThreadDto[] {
 }
 
 /**
- * The slim right-side review rail. It owns its toolbar — an Open / All / Tasks
- * segmented filter (wired to the hook's `includeResolved` plus a tasks-only view),
- * a live item count, a document-scope overflow menu (bulk-delete lands here later),
- * and a collapse button — over a scrollable thread list. When a `pendingAnchor` is
- * supplied it pins a new-comment composer at the top. It consumes
+ * The slim right-side review rail: the open document's threads under a single toolbar row holding an
+ * Open / All / Tasks segmented filter (wired to the hook's `includeResolved` plus a tasks-only view),
+ * the live item count, and the document-scope overflow menu. It renders no title of its own — the
+ * Comments view's panel header names it once — so the rail is all list and no chrome. When a
+ * `pendingAnchor` is supplied it pins a new-comment composer at the top. It consumes
  * {@link useReviewItems} for data and links to the editor via the ambient
- * {@link useReviewViewStateOptional} view-state (overridable by props). It does not
- * mount itself into the layout; a later wiring task owns placement.
+ * {@link useReviewViewStateOptional} view-state (overridable by props).
  */
 export function CommentRail({
   projectId,
@@ -119,7 +119,7 @@ export function CommentRail({
   onMutated,
 }: CommentRailProperties) {
   const readOnly = role === 'observer';
-  const { threads, anchorStates, loading, error, refetch, setIncludeResolved } = useReviewItems({
+  const { threads, ranges, anchorStates, loading, error, refetch, setIncludeResolved } = useReviewItems({
     projectId,
     documentId,
     ydoc,
@@ -149,7 +149,10 @@ export function CommentRail({
   const effectiveActive = activeThreadId ?? ambient?.activeThreadId ?? localActive;
   const effectiveSetActive = setActiveThreadId ?? ambient?.setActiveThreadId ?? setLocalActive;
 
-  const visible = filterThreads(threads, mode);
+  // Document order, not creation order: the rail reads top-to-bottom like the document does. The rule
+  // is shared with the cross-file panel and the prev/next thread walk (see `@/lib/review/order`), and
+  // the split below preserves it in both the card list and the detached tray.
+  const visible = sortThreadsByDocumentOrder(filterThreads(threads, mode), ranges);
 
   // Detached items can't be pinned in the document, so they surface in the tray instead of the list;
   // section-degraded items stay in the list with an inline indicator (T040).
@@ -169,47 +172,13 @@ export function CommentRail({
       aria-label="Comments and tasks"
       className="flex h-full min-w-0 flex-col bg-background"
     >
-      {/* Toolbar. */}
-      <div className="flex flex-col gap-2 border-b p-2">
-        <div className="flex items-center gap-2">
-          <MessagesSquare className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <h2 className="truncate text-sm font-semibold">Comments &amp; tasks</h2>
-          <span
-            className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
-            data-testid="comment-rail-count"
-          >
-            {visible.length}
-          </span>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Comment options"
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {readOnly ? (
-                <div className="px-2 py-1.5 text-xs text-muted-foreground">No actions</div>
-              ) : (
-                <BulkDeleteDocumentAction
-                  projectId={projectId}
-                  documentId={documentId}
-                  count={threads.length}
-                  onDeleted={handleRefetch}
-                />
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        {/* Open / All / Tasks segmented filter. */}
+      {/* Toolbar: filters, the live count and the document-scope ⋯ menu on ONE row. The list carries
+          no title of its own — the Comments view's panel header names it once, above this rail. */}
+      <div className="flex items-center gap-1 border-b px-2 py-1">
         <div
           role="tablist"
           aria-label="Filter comments"
-          className="flex items-center gap-0.5 rounded-md bg-muted p-0.5"
+          className="flex min-w-0 flex-1 items-center gap-0.5 rounded-md bg-muted p-0.5"
         >
           {FILTERS.map((filter) => (
             <button
@@ -219,7 +188,7 @@ export function CommentRail({
               aria-selected={mode === filter.mode}
               onClick={() => setMode(filter.mode)}
               className={cn(
-                'flex-1 rounded-sm px-2 py-1 text-xs font-medium transition-colors',
+                'flex-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors',
                 mode === filter.mode
                   ? 'bg-background text-foreground shadow-sm'
                   : 'text-muted-foreground hover:text-foreground',
@@ -229,6 +198,35 @@ export function CommentRail({
             </button>
           ))}
         </div>
+        <span
+          className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+          data-testid="comment-rail-count"
+        >
+          {visible.length}
+        </span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Comment options"
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {readOnly ? (
+              <div className="px-2 py-1.5 text-sm text-muted-foreground">No actions</div>
+            ) : (
+              <BulkDeleteDocumentAction
+                projectId={projectId}
+                documentId={documentId}
+                count={threads.length}
+                onDeleted={handleRefetch}
+              />
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Body. */}
@@ -254,20 +252,20 @@ export function CommentRail({
         )}
 
         {error && (
-          <p className="px-2 py-4 text-sm text-destructive" role="alert">
+          <p className="px-2 py-4 text-xs text-destructive" role="alert">
             Couldn&apos;t load comments. {error.message}
           </p>
         )}
 
         {!error && visible.length === 0 && !loading && (
           <div
-            className="flex flex-col items-center gap-1 px-4 py-10 text-center text-sm text-muted-foreground"
+            className="flex flex-col items-center gap-1 px-4 py-10 text-center text-xs text-muted-foreground"
             data-testid="comment-rail-empty"
           >
             <MessagesSquare className="h-6 w-6" aria-hidden="true" />
             <p>{mode === 'tasks' ? 'No tasks yet.' : 'No comments yet.'}</p>
             {!readOnly && !pendingAnchor && (
-              <p className="text-xs">Select text in the document to start a thread.</p>
+              <p className="text-[11px]">Select text in the document to start a thread.</p>
             )}
           </div>
         )}

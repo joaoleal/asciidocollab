@@ -6,7 +6,7 @@ import { EditorView, keymap } from '@codemirror/view';
 import { LRLanguage, LanguageSupport } from '@codemirror/language';
 import { defaultKeymap, history, historyKeymap, undo } from '@codemirror/commands';
 import { continueList, listContinuationKeymap } from '@/lib/codemirror/asciidoc-list-continuation';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 /**
  * Command-behaviour tests for the Enter continuation command, driven against a real
@@ -19,6 +19,7 @@ const grammarPath = path.resolve(__dirname, '../../../src/lib/codemirror/asciido
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const lezerParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 const asciidocLang = new LanguageSupport(LRLanguage.define({ name: 'asciidoc', parser: lezerParser }));
 

@@ -289,7 +289,7 @@ export function ReviewThreadCard({
                 <DropdownMenuContent align="end">
                   {/* US5 wires Delete (and any owner bulk actions) into this slot. */}
                   {itemMenuExtra ?? (
-                    <div className="px-2 py-1.5 text-xs text-muted-foreground">No actions</div>
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">No actions</div>
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>

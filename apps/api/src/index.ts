@@ -27,6 +27,8 @@ import type {
   EditorPreferencesRepository,
   CollaborationSessionRepository,
   ProjectRenderConfigRepository,
+  ProjectDictionaryRepository,
+  IgnoredLintRepository,
   ReviewCommentRepository,
   ReviewReactionRepository,
   ProjectFileStore,
@@ -101,6 +103,10 @@ export interface AppContainer {
     collaborationSession: CollaborationSessionRepository;
     /** Repository for project render-config persistence. */
     projectRenderConfig: ProjectRenderConfigRepository;
+    /** Repository for the project's shared grammar dictionary. */
+    projectDictionary: ProjectDictionaryRepository;
+    /** Repository for per-user, per-document ignored grammar lints. */
+    ignoredLint: IgnoredLintRepository;
     /** Repository for review comments/tasks persistence. */
     reviewComment: ReviewCommentRepository;
     /** Repository for review reactions persistence. */
@@ -243,6 +249,7 @@ async function start() {
         document: app.repos.document,
         asset: app.repos.asset,
         projectRenderConfig: app.repos.projectRenderConfig,
+        projectDictionary: app.repos.projectDictionary,
         systemSetting: app.repos.systemSetting,
       },
       fileStore: app.stores.fileStore,
@@ -309,6 +316,8 @@ declare module 'fastify' {
       reviewComment: ReviewCommentRepository;
       reviewReaction: ReviewReactionRepository;
       projectRenderConfig: ProjectRenderConfigRepository;
+      projectDictionary: ProjectDictionaryRepository;
+      ignoredLint: IgnoredLintRepository;
     };
     stores: {
       fileStore: ProjectFileStore;

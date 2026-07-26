@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { CaseSensitive, WholeWord, Regex, Replace, ReplaceAll } from 'lucide-react';
 import type { FileMatchGroupDto, SearchMatchDto, SearchMode } from '@asciidocollab/shared';
 import { useProjectSearch } from '@/hooks/use-project-search';
+import { PanelViewHeader } from './panel-view-header';
 
 /**
  * Expands a replacement template for the before/after PREVIEW only, using the capture groups the
@@ -225,9 +226,7 @@ export function SearchView({ projectId, onNavigate }: SearchViewProperties) {
 
   return (
     <div data-testid="search-view" className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center px-2 border-b shrink-0 h-9">
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Search</span>
-      </div>
+      <PanelViewHeader title="Search" />
 
       <div className="flex flex-col gap-1 border-b px-2 py-2 shrink-0">
         <div className="flex items-center gap-1 rounded border bg-background px-2 py-1">

@@ -5,6 +5,12 @@ import {
   PINNED_ATTRIBUTE_KEYS,
   PDF_PAGE_SIZES,
   EMPTY_RENDER_CONFIG,
+  HTML_EXPORT_PACKAGINGS,
+  HTML_EXPORT_STYLES,
+  HTML_EXPORT_THEMES,
+  DEFAULT_HTML_EXPORT_PACKAGING,
+  DEFAULT_HTML_EXPORT_THEME,
+  resolveRenderAttributes,
 } from '../../src/render-config';
 
 describe('renderConfigSchema / normalizeRenderConfig', () => {
@@ -23,6 +29,7 @@ describe('renderConfigSchema / normalizeRenderConfig', () => {
       icons: 'font',
       experimental: true,
       hardbreaks: false,
+      grammarCheckEnabled: true,
       imagesdir: 'images',
       extraFontDirs: ['assets/fonts', 'branding/fonts'],
       bibtexFile: 'refs.bib',
@@ -43,6 +50,21 @@ describe('renderConfigSchema / normalizeRenderConfig', () => {
   it('rejects unknown top-level keys (strict)', () => {
     const result = safeNormalizeRenderConfig({ notAnOption: true });
     expect(result.success).toBe(false);
+  });
+
+  it('accepts a boolean grammarCheckEnabled and rejects a non-boolean', () => {
+    expect(safeNormalizeRenderConfig({ grammarCheckEnabled: true }).success).toBe(true);
+    expect(safeNormalizeRenderConfig({ grammarCheckEnabled: false }).success).toBe(true);
+    expect(safeNormalizeRenderConfig({ grammarCheckEnabled: 'yes' }).success).toBe(false);
+    // Absent is valid — the web layer resolves the default for English projects.
+    expect(safeNormalizeRenderConfig({}).success).toBe(true);
+  });
+
+  it('accepts the supported grammar dialects and rejects others', () => {
+    expect(safeNormalizeRenderConfig({ grammarDialect: 'en-GB' }).success).toBe(true);
+    expect(safeNormalizeRenderConfig({ grammarDialect: 'en-US' }).success).toBe(true);
+    expect(safeNormalizeRenderConfig({ grammarDialect: 'en' }).success).toBe(false);
+    expect(safeNormalizeRenderConfig({ grammarDialect: 'fr-FR' }).success).toBe(false);
   });
 
   it('rejects an out-of-range toclevels', () => {
@@ -149,5 +171,53 @@ describe('renderConfigSchema / normalizeRenderConfig', () => {
 
   it('is the same schema object exported for the API to reuse', () => {
     expect(renderConfigSchema.safeParse({}).success).toBe(true);
+  });
+});
+
+describe('renderConfigSchema — htmlExport', () => {
+  it('accepts both packaging values and rejects anything else', () => {
+    expect(safeNormalizeRenderConfig({ htmlExport: { packaging: 'single-file' } }).success).toBe(true);
+    expect(safeNormalizeRenderConfig({ htmlExport: { packaging: 'zip' } }).success).toBe(true);
+    expect(safeNormalizeRenderConfig({ htmlExport: { packaging: 'tarball' } }).success).toBe(false);
+  });
+
+  it('accepts every theme value and rejects anything else', () => {
+    for (const theme of HTML_EXPORT_THEMES) {
+      expect(safeNormalizeRenderConfig({ htmlExport: { theme } }).success).toBe(true);
+    }
+    expect(safeNormalizeRenderConfig({ htmlExport: { theme: 'sepia' } }).success).toBe(false);
+  });
+
+  it('accepts both styles and rejects anything else', () => {
+    for (const style of HTML_EXPORT_STYLES) {
+      expect(safeNormalizeRenderConfig({ htmlExport: { style } }).success).toBe(true);
+    }
+    expect(safeNormalizeRenderConfig({ htmlExport: { style: 'github' } }).success).toBe(false);
+  });
+
+  it('leaves style absent when unset — that is what "follow the exporter\'s own preview" looks like', () => {
+    expect(normalizeRenderConfig({ htmlExport: { packaging: 'zip' } }).htmlExport?.style).toBeUndefined();
+  });
+
+  it('treats the section and each field as optional', () => {
+    expect(normalizeRenderConfig({}).htmlExport).toBeUndefined();
+    expect(normalizeRenderConfig({ htmlExport: {} }).htmlExport).toEqual({});
+    expect(normalizeRenderConfig({ htmlExport: { theme: 'auto' } }).htmlExport).toEqual({ theme: 'auto' });
+  });
+
+  it('rejects unknown keys inside the section, so a typo cannot be stored and silently ignored', () => {
+    expect(safeNormalizeRenderConfig({ htmlExport: { packagin: 'zip' } }).success).toBe(false);
+  });
+
+  it('emits NO Asciidoctor attribute — it describes the exported file, not the document', () => {
+    const resolved = resolveRenderAttributes(
+      normalizeRenderConfig({ htmlExport: { packaging: 'zip', theme: 'dark', style: 'asciidoctor' } }),
+    );
+    expect(resolved.attributes).toEqual({});
+  });
+
+  it('defaults name a packaging and theme that are both valid schema values', () => {
+    expect(HTML_EXPORT_PACKAGINGS).toContain(DEFAULT_HTML_EXPORT_PACKAGING);
+    expect(HTML_EXPORT_THEMES).toContain(DEFAULT_HTML_EXPORT_THEME);
   });
 });

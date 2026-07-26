@@ -258,9 +258,15 @@ export function useProjectSymbolIndex({
     (event: ContentChangedEventDto) => {
       const fileId = event.fileNodeId;
       if (fileId === liveOverlay.current.id) return;
+      // Drop the cached copy BEFORE the reachability test. The filter exists to avoid a pointless
+      // rebuild for a file outside this document's graph — not to keep a copy we have just been told is
+      // stale. Keeping it strands that copy permanently: the fetcher skips any id already cached, so
+      // when the file re-enters the graph (an `ifdef::` gate flips back, an include line is restored)
+      // it is served from the pre-change text until a refresh, an SSE reconnect, or a file-tree event
+      // for that id happens to clear it.
+      contentCache.current.delete(fileId);
       const built = indexReference.current;
       if (built && !built.tree.nodes.includes(fileId)) return;
-      contentCache.current.delete(fileId);
       if (!contentChangedScheduled.current) {
         contentChangedScheduled.current = true;
         queueMicrotask(flushContentChanged);

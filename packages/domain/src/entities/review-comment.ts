@@ -308,6 +308,25 @@ export class ReviewComment {
     this._touch();
   }
 
+  /**
+   * Re-measures the anchor's line hint. The hint is a DERIVED coordinate — the line the anchor's
+   * relative position currently resolves to — captured when the item was created and otherwise never
+   * refreshed, which made it drift further from the truth with every edit to the document. Refreshing
+   * it changes nothing a user authored, so unlike every other mutator here this one deliberately does
+   * NOT touch `updatedAt`: a housekeeping re-measurement must not make an untouched comment look
+   * freshly edited, nor churn the column on every write-back.
+   *
+   * @param lineHint - The newly measured 1-based line number.
+   * @returns True when the stored hint actually changed (the caller need only persist those).
+   * @throws {ReviewOperationInvalidError} If this item has no anchor.
+   */
+  refreshAnchorLineHint(lineHint: number): boolean {
+    if (this._anchor === null) throw new ReviewOperationInvalidError('item has no anchor');
+    if (this._anchor.lineHint === lineHint) return false;
+    this._anchor = this._anchor.withLineHint(lineHint);
+    return true;
+  }
+
   /** Single writer of the resolution stamp (shared by task-status and comment-resolve paths). */
   private _stampResolved(resolverId: UserId | null): void {
     this._resolvedAt = new Date();

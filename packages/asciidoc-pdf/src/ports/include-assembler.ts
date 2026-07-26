@@ -66,6 +66,12 @@ export interface IncludeAssemblyOptions {
   readonly seedAttributes?: ReadonlyMap<string, string>;
   /** The `:leveloffset:` already in effect where the root is included in the wider document. */
   readonly baseOffset?: number;
+  /**
+   * When true, the assembler also returns a line→source provenance map ({@link AssembledDocument.sourceMap}):
+   * for each assembled line, the origin file + source line. Used by preview renders so a click on a rendered
+   * block can resolve to its exact source location. Off by default (the map has a cost and exports don't need it).
+   */
+  readonly withSourceMap?: boolean;
 }
 
 /** Everything needed to assemble a document tree from a root file. */
@@ -80,12 +86,25 @@ export interface IncludeAssemblyRequest {
   readonly options?: IncludeAssemblyOptions;
 }
 
+/** The origin of one assembled line: the source file and the line within it. */
+export interface AssembledLineOrigin {
+  /** Project-relative path of the file this assembled line came from. */
+  readonly path: string;
+  /** 1-based line within {@link path}. */
+  readonly sourceLine: number;
+}
+
 /** The assembled single-document result and its diagnostics. */
 export interface AssembledDocument {
   /** The assembled document with every in-sandbox include inlined. */
   readonly content: string;
   /** Every directive that was rejected or could not be resolved, in encounter order. */
   readonly unresolved: readonly UnresolvedInclude[];
+  /**
+   * Line→source provenance, present only when {@link IncludeAssemblyOptions.withSourceMap} was set:
+   * `lineToSource[i]` is the origin of assembled line `i + 1`. Parallel to the assembled content lines.
+   */
+  readonly sourceMap?: { readonly lineToSource: readonly AssembledLineOrigin[] };
 }
 
 /**

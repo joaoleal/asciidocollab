@@ -19,6 +19,11 @@ const mockExportPdf = jest.fn();
 jest.mock('@/hooks/use-pdf-export', () => ({
   usePdfExport: () => ({ exportPdf: mockExportPdf, isExporting: false, diagnostics: [] }),
 }));
+// Same for the HTML export hook, which owns the render worker (`import.meta.url` again).
+const mockExportHtml = jest.fn();
+jest.mock('@/hooks/use-html-export', () => ({
+  useHtmlExport: () => ({ exportHtml: mockExportHtml, isExporting: false, failures: [] }),
+}));
 jest.mock('@/hooks/use-project-render-config', () => ({
   useProjectRenderConfig: () => ({ config: {}, loading: false, saving: false, error: null, save: jest.fn() }),
 }));
@@ -51,6 +56,7 @@ jest.mock('@/components/editor/asciidoc-editor', () => ({
     onChange?: (value: string) => void;
     onGoToSymbol?: () => void;
     onRefactor?: (initial: { kind: string; name: string } | null) => void;
+    onGrammarStateChange?: (state: unknown) => void;
   }) => (
     <div
       data-testid="asciidoc-editor"
@@ -61,6 +67,36 @@ jest.mock('@/components/editor/asciidoc-editor', () => ({
       {properties.onGoToSymbol && <button onClick={() => properties.onGoToSymbol?.()}>Go to Symbol</button>}
       {properties.onRefactor && (
         <button onClick={() => properties.onRefactor?.({ kind: 'attribute', name: 'seeded' })}>Refactor</button>
+      )}
+      {/* Stands in for the checker reporting issues. The real editor publishes this from an effect; here
+          it is a button so a test decides WHEN there is a checked document, which is what the right
+          panel's availability turns on. */}
+      {properties.onGrammarStateChange && (
+        <button
+          onClick={() =>
+            properties.onGrammarStateChange?.({
+              diagnostics: [{ from: 0, to: 4, diagnostic: { message: 'x', category: 'spelling', grammarSuggestions: [] } }],
+              status: 'ready',
+              lintScope: 'this-file',
+              setLintScope: () => {},
+              navigate: () => {},
+              apply: () => {},
+              dictionary: [],
+              canManageDictionary: false,
+              addDictionaryTerm: () => {},
+              removeDictionaryTerm: () => {},
+              addIssueWordToDictionary: () => {},
+              ignore: null,
+              canConfigureRules: false,
+              ruleConfig: {},
+              ruleDescriptions: {},
+              setRule: () => {},
+              resetRules: () => {},
+            })
+          }
+        >
+          publish grammar state
+        </button>
       )}
       {properties.content}
     </div>
@@ -232,14 +268,29 @@ jest.mock('@/hooks/use-file-selection', () => ({
   }),
 }));
 
+// The stylesheet the reader currently has the preview in. Deliberately the NON-default of the two, so
+// a fallback that silently hardcoded the default would be visible rather than accidentally correct.
+const mockPreviewStyle = 'asciidoctor';
+
 jest.mock('@/hooks/use-editor-preferences', () => ({
   useEditorPreferences: () => ({
     scrollSyncEnabled: true,
     setScrollSyncEnabled: jest.fn(),
-    previewStyle: 'default',
+    previewStyle: mockPreviewStyle,
     setPreviewStyle: jest.fn(),
     commentsPanelOpen: false,
     setCommentsPanelOpen: jest.fn(),
+    // The panel-view preferences drive the left/right rails. They are part of the hook's contract,
+    // so the stub has to supply them — an absent setter reaches a rail as an undefined onTabChange
+    // and any tab click throws.
+    leftPanelTab: 'files',
+    setLeftPanelTab: jest.fn(),
+    rightPanelTab: 'comments',
+    setRightPanelTab: jest.fn(),
+    showIncludedFiles: false,
+    setShowIncludedFiles: jest.fn(),
+    outlineScope: 'document',
+    setOutlineScope: jest.fn(),
   }),
 }));
 
@@ -278,6 +329,7 @@ const defaultProps = {
   canManage: true,
   canEdit: true,
   canModifyFiles: true,
+  canManageDictionary: true,
   userId: 'u-test',
 };
 
@@ -307,6 +359,7 @@ beforeEach(() => {
   mockGetFiles.mockReset();
   mockGetFiles.mockReturnValue([]);
   mockExportPdf.mockReset();
+  mockExportHtml.mockReset();
   mockGetCollabInfo.mockReset();
   mockGetDocumentContent.mockReset();
   mockLineOf.mockClear();
@@ -351,6 +404,21 @@ describe('ProjectEditorLayout — preview toggle & scroll sync', () => {
     fireEvent.click(screen.getByRole('button', { name: /collapse preview/i }));
     expect(screen.queryByTestId('asciidoc-preview')).not.toBeInTheDocument();
     expect(sessionStorage.getItem('asciidoc-preview-open')).toBe('false');
+  });
+
+  // The right panel is a member of the editor's panel group, so a collapsed-preview strip rendered
+  // AFTER that group would sit beyond the right panel's rail instead of before it. Keeping the strip
+  // inside the group is what holds it in the preview's own place: editor | preview | right panel.
+  test('the collapsed preview strip keeps the preview\'s place in the row, inside the panel group', () => {
+    render(<ProjectEditorLayout {...defaultProps} />);
+
+    const strip = screen.getByRole('button', { name: /expand preview/i });
+    const editorPanel = screen.getByTestId('content-panel');
+
+    // Same container as the editor panel — i.e. still within the panel group, not a sibling after it.
+    expect(editorPanel.parentElement?.contains(strip)).toBe(true);
+    // ...and positioned after the editor, so it stands where the preview would open.
+    expect(editorPanel.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   test('scroll-sync handler dedups identical lines, line-click always re-fires', () => {
@@ -423,6 +491,65 @@ describe('ProjectEditorLayout — PDF export', () => {
 
     await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
     expect(mockRefreshIndex).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProjectEditorLayout — HTML export', () => {
+  test('the Export to HTML action sits beside the PDF one and exports the whole document', async () => {
+    mockFileSelection = adocFile('mainfile-1');
+    mockGetFiles.mockReturnValue({ '/path/mainfile-1.adoc': '= Doc' });
+
+    render(<ProjectEditorLayout {...defaultProps} mainFileNodeId="mainfile-1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /export to html/i }));
+    });
+
+    await waitFor(() => expect(mockExportHtml).toHaveBeenCalledTimes(1));
+    // The configured main document is the root, exactly as the PDF export does it — never the open
+    // file, which for a multi-file project would export a fragment of the document. The project name
+    // travels with it, because that — not the root — is what the download is named after.
+    expect(mockExportHtml.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ rootPath: '/path/mainfile-1.adoc', projectName: 'Proj' }),
+    );
+  });
+
+  test('it applies the project defaults when the project has configured nothing', async () => {
+    // The render-config mock returns `{}`, so every option falls back: one self-contained file, the
+    // light palette, and — rather than a fixed stylesheet — whichever one the reader currently has the
+    // preview in, so an unconfigured export matches the panel it was taken from.
+    render(<ProjectEditorLayout {...defaultProps} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /export to html/i }));
+    });
+
+    await waitFor(() => expect(mockExportHtml).toHaveBeenCalledTimes(1));
+    expect(mockExportHtml.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        packaging: 'single-file',
+        theme: 'light',
+        style: mockPreviewStyle,
+      }),
+    );
+  });
+
+  test('it waits for a transiently-absent render root, like the PDF export', async () => {
+    mockFileSelection = adocFile('mainfile-1');
+    const rootPath = '/path/mainfile-1.adoc';
+    let rootAvailable = false;
+    mockGetFiles.mockImplementation(() => (rootAvailable ? { [rootPath]: '= Doc' } : {}));
+    mockRefreshIndex.mockImplementation(() => {
+      rootAvailable = true;
+      return Promise.resolve();
+    });
+
+    render(<ProjectEditorLayout {...defaultProps} mainFileNodeId="mainfile-1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /export to html/i }));
+    });
+
+    await waitFor(() => expect(mockExportHtml).toHaveBeenCalledTimes(1));
+    expect(mockRefreshIndex).toHaveBeenCalled();
+    expect(mockExportHtml.mock.calls[0][0].files).toEqual({ [rootPath]: '= Doc' });
   });
 });
 
@@ -602,13 +729,45 @@ describe('ProjectEditorLayout — content branches', () => {
   });
 });
 
+// Queried fresh on each call: collapsing re-renders, so a captured element goes stale.
+const leftPanelBody = () => document.querySelector('#left-panel-body');
+const leftRail = () => screen.getByRole('tablist', { name: 'Left panel views' });
+const filesTab = () => screen.getByRole('tab', { name: 'Files' });
+
 describe('ProjectEditorLayout — sidebar expand', () => {
-  test('collapsing then expanding the sidebar toggles its visibility', () => {
+  // Collapsing hides the BODY and leaves the rail on screen as the editor's activity bar, so the
+  // views stay visible and one click away — the panel wrapper itself never hides.
+  test('collapsing then expanding the sidebar toggles the body, keeping the rail visible', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
+
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
-    expect(screen.getByTestId('file-tree-panel')).toHaveClass('hidden');
+    expect(leftPanelBody()).toHaveClass('hidden');
+    expect(leftRail()).toBeVisible();
+
     fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
-    expect(screen.getByTestId('file-tree-panel')).not.toHaveClass('hidden');
+    expect(leftPanelBody()).not.toHaveClass('hidden');
+    expect(leftRail()).toBeVisible();
+  });
+
+  test('activating the view already showing collapses the panel, and activating it again reopens it', () => {
+    render(<ProjectEditorLayout {...defaultProps} />);
+
+    expect(leftPanelBody()).not.toHaveClass('hidden');
+    fireEvent.click(filesTab());
+    expect(leftPanelBody()).toHaveClass('hidden');
+    fireEvent.click(filesTab());
+    expect(leftPanelBody()).not.toHaveClass('hidden');
+  });
+
+  test('activating a DIFFERENT view while collapsed reopens the panel onto that view', () => {
+    render(<ProjectEditorLayout {...defaultProps} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
+    expect(leftPanelBody()).toHaveClass('hidden');
+
+    // (The stubbed preference hook does not persist the new tab, so this asserts the reopen only.)
+    fireEvent.click(screen.getByRole('tab', { name: 'Outline' }));
+    expect(leftPanelBody()).not.toHaveClass('hidden');
   });
 });
 
@@ -753,5 +912,21 @@ describe('ProjectEditorLayout — restored-line & index-null edge branches', () 
     render(<ProjectEditorLayout {...defaultProps} mainFileNodeId="mainfile-1" />);
     fireEvent.click(screen.getByRole('button', { name: /expand preview/i }));
     expect(lastPreviewProperties()?.mainPath).toBeUndefined();
+  });
+});
+
+describe('ProjectEditorLayout — Writing panel without collaboration', () => {
+  test('the right panel stays out of the way until there is something to show', () => {
+    render(<ProjectEditorLayout {...defaultProps} />);
+    expect(screen.queryByTestId('right-panel-tab-writing')).not.toBeInTheDocument();
+  });
+
+  test('the Writing view and its issue count are reachable on a non-collaborative document', async () => {
+    // Grammar checking is entirely local and was still underlining the text; gating the whole right
+    // panel on a live Y.Doc hid the Issues list and the count for every document without collab.
+    render(<ProjectEditorLayout {...defaultProps} />);
+    fireEvent.click(screen.getByRole('button', { name: 'publish grammar state' }));
+    expect(await screen.findByTestId('right-panel-tab-writing')).toBeInTheDocument();
+    expect(screen.getByTestId('right-panel-count-writing')).toHaveTextContent('1');
   });
 });

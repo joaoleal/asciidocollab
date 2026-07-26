@@ -58,6 +58,10 @@ const collectCoverageFrom = [
   '!src/**/*.worker.ts',
   '!src/lib/create-render-worker.ts',
   '!src/lib/create-pdf-worker.ts',
+  // Browser-only Harper engine adapter: dynamically imports the harper.js ESM+WASM package and
+  // constructs a `WorkerLinter` that cannot run under Node/jest, so it is verified in a real browser
+  // (like the worker factories above). Everything above the `HarperEngine` seam is unit-tested.
+  '!src/lib/create-harper-worker.ts',
   // Ambient type declarations carry no runtime code — they are not loadable modules.
   '!src/**/*.d.ts',
 ];

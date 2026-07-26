@@ -282,6 +282,28 @@ CREATE TABLE "project_render_configs" (
 );
 
 -- CreateTable
+CREATE TABLE "project_dictionary_terms" (
+    "id" UUID NOT NULL,
+    "projectId" UUID NOT NULL,
+    "term" TEXT NOT NULL,
+    "createdByUserId" UUID NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "project_dictionary_terms_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "ignored_lints" (
+    "id" UUID NOT NULL,
+    "userId" UUID NOT NULL,
+    "documentId" UUID NOT NULL,
+    "ignoredLintsJson" TEXT NOT NULL DEFAULT '',
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "ignored_lints_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "review_comments" (
     "id" UUID NOT NULL,
     "projectId" UUID NOT NULL,
@@ -422,6 +444,15 @@ CREATE UNIQUE INDEX "editor_preferences_userId_key" ON "editor_preferences"("use
 CREATE UNIQUE INDEX "project_render_configs_projectId_key" ON "project_render_configs"("projectId");
 
 -- CreateIndex
+CREATE INDEX "project_dictionary_terms_projectId_idx" ON "project_dictionary_terms"("projectId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "project_dictionary_terms_projectId_term_key" ON "project_dictionary_terms"("projectId", "term");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "ignored_lints_userId_documentId_key" ON "ignored_lints"("userId", "documentId");
+
+-- CreateIndex
 CREATE INDEX "review_comments_projectId_idx" ON "review_comments"("projectId");
 
 -- CreateIndex
@@ -504,6 +535,15 @@ ALTER TABLE "editor_preferences" ADD CONSTRAINT "editor_preferences_userId_fkey"
 
 -- AddForeignKey
 ALTER TABLE "project_render_configs" ADD CONSTRAINT "project_render_configs_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "project_dictionary_terms" ADD CONSTRAINT "project_dictionary_terms_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ignored_lints" ADD CONSTRAINT "ignored_lints_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ignored_lints" ADD CONSTRAINT "ignored_lints_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "FileNode"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "review_comments" ADD CONSTRAINT "review_comments_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;

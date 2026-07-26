@@ -2,6 +2,7 @@ import {
   hasIncludeLevelOffsetOption,
   applyLevelOffsetEntry,
   applyLineAttributes,
+  attributeEntryLineRanges,
   resolveAttributeReferences,
   resolveAttributeScope,
   extractSymbols,
@@ -60,6 +61,52 @@ describe('applyLineAttributes', () => {
 
     applyLineAttributes(':!feature:', attributes);
     expect(attributes.has('feature')).toBe(false);
+  });
+});
+
+/** The exact text each attribute-entry span covers, so a range is asserted as what a consumer masks. */
+function spanned(content: string): string[] {
+  return attributeEntryLineRanges(content).map(({ from, to }) => content.slice(from, to));
+}
+
+describe('attributeEntryLineRanges', () => {
+  test('covers the whole entry — name and value — for every set form', () => {
+    const content = ':toc: left\n:toclevels: 3\n:product-name: AsciidoCollab\n';
+    expect(spanned(content)).toEqual([':toc: left\n', ':toclevels: 3\n', ':product-name: AsciidoCollab\n']);
+  });
+
+  test('covers a valueless entry (`:experimental:`) and both unset forms', () => {
+    expect(spanned(':experimental:\n:sectnums!:\n:!toc:\n')).toEqual([
+      ':experimental:\n',
+      ':sectnums!:\n',
+      ':!toc:\n',
+    ]);
+  });
+
+  test('covers every `\\`-continuation line of a wrapped value as one span', () => {
+    const content = ':description: first part \\\nsecond part\n\nBody.\n';
+    expect(spanned(content)).toEqual([':description: first part \\\nsecond part\n']);
+  });
+
+  test('excludes an attribute-looking line inside a verbatim block or a `//` comment', () => {
+    expect(attributeEntryLineRanges('----\n:toc: left\n----\n')).toEqual([]);
+    expect(attributeEntryLineRanges('////\n:toc: left\n////\n')).toEqual([]);
+    expect(attributeEntryLineRanges('// :toc: left\n')).toEqual([]);
+  });
+
+  test('excludes an INDENTED entry — Asciidoctor recognizes no indented attribute entry', () => {
+    expect(attributeEntryLineRanges('  :toc: left\n')).toEqual([]);
+  });
+
+  test('excludes a body line that merely contains a colon', () => {
+    expect(attributeEntryLineRanges('Note: this line is prose.\nSee section 2: the details.\n')).toEqual([]);
+  });
+
+  test('is the superset of the value view: the unset entries it adds carry no value span', () => {
+    // The two views agree on set entries; only unsets (no value to resolve against) differ.
+    const content = ':a: 1\n:b!:\n:c: 3\n';
+    expect(spanned(content)).toEqual([':a: 1\n', ':b!:\n', ':c: 3\n']);
+    expect(resolveAttributeReferences(':a: 1\n:b!:\n:c: {a}\n')).toEqual([]);
   });
 });
 

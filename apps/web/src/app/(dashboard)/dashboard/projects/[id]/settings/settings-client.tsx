@@ -9,8 +9,10 @@
  *  - It does not unmount the render-config draft when the section changes. That draft lives in a
  *    provider wrapping the whole switch, so options edited in AsciiDoc survive a trip to PDF and a
  *    save from either one carries both (FR-006).
- *  - It does not change sections while the section being left holds unsaved edits without asking
- *    first (FR-005). The General form's state is local to its own fields and genuinely would be lost.
+ *  - It does not change sections while the section being left holds unsaved edits that the move would
+ *    genuinely lose, without asking first (FR-005). The General form's own fields are local state and
+ *    do get lost; the shared draft — which General also writes, through the grammar controls beside
+ *    Language — does not, until the viewer leaves every section that can save it.
  */
 
 import { useState } from "react";
@@ -20,11 +22,12 @@ import { BackButton } from "@/components/back-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { projectsApi, Project, ProjectMemberRole } from "@/lib/api";
+import { setProjectMainFile } from "@/lib/api/projects";
 import { updateProjectSchema, type UpdateProjectInput } from "@asciidocollab/shared";
 import { ArchiveButton } from "@/components/archive-button";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
 import { DeleteProjectButton } from "@/components/delete-project-button";
-import { EditorMainFilePicker } from "@/components/editor/editor-main-file-picker";
+import { MainFileField } from "@/components/settings/main-file-field";
 import {
   RenderConfigProvider,
   RenderConfigSection,
@@ -39,6 +42,8 @@ import {
   type SettingsSectionId,
 } from "@/components/settings/sections";
 import { SPELLCHECK_LANGUAGE_OPTIONS } from "@/lib/codemirror/spellcheck-languages";
+import { GrammarSettingsSection } from "@/components/settings/grammar-settings-section";
+import { DEFAULT_GRAMMAR_DIALECT } from "@/lib/codemirror/harper/dialect";
 
 interface SettingsClientProperties {
   project: Project;
@@ -109,13 +114,17 @@ interface SectionedSettingsProperties {
 /**
  * The sections backed by the ONE shared render-config draft.
  *
- * Moving between them loses nothing, because the draft outlives the switch; leaving the group is
- * what discards. Extensions is a member — its toggles write to the same draft as the others.
+ * Moving between them loses nothing, because the draft outlives the switch and every one of them can
+ * still save it; leaving the group is what discards. Extensions is a member — its toggles write to
+ * the same draft as the others. So is General, since the grammar-checking controls that sit with
+ * Language write to that draft too and General's Save flushes it.
  */
 const RENDER_CONFIG_SECTIONS: ReadonlySet<SettingsSectionId> = new Set<SettingsSectionId>([
+  "general",
   "rendering",
   "pdf",
   "extensions",
+  "html",
 ]);
 
 function SectionedSettings({
@@ -133,23 +142,28 @@ function SectionedSettings({
   const [generalDirty, setGeneralDirty] = useState(false);
   const [pendingSection, setPendingSection] = useState<SettingsSectionId | null>(null);
 
-  /** True when leaving `section` right now would lose edits the viewer made and has not saved. */
-  function hasUnsavedEdits(leaving: SettingsSectionId): boolean {
-    if (leaving === "general") return generalDirty;
-    // The AsciiDoc, PDF and Extensions sections share one draft that OUTLIVES the section change, so
-    // moving between them loses nothing. Leaving the group entirely does, since the save control goes
-    // with them. Extensions belongs in this list: its toggles write to the SAME draft, so omitting it
-    // let a viewer leave with unsaved extension changes unwarned — which then rode along on the next
-    // save from any other section.
-    if (RENDER_CONFIG_SECTIONS.has(leaving)) return renderConfig.dirty;
+  /**
+   * True when moving from `leaving` to `next` right now would lose edits the viewer made and has not
+   * saved. The two kinds of state on this page die at different moments, so the destination matters:
+   *
+   *  - General's own form fields (name, description, tags, language, main file) are local component
+   *    state that unmounts with the section, so they are lost whatever the destination.
+   *  - The render-config draft lives in a provider ABOVE the section switch and every section in
+   *    {@link RENDER_CONFIG_SECTIONS} carries a save that sends the merged whole, so it is only lost
+   *    when the viewer leaves that group. Warning on a move inside the group would be a lie — and the
+   *    confirmation discards, which would destroy edits that were never at risk.
+   */
+  function leavingLosesEdits(leaving: SettingsSectionId, next: SettingsSectionId): boolean {
+    if (leaving === "general" && generalDirty) return true;
+    if (RENDER_CONFIG_SECTIONS.has(leaving) && !RENDER_CONFIG_SECTIONS.has(next)) {
+      return renderConfig.dirty;
+    }
     return false;
   }
 
   function requestSection(next: SettingsSectionId): void {
     if (next === section) return;
-    const staysInRenderConfig =
-      RENDER_CONFIG_SECTIONS.has(section) && RENDER_CONFIG_SECTIONS.has(next);
-    if (!staysInRenderConfig && hasUnsavedEdits(section)) {
+    if (leavingLosesEdits(section, next)) {
       setPendingSection(next);
       return;
     }
@@ -179,7 +193,9 @@ function SectionedSettings({
             onDirtyChange={setGeneralDirty}
           />
         )}
-        {(section === "rendering" || section === "pdf") && <RenderConfigSection section={section} />}
+        {(section === "rendering" || section === "pdf" || section === "html") && (
+          <RenderConfigSection section={section} />
+        )}
         {section === "extensions" && <ExtensionsSection />}
         {section === "danger" && isOwner && <DangerSection project={project} router={router} />}
       </div>
@@ -200,8 +216,11 @@ function SectionedSettings({
             setGeneralDirty(false);
             // The render-config draft lives in a provider ABOVE the section switch, so nothing
             // unmounts on navigation and its edits would otherwise survive the discard the viewer
-            // just confirmed — and be written by the next save from any section.
-            renderConfig.discard();
+            // just confirmed — and be written by the next save from any section. It is thrown away
+            // only when the destination cannot save it: a prompt raised by General's own form
+            // fields must not take the grammar/AsciiDoc/PDF edits down with it, since those are
+            // still live and still savable where the viewer is going.
+            if (!RENDER_CONFIG_SECTIONS.has(next)) renderConfig.discard();
             onNavigate(next);
           }
         }}
@@ -210,7 +229,16 @@ function SectionedSettings({
   );
 }
 
-/** The project's own identity: name, description, tags, language and main file. */
+/**
+ * The project's own identity: name, description, tags, language, grammar checking and main file.
+ *
+ * Every field here is a DRAFT until the viewer saves, whichever document it ends up in. Name,
+ * description, tags and language go to the project row; the main file goes to the project row too but
+ * through its own endpoint; grammar checking is stored on the render config, so its two controls write
+ * the shared draft and the submit flushes that draft as well — see {@link GrammarPanel} for why they
+ * sit here at all. The submit is what writes all three, so a Cancel or a discarded section change
+ * leaves every one of them untouched.
+ */
 function GeneralSection({
   project,
   isArchived,
@@ -222,6 +250,7 @@ function GeneralSection({
   router: ReturnType<typeof useRouter>;
   onDirtyChange: (dirty: boolean) => void;
 }) {
+  const renderConfig = useRenderConfigDraft();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -231,11 +260,17 @@ function GeneralSection({
     tags: project.tags,
   });
   const [language, setLanguage] = useState<string | null>(project.language);
+  const [mainFileNodeId, setMainFileNodeId] = useState<string | null>(project.mainFileNodeId);
+
+  /** Report the section as holding unsaved changes, and retract any earlier success banner. */
+  function markEdited(): void {
+    setSuccess(false);
+    onDirtyChange(true);
+  }
 
   /** Apply an edit and report the section as holding unsaved changes. */
   function edit(next: Partial<UpdateProjectInput>): void {
-    setSuccess(false);
-    onDirtyChange(true);
+    markEdited();
     setFormData((current) => ({ ...current, ...next }));
   }
 
@@ -253,6 +288,25 @@ function GeneralSection({
         tags: validatedData.tags,
         language: validatedData.language ?? null,
       });
+      // The main file has an endpoint of its own — it re-scopes every open document, so setting it
+      // audits and broadcasts rather than patching a column. Sent only when the viewer actually
+      // changed it, so an unrelated rename does not re-announce a main file nobody touched. A
+      // rejection here (a file deleted since the page loaded, a permission lost) throws, so the
+      // section reports the failure instead of claiming a save it did not make.
+      if (mainFileNodeId !== project.mainFileNodeId) {
+        await setProjectMainFile(project.id, mainFileNodeId);
+      }
+      // Grammar checking is stored on the render config — a different document behind a different
+      // endpoint — so this section's one Save has to write both, or a toggled checkbox would look
+      // saved and not be. Sent only when the draft actually diverged, and sent as the merged WHOLE
+      // (see `RenderConfigProvider.save`), so a save from here cannot wipe the settings of the
+      // sections the viewer never opened. A failed render-config save does not throw — it reports
+      // `false` — so it is checked explicitly: half a save is a failed save, and the section has to
+      // stay dirty so the viewer's toggle is not silently dropped on the next navigation.
+      if (renderConfig.dirty && !(await renderConfig.save())) {
+        setError(renderConfig.error ?? "Failed to save grammar and rendering settings");
+        return;
+      }
       setSuccess(true);
       onDirtyChange(false);
       router.refresh();
@@ -264,111 +318,165 @@ function GeneralSection({
   };
 
   return (
-    <div className="space-y-8">
-      <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
-          <div className="p-3 text-sm text-destructive bg-destructive/10 rounded-md">{error}</div>
-        )}
-        {success && (
-          <div className="rounded-md border p-3 text-sm border-[hsl(var(--success-border))] bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]">
-            Project settings updated successfully.
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <Label htmlFor="name">Project Name *</Label>
-          <Input
-            id="name"
-            value={formData.name || ""}
-            onChange={(event) => edit({ name: event.target.value })}
-            placeholder="My Awesome Project"
-            required
-            maxLength={100}
-            disabled={isArchived}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="description">Description</Label>
-          <textarea
-            id="description"
-            value={formData.description || ""}
-            onChange={(event) => edit({ description: event.target.value })}
-            placeholder="Optional project description"
-            className="w-full min-h-[100px] rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
-            maxLength={1000}
-            disabled={isArchived}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="tags">Tags (comma-separated)</Label>
-          <Input
-            id="tags"
-            value={formData.tags?.join(", ") || ""}
-            onChange={(event) =>
-              edit({
-                tags: event.target.value.split(",").map((t) => t.trim()).filter(Boolean),
-              })
-            }
-            placeholder="documentation, api, guide"
-            disabled={isArchived}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="language">Language</Label>
-          <p className="text-sm text-muted-foreground">
-            Document language for the editor&apos;s spell checker. Applies to everyone editing this
-            project.
-          </p>
-          <select
-            id="language"
-            value={language ?? ""}
-            onChange={(event) => {
-              setSuccess(false);
-              onDirtyChange(true);
-              setLanguage(event.target.value || null);
-            }}
-            disabled={isArchived}
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-          >
-            <option value="">Not set</option>
-            {SPELLCHECK_LANGUAGE_OPTIONS.map((option) => (
-              <option key={option.code} value={option.code}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {!isArchived && (
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => router.back()}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={loading}>
-              {loading ? "Saving…" : "Save Changes"}
-            </Button>
-          </div>
-        )}
-      </form>
-
-      {!isArchived && (
-        <div className="space-y-2 pt-4 border-t">
-          <h3 className="text-sm font-semibold">Main file</h3>
-          <p className="text-sm text-muted-foreground">
-            The main file scopes cross-file resolution (include graph, symbols, diagnostics, and
-            heading levels) for the whole project. Leave it unset to resolve each file on its own.
-          </p>
-          <EditorMainFilePicker
-            projectId={project.id}
-            canEdit={!isArchived}
-            currentMainFileNodeId={project.mainFileNodeId}
-          />
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {error && (
+        <div className="p-3 text-sm text-destructive bg-destructive/10 rounded-md">{error}</div>
+      )}
+      {success && (
+        <div className="rounded-md border p-3 text-sm border-[hsl(var(--success-border))] bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]">
+          Project settings updated successfully.
         </div>
       )}
-    </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="name">Project Name *</Label>
+        <Input
+          id="name"
+          value={formData.name || ""}
+          onChange={(event) => edit({ name: event.target.value })}
+          placeholder="My Awesome Project"
+          required
+          maxLength={100}
+          disabled={isArchived}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="description">Description</Label>
+        <textarea
+          id="description"
+          value={formData.description || ""}
+          onChange={(event) => edit({ description: event.target.value })}
+          placeholder="Optional project description"
+          className="w-full min-h-[100px] rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
+          maxLength={1000}
+          disabled={isArchived}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="tags">Tags (comma-separated)</Label>
+        <Input
+          id="tags"
+          value={formData.tags?.join(", ") || ""}
+          onChange={(event) =>
+            edit({
+              tags: event.target.value.split(",").map((t) => t.trim()).filter(Boolean),
+            })
+          }
+          placeholder="documentation, api, guide"
+          disabled={isArchived}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="language">Language</Label>
+        <p className="text-sm text-muted-foreground">
+          Document language for the editor&apos;s spell checker. Applies to everyone editing this
+          project.
+        </p>
+        <select
+          id="language"
+          value={language ?? ""}
+          onChange={(event) => {
+            markEdited();
+            setLanguage(event.target.value || null);
+          }}
+          disabled={isArchived}
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <option value="">Not set</option>
+          {SPELLCHECK_LANGUAGE_OPTIONS.map((option) => (
+            <option key={option.code} value={option.code}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/*
+        Gated on the LIVE value of the select above, not the project's stored language: picking a
+        different language greys these controls out and says why on the spot, which is the whole
+        reason they sit here. It is also honest about what saving does — this form writes the
+        language and the grammar settings together.
+      */}
+      <div className="rounded-md border p-4">
+        <GrammarPanel languageIsEnglish={language === "en"} />
+      </div>
+
+      <MainFileField
+        projectId={project.id}
+        value={mainFileNodeId}
+        disabled={isArchived}
+        onChange={(next) => {
+          markEdited();
+          setMainFileNodeId(next);
+        }}
+      />
+
+      {!isArchived && (
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => router.back()}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={loading}>
+            {loading ? "Saving…" : "Save Changes"}
+          </Button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+/**
+ * The grammar & spelling controls, shown with the Language setting.
+ *
+ * They belong beside Language because they are GATED on it: checking only runs for English projects
+ * and the dialect is meaningless otherwise. Sitting in a section of their own, the dependency was
+ * invisible — someone changed the language and had no way to know they had just turned checking off.
+ *
+ * The two settings are stored on the project's render config rather than the project row (they are
+ * checker configuration, not Asciidoctor attributes), so this panel reads and writes the ONE shared
+ * draft the AsciiDoc/PDF/HTML/Extensions sections use, and General's Save flushes it.
+ *
+ * @param properties - Whether the language currently selected in the form is English.
+ * @returns The grammar panel element.
+ */
+function GrammarPanel({ languageIsEnglish }: { languageIsEnglish: boolean }): React.JSX.Element {
+  const renderConfig = useRenderConfigDraft();
+
+  if (renderConfig.loading) {
+    return <p className="text-sm text-muted-foreground">Loading grammar options…</p>;
+  }
+
+  // The stored render config could not be READ, and saving it is a whole-document replace: a toggle
+  // made against the empty default would erase every other option this project has. So the controls
+  // are not offered at all — the same rule the render-config sections apply to their own fields.
+  if (!renderConfig.loaded) {
+    return (
+      <div role="alert" className="p-3 text-sm text-destructive bg-destructive/10 rounded-md">
+        {renderConfig.error ?? "Render options could not be loaded."} Grammar checking is not shown
+        here because saving it now would overwrite the options already stored.
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {renderConfig.error !== null && (
+        <div role="alert" className="mb-3 p-3 text-sm text-destructive bg-destructive/10 rounded-md">
+          {renderConfig.error}
+        </div>
+      )}
+      <GrammarSettingsSection
+        enabled={renderConfig.draft.grammarCheckEnabled ?? true}
+        dialect={renderConfig.draft.grammarDialect ?? DEFAULT_GRAMMAR_DIALECT}
+        languageIsEnglish={languageIsEnglish}
+        canEdit={renderConfig.canEdit && !renderConfig.saving}
+        onEnabledChange={(next) => renderConfig.set("grammarCheckEnabled", next)}
+        onDialectChange={(next) => renderConfig.set("grammarDialect", next)}
+      />
+    </>
   );
 }
 

@@ -110,6 +110,47 @@ describe('PrismaReviewCommentRepository', () => {
     expect(found!.anchor!.state).toBe('located');
   });
 
+  it('persists a refreshed anchor line hint without disturbing the rest of the anchor', async () => {
+    // The write path the collaboration server uses on write-back: re-measure the hint, persist, and
+    // leave the relative-position pair, quote, section, state and updatedAt exactly as they were.
+    const { projectId, documentId, authorId } = await setupDocument();
+    const anchor = new ReviewAnchor(
+      new Uint8Array([7, 7, 7]),
+      { prefix: 'p ', exact: 'passage', suffix: ' s' },
+      3,
+      'sect-intro',
+      'located',
+    );
+    const comment = new ReviewComment(
+      ReviewCommentId.create(randomUUID()),
+      projectId,
+      documentId,
+      null,
+      'comment',
+      'A comment body',
+      authorId,
+      null,
+      null,
+      null,
+      null,
+      null,
+      anchor,
+    );
+    await repo.create(comment);
+    const stored = await repo.findById(projectId, comment.id);
+
+    expect(stored!.refreshAnchorLineHint(87)).toBe(true);
+    await repo.update(stored!);
+
+    const reloaded = await repo.findById(projectId, comment.id);
+    expect(reloaded!.anchor!.lineHint).toBe(87);
+    expect([...reloaded!.anchor!.relPos!]).toEqual([7, 7, 7]);
+    expect(reloaded!.anchor!.quote!.exact).toBe('passage');
+    expect(reloaded!.anchor!.sectionId).toBe('sect-intro');
+    expect(reloaded!.anchor!.state).toBe('located');
+    expect(reloaded!.updatedAt.getTime()).toBe(stored!.updatedAt.getTime());
+  });
+
   it('scopes findById to the project (tenant filter)', async () => {
     const { projectId, documentId, authorId } = await setupDocument();
     const row = await createTestReviewComment(client, {

@@ -326,6 +326,30 @@ describe('ThemeEditor — content survives the collab lifecycle', () => {
     expect(container.querySelector('.cm-editor')).toBe(view);
   });
 
+  it('restores the room text when the binding is dropped and restored (sync-timeout recovery)', () => {
+    // The sync handshake exceeding COLLAB_SYNC_TIMEOUT_MS drops the binding to null and serves the file
+    // read-only; the later `synced` restores it. Because this component's mount effect keys on
+    // `collab?.doc`, that round trip recreates the view against an ALREADY-populated room — and ySync
+    // applies only incremental deltas, so a view created empty then stays empty forever while the
+    // author's first keystroke splices into the middle of the real text. Seeding from the live Y.Text
+    // (which cannot duplicate — it IS what Yjs holds) makes the recreation lossless.
+    const doc = new Y.Doc();
+    doc.getText(COLLAB_YTEXT_KEY).insert(0, 'page:\n  layout: landscape\n');
+    const collab = { doc, awareness: new Awareness(doc) };
+
+    const { container, rerender } = render(
+      <ThemeEditor content="" canEdit path="t-theme.yml" collab={collab} connectionState="synced" />,
+    );
+    // The binding drops on the sync timeout.
+    rerender(<ThemeEditor content="" canEdit path="t-theme.yml" collab={null} connectionState="offline" />);
+    // ...and returns when the provider finally syncs.
+    rerender(
+      <ThemeEditor content="" canEdit path="t-theme.yml" collab={collab} connectionState="synced" />,
+    );
+
+    expect(container.querySelector('.cm-content')?.textContent ?? '').toContain('layout');
+  });
+
   it('treats a document with no collaborative backing as the non-collab path', () => {
     const { container } = render(
       <ThemeEditor

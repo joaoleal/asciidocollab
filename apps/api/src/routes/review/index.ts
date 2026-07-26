@@ -21,9 +21,13 @@ import {
   ReviewCommentId,
   isReviewItemKind,
   isReviewItemStatus,
+  // The body limit is a business rule, and the API is a layer that may read the domain directly. The
+  // route's `maxLength` rejects an over-long body early, but it is enforcing the DOMAIN's rule, so it
+  // cites the owner rather than the browser-facing mirror in `@asciidocollab/shared`.
+  REVIEW_BODY_MAX_LEN,
   type ReviewComment,
 } from '@asciidocollab/domain';
-import { REVIEW_BODY_MAX_LEN, isAllowedReactionEmoji } from '@asciidocollab/shared';
+import { isAllowedReactionEmoji } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { sendReviewError } from './errors';

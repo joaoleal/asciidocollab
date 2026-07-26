@@ -8,6 +8,7 @@ import {
   PrismaSystemSettingRepository,
   PrismaDocumentRepository,
   PrismaFileNodeRepository,
+  PrismaReviewCommentRepository,
   Re2RegexEngine,
 } from '@asciidocollab/infrastructure';
 import { OpenCollaborationSessionUseCase, CloseCollaborationSessionUseCase } from '@asciidocollab/domain';
@@ -15,6 +16,7 @@ import { PersistenceExtension } from './extensions/persistence.js';
 import { AuthHookExtension } from './extensions/auth-hook.js';
 import { ConnectionLimitExtension } from './extensions/connection-limit.js';
 import { ChangeNotifierExtension } from './extensions/change-notifier.js';
+import { ReviewAnchorHintExtension } from './extensions/review-anchor-hints.js';
 import { createMtlsFetch } from './extensions/mtls-fetch.js';
 import { createCollabServer } from './server.js';
 import { createCollabConfig } from './config/collab-config.js';
@@ -35,6 +37,7 @@ export async function compositionRoot() {
   const systemSettingRepo = new PrismaSystemSettingRepository(prisma);
   const documentRepository = new PrismaDocumentRepository(prisma);
   const fileNodeRepository = new PrismaFileNodeRepository(prisma);
+  const reviewCommentRepository = new PrismaReviewCommentRepository(prisma);
 
   const openCollaborationSessionUseCase = new OpenCollaborationSessionUseCase();
   const closeCollaborationSessionUseCase = new CloseCollaborationSessionUseCase();
@@ -81,6 +84,16 @@ export async function compositionRoot() {
     fileNodeRepository,
   );
 
+  // Re-measures each review anchor's stored line hint on write-back, so the cross-file comments &
+  // tasks panel (which has no loaded Y.Doc for the files it lists) orders by where anchors ARE rather
+  // than where they were when the comment was written. Best-effort and registered AFTER persistence
+  // so the authoritative content writes always land first.
+  const reviewAnchorHintExtension = new ReviewAnchorHintExtension({
+    reviewCommentRepo: reviewCommentRepository,
+    documentRepo: documentRepository,
+    logger,
+  });
+
   // Notifies the API of live edits so open dependent documents recompute. Best-effort, off the
   // Yjs hot path; reuses the same mTLS transport as the auth hook when configured.
   const changeNotifierExtension = new ChangeNotifierExtension({
@@ -93,7 +106,13 @@ export async function compositionRoot() {
 
   const server = await createCollabServer(
     { port: config.get('port'), maxPayloadBytes: config.get('maxPayloadBytes'), logger },
-    [authHookExtension, connectionLimitExtension, persistenceExtension, changeNotifierExtension],
+    [
+      authHookExtension,
+      connectionLimitExtension,
+      persistenceExtension,
+      reviewAnchorHintExtension,
+      changeNotifierExtension,
+    ],
     systemSettingRepo,
     {
       onRoomOpen: (projectId, documentId) =>

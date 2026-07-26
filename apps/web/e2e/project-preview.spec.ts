@@ -227,7 +227,13 @@ test.describe('AsciiDoc live preview', () => {
     await editorContent.click();
     await page.keyboard.press('Control+End');
 
-    // Wait for cursor to reach the last line, then Ctrl+click the active line
+    // Wait for the caret to actually REACH the last line before clicking the active line. Pressing a
+    // key and clicking `.cm-activeLine` in the next breath is a race: under parallel load the keypress
+    // may not have been applied yet, so the click lands on whichever line was active before — and the
+    // assertion below then measures a scroll to the wrong place. `toHaveClass` retries until the class
+    // has moved, which is the event actually being waited for.
+    const editorLines = page.locator('.cm-editor .cm-line');
+    await expect(editorLines.last()).toHaveClass(/cm-activeLine/, { timeout: 10_000 });
     const activeLineLocator = page.locator('.cm-editor .cm-activeLine');
     await activeLineLocator.click({ modifiers: ['Control'] });
 
@@ -238,6 +244,9 @@ test.describe('AsciiDoc live preview', () => {
 
     // --- Step 2: Ctrl+click on first line → preview scrolls back to the top ---
     await page.keyboard.press('Control+Home');
+    // Same wait as step 1, and this is the one that actually flaked: clicking before the caret moved
+    // ctrl+clicked the LAST line again, scrolling the preview down when the assertion wants it at top.
+    await expect(editorLines.first()).toHaveClass(/cm-activeLine/, { timeout: 10_000 });
     const firstLineLocator = page.locator('.cm-editor .cm-activeLine');
     await firstLineLocator.click({ modifiers: ['Control'] });
 

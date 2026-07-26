@@ -1,5 +1,6 @@
 import * as Y from 'yjs';
 import type { AnchorDto, AnchorQuoteDto, AnchorState, CreateAnchorInput } from '@asciidocollab/shared';
+import { packRelativePositionPair, unpackRelativePositionPair } from '@asciidocollab/shared';
 
 /**
  * The primary anchor core for feature 038 review comments: encode/decode the Yjs
@@ -20,9 +21,6 @@ import type { AnchorDto, AnchorQuoteDto, AnchorState, CreateAnchorInput } from '
 export const QUOTE_CONTEXT_LEN = 32;
 /** Upper bound on a captured anchor's `exact` passage, in characters. */
 export const MAX_ANCHOR_LEN = 2000;
-
-/** Bytes reserved for the little-endian length prefix of the start relative-position. */
-const LENGTH_PREFIX_BYTES = 4;
 
 /**
  * Encodes a `Uint8Array` to a base64 string without relying on Node's `Buffer` (browser-safe).
@@ -47,18 +45,16 @@ export function base64ToUint8Array(encoded: string): Uint8Array {
 }
 
 /**
- * Encodes the (start, end) relative-position PAIR into a single base64 string. The two byte
- * runs are packed as `[startLen:uint32 LE][startBytes][endBytes]` so the boundary is exact and
- * the end run is simply the remainder.
+ * Encodes the (start, end) relative-position PAIR into a single base64 string. The two byte runs are
+ * packed by {@link packRelativePositionPair} — the shared authority for that layout, because the
+ * collaboration server reads the very same blob when it refreshes an anchor's line hint at
+ * write-back.
  */
 export function encodeRelativePositions(start: Y.RelativePosition, end: Y.RelativePosition): string {
-  const startBytes = Y.encodeRelativePosition(start);
-  const endBytes = Y.encodeRelativePosition(end);
-  const packed = new Uint8Array(LENGTH_PREFIX_BYTES + startBytes.length + endBytes.length);
-  const view = new DataView(packed.buffer);
-  view.setUint32(0, startBytes.length, true);
-  packed.set(startBytes, LENGTH_PREFIX_BYTES);
-  packed.set(endBytes, LENGTH_PREFIX_BYTES + startBytes.length);
+  const packed = packRelativePositionPair(
+    Y.encodeRelativePosition(start),
+    Y.encodeRelativePosition(end),
+  );
   return uint8ArrayToBase64(packed);
 }
 
@@ -70,17 +66,11 @@ export function decodeRelativePositions(
   encoded: string,
 ): { start: Y.RelativePosition; end: Y.RelativePosition } | null {
   try {
-    const packed = base64ToUint8Array(encoded);
-    if (packed.length < LENGTH_PREFIX_BYTES) return null;
-    const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
-    const startLength = view.getUint32(0, true);
-    const startEnd = LENGTH_PREFIX_BYTES + startLength;
-    if (startEnd > packed.length) return null;
-    const startBytes = packed.subarray(LENGTH_PREFIX_BYTES, startEnd);
-    const endBytes = packed.subarray(startEnd);
+    const unpacked = unpackRelativePositionPair(base64ToUint8Array(encoded));
+    if (!unpacked) return null;
     return {
-      start: Y.decodeRelativePosition(startBytes),
-      end: Y.decodeRelativePosition(endBytes),
+      start: Y.decodeRelativePosition(unpacked.start),
+      end: Y.decodeRelativePosition(unpacked.end),
     };
   } catch {
     return null;

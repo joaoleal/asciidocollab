@@ -5,6 +5,7 @@ import {
   Document,
   Asset,
   ProjectRenderConfig,
+  ProjectDictionaryTerm,
   ProjectId,
   ProjectName,
   FileNodeId,
@@ -15,6 +16,7 @@ import {
   YjsStateId,
   MimeType,
   ProjectRenderConfigId,
+  ProjectDictionaryTermId,
   Role,
   UserId,
   type ProjectRepository,
@@ -23,6 +25,7 @@ import {
   type DocumentRepository,
   type AssetRepository,
   type ProjectRenderConfigRepository,
+  type ProjectDictionaryRepository,
   type SystemSettingRepository,
   type ProjectFileStore,
 } from '@asciidocollab/domain';
@@ -33,6 +36,8 @@ import {
   DEMO_PROJECT_DESCRIPTION,
   DEMO_PROJECT_TAGS,
   DEMO_RENDER_CONFIG,
+  DEMO_DICTIONARY_TERMS,
+  DEMO_DICTIONARY_AUTHOR_ID,
   DEMO_MAIN_FILE_ID,
   DEMO_FOLDERS,
   DEMO_FILES,
@@ -130,6 +135,7 @@ export interface DemoProjectDeps {
     readonly document: DocumentRepository;
     readonly asset: AssetRepository;
     readonly projectRenderConfig: ProjectRenderConfigRepository;
+    readonly projectDictionary: ProjectDictionaryRepository;
     readonly systemSetting: SystemSettingRepository;
   };
   /** Filesystem-backed store that holds the user-visible file bytes. */
@@ -259,7 +265,21 @@ async function createDemoProject(deps: DemoProjectDeps, projectId: ProjectId): P
       new ProjectRenderConfig(ProjectRenderConfigId.create(projectId.value), projectId, normalized),
     );
 
-    // 5. Designate the main/root include file now that its node exists.
+    // 5. The shared dictionary: the names the tutorial repeats on every page, pre-accepted so the
+    //    on-device checker does not underline them. Nobody could add them later — the demo grants
+    //    every user `VIEWER`, and managing a dictionary requires editor/owner.
+    for (const entry of DEMO_DICTIONARY_TERMS) {
+      await deps.repos.projectDictionary.add(
+        new ProjectDictionaryTerm(
+          ProjectDictionaryTermId.create(entry.id),
+          projectId,
+          entry.term,
+          UserId.create(DEMO_DICTIONARY_AUTHOR_ID),
+        ),
+      );
+    }
+
+    // 6. Designate the main/root include file now that its node exists.
     project.setMainFile(FileNodeId.create(DEMO_MAIN_FILE_ID));
     await deps.repos.project.save(project);
   } catch (error) {

@@ -1,7 +1,7 @@
 'use client';
 import { useLayoutEffect, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Settings, Users } from 'lucide-react';
+import { ChevronLeft, Settings, Users } from 'lucide-react';
 import type { CreateAnchorInput, ReviewItemDto } from '@asciidocollab/shared';
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { ResizeHandle } from '@/components/ui/resize-handle';
 import { BackButton } from '@/components/back-button';
 import { LogoMark } from '@/components/logo';
 import { FileTree } from '@/components/file-tree/file-tree';
-import { AsciiDocEditor } from '@/components/editor/asciidoc-editor';
+import { AsciiDocEditor, type EditorGrammarState } from '@/components/editor/asciidoc-editor';
 import { useProjectSymbolIndex } from '@/hooks/use-project-symbol-index';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
@@ -25,13 +25,19 @@ import { useEditorPreferences } from '@/hooks/use-editor-preferences';
 import { type ConnectionState } from '@/hooks/use-collab-document';
 
 import { LeftPanel } from '@/components/editor/left-panel';
+import { RightPanel } from '@/components/editor/right-panel';
+import { RightPanelRail } from '@/components/editor/right-panel-rail';
 import { OutlineView } from '@/components/editor/outline-view';
+import { CommentsPanelView, type CommentsSubView } from '@/components/editor/comments-panel-view';
+import { WritingPanelView, type WritingSubView } from '@/components/editor/writing-panel-view';
 import { SearchView, type SearchResultTarget } from '@/components/editor/search-view';
 import { NonLiveIndicator } from '@/components/editor/non-live-indicator';
 import type { SectionOutlineEntry } from '@/lib/codemirror/asciidoc-outline';
 import { assembleOutline, mapOutlinePresence } from '@/lib/outline';
 import {
+  buildAssembledLineToSource,
   buildAssembledScrollContext,
+  buildOpenFileLineToSource,
   liftSourceMapToBlockStarts,
   openLineToAssembledLine,
 } from '@/lib/pdf/scroll-sync-map';
@@ -40,10 +46,10 @@ import { sameOutlineEntries } from '@/lib/outline/stable-entries';
 import type { OutlinePeer } from '@/lib/outline';
 import type { SelectedFile, FileContentState } from '@/hooks/use-file-selection';
 import type { CollabBinding } from '@/components/editor/asciidoc-editor';
-import { CommentRail, TaskPanel, ReviewToggle, ReviewViewStateProvider } from '@/components/review';
-import { cn } from '@/lib/utilities';
+import { ReviewViewStateProvider } from '@/components/review';
 import type { TaskMember } from '@/components/review';
 import { useReviewItems } from '@/hooks/use-review-items';
+import { sortThreadsByDocumentOrder } from '@/lib/review/order';
 import { reanchorReviewItem } from '@/lib/api/review';
 import { membersApi } from '@/lib/api/members';
 import type { ReviewAnchorRange } from '@/lib/codemirror/review-decorations';
@@ -58,11 +64,14 @@ import { useEditorNavigation } from '@/app/(dashboard)/dashboard/projects/[id]/u
 import { useEditorRestoration } from '@/app/(dashboard)/dashboard/projects/[id]/use-editor-restoration';
 import { readLastSelection } from '@/hooks/use-last-selection';
 import { PdfExportButton } from '@/components/pdf-export-button';
+import { HtmlExportButton } from '@/components/html-export-button';
+import { useHtmlExport } from '@/hooks/use-html-export';
 import { PdfDiagnostics } from '@/components/pdf-diagnostics';
 import { PdfPreviewPanel } from '@/components/pdf-preview-panel';
 import { usePdfExport } from '@/hooks/use-pdf-export';
 import { usePdfPreview } from '@/hooks/use-pdf-preview';
 import { buildProjectSnapshot, type SnapshotFile } from '@/lib/pdf/build-project-snapshot';
+import { withAppRenderDefaults } from '@/lib/asciidoc/render-app-defaults';
 import { collectReferencedAssetPaths } from '@/lib/pdf/collect-referenced-assets';
 import { useProjectAssetCache, type ProjectAssetCache } from '@/hooks/use-project-asset-cache';
 import { useProjectAuxiliaryTextCache } from '@/hooks/use-auxiliary-text-cache';
@@ -71,7 +80,12 @@ import { usePdfExtensionBundle } from '@/hooks/use-pdf-extension-bundle';
 
 /** No extensions enabled. Shared so the memo keeps a stable identity across renders. */
 const NO_EXTENSION_IDS: readonly string[] = [];
-import { resolveRenderAttributes, SOFT_DEFAULT_SUFFIX } from '@asciidocollab/shared';
+import {
+  resolveRenderAttributes,
+  SOFT_DEFAULT_SUFFIX,
+  DEFAULT_HTML_EXPORT_PACKAGING,
+  DEFAULT_HTML_EXPORT_THEME,
+} from '@asciidocollab/shared';
 import type { ProjectSnapshot, RenderDiagnostic } from '@asciidocollab/asciidoc-pdf';
 
 /** A diagnostic source location the editor can reveal. */
@@ -107,7 +121,22 @@ interface ContentAreaProperties {
   selectedFile: SelectedFile | null;
   contentState: FileContentState;
   canEdit: boolean;
+  /** Project-role permission for the shared dictionary (no admin bypass). See the layout's prop. */
+  canManageDictionary: boolean;
+  /**
+   * The reader's UN-NARROWED edit permission, for the view-local rule config only. `canEdit` above is
+   * `editorCanEdit`, which already folds in `offline`/`collabUnavailable`; those must not disable a
+   * control that writes nothing. See the editor's prop.
+   */
+  canConfigureRules: boolean;
   projectId: string;
+  /**
+   * Surfaces the editor's live grammar-panel state so the layout can render the Grammar rail.
+   *
+   * @param state - The current grammar issues plus the navigate/apply actions, or null when no
+   * AsciiDoc editor is mounted to check anything.
+   */
+  onGrammarStateChange?: (state: EditorGrammarState | null) => void;
   /**
    * The project's binary-asset cache, forwarded to the theme editor so a theme's fonts are fetched
    * and embedded in its preview. The SAME instance the document preview and the export use, so a
@@ -196,6 +225,8 @@ function ContentArea({
   selectedFile,
   contentState,
   canEdit,
+  canManageDictionary,
+  canConfigureRules,
   projectId,
   assetCache,
   projectLanguage,
@@ -228,6 +259,7 @@ function ContentArea({
   onReviewMarkerClick,
   onReviewMarkerHover,
   onCreateCommentFromSelection,
+  onGrammarStateChange,
 }: ContentAreaProperties) {
   // Called before the early returns below, because a hook cannot be conditional. The result is only
   // consumed on the theme-file branch, but computing it here keeps the branch a plain render.
@@ -290,8 +322,11 @@ function ContentArea({
       key={selectedFile.nodeId}
       content={contentOverride ?? contentState.content ?? ''}
       canEdit={canEdit}
+      canManageDictionary={canManageDictionary}
+      canConfigureRules={canConfigureRules}
       projectId={projectId}
       fileNodeId={selectedFile.nodeId}
+      onGrammarStateChange={onGrammarStateChange}
       initialEtag={contentState.etag}
       isAsciiDoc={isAsciiDocFile(selectedFile.nodeName)}
       spellcheckLanguage={projectLanguage}
@@ -343,6 +378,13 @@ interface ProjectEditorLayoutProperties {
    * 403. See page.tsx.
    */
   canModifyFiles: boolean;
+  /**
+   * Whether the user may write the project's shared grammar dictionary. Excludes the admin bypass for
+   * the same reason as {@link canModifyFiles} — `requireDictionaryEditor` authorizes on project role
+   * alone — and unlike the document editor nothing else covers it, since a dictionary write is a REST
+   * call with no collaboration session to force read-only. See page.tsx.
+   */
+  canManageDictionary: boolean;
   /** Authenticated user id — scopes the persisted last-selection so accounts stay isolated. */
   userId: string;
 }
@@ -357,6 +399,7 @@ export function ProjectEditorLayout({
   canManage,
   canEdit,
   canModifyFiles,
+  canManageDictionary,
   userId,
 }: ProjectEditorLayoutProperties) {
   const { selectedFile, contentState, selectFile, clearSelection } = useFileSelection(projectId);
@@ -383,7 +426,7 @@ export function ProjectEditorLayout({
   });
 
   // Editor preferences (preview style, outline scope/visibility, included-file display).
-  const { scrollSyncEnabled, setScrollSyncEnabled, previewStyle, setPreviewStyle, leftPanelTab, setLeftPanelTab, showIncludedFiles, setShowIncludedFiles, outlineScope, setOutlineScope, commentsPanelOpen, setCommentsPanelOpen } = useEditorPreferences();
+  const { scrollSyncEnabled, setScrollSyncEnabled, previewStyle, setPreviewStyle, leftPanelTab, setLeftPanelTab, rightPanelTab, setRightPanelTab, showIncludedFiles, setShowIncludedFiles, outlineScope, setOutlineScope, commentsPanelOpen, setCommentsPanelOpen } = useEditorPreferences();
 
   // Cross-file symbol index: rooted at the configured main file, or the open file when
   // none is set. Powers cross-file diagnostics + completion; refreshes when the main
@@ -472,7 +515,16 @@ export function ProjectEditorLayout({
   const [pendingReviewFocus, setPendingReviewFocus] = useState<{ fileNodeId: string; documentId: string; itemId: string } | null>(null);
 
   // Which surface the comments panel shows: this document's threads or the project-wide task list.
-  const [commentsView, setCommentsView] = useState<'threads' | 'tasks'>('threads');
+  const [commentsView, setCommentsView] = useState<CommentsSubView>('threads');
+  // Live grammar-panel state surfaced from the editor (issues + navigate/apply/dictionary actions).
+  const [grammarState, setGrammarState] = useState<EditorGrammarState | null>(null);
+  // Writing panel sub-view: the list of issues, the project dictionary, or the rule configuration.
+  const [grammarView, setGrammarView] = useState<WritingSubView>('issues');
+  // The right panel holds two independent views, and only the comments one needs collaboration.
+  // Gating the whole panel on a live Y.Doc hid the Writing view — and the issue count — for every
+  // non-collaborative document, even though grammar checking runs locally and was still underlining
+  // the text. So the panel is offered when EITHER view has something to show.
+  const rightPanelAvailable = commentsAvailable || grammarState !== null;
   // Project members for the assignee picker + whether the current user owns the project.
   const [members, setMembers] = useState<TaskMember[]>([]);
   const [isProjectOwner, setIsProjectOwner] = useState(false);
@@ -488,15 +540,30 @@ export function ProjectEditorLayout({
     return () => { cancelled = true; };
   }, [projectId, userId]);
 
-  // Open (unresolved) roots in document order, for the count badge + sequential navigation.
-  const openThreadIdsInOrder = useMemo(() => {
-    const fromById = new Map(reviewItems.ranges.map((range) => [range.id, range.from]));
-    return reviewItems.threads
-      .filter((thread) => !thread.root.resolvedAt)
-      .map((thread) => thread.root.id)
-      .toSorted((a, b) => (fromById.get(a) ?? Number.POSITIVE_INFINITY) - (fromById.get(b) ?? Number.POSITIVE_INFINITY));
-  }, [reviewItems.threads, reviewItems.ranges]);
-  const openCount = openThreadIdsInOrder.length;
+  // Every root in document order — the sequence the prev/next arrows walk. Resolved threads are
+  // included: the arrows step through ALL comments, so a resolved one is never skipped over.
+  // It shares the rail's ordering rule so the arrows visit the cards in exactly the order they appear
+  // in the rail (including where a detached thread lands).
+  const threadIdsInOrder = useMemo(
+    () =>
+      sortThreadsByDocumentOrder(reviewItems.threads, reviewItems.ranges).map((thread) => thread.root.id),
+    [reviewItems.threads, reviewItems.ranges],
+  );
+  // The badge counts only what still needs attention, so it stays a count of OPEN comments.
+  const openCount = useMemo(
+    () => reviewItems.threads.filter((thread) => !thread.root.resolvedAt).length,
+    [reviewItems.threads],
+  );
+
+  // Step the focused thread through every comment in document order, wrapping at both ends.
+  const stepActiveThread = useCallback((delta: number) => {
+    if (threadIdsInOrder.length === 0) return;
+    const current = activeThreadId ? threadIdsInOrder.indexOf(activeThreadId) : -1;
+    const nextIndex = current === -1
+      ? (delta > 0 ? 0 : threadIdsInOrder.length - 1)
+      : (current + delta + threadIdsInOrder.length) % threadIdsInOrder.length;
+    setActiveThreadId(threadIdsInOrder[nextIndex]);
+  }, [threadIdsInOrder, activeThreadId]);
 
   // A review marker was clicked in the editor: open the panel, switch to the per-file threads view
   // (the marker belongs to this file), and focus that thread.
@@ -519,16 +586,6 @@ export function ProjectEditorLayout({
     setCommentsView('threads');
     setPendingAnchor(anchor);
   }, [reattachItemId, projectId, reviewItems, setCommentsPanelOpen]);
-
-  // Step the focused thread through the open threads in document order (sequential navigation).
-  const stepActiveThread = useCallback((delta: number) => {
-    if (openThreadIdsInOrder.length === 0) return;
-    const current = activeThreadId ? openThreadIdsInOrder.indexOf(activeThreadId) : -1;
-    const nextIndex = current === -1
-      ? (delta > 0 ? 0 : openThreadIdsInOrder.length - 1)
-      : (current + delta + openThreadIdsInOrder.length) % openThreadIdsInOrder.length;
-    setActiveThreadId(openThreadIdsInOrder[nextIndex]);
-  }, [openThreadIdsInOrder, activeThreadId]);
 
   // File + cross-reference navigation, the go-to-symbol palette, and the refactor dialog.
   const {
@@ -684,7 +741,7 @@ export function ProjectEditorLayout({
   const exportConfigurationReady = !renderConfigLoading && projectExtensionsReady;
 
   const { exportPdf, isExporting: isExportingPdf, phase: exportPhase, error: exportError, diagnostics: exportDiagnostics } =
-    usePdfExport({ extensions: projectExtensionBundle });
+    usePdfExport({ extensions: projectExtensionBundle, projectName });
   const exportRootFileId = mainFile ?? selectedFile?.nodeId ?? null;
   const exportMainPath = mainFile && projectIndex ? projectIndex.pathOf(mainFile) : null;
   const exportOpenPath =
@@ -697,16 +754,23 @@ export function ProjectEditorLayout({
     // The project's own "Language" setting (which drives the editor spell checker) is ALSO the render
     // `lang` here, so the PDF/HTML output localizes to it — one language control, not two. Soft-
     // defaulted (`@`) and seeded first so a document `:lang:` header still overrides it.
-    if (projectLanguage === null || projectLanguage === '') return resolved;
-    return {
-      ...resolved,
-      attributes: { lang: `${projectLanguage}${SOFT_DEFAULT_SUFFIX}`, ...resolved.attributes },
-    };
+    const configured =
+      projectLanguage === null || projectLanguage === ''
+        ? resolved.attributes
+        : { lang: `${projectLanguage}${SOFT_DEFAULT_SUFFIX}`, ...resolved.attributes };
+    // Then the app's own render defaults UNDERNEATH all of it (`icons=font`, so admonitions get icons
+    // in every project and not just in one whose header declares `:icons:`). This is the single seam
+    // every real render passes through — the HTML preview and export take this map as
+    // `projectAttributes`, the PDF preview and export take it as the snapshot's attribute seed — so
+    // the four of them cannot disagree about it. See render-app-defaults.ts for why it lives here.
+    return { ...resolved, attributes: withAppRenderDefaults(configured) };
   }, [renderConfig, projectLanguage]);
 
   // The render root's own resolved attributes (it inherits none), layered OVER the project render-config
   // defaults so the exported PDF and the on-screen preview share one seed and a document header still
-  // overrides a project default. An empty project config preserves the base map identity (no churn).
+  // overrides a project default. The empty-map shortcut below preserves the base map identity when
+  // there is nothing to layer; it no longer fires in practice, since the app render defaults
+  // (`withAppRenderDefaults`) always contribute at least one entry.
   const baseExportAttributes =
     exportRootFileId && projectIndex ? resolvedScopeOf(exportRootFileId) : NO_EXPORT_ATTRIBUTES;
   const exportAttributes = useMemo<ReadonlyMap<string, string>>(() => {
@@ -794,33 +858,39 @@ export function ProjectEditorLayout({
     ],
   );
 
+  /**
+   * Guarantee the render root's content is present before an export dispatches.
+   *
+   * Every export names the main document as its root, and every engine fails outright if that path
+   * carries no content: the PDF engine reports "root document is missing from the project snapshot",
+   * and the HTML render has nothing to assemble includes from. The symbol index fetches file content
+   * asynchronously, so the root can be transiently absent even while `exportMainPath` is already known
+   * and the button is enabled: at first load, or for a frame after a file-tree / content-changed SSE
+   * event invalidates and refetches it (exactly the shape the E2E export test hit — a fresh project
+   * whose main file was just created/configured). A memo-based button gate cannot close the SSE window
+   * (the invalidation does not change `projectIndex`'s identity), so the click handler is
+   * authoritative: if the root content is missing, force a rebuild and wait for it.
+   *
+   * If it still has not arrived the caller falls through deliberately: the engine then surfaces its
+   * own specific, user-visible error rather than the click silently doing nothing.
+   */
+  const ensureRootLoaded = useCallback(async () => {
+    const rootLoaded = (): boolean =>
+      exportMainPath === null ||
+      Object.prototype.hasOwnProperty.call(getProjectFiles(), exportMainPath);
+    if (rootLoaded()) return;
+    await refreshProjectIndex();
+    await waitUntil(rootLoaded, {
+      timeoutMs: EXPORT_ROOT_WAIT_TIMEOUT_MS,
+      intervalMs: EXPORT_ROOT_WAIT_INTERVAL_MS,
+    });
+  }, [exportMainPath, getProjectFiles, refreshProjectIndex]);
+
   // One-click export: enumerate the referenced assets, AWAIT their bytes (so nothing renders as a
   // placeholder in the downloaded file), then build the snapshot with them and render.
   const handleExportPdf = useCallback(async () => {
     if (exportOpenPath === null) return;
-
-    // Guarantee the render root's content is present before dispatching. buildProjectSnapshot names
-    // `rootPath` = the main document, but the engine fails with "root document is missing from the
-    // project snapshot" if that path carries no content in `files`. The symbol index fetches file
-    // content asynchronously, so the root can be transiently absent even while `exportMainPath` is
-    // already known and the button is enabled: at first load, or for a frame after a file-tree /
-    // content-changed SSE event invalidates and refetches it (exactly the shape the E2E export test
-    // hit — a fresh project whose main file was just created/configured). A memo-based button gate
-    // cannot close the SSE window (the invalidation does not change `projectIndex`'s identity), so the
-    // click handler is authoritative: if the root content is missing, force a rebuild and wait for it.
-    const rootLoaded = (): boolean =>
-      exportMainPath === null ||
-      Object.prototype.hasOwnProperty.call(getProjectFiles(), exportMainPath);
-    if (!rootLoaded()) {
-      await refreshProjectIndex();
-      await waitUntil(rootLoaded, {
-        timeoutMs: EXPORT_ROOT_WAIT_TIMEOUT_MS,
-        intervalMs: EXPORT_ROOT_WAIT_INTERVAL_MS,
-      });
-      // If it still has not arrived we fall through: buildSnapshot below still produces a snapshot and
-      // the engine surfaces its specific, user-visible error rather than the click silently doing
-      // nothing.
-    }
+    await ensureRootLoaded();
 
     const assetPaths = collectReferencedAssetPaths({ files: getProjectFiles(), attributes: exportAttributes });
     const binaryFiles = await loadAssets(assetPaths);
@@ -829,7 +899,48 @@ export function ProjectEditorLayout({
     const snapshot = buildSnapshot(binaryFiles, exportMainPath, exportAttributes);
     if (snapshot === null) return;
     exportPdf(snapshot);
-  }, [exportOpenPath, getProjectFiles, exportAttributes, exportMainPath, loadAssets, buildSnapshot, exportPdf, refreshProjectIndex]);
+  }, [exportOpenPath, getProjectFiles, exportAttributes, exportMainPath, loadAssets, buildSnapshot, exportPdf, ensureRootLoaded]);
+
+  // ── Export to HTML ──────────────────────────────────────────────────────────────────────────
+  // The same whole-document scope as the PDF export, rendered by the engine that already draws the
+  // preview and saved as a real standalone page. Packaging, stylesheet and palette are project
+  // settings so a team's exports are consistent; the stylesheet falls back to whichever one the
+  // reader currently has the preview in, so an export with nothing configured matches what they see.
+  const {
+    exportHtml,
+    isExporting: isExportingHtml,
+    phase: htmlExportPhase,
+    error: htmlExportError,
+    failures: htmlExportFailures,
+  } = useHtmlExport({ projectId });
+
+  const handleExportHtml = useCallback(async () => {
+    if (exportOpenPath === null) return;
+    await ensureRootLoaded();
+    const htmlExport = renderConfig.htmlExport;
+    exportHtml({
+      // The export always renders the configured main document — never the preview's per-open-file
+      // root — so what is downloaded is the whole document, exactly as the PDF export does it.
+      rootPath: exportMainPath ?? exportOpenPath,
+      // The download is named after the project, not the root — see `exportFileName`.
+      projectName,
+      files: getProjectFiles(),
+      projectAttributes: projectRenderAttributes.attributes,
+      packaging: htmlExport?.packaging ?? DEFAULT_HTML_EXPORT_PACKAGING,
+      style: htmlExport?.style ?? previewStyle,
+      theme: htmlExport?.theme ?? DEFAULT_HTML_EXPORT_THEME,
+    });
+  }, [
+    exportOpenPath,
+    exportMainPath,
+    ensureRootLoaded,
+    getProjectFiles,
+    projectName,
+    projectRenderAttributes,
+    renderConfig.htmlExport,
+    previewStyle,
+    exportHtml,
+  ]);
 
   // ── Live PDF preview ─────────────────────────────────────────────────────────────────────────
   // The single preview panel switches between its HTML and PDF renderings via the header's segmented
@@ -932,6 +1043,47 @@ export function ProjectEditorLayout({
       handleNavigateToFile(location.path);
     },
     [previewOpenPath, revealLine, handleNavigateToFile, pendingXrefLine],
+  );
+
+  // Reveal the editor source of a block clicked in the HTML preview. The click carries the block's line in
+  // the preview's OPEN-FILE-rooted assembled coordinates. With include bodies hidden every line is the open
+  // file's own, so the line is used directly; with bodies shown, reverse-map through the open-file-rooted
+  // provenance map so a click inside an included body jumps to that file. Reuses the diagnostic seam.
+  const handlePreviewSourceNavigate = useCallback(
+    (assembledLine: number) => {
+      if (previewOpenPath === undefined) return;
+      let target: DiagnosticLocation = { path: previewOpenPath, line: assembledLine };
+      if (showIncludedFiles) {
+        const files = getProjectFiles();
+        const map = buildOpenFileLineToSource(previewOpenPath, (path: string) => files[path] ?? null, true);
+        const entry = map?.[assembledLine - 1];
+        if (entry) target = { path: entry.path, line: entry.sourceLine };
+      }
+      handleDiagnosticLocation(target);
+    },
+    [previewOpenPath, showIncludedFiles, getProjectFiles, handleDiagnosticLocation],
+  );
+
+  // Reveal the editor source of a block clicked in the PDF preview. The click resolves (best-effort) to a
+  // line in the MAIN-rooted assembled document; reverse-map it through the same provenance map the PDF
+  // scroll-sync uses to a source {file, line}. Built lazily here since clicks are rare.
+  const handlePdfSourceNavigate = useCallback(
+    (assembledLine: number) => {
+      if (previewSnapshot === null) return;
+      const map = buildAssembledLineToSource(previewSnapshot);
+      const entry = map?.[assembledLine - 1];
+      if (entry) handleDiagnosticLocation({ path: entry.path, line: entry.sourceLine });
+    },
+    [previewSnapshot, handleDiagnosticLocation],
+  );
+
+  // Exact PDF click-to-source: the block carried its render-time origin, so jump straight to it — no
+  // reverse mapping through the (possibly newer) buffer, so it can't drift to the wrong file/section.
+  const handlePdfExactSourceNavigate = useCallback(
+    (path: string, line: number) => {
+      handleDiagnosticLocation({ path, line });
+    },
+    [handleDiagnosticLocation],
   );
 
   // Full-document outline (feature 032): assemble across include directives when a main file is
@@ -1049,37 +1201,14 @@ export function ProjectEditorLayout({
             phase={exportPhase}
             disabled={exportOpenPath === null || !exportConfigurationReady}
           />
-          {commentsAvailable && (
-            <div className="flex items-center gap-1">
-              {commentsPanelOpen && openCount > 0 && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    aria-label="Previous comment"
-                    onClick={() => stepActiveThread(-1)}
-                  >
-                    <ChevronUp className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    aria-label="Next comment"
-                    onClick={() => stepActiveThread(1)}
-                  >
-                    <ChevronDown className="h-4 w-4" />
-                  </Button>
-                </>
-              )}
-              <ReviewToggle
-                openCount={openCount}
-                isOpen={commentsPanelOpen}
-                onToggle={() => setCommentsPanelOpen(!commentsPanelOpen)}
-              />
-            </div>
-          )}
+          {/* The HTML export needs the render config (its packaging/style/theme live there) but not the
+              PDF extension bundle, which only the PDF engine runs — so it unlocks a beat earlier. */}
+          <HtmlExportButton
+            onExport={handleExportHtml}
+            isExporting={isExportingHtml}
+            phase={htmlExportPhase}
+            disabled={exportOpenPath === null || renderConfigLoading}
+          />
           {canManage && (
             <>
               <Button asChild variant="ghost" size="sm">
@@ -1126,18 +1255,38 @@ export function ProjectEditorLayout({
         </div>
       )}
 
+      {/* HTML export outcome, on the same terms: a fatal failure, and — separately — the images that
+          could not be retrieved. The second is not a failure: the file downloaded, but those pictures
+          are missing from it, which the author can only know if we say so. */}
+      {htmlExportError && (
+        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {`Export to HTML failed: ${htmlExportError}`}
+        </div>
+      )}
+      {htmlExportFailures.length > 0 && (
+        <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
+          {`${htmlExportFailures.length} image${htmlExportFailures.length === 1 ? '' : 's'} could not be included in the exported HTML: ${htmlExportFailures
+            .map((failure) => failure.source)
+            .join(', ')}`}
+        </div>
+      )}
+
       {/* Body: sidebar + content + preview */}
       <div className="flex flex-1 overflow-hidden">
-        {/* File tree panel — resizable via the divider on its right edge. */}
+        {/* File tree panel — resizable via the divider on its right edge. Always rendered: collapsing
+            hides the body and leaves the rail, so the panel shrinks to the rail's width rather than
+            disappearing behind an anonymous chevron strip. */}
         <div
           data-testid="file-tree-panel"
           style={sidebarOpen ? { width: sidebarResize.width } : undefined}
-          className={sidebarOpen ? 'shrink-0 overflow-hidden' : 'hidden'}
+          className="shrink-0 overflow-hidden"
         >
           <LeftPanel
             activeTab={leftPanelTab}
             onTabChange={setLeftPanelTab}
+            collapsed={!sidebarOpen}
             onCollapse={() => setSidebarOpen(false)}
+            onExpand={() => setSidebarOpen(true)}
             filesSlot={
               <FileTree
                 projectId={projectId}
@@ -1174,18 +1323,6 @@ export function ProjectEditorLayout({
           />
         )}
 
-        {!sidebarOpen && (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="expand sidebar"
-            className="w-6 h-full shrink-0 border-r rounded-none"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        )}
-
         {/* Editor + Preview + Comments panels. The editor's ContentArea stays mounted in ONE
             stable Panel regardless of previewOpen/commentsPanelOpen — only the preview and comments
             Panels + their resize handles mount/unmount — so toggling either never remounts
@@ -1205,7 +1342,10 @@ export function ProjectEditorLayout({
               selectedFile={selectedFile}
               contentState={contentState}
               canEdit={editorCanEdit}
+              canManageDictionary={canManageDictionary}
+              canConfigureRules={canEdit}
               projectId={projectId}
+              onGrammarStateChange={setGrammarState}
               assetCache={assetCache}
               projectLanguage={projectLanguage}
               onScrollLine={previewOpen && scrollSyncEnabled ? handleScrollLine : undefined}
@@ -1271,6 +1411,7 @@ export function ProjectEditorLayout({
                     onPreviewStyleChange={setPreviewStyle}
                     showIncludedFiles={showIncludedFiles}
                     onOpenInclude={handleNavigateToFile}
+                    onNavigateToSource={handlePreviewSourceNavigate}
                     onShowIncludedFilesChange={setShowIncludedFiles}
                     previewMode={previewMode}
                     onPreviewModeChange={setPreviewMode}
@@ -1282,6 +1423,8 @@ export function ProjectEditorLayout({
                     phase={previewPhase}
                     diagnostics={previewDiagnostics}
                     onSelectLocation={handleDiagnosticLocation}
+                    onNavigateToSource={handlePdfSourceNavigate}
+                    onNavigateToExactSource={handlePdfExactSourceNavigate}
                     previewMode={previewMode}
                     onPreviewModeChange={setPreviewMode}
                     // The open file always contributes to the rendered document — it is either the render
@@ -1302,7 +1445,23 @@ export function ProjectEditorLayout({
               </Panel>
             </>
           )}
-          {commentsAvailable && commentsPanelOpen && editorCollab && (
+          {/* Collapsed preview: a plain strip standing in for the preview panel, so it keeps the
+              preview's PLACE in the row — between the editor and the right panel. Rendered inside
+              the group for that reason: the right panel is a member of this group, so anything
+              placed after the group would sit beyond its rail instead of before it. */}
+          {showPreview && !previewOpen && (
+            <Button
+              data-testid="preview-panel"
+              variant="ghost"
+              size="icon"
+              aria-label="expand preview"
+              className="w-6 h-full shrink-0 border-l rounded-none"
+              onClick={togglePreview}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          )}
+          {rightPanelAvailable && commentsPanelOpen && (
             <>
               <PanelResizeHandle className="group relative z-10 -mx-[3px] flex w-[7px] shrink-0 cursor-col-resize items-stretch justify-center outline-none">
                 <span className="w-px bg-border transition-colors group-hover:bg-primary/60 group-data-[resize-handle-state=drag]:bg-primary" />
@@ -1310,60 +1469,43 @@ export function ProjectEditorLayout({
               <Panel
                 id="editor-comments"
                 order={3}
-                defaultSize={22}
-                minSize={16}
-                maxSize={32}
+                // Wider than the pre-rail panel was: the view rail now takes a fixed ~46px out of
+                // the panel, and at the old default the control row's tab labels wrapped onto two
+                // lines. The min is raised for the same reason.
+                defaultSize={30}
+                minSize={22}
+                maxSize={40}
                 collapsible
                 className="flex flex-col overflow-hidden"
                 data-testid="comments-panel"
               >
-                <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1" role="tablist" aria-label="Comments view">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={commentsView === 'threads'}
-                    data-testid="comments-view-threads"
-                    onClick={() => setCommentsView('threads')}
-                    className={cn(
-                      'rounded px-2 py-0.5 text-xs font-medium transition-colors',
-                      commentsView === 'threads' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    This file
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={commentsView === 'tasks'}
-                    data-testid="comments-view-tasks"
-                    onClick={() => setCommentsView('tasks')}
-                    className={cn(
-                      'rounded px-2 py-0.5 text-xs font-medium transition-colors',
-                      commentsView === 'tasks' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    All comments &amp; tasks
-                  </button>
-                  {/* Collapse lives on the shared tab bar (like the left panel's rail) so it stays
-                      available from both the per-file and cross-file views. */}
-                  <button
-                    type="button"
-                    aria-label="collapse comments"
-                    title="Collapse panel"
-                    onClick={() => setCommentsPanelOpen(false)}
-                    className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <ChevronRight className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </div>
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  {commentsView === 'threads' ? (
-                    <CommentRail
+                <RightPanel
+                  activeTab={rightPanelTab}
+                  onTabChange={setRightPanelTab}
+                  onCollapse={() => setCommentsPanelOpen(false)}
+                  commentCount={openCount}
+                  writingCount={grammarState?.diagnostics.length}
+                  writingSlot={
+                    <WritingPanelView view={grammarView} onViewChange={setGrammarView} grammar={grammarState} />
+                  }
+                  commentsSlot={
+                    editorCollab === null ? (
+                      <p className="p-3 text-xs text-muted-foreground">
+                        Comments need a live connection to this document. Reload once the collaboration
+                        service is reachable.
+                      </p>
+                    ) : (
+                    <CommentsPanelView
+                      view={commentsView}
+                      onViewChange={setCommentsView}
+                      canStepThreads={threadIdsInOrder.length > 0}
+                      onStepThread={stepActiveThread}
                       projectId={projectId}
                       documentId={editorCollab.documentId}
                       ydoc={editorCollab.doc}
                       role={editorCollab.role}
                       currentUserId={userId}
+                      isProjectOwner={isProjectOwner}
                       enabled={commentsAvailable}
                       members={members}
                       pendingAnchor={pendingAnchor}
@@ -1374,34 +1516,28 @@ export function ProjectEditorLayout({
                       setActiveThreadId={setActiveThreadId}
                       onReattach={(itemId) => { setCommentsPanelOpen(true); setReattachItemId(itemId); }}
                       onMutated={reviewItems.refetch}
+                      onNavigateToItem={handleNavigateToReviewItem}
                     />
-                  ) : (
-                    <TaskPanel
-                      projectId={projectId}
-                      currentUserId={userId}
-                      isOwner={isProjectOwner}
-                      readOnly={editorCollab.role === 'observer'}
-                      enabled={commentsAvailable}
-                      onNavigate={handleNavigateToReviewItem}
-                    />
-                  )}
-                </div>
+                    )
+                  }
+                />
               </Panel>
             </>
           )}
         </PanelGroup>
         </ReviewViewStateProvider>
-        {showPreview && !previewOpen && (
-          <Button
-            data-testid="preview-panel"
-            variant="ghost"
-            size="icon"
-            aria-label="expand preview"
-            className="w-6 h-full shrink-0 border-l rounded-none"
-            onClick={togglePreview}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
+        {/* Collapsed right panel: the rail stays on screen, exactly as the file tree's does, so the
+            open-comment and writing-issue counts remain visible and either view is one click away.
+            It is the right-most element because the panel it restores is the right-most panel. */}
+        {rightPanelAvailable && !commentsPanelOpen && (
+          <RightPanelRail
+            activeTab={rightPanelTab}
+            onTabChange={setRightPanelTab}
+            collapsed
+            onExpand={() => setCommentsPanelOpen(true)}
+            commentCount={openCount}
+            writingCount={grammarState?.diagnostics.length}
+          />
         )}
       </div>
       <EditorGoToSymbol

@@ -547,6 +547,26 @@ describe('invokeConvert — source map read-back', () => {
     ]);
   });
 
+  it('carries the exact source origin (path + sourceLine) when a preview render stamped it', async () => {
+    const map = [
+      { line: 4, page: 1, yFraction: 0.2, path: 'ch/one.adoc', sourceLine: 12 },
+      { line: 8, page: 1, yFraction: 0.5, path: '', sourceLine: 3 }, // empty path → origin dropped
+      { line: 9, page: 1, yFraction: 0.7, path: 'ch/two.adoc' }, // missing sourceLine → origin dropped
+    ];
+    const vm = new FakeVm({ sourceMapFile: encodeText(JSON.stringify(map)) });
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error('expected success');
+    }
+    expect(result.sourceMap).toEqual([
+      { line: 4, page: 1, yFraction: 0.2, path: 'ch/one.adoc', sourceLine: 12 },
+      { line: 8, page: 1, yFraction: 0.5 },
+      { line: 9, page: 1, yFraction: 0.7 },
+    ]);
+  });
+
   it('drops malformed entries and omits the map entirely when none survive', async () => {
     const map = [
       { line: 'x', page: 1, yFraction: 0.1 }, // non-numeric line

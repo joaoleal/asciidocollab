@@ -21,5 +21,7 @@ export { EmailVerificationToken } from './email-verification-token';
 export type { KeyBinding } from './key-binding';
 export { EditorPreferences } from './editor-preferences';
 export { ProjectRenderConfig, type RenderConfigData } from './project-render-config';
+export { ProjectDictionaryTerm } from './project-dictionary-term';
+export { IgnoredLint } from './ignored-lint';
 export { ReviewComment } from './review-comment';
 export { ReviewReaction } from './review-reaction';

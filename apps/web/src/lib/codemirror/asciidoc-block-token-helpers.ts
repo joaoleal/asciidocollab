@@ -10,7 +10,7 @@
 
 export const NEWLINE = 10, SPACE = 32, TAB = 9, EQUALS = 61, DASH = 45, STAR = 42, UNDERSCORE = 95;
 export const PLUS = 43, SLASH = 47, COLON = 58, PIPE = 124, DOT = 46, LBRACK = 91, RBRACK = 93, SEMICOLON = 59, COMMA = 44;
-export const APOSTROPHE = 39, LANGLE = 60, BACKSLASH = 92, BACKTICK = 96;
+export const APOSTROPHE = 39, LANGLE = 60, BACKSLASH = 92, BACKTICK = 96, BANG = 33;
 
 /**
  * A look-ahead view over the input being tokenized, exposing the char code `offset`
@@ -231,6 +231,100 @@ export function consumeAttributeEntry(input: ConsumingInput): void {
     if (input.next === NEWLINE) input.advance();
     if (!continues || input.next === -1) return;
   }
+}
+
+/**
+ * Longest document-header byline the tokenizer will consider. An author or revision line is a short
+ * metadata line; a longer line is prose (or a wrapped construct) and is left to the paragraph path,
+ * which also caps the work these predicates do on every header-position line.
+ */
+const MAX_BYLINE_LENGTH = 500;
+
+/**
+ * Read the current line as a string WITHOUT moving the cursor, excluding the trailing newline.
+ *
+ * @param input - The look-ahead view over the input (cursor on the first char of the line).
+ * @param maxLength - Give up (returning `null`) once the line exceeds this many characters.
+ * @returns The line text, or `null` when it is longer than `maxLength`.
+ */
+function peekLine(input: PeekInput, maxLength: number): string | null {
+  let line = '';
+  for (let offset = 0; offset < maxLength; offset++) {
+    const code = input.peek(offset);
+    if (code === NEWLINE || code === -1) return line;
+    line += String.fromCodePoint(code);
+  }
+  return null;
+}
+
+// One author of an implicit author line, mirroring Asciidoctor's `AuthorInfoLineRx`: one to three
+// name words (a word char then word chars / `-` / `'` / `.`), optionally followed by ` <email>`.
+// Deliberately STRICT — a fourth word, a leading space, or an `<…>` without an `@` all fail, so
+// ordinary prose sitting under a title stays a paragraph rather than highlighting as metadata.
+const AUTHOR_NAME_PATTERN = String.raw`[\p{L}\p{N}_][\p{L}\p{N}_'.-]*`;
+const AUTHOR_SEGMENT_RE = new RegExp(
+  String.raw`^${AUTHOR_NAME_PATTERN}(?: +${AUTHOR_NAME_PATTERN})?(?: +${AUTHOR_NAME_PATTERN})?(?: +<[^<>@\s]+@[^<>@\s]+>)?$`,
+  'u',
+);
+
+// A revision line: a version (`v1.0`, `1.0`, or a bare date like `2026-07-18` — an optional `v`
+// then a DIGIT then version chars), optionally followed by `, <date>` and/or `: <remark>`.
+// Requiring the version to start with a digit is what keeps ordinary prose out (`Version 2`,
+// `2 apples a day` and `1. Step one` all fail), and requiring the remark separator to be a single
+// `:` followed by whitespace keeps a numeric description-list term (`1:: definition`) out.
+const REVISION_LINE_RE = /^[vV]?\d[\w.-]*[ \t]*(?:,[^:]*)?(?::(?:[ \t].*)?)?$/;
+
+/**
+ * Reports whether a LINE of text qualifies as an AsciiDoc REVISION line (`v1.0`, `v1.0, 2026-07-18`,
+ * `1.0, Jan 01, 2013: Ring in the new year release`). The header position (directly under the author
+ * line) is the caller's responsibility; this only judges the text.
+ *
+ * Shared rather than private because the prose extractor walks the document header too — Asciidoctor
+ * takes the revision line only if it MATCHES (the author line above it is read unconditionally), so
+ * the extractor needs this exact predicate to find where the header ends, and a second copy of the
+ * pattern would be free to drift from the one the tokenizer applies.
+ *
+ * @param line - The line's text, without its trailing newline.
+ * @returns `true` when the text is a well-formed revision line.
+ */
+export function isRevisionLineText(line: string): boolean {
+  return REVISION_LINE_RE.test(line);
+}
+
+/**
+ * Reports whether the current line qualifies as an AsciiDoc implicit AUTHOR line — one or more
+ * `;`-separated authors, each a 1–3 word name with an optional `<email>`.
+ *
+ * Position is NOT checked here: an author line is only special immediately under the document title,
+ * and that context is enforced by the caller (via `Stack.canShift`, which the grammar makes true only
+ * in that one position). This predicate answers the separate question of whether the TEXT qualifies.
+ *
+ * @param input - The look-ahead view over the input (cursor on the first char of the line).
+ * @returns `true` when the line's text is a well-formed author line.
+ */
+export function isAuthorLine(input: PeekInput): boolean {
+  const line = peekLine(input, MAX_BYLINE_LENGTH);
+  if (line === null) return false;
+  // Leading whitespace is never an author line (Asciidoctor anchors the pattern at column 0); an
+  // indented line under a title is literal/paragraph text.
+  if (line.startsWith(' ') || line.startsWith('\t')) return false;
+  const trimmed = line.trimEnd();
+  if (trimmed === '') return false;
+  return trimmed.split(';').every((segment) => AUTHOR_SEGMENT_RE.test(segment.trim()));
+}
+
+/**
+ * Reports whether the current line qualifies as an AsciiDoc REVISION line.
+ *
+ * As with {@link isAuthorLine}, the header position (immediately under an author line) is the
+ * caller's responsibility; this only judges the text, via {@link isRevisionLineText}.
+ *
+ * @param input - The look-ahead view over the input (cursor on the first char of the line).
+ * @returns `true` when the line's text is a well-formed revision line.
+ */
+export function isRevisionLine(input: PeekInput): boolean {
+  const line = peekLine(input, MAX_BYLINE_LENGTH);
+  return line !== null && isRevisionLineText(line);
 }
 
 /**

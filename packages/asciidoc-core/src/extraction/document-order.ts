@@ -44,14 +44,30 @@ export type WalkEvent =
   | { kind: 'region-open'; pos: number; line: string }
   | { kind: 'region-close'; pos: number };
 
+/** One attribute-entry line and the characters it occupies, as scanned by {@link attributeEntrySpans}. */
+interface AttributeEntrySpan {
+  /**
+   * The whole entry: the `:name:` itself, the value, and every `\`-continuation line (the trailing
+   * newline of the last one included). It starts at column 0 because an attribute entry IS the whole
+   * line — Asciidoctor recognizes no indented form.
+   */
+  readonly span: TextSpan;
+  /** True for a SET entry (`:name: value`, value possibly empty), false for an unset (`:name!:`/`:!name:`). */
+  readonly isSet: boolean;
+}
+
 /**
- * Character spans occupied by attribute-entry VALUES (`:name: value`, including any `\`-continuation
- * lines), excluding entries inside verbatim/comment blocks. A `{set:}`/`include::` that falls inside
- * such a span is value TEXT, not a document-order directive, so body scans skip it. The caller passes
- * the already-computed verbatim ranges to avoid re-scanning.
+ * Scan every attribute-entry line of a file, following `\`-continuations and skipping entries inside
+ * verbatim/comment blocks (there an attribute-looking line is sample text, not an entry). The single
+ * place the entry-line walk lives, so the two range views below cannot drift from each other or from
+ * the grammar's {@link ATTR_ENTRY_LINE_RE}.
+ *
+ * @param content - The file's full text.
+ * @param verbatim - The already-computed verbatim/comment ranges, so callers that have them do not re-scan.
+ * @returns One entry per attribute-entry line, in document order.
  */
-export function attributeEntryValueRanges(content: string, verbatim: readonly TextSpan[]): TextSpan[] {
-  const spans: TextSpan[] = [];
+function attributeEntrySpans(content: string, verbatim: readonly TextSpan[]): AttributeEntrySpan[] {
+  const entries: AttributeEntrySpan[] = [];
   const lines = content.split('\n');
   let cursor = 0;
   for (let index = 0; index < lines.length; index += 1) {
@@ -59,16 +75,52 @@ export function attributeEntryValueRanges(content: string, verbatim: readonly Te
     cursor += lines[index].length + 1;
     if (isInRanges(start, verbatim)) continue;
     const match = ATTR_ENTRY_LINE_RE.exec(lines[index]);
-    if (match === null || match[2] === undefined) continue; // not a SET entry (unset/no value)
+    if (match === null) continue;
+    if (match[2] === undefined) {
+      // An unset (`:name!:` / `:!name:`) — a single line, with no value to continue.
+      entries.push({ span: { from: start, to: cursor }, isSet: false });
+      continue;
+    }
     let raw = match[2];
     while (VALUE_CONTINUATION_RE.test(raw) && index + 1 < lines.length) {
       raw = raw.replace(VALUE_CONTINUATION_RE, '').trimEnd() + ' ' + lines[index + 1].trim();
       index += 1;
       cursor += lines[index].length + 1;
     }
-    spans.push({ from: start, to: cursor });
+    entries.push({ span: { from: start, to: cursor }, isSet: true });
   }
-  return spans;
+  return entries;
+}
+
+/**
+ * Character spans occupied by attribute-entry VALUES (`:name: value`, including any `\`-continuation
+ * lines), excluding entries inside verbatim/comment blocks. A `{set:}`/`include::` that falls inside
+ * such a span is value TEXT, not a document-order directive, so body scans skip it. The caller passes
+ * the already-computed verbatim ranges to avoid re-scanning.
+ */
+export function attributeEntryValueRanges(content: string, verbatim: readonly TextSpan[]): TextSpan[] {
+  return attributeEntrySpans(content, verbatim)
+    .filter((entry) => entry.isSet) // an unset carries no value, so it spans nothing a body scan may skip
+    .map((entry) => entry.span);
+}
+
+/**
+ * Character spans occupied by attribute ENTRIES — every form (`:name: value`, `:name!:`, `:!name:`),
+ * name and value together, `\`-continuation lines included, entries inside verbatim/comment blocks
+ * excluded. The superset of {@link attributeEntryValueRanges}, which sees only the entries that set a
+ * value.
+ *
+ * This is the view a text consumer wants: an attribute entry is configuration — the name is a syntax
+ * identifier and the value is overwhelmingly a token, path, version, or brand word — so the whole line
+ * is markup, not writing. The editor's prose extraction masks these ranges before handing text to the
+ * grammar/spell checker, which is why it must be computed HERE from the same grammar the preview and
+ * resolution layers apply rather than from a second `:name:` pattern.
+ *
+ * @param content - The file's full text.
+ * @returns The entry spans in document order (non-overlapping, ascending).
+ */
+export function attributeEntryLineRanges(content: string): TextSpan[] {
+  return attributeEntrySpans(content, verbatimRanges(content)).map((entry) => entry.span);
 }
 
 /**

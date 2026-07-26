@@ -132,7 +132,7 @@ beforeEach(() => {
   Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectUrl, configurable: true });
 
   // Capture the download filename off each anchor at click time, so tests can assert the name the
-  // hook derived from the snapshot's root path without touching the download element directly.
+  // hook derived from the project name without touching the download element directly.
   capturedDownloadNames = [];
   anchorClick = jest
     .spyOn(HTMLAnchorElement.prototype, 'click')
@@ -192,34 +192,26 @@ describe('usePdfExport', () => {
     expect(result.current.isExporting).toBe(false);
   });
 
-  it('derives the download name from a root path that carries an extension', async () => {
-    const { result } = renderExport();
+  it('names the download after the project and the export date, not the render root', async () => {
+    const { result } = renderExport({ projectName: 'Annual Réport 2026' });
     await exportAndSettle(result.current.exportPdf, { ...SNAPSHOT, rootPath: 'chapters/intro.adoc' });
     const requestId = lastRenderRequest().requestId;
 
     act(() => lastWorker().emit({ type: 'result', result: makeResult(requestId) }));
 
-    expect(lastDownloadName()).toBe('intro.pdf');
+    // The slug rule itself is pinned in `export-file-name.test.ts`; this pins that the hook applies it
+    // to the PROJECT name — the root path contributes nothing to the name.
+    expect(lastDownloadName()).toMatch(/^annual-report-2026-\d{4}-\d{2}-\d{2}\.pdf$/);
   });
 
-  it('appends a .pdf extension when the root path has no extension of its own', async () => {
-    const { result } = renderExport();
-    await exportAndSettle(result.current.exportPdf, { ...SNAPSHOT, rootPath: 'book' });
-    const requestId = lastRenderRequest().requestId;
-
-    act(() => lastWorker().emit({ type: 'result', result: makeResult(requestId) }));
-
-    expect(lastDownloadName()).toBe('book.pdf');
-  });
-
-  it('falls back to a default name when the root path has no usable basename', async () => {
+  it('falls back to a usable name when no project name was supplied', async () => {
     const { result } = renderExport();
     await exportAndSettle(result.current.exportPdf, { ...SNAPSHOT, rootPath: 'chapters/' });
     const requestId = lastRenderRequest().requestId;
 
     act(() => lastWorker().emit({ type: 'result', result: makeResult(requestId) }));
 
-    expect(lastDownloadName()).toBe('document.pdf');
+    expect(lastDownloadName()).toMatch(/^project-\d{4}-\d{2}-\d{2}\.pdf$/);
   });
 
   it('exposes the result diagnostics for the UI to surface', async () => {

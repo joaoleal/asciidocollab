@@ -10,6 +10,8 @@ export type { EditorPreferencesRepository } from './user/editor-preferences.repo
 // project/
 export { ProjectRepository, PaginationParameters, PaginatedProjects } from './project/project.repository';
 export { ProjectMemberRepository } from './project/project-member.repository';
+export { ProjectDictionaryRepository } from './grammar/project-dictionary.repository';
+export { IgnoredLintRepository } from './grammar/ignored-lint.repository';
 export { TemplateRepository } from './project/template.repository';
 export { GitRepositoryRepository } from './project/git-repository.repository';
 export { CollaborationSessionRepository } from './project/collaboration-session.repository';

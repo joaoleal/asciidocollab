@@ -11,6 +11,7 @@ export type {
   TextRange,
   Reference,
   ProjectSymbol,
+  Diagnostic,
   IncludeEdge,
   ResolvedAttributeScope,
   DocumentOrderEvent,

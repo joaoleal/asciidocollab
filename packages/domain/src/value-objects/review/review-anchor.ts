@@ -55,7 +55,7 @@ export class ReviewAnchor {
     return this._quote === null ? null : { ...this._quote };
   }
 
-  /** @returns The 1-based line hint captured at creation, or null. */
+  /** @returns The 1-based line hint (captured at creation, re-measured on write-back), or null. */
   get lineHint(): number | null {
     return this._lineHint;
   }
@@ -91,5 +91,19 @@ export class ReviewAnchor {
   /** @returns A copy of this anchor with the given state, other fields unchanged. */
   withState(state: AnchorState): ReviewAnchor {
     return new ReviewAnchor(this._relPos, this._quote, this._lineHint, this._sectionId, state);
+  }
+
+  /**
+   * Returns a copy of this anchor carrying a freshly measured line hint, leaving the primary
+   * relative-position pair, the quote, the section and the resolution state untouched. The hint is
+   * derived data — where the anchor's relative position currently resolves to in the document — so
+   * re-measuring it changes nothing about WHERE the item is attached, only what a reader without a
+   * loaded document is told about it.
+   *
+   * @param lineHint - The newly measured 1-based line number, or null when unknown.
+   * @returns A copy of this anchor with the new hint.
+   */
+  withLineHint(lineHint: number | null): ReviewAnchor {
+    return new ReviewAnchor(this._relPos, this._quote, lineHint, this._sectionId, this._state);
   }
 }

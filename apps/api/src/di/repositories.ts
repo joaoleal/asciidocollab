@@ -22,6 +22,8 @@ import {
   PrismaReviewCommentRepository,
   PrismaReviewReactionRepository,
   PrismaProjectRenderConfigRepository,
+  PrismaProjectDictionaryRepository,
+  PrismaIgnoredLintRepository,
 } from '@asciidocollab/infrastructure';
 import type { AppContainer } from '..';
 
@@ -55,5 +57,7 @@ export function createRepositories(prisma: PrismaClient): AppContainer['repos'] 
     reviewComment: new PrismaReviewCommentRepository(prisma),
     reviewReaction: new PrismaReviewReactionRepository(prisma),
     projectRenderConfig: new PrismaProjectRenderConfigRepository(prisma),
+    projectDictionary: new PrismaProjectDictionaryRepository(prisma),
+    ignoredLint: new PrismaIgnoredLintRepository(prisma),
   };
 }

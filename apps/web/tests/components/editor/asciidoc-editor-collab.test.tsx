@@ -110,21 +110,78 @@ jest.mock('@/components/editor/editor-table-context-toolbar', () => ({
   EditorTableContextToolbar: () => <div data-testid="table-toolbar" />,
 }));
 
-// Capture the mount-hook inputs so we can assert collabExtension/remountKey threading.
+// The two grammar hooks that would otherwise reach the network on every render of this suite. Their
+// real behaviour is covered in the main editor suite; here they only have to settle.
+jest.mock('@/hooks/use-grammar-settings', () => ({
+  useGrammarSettings: () => ({ enabled: false, languageIsEnglish: false, dialect: 'en-GB', loaded: true }),
+}));
+jest.mock('@/hooks/use-ignored-lints', () => ({
+  useIgnoredLints: () => ({ blob: '', loading: false, error: null, save: jest.fn(async () => true) }),
+}));
+
+// The project dictionary is shared content, so its two writes are captured to prove a reader who may
+// not manage it never reaches them.
+const mockAddDictionaryTerm = jest.fn(async () => true);
+const mockRemoveDictionaryTerm = jest.fn(async () => true);
+jest.mock('@/hooks/use-project-dictionary', () => ({
+  useProjectDictionary: () => ({
+    entries: [{ id: 't1', term: 'Kubernetes', createdByUserId: 'u1', createdAt: '2026-01-01T00:00:00Z' }],
+    terms: ['Kubernetes'],
+    loading: false,
+    error: null,
+    addTerm: mockAddDictionaryTerm,
+    removeTerm: mockRemoveDictionaryTerm,
+    refetch: jest.fn(),
+  }),
+}));
+
+// Capture the mount-hook inputs so we can assert collabExtension/remountKey threading. The view's
+// dispatch is module-scoped so a document edit attempted through the grammar panel is observable.
+const mockViewDispatch = jest.fn();
 const mountSpy = jest.fn();
+// The Harper worker handle the rule-config writes go through. Stubbed so `setRule`/`resetRules` are
+// observable: without it `getHarperClient()` yields nothing and both bail before their permission
+// guard is reached, which would make a "no write happened" assertion pass for the wrong reason.
+const mockSetLintConfig = jest.fn();
+const mockHarperClient = {
+  getLintConfig: jest.fn(() => Promise.resolve({ SpellCheck: null })),
+  getLintDescriptions: jest.fn(() => Promise.resolve({})),
+  setLintConfig: mockSetLintConfig,
+};
+
 jest.mock('@/hooks/use-editor-mount', () => ({
   useEditorMount: (options: Record<string, unknown>) => {
     mountSpy(options);
     const containerReference = { current: document.createElement('div') };
     const viewReference = {
       current: {
-        state: { doc: { toString: () => 'live content', length: 12, sliceString: () => 'tbl' } },
-        dispatch: jest.fn(),
+        state: {
+          doc: { toString: () => 'live content', length: 12, sliceString: () => 'tbl' },
+          // What the flagged span holds, read by "add this word to the dictionary".
+          sliceDoc: () => 'wrold',
+        },
+        dispatch: mockViewDispatch,
       },
     };
-    return { containerReference, viewReference, handleHeadingClick: jest.fn() };
+    return {
+      containerReference,
+      viewReference,
+      handleHeadingClick: jest.fn(),
+      getHarperClient: () => mockHarperClient,
+    };
   },
 }));
+
+/**
+ * The document-changing transactions the view received. The editor dispatches effect-only transactions
+ * of its own on mount (review ranges, the active review), so "nothing was edited" has to mean "no
+ * transaction carried changes", not "nothing was dispatched".
+ */
+function documentEdits(): unknown[] {
+  return mockViewDispatch.mock.calls
+    .map((call) => call[0])
+    .filter((transaction) => transaction != null && 'changes' in (transaction as object));
+}
 
 const mockSave = jest.fn();
 let capturedDraftRecovered: ((draft: string) => void) | undefined;
@@ -155,6 +212,10 @@ beforeEach(() => {
   mountSpy.mockClear();
   mockSave.mockClear();
   mockUseAutoSave.mockClear();
+  mockViewDispatch.mockClear();
+  mockAddDictionaryTerm.mockClear();
+  mockRemoveDictionaryTerm.mockClear();
+  mockSetLintConfig.mockClear();
   mockTableContext = null;
   capturedDraftRecovered = undefined;
   capturedExternalChange = undefined;
@@ -292,5 +353,254 @@ describe('AsciiDocEditor — plain-text (non-AsciiDoc) chrome', () => {
   test('omits the status bar when projectId/fileNodeId are absent', () => {
     render(<AsciiDocEditor content="plain" canEdit />);
     expect(screen.queryByText(/Ln/i)).not.toBeInTheDocument();
+  });
+});
+
+// The writing surfaces (in-editor tooltip, Writing panel, dictionary) are driven by the handle the
+// editor publishes, so this is where the permission gate has to be right. It was not: the dictionary
+// permission was computed from the raw `canEdit` prop, which knows only the reader's PROJECT role —
+// so an observer, and a text file with no collaborative backing, were both offered every mutating
+// action, and applying a fix really did change the document under them.
+describe('AsciiDocEditor — grammar actions and edit permission', () => {
+  /** The grammar handle the editor publishes for a given set of props. */
+  function publishedGrammarState(properties: Record<string, unknown>) {
+    const published = jest.fn();
+    render(
+      <AsciiDocEditor
+        content="the wrold is round"
+        canEdit
+        projectId="p1"
+        fileNodeId="f1"
+        onGrammarStateChange={published}
+        {...properties}
+      />,
+    );
+    return published.mock.calls.at(-1)![0];
+  }
+
+  /** One positioned issue with a fix, shaped as the panel hands it back to the editor. */
+  const issue = {
+    from: 4,
+    to: 9,
+    diagnostic: {
+      from: 4,
+      to: 9,
+      severity: 'info' as const,
+      message: '“wrold” may be misspelled',
+      category: 'spelling' as const,
+      grammarSuggestions: [{ text: 'world', kind: 'replace' as const }],
+      grammarSegmentText: 'the wrold is round',
+      grammarLint: {
+        span: { start: 4, end: 9 },
+        kind: 'Spelling',
+        rule: 'SpellCheck',
+        message: '“wrold” may be misspelled',
+        suggestions: [{ text: 'world', kind: 'replace' as const }],
+      },
+    },
+  };
+  const fix = { text: 'world', kind: 'replace' as const };
+
+  describe('an editor-role collaborator', () => {
+    test('may edit the document, manage the dictionary, and configure rules', () => {
+      const grammar = publishedGrammarState({ collab: makeBinding('editor') });
+      expect(grammar.canEditDocument).toBe(true);
+      expect(grammar.canManageDictionary).toBe(true);
+      expect(grammar.canConfigureRules).toBe(true);
+    });
+
+    test('applying a fix reaches the document', () => {
+      const grammar = publishedGrammarState({ collab: makeBinding('editor') });
+      act(() => grammar.apply(issue, fix));
+      expect(documentEdits()).toEqual([{ changes: { from: 4, to: 9, insert: 'world' } }]);
+    });
+
+    test('the dictionary writes reach the server', () => {
+      const grammar = publishedGrammarState({ collab: makeBinding('editor') });
+      act(() => {
+        grammar.addDictionaryTerm('Kubernetes');
+        grammar.removeDictionaryTerm('t1');
+        grammar.addIssueWordToDictionary(issue);
+      });
+      expect(mockAddDictionaryTerm).toHaveBeenCalledWith('Kubernetes');
+      expect(mockAddDictionaryTerm).toHaveBeenCalledWith('wrold');
+      expect(mockRemoveDictionaryTerm).toHaveBeenCalledWith('t1');
+    });
+
+    test('the rule toggles reach the checker', async () => {
+      const grammar = publishedGrammarState({ collab: makeBinding('editor') });
+      await act(async () => {
+        grammar.setRule('SpellCheck', false);
+      });
+      expect(mockSetLintConfig).toHaveBeenCalledWith({ SpellCheck: false });
+    });
+  });
+
+  describe('an observer, whose project role still says they may edit', () => {
+    test('may neither edit the document nor manage the dictionary', () => {
+      // The reported bug: `canManageDictionary` was the raw `canEdit`, so this was true and the
+      // Add-to-dictionary controls rendered for a read-only viewer.
+      const grammar = publishedGrammarState({ collab: makeBinding('observer') });
+      expect(grammar.canEditDocument).toBe(false);
+      expect(grammar.canManageDictionary).toBe(false);
+      expect(grammar.canConfigureRules).toBe(false);
+    });
+
+    test('applying a fix changes nothing — no transaction is dispatched at all', () => {
+      const grammar = publishedGrammarState({ collab: makeBinding('observer') });
+      act(() => grammar.apply(issue, fix));
+      expect(documentEdits()).toEqual([]);
+    });
+
+    test('no dictionary write is attempted, so the server is never asked for a 403', () => {
+      const grammar = publishedGrammarState({ collab: makeBinding('observer') });
+      act(() => {
+        grammar.addDictionaryTerm('Kubernetes');
+        grammar.removeDictionaryTerm('t1');
+        grammar.addIssueWordToDictionary(issue);
+      });
+      expect(mockAddDictionaryTerm).not.toHaveBeenCalled();
+      expect(mockRemoveDictionaryTerm).not.toHaveBeenCalled();
+    });
+
+    test('no rule change reaches the checker', async () => {
+      // The rule config is view-local, so this is consistency rather than authorization: a reader who
+      // cannot apply a suggestion is offered no control over which checks run either. The panel
+      // disables the toggles; these handlers refuse as well, so a stale render cannot slip past.
+      const grammar = publishedGrammarState({ collab: makeBinding('observer') });
+      await act(async () => {
+        grammar.setRule('SpellCheck', false);
+        grammar.resetRules();
+      });
+      expect(mockSetLintConfig).not.toHaveBeenCalled();
+    });
+
+    test('still sees the issues and the project dictionary', () => {
+      // Reading is not gated: the checker keeps running and the terms stay listed.
+      const grammar = publishedGrammarState({ collab: makeBinding('observer') });
+      expect(grammar.dictionary).toHaveLength(1);
+      expect(grammar.diagnostics).toEqual([]);
+    });
+  });
+
+  // `canEdit` carries the global-admin bypass; `requireDictionaryEditor` authorizes on project
+  // membership alone. A global admin who is only a VIEWER of this project therefore arrives with
+  // canEdit=true and the role-only permission false, and must not be offered a dictionary control the
+  // API answers 403 to. Nothing downstream covers this case — a dictionary write is a REST call with
+  // no collaboration session to force read-only, unlike a document edit.
+  describe('a global admin who is only a viewer of this project', () => {
+    const asAdminViewer = { canEdit: true, canManageDictionary: false };
+
+    test('may edit the document but not manage the dictionary', () => {
+      const grammar = publishedGrammarState(asAdminViewer);
+      expect(grammar.canEditDocument).toBe(true);
+      expect(grammar.canManageDictionary).toBe(false);
+    });
+
+    test('no dictionary write is attempted, so the server is never asked for a 403', () => {
+      const grammar = publishedGrammarState(asAdminViewer);
+      act(() => {
+        grammar.addDictionaryTerm('Kubernetes');
+        grammar.removeDictionaryTerm('t1');
+        grammar.addIssueWordToDictionary(issue);
+      });
+      expect(mockAddDictionaryTerm).not.toHaveBeenCalled();
+      expect(mockRemoveDictionaryTerm).not.toHaveBeenCalled();
+    });
+
+    test('applying a fix still reaches the document (that permission is unaffected)', () => {
+      const grammar = publishedGrammarState(asAdminViewer);
+      act(() => grammar.apply(issue, fix));
+      expect(documentEdits()).toEqual([{ changes: { from: 4, to: 9, insert: 'world' } }]);
+    });
+
+    test('omitting the prop falls back to canEdit, for hosts that do not distinguish the two', () => {
+      const grammar = publishedGrammarState({ canEdit: true });
+      expect(grammar.canManageDictionary).toBe(true);
+    });
+  });
+
+  describe('a file with no collaborative backing (forced read-only)', () => {
+    // The document is read-only — there is no collaborative record to write through — but the
+    // DICTIONARY is scoped to the project, not to this file, and the server authorizes it on the
+    // project role alone. Revoking it here would let one unbacked file strip an owner of a
+    // project-level capability the server would grant, silently no-opping Add/Remove.
+    //
+    // These props are the combination the PROJECT EDITOR really produces for an owner on such a file:
+    // the layout passes `editorCanEdit` (already false — `use-managed-collab.ts` folds
+    // `offline || collabUnavailable` into it) as `canEdit`, alongside the role-only
+    // `canManageDictionary` and `canConfigureRules`. Passing `canEdit` as true here instead would test
+    // a shape production never renders, and did: it hid that the rules gate was reading the narrowed
+    // prop and disabling itself for an owner.
+    const asUnbackedOwner = {
+      collabUnavailable: true,
+      canEdit: false,
+      canManageDictionary: true,
+      canConfigureRules: true,
+    };
+
+    test('cannot edit the document, but may still manage the project dictionary and configure rules', () => {
+      const grammar = publishedGrammarState(asUnbackedOwner);
+      expect(grammar.canEditDocument).toBe(false);
+      expect(grammar.canManageDictionary).toBe(true);
+      // Same reasoning as the dictionary, and more plainly so: the rule config is view-local — never
+      // persisted, never sent to anyone — so an unbacked file has no business disabling it.
+      expect(grammar.canConfigureRules).toBe(true);
+    });
+
+    test('a rule toggle still reaches the checker', async () => {
+      const grammar = publishedGrammarState(asUnbackedOwner);
+      await act(async () => {
+        grammar.setRule('SpellCheck', false);
+      });
+      expect(mockSetLintConfig).toHaveBeenCalledWith({ SpellCheck: false });
+    });
+
+    // The regression witness for the coupling itself. Without the role-only prop the narrowed
+    // `canEdit` is the only signal the editor has, and the rule gate collapses with it — which is
+    // exactly what shipped, and why the layout now threads the un-narrowed value past it.
+    test('without the role-only prop the narrowed canEdit governs — the bug this prop exists to fix', () => {
+      const grammar = publishedGrammarState({ canEdit: false, collabUnavailable: true });
+      expect(grammar.canConfigureRules).toBe(false);
+    });
+
+    test('an observer on such a file still may not configure rules', () => {
+      // The role gate is the one that survives: `canConfigureRules` is a host claim about the project
+      // role, so an observer session must still override it.
+      const grammar = publishedGrammarState({ ...asUnbackedOwner, collab: makeBinding('observer') });
+      expect(grammar.canConfigureRules).toBe(false);
+    });
+
+    test('applies no fix, yet a dictionary term still reaches the server', () => {
+      const grammar = publishedGrammarState(asUnbackedOwner);
+      act(() => {
+        grammar.apply(issue, fix);
+        grammar.addDictionaryTerm('Kubernetes');
+        grammar.addIssueWordToDictionary(issue);
+      });
+      expect(documentEdits()).toEqual([]); // the document itself is untouched
+      expect(mockAddDictionaryTerm).toHaveBeenCalledWith('Kubernetes');
+      expect(mockAddDictionaryTerm).toHaveBeenCalledWith('wrold');
+    });
+  });
+
+  describe('a project viewer (no write permission at all)', () => {
+    test('may neither edit the document nor manage the dictionary', () => {
+      const published = jest.fn();
+      render(
+        <AsciiDocEditor
+          content="the wrold is round"
+          canEdit={false}
+          projectId="p1"
+          fileNodeId="f1"
+          onGrammarStateChange={published}
+        />,
+      );
+      const grammar = published.mock.calls.at(-1)![0];
+      expect(grammar.canEditDocument).toBe(false);
+      expect(grammar.canManageDictionary).toBe(false);
+      act(() => grammar.apply(issue, fix));
+      expect(documentEdits()).toEqual([]);
+    });
   });
 });
