@@ -34,6 +34,10 @@ jest.mock('@/lib/codemirror/asciidoc-language', () => {
   return { asciidoc: () => new LanguageSupport(language) };
 });
 
+// The grammar-engine factory spawns the Harper worker via `new URL(…, import.meta.url)`, which the
+// commonjs runtime cannot parse; the mount imports it transitively, so stub the factory out.
+jest.mock('@/lib/create-harper-worker', () => ({ createHarperEngine: () => ({}) }));
+
 // The real source-highlight loader lazily `import()`s embedded language packs from
 // `@codemirror/language-data` — ESM modules the commonjs ts-jest runtime cannot load, so the
 // genuine async `reparse` path never fires under jest. The mount-side reparse CALLBACK (the
