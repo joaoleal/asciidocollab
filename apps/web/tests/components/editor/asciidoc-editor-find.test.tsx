@@ -118,6 +118,9 @@ jest.mock('@/lib/codemirror/asciidoc-completions', () => {
     createImageCompletionSource: () => jest.fn(),
   };
 });
+// The grammar-engine factory spawns the Harper worker via `new URL(…, import.meta.url)`, which the
+// commonjs runtime cannot parse; the editor mount imports it transitively, so stub the factory out.
+jest.mock('@/lib/create-harper-worker', () => ({ createHarperEngine: () => ({}) }));
 jest.mock('@/lib/codemirror/asciidoc-link-handler', () => ({ createLinkHandler: () => ({ handleMousedown: jest.fn(), extension: jest.fn() }) }));
 jest.mock('@/hooks/use-include-completions', () => ({ useIncludeCompletions: () => [], useImagePaths: () => [] }));
 jest.mock('@/lib/codemirror/asciidoc-theme', () => ({ asciidocTheme: [] }));

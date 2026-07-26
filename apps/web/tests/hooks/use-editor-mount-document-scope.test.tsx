@@ -31,6 +31,10 @@ jest.mock('@/lib/codemirror/asciidoc-language', () => {
 
 const noop = (): void => {};
 
+// The grammar-engine factory spawns the Harper worker via `new URL(…, import.meta.url)`, which the
+// commonjs runtime cannot parse. The client below is mocked anyway, so the engine is never used.
+jest.mock('@/lib/create-harper-worker', () => ({ createHarperEngine: () => ({}) }));
+
 // A worker client that is ready immediately and flags every "wrold" — the real harper.js ESM/WASM
 // package cannot load under jest, but everything above the client seam is the production code.
 jest.mock('@/lib/codemirror/harper/harper-worker-client', () => ({

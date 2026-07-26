@@ -3,12 +3,14 @@ import type { GrammarDialect } from './dialect';
 /**
  * The domain-typed seam between our code and the Harper WASM engine. Everything above this interface
  * (the worker client, lint source, panel) depends only on `HarperEngine` and these plain data types —
- * never on `harper.js` directly — so it all unit-tests against a fake engine. The one concrete
- * implementation, `create-harper-worker.ts`, adapts Harper's `WorkerLinter` to this interface and is
- * the only module that imports `harper.js` (and thus the only one that cannot run under Node/jest).
+ * never on `harper.js` directly — so it all unit-tests against a fake engine.
  *
- * Per the T003 spike, `WorkerLinter` self-manages its own dedicated Web Worker + WASM, so there is no
- * hand-rolled postMessage protocol — this interface is the protocol.
+ * The one concrete implementation is the pair `harper-engine-proxy.ts` (main thread) +
+ * `workers/harper.worker.ts` (the engine), which speak the `harper-worker-protocol.ts` messages. The
+ * worker is the only module that imports `harper.js`, and therefore the only place the WASM binary is
+ * ever loaded — the T003 spike's shortcut of driving `harper.js`'s own `WorkerLinter` from the main
+ * thread looked equivalent but is not: its RPC serializer rehydrates every `Lint` into main-thread WASM
+ * objects, so it loaded the binary here too and stalled the editor while the reader typed.
  */
 
 /** A character range within a linted segment's text, as returned by Harper's `Lint.span()`. */
