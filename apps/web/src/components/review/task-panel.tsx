@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarClock, ListChecks, MessagesSquare, MoreHorizontal } from 'lucide-react';
+import { CalendarClock, MessagesSquare, MoreHorizontal } from 'lucide-react';
 import type { ReviewItemDto, ReviewItemKind, ReviewItemStatus } from '@asciidocollab/shared';
 import { listProjectReviewItems } from '@/lib/api/review';
 import { classifyDueDate, dueDateTextClass, formatDueDate } from '@/lib/review/due-date';
+import { sortReviewItemsByDocumentOrder } from '@/lib/review/order';
 import { STATUS_LABELS, STATUS_VARIANTS } from '@/lib/review/status';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import { cn } from '@/lib/utilities';
@@ -79,7 +80,8 @@ export interface TaskPanelProperties {
  * client fn on every server-side filter change (kind is applied client-side). Each row surfaces its
  * file, passage, status, assignee, and due date, and — when `onNavigate` is wired — opens that file
  * and scrolls to the passage on click. Owners see the project-wide bulk-delete control (T049);
- * `readOnly` hides every mutation.
+ * `readOnly` hides every mutation. Like the per-document rail it renders no title of its own — the
+ * Comments view's panel header names it once, above whichever list is showing.
  */
 export function TaskPanel({
   projectId,
@@ -109,10 +111,14 @@ export function TaskPanel({
   // Rows show root items only (the project list returns replies too, but the cross-document panel is
   // a list of threads, not individual reply rows) narrowed by the client-side kind filter. `items`
   // stays the full server set — including replies — because the project bulk-delete guard compares
-  // against the server's all-rows `countByProject`.
+  // against the server's all-rows `countByProject`. The rows are then put in document order (file,
+  // then anchor position) by the rule shared with the per-file rail — the server returns them in no
+  // defined order at all.
   const visibleItems = useMemo(
     () =>
-      items.filter((item) => !item.parentId && (kind === 'all' || item.kind === kind)),
+      sortReviewItemsByDocumentOrder(
+        items.filter((item) => !item.parentId && (kind === 'all' || item.kind === kind)),
+      ),
     [items, kind],
   );
 
@@ -168,7 +174,7 @@ export function TaskPanel({
   /** The ⋯ menu body: the owner-only project-wide delete, a "clear filters" hint, or "No actions". */
   const renderMenuContent = () => {
     if (readOnly || !isOwner) {
-      return <div className="px-2 py-1.5 text-xs text-muted-foreground">No actions</div>;
+      return <div className="px-2 py-1.5 text-sm text-muted-foreground">No actions</div>;
     }
     if (filtersActive) {
       // The delete removes every item in the project, so it stays exact only with no filter
@@ -196,13 +202,37 @@ export function TaskPanel({
       aria-label="Project comments and tasks"
       className="flex h-full min-w-0 flex-col bg-background"
     >
-      {/* Header + filters. */}
-      <div className="flex flex-col gap-2 border-b p-2">
-        <div className="flex items-center gap-2">
-          <ListChecks className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <h2 className="truncate text-sm font-semibold">Comments &amp; tasks</h2>
+      {/* Filters. The list carries no title of its own — the Comments view's panel header names it
+          once, above this list. The kind filter shares its row with the count and the ⋯ menu. */}
+      <div className="flex flex-col gap-1 border-b px-2 py-1">
+        <div className="flex items-center gap-1">
+          {/* Comments / Tasks kind filter. */}
+          <div
+            role="tablist"
+            aria-label="Filter by kind"
+            className="flex min-w-0 flex-1 items-center gap-0.5 rounded-md bg-muted p-0.5"
+          >
+            {KIND_FILTERS.map((filter) => (
+              <button
+                key={filter.value}
+                type="button"
+                role="tab"
+                aria-selected={kind === filter.value}
+                data-testid={`task-panel-kind-${filter.value}`}
+                onClick={() => setKind(filter.value)}
+                className={cn(
+                  'flex-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors',
+                  kind === filter.value
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
           <span
-            className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
+            className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
             data-testid="task-panel-count"
           >
             {visibleItems.length}
@@ -212,7 +242,7 @@ export function TaskPanel({
               <button
                 type="button"
                 aria-label="Comment options"
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
               </button>
@@ -221,35 +251,9 @@ export function TaskPanel({
           </DropdownMenu>
         </div>
 
-        {/* Comments / Tasks kind filter. */}
-        <div
-          role="tablist"
-          aria-label="Filter by kind"
-          className="flex items-center gap-0.5 rounded-md bg-muted p-0.5"
-        >
-          {KIND_FILTERS.map((filter) => (
-            <button
-              key={filter.value}
-              type="button"
-              role="tab"
-              aria-selected={kind === filter.value}
-              data-testid={`task-panel-kind-${filter.value}`}
-              onClick={() => setKind(filter.value)}
-              className={cn(
-                'flex-1 rounded-sm px-2 py-1 text-xs font-medium transition-colors',
-                kind === filter.value
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {filter.label}
-            </button>
-          ))}
-        </div>
-
         {/* "Assigned to me" + document filter share one row that shrinks rather than wraps, so the
             document dropdown stays inline at the panel's default (narrow) width. */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
           {/* Assigned-to-me toggle (compact, never shrinks). */}
           <button
             type="button"
@@ -302,7 +306,7 @@ export function TaskPanel({
               aria-selected={status === filter.value}
               onClick={() => setStatus(filter.value)}
               className={cn(
-                'whitespace-nowrap rounded-sm px-2 py-1 text-xs font-medium transition-colors',
+                'whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium transition-colors',
                 status === filter.value
                   ? 'bg-background text-foreground shadow-sm'
                   : 'text-muted-foreground hover:text-foreground',
@@ -317,14 +321,14 @@ export function TaskPanel({
       {/* Rows. */}
       <div className="flex-1 overflow-y-auto p-2">
         {error && (
-          <p className="px-2 py-4 text-sm text-destructive" role="alert">
+          <p className="px-2 py-4 text-xs text-destructive" role="alert">
             Couldn&apos;t load comments and tasks. {error.message}
           </p>
         )}
 
         {!error && visibleItems.length === 0 && !loading && (
           <div
-            className="flex flex-col items-center gap-1 px-4 py-10 text-center text-sm text-muted-foreground"
+            className="flex flex-col items-center gap-1 px-4 py-10 text-center text-xs text-muted-foreground"
             data-testid="task-panel-empty"
           >
             <MessagesSquare className="h-6 w-6" aria-hidden="true" />

@@ -8,7 +8,7 @@ import {
   type StageContext,
 } from '../../../src/pipeline/orchestrator';
 import { createShimRegistry } from '../../../src/ports/shim';
-import { PROJECT_ROOT } from '../../../src/vfs/populate';
+import { PROJECT_ROOT, SOURCE_PROVENANCE_PATH } from '../../../src/vfs/populate';
 import type {
   AssembledDocument,
   IncludeAssembler,
@@ -36,8 +36,8 @@ function makeSnapshot(overrides: Partial<ProjectSnapshot> = {}): ProjectSnapshot
   };
 }
 
-function makeRequest(snapshot: ProjectSnapshot): RenderRequest {
-  return { requestId: 'req-1', mode: 'export', optimize: false, snapshot };
+function makeRequest(snapshot: ProjectSnapshot, mode: RenderRequest['mode'] = 'export'): RenderRequest {
+  return { requestId: 'req-1', mode, optimize: false, snapshot };
 }
 
 function makeVfs(): PipelineVfs {
@@ -93,10 +93,11 @@ function makeContext(overrides: {
   assembler?: IncludeAssembler;
   readFile?: ProjectFileReader;
   vfs?: PipelineVfs;
+  mode?: RenderRequest['mode'];
 }): StageContext {
   const snapshot = overrides.snapshot ?? makeSnapshot();
   return {
-    request: makeRequest(snapshot),
+    request: makeRequest(snapshot, overrides.mode),
     readFile: overrides.readFile ?? nullReadFile,
     vfs: overrides.vfs ?? makeVfs(),
     shims: createShimRegistry([]),
@@ -145,6 +146,34 @@ describe('createIncludeResolveStage', () => {
       expect(vfs.readText(`${PROJECT_ROOT}/main.adoc`)).toBe(
         'partial doc with the resolvable parts inlined',
       );
+    });
+  });
+
+  describe('source provenance sidecar (preview click-to-source)', () => {
+    const provenance = { lineToSource: [{ path: 'main.adoc', sourceLine: 1 }, { path: 'ch/one.adoc', sourceLine: 3 }] };
+
+    it('requests the source map and writes the provenance sidecar for PREVIEW renders', async () => {
+      const { assembler, calls } = makeAssembler({ content: 'body', unresolved: [], sourceMap: provenance });
+      const vfs = makeVfs();
+      const context = makeContext({ assembler, vfs, mode: 'preview' });
+      const stage = createIncludeResolveStage({ resolveSandboxedPath: passthroughResolver });
+
+      await stage.run(context);
+
+      expect(calls[0].options?.withSourceMap).toBe(true);
+      expect(JSON.parse(vfs.readText(SOURCE_PROVENANCE_PATH)!)).toEqual(provenance.lineToSource);
+    });
+
+    it('writes an empty provenance for EXPORT renders (no origins leak into an export on a warm VM)', async () => {
+      const { assembler, calls } = makeAssembler({ content: 'body', unresolved: [] });
+      const vfs = makeVfs();
+      const context = makeContext({ assembler, vfs, mode: 'export' });
+      const stage = createIncludeResolveStage({ resolveSandboxedPath: passthroughResolver });
+
+      await stage.run(context);
+
+      expect(calls[0].options?.withSourceMap).toBe(false);
+      expect(JSON.parse(vfs.readText(SOURCE_PROVENANCE_PATH)!)).toEqual([]);
     });
   });
 

@@ -1,5 +1,6 @@
 import * as Y from 'yjs';
 import type { AnchorDto } from '@asciidocollab/shared';
+import { unpackRelativePositionPair } from '@asciidocollab/shared';
 import {
   QUOTE_CONTEXT_LEN,
   MAX_ANCHOR_LEN,
@@ -57,6 +58,25 @@ describe('encode/decode relative positions', () => {
     const packed = new Uint8Array(8);
     new DataView(packed.buffer).setUint32(0, 999, true); // claims 999 start bytes; only 4 exist.
     expect(decodeRelativePositions(uint8ArrayToBase64(packed))).toBeNull();
+  });
+
+  test('what the browser writes is unpackable by the shared codec the collab server reads with', () => {
+    // The stored blob is a cross-process contract: the collaboration server unpacks the very same
+    // bytes (with unpackRelativePositionPair) to re-measure the anchor's line hint on write-back. If
+    // this side ever stopped using the shared layout, that refresh would silently resolve nothing.
+    const { ydoc, ytext } = makeDocument('Hello, world!');
+    const encoded = encodeRelativePositions(
+      Y.createRelativePositionFromTypeIndex(ytext, 7),
+      Y.createRelativePositionFromTypeIndex(ytext, 12),
+    );
+
+    const unpacked = unpackRelativePositionPair(base64ToUint8Array(encoded));
+
+    expect(unpacked).not.toBeNull();
+    const start = Y.createAbsolutePositionFromRelativePosition(Y.decodeRelativePosition(unpacked!.start), ydoc);
+    const end = Y.createAbsolutePositionFromRelativePosition(Y.decodeRelativePosition(unpacked!.end), ydoc);
+    expect(start!.index).toBe(7);
+    expect(end!.index).toBe(12);
   });
 });
 

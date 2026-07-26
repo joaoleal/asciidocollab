@@ -13,6 +13,14 @@
   color: hsl(var(--foreground));
   max-width: 46rem;
   margin: 0;
+  /* A single unbreakable token — a long URL, a dotted identifier, a base64 blob — offers no wrap
+     opportunity, so without this it spills out of its paragraph, heading or table cell and makes the
+     whole preview PANE scroll sideways (the block itself has no scroll container to absorb it). Set
+     once on the container so every text context inherits it, mirroring the vendored Asciidoctor
+     stylesheet, which does the same with `word-wrap: anywhere` on its own container. `anywhere` also
+     keeps such a token out of min-content sizing, which is what stops a 100%-wide table being pushed
+     wider than its column. Roles that ask for the opposite (`.nowrap`/`.nobreak`) opt out below. */
+  overflow-wrap: anywhere;
 }
 
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) > :first-child {
@@ -161,12 +169,28 @@
   font-family: var(--font-mono, ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace);
   font-size: 0.85em;
   line-height: 1.55;
-  background: hsl(var(--card));
+  background: hsl(var(--muted) / 0.5);
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   padding: 0.9em 1.1em;
+  /* Verbatim blocks (`----` listing, `....` literal, `[source]`, `[verse]`) SOFT-WRAP by default.
+     That is the upstream default this preview was diverging from: Asciidoctor sets the `prewrap`
+     document attribute out of the box and its own stylesheet says `pre{white-space:pre-wrap}`. With
+     `white-space: pre` a single long line — prose pasted into a listing block, a URL, one long
+     statement — was stranded behind a horizontal scrollbar the reader had to drag to read the text.
+     `overflow-wrap: anywhere` additionally breaks a lone over-long token that offers no wrap
+     opportunity, so verbatim content can never widen the card or the preview pane.
+     TRADE-OFF: re-flowed lines misrepresent content whose columns line up — ASCII diagrams, aligned
+     program output, a table drawn inside a listing. Authors keep that alignment by opting out, with
+     `[%nowrap]` on the block or `:prewrap!:` for the whole document; Asciidoctor turns both into
+     `class="nowrap"` on the `pre`, which the rule below honours. Overflow is never hidden: the
+     `overflow-x: auto` here stays, so an opted-out block scrolls inside its own card — `max-width:
+     100%` keeps that scroll contained so a wide line can never widen the whole preview surface
+     (Constitution VI) — rather than having its text clipped away. */
+  max-width: 100%;
   overflow-x: auto;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: hsl(var(--foreground));
 }
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) pre code {
@@ -175,6 +199,20 @@
   padding: 0;
   font-size: inherit;
   color: inherit;
+}
+
+/* The author's explicit "do not re-flow this": `[%nowrap]` on a verbatim block, or `:prewrap!:` for the
+   whole document. Asciidoctor expresses both as `class="nowrap"` on the `pre` (including a highlighted
+   `pre.highlight nowrap`), so honour it exactly as the vendored Asciidoctor stylesheet does — column
+   alignment is preserved and the `overflow-x: auto` above gives that one block its own scrollbar,
+   instead of us overriding a deliberate authoring choice. `overflow-wrap: normal` is needed as well
+   because the container sets `anywhere`, which would otherwise still break long tokens apart.
+   MUST stay after the generic `pre` rule: identical specificity, so source order decides.
+   (Literal and verse blocks need no special case any more — the generic rule now wraps them.) */
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) pre.nowrap,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) pre.nowrap pre {
+  white-space: pre;
+  overflow-wrap: normal;
 }
 
 /* Block titles (e.g. .Listing caption). */
@@ -431,9 +469,17 @@
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .line-through { text-decoration: line-through; }
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .big { font-size: larger; }
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .small { font-size: smaller; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .nowrap,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .nobreak { white-space: nowrap; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .pre-wrap { white-space: pre-wrap; }
+/* `:not(pre)` on all three, exactly as the vendored Asciidoctor stylesheet writes them: `nowrap` is
+   also the class Asciidoctor puts on a verbatim `pre` for `[%nowrap]`/`:prewrap!:`, and there it means
+   "keep the block's own newlines, just don't re-flow" — `white-space: nowrap` would instead collapse
+   every newline and render the whole listing as one line. The verbatim case is handled by the
+   `pre.nowrap` rule above; these three stay inline-role-only.
+   `.nobreak` gets `overflow-wrap: normal` rather than `white-space: nowrap`, again matching upstream:
+   the role asks for no breaks INSIDE a word (it opts out of the container's `overflow-wrap: anywhere`),
+   not for a run of text that can never wrap and therefore drags the pane sideways. */
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) :not(pre).nowrap { white-space: nowrap; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) :not(pre).nobreak { overflow-wrap: normal; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) :not(pre).pre-wrap { white-space: pre-wrap; }
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .paragraph.lead > p,
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) p .lead {
   font-size: 1.21875em;
@@ -574,3 +620,30 @@
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-important::before { background-color: hsl(280 40% 56%); }
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-warning::before { background-color: hsl(34 88% 48%); }
 .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-caution::before { background-color: hsl(0 72% 50%); }
+
+/* ── Containing the faithful Asciidoctor style ───────────────────────────────────────────────────────
+   The vendored sheet was written for a document that owns the browser viewport, where content too wide
+   to fit simply makes the page wider. Here the same markup renders inside a resizable pane beside the
+   editor, so anything that cannot fit drags the whole preview surface sideways instead (Constitution
+   VI). The vendored file is generated and must not be edited, so the containment lives here — it is
+   imported after the generated sheet, and everything below is either higher-specificity or a clamp
+   that changes nothing until something would overflow.
+
+   Verbatim blocks already behave: upstream sets `pre{white-space:pre-wrap}` and gives listing/literal
+   blocks `overflow-x: auto`, so even an opted-out `[%nowrap]` block scrolls inside its own card rather
+   than widening the pane.
+
+   Tables are the exception. Upstream resets `word-wrap: normal` on `table`, so a cell holding one
+   unbreakable token — a URL, a base64 blob — has no wrap opportunity, and the table's min-content
+   width pushes straight past the pane. Upstream already makes this exception for AsciiDoc-style cells
+   (`td.tableblock > .content`); extending it to ordinary cells is the narrowest change that contains
+   the table, and it is invisible to any token that already fits. */
+.asciidoc-preview-content[data-preview-style="asciidoctor"] td.tableblock,
+.asciidoc-preview-content[data-preview-style="asciidoctor"] th.tableblock,
+.asciidoc-preview-content[data-preview-style="asciidoctor"] td.tableblock > p.tableblock {
+  overflow-wrap: anywhere;
+}
+/* A clamp, not a re-layout: a table that fits is unaffected. */
+.asciidoc-preview-content[data-preview-style="asciidoctor"] table.tableblock {
+  max-width: 100%;
+}

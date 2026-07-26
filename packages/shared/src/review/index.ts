@@ -1,4 +1,4 @@
-/** @file Barrel for the review module's shared DTOs, enums, constants, and error codes. */
+/** @file Barrel for the review module's shared DTOs, enums, constants, codecs, and error codes. */
 
 export type { ReviewItemKind, ReviewItemStatus, AnchorState } from './enums';
 export {
@@ -36,3 +36,9 @@ export type {
   BulkDeleteResultDto,
 } from './commands.dto';
 export type { ReviewErrorCode, ReviewErrorDto } from './errors';
+export type { RelativePositionPairBytes } from './relative-position-pair';
+export {
+  RELPOS_LENGTH_PREFIX_BYTES,
+  packRelativePositionPair,
+  unpackRelativePositionPair,
+} from './relative-position-pair';

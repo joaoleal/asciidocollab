@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { ArrowUpDown, ChevronRight, Loader2, ZoomIn, ZoomOut } from "lucide-react";
 import {
   AnnotationLayer,
@@ -16,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { PdfDiagnostics } from "@/components/pdf-diagnostics";
 import { PreviewModeToggle, type PreviewMode } from "@/components/preview-mode-toggle";
 import type { ScrollRequest } from "@/hooks/use-asciidoc-preview";
+import { assembledEntryAtPdfPosition } from "@/lib/pdf/pdf-click-to-source";
+import { isSelectionDragClick } from "@/lib/preview-selection";
 import { cn } from "@/lib/utilities";
 // The pdf.js text/annotation layers are DOM overlays styled by the library's own global classes; the
 // stylesheet co-locates only the rules the three-layer page stack needs (see the file's header). It is
@@ -247,7 +249,13 @@ function clamp(value: number, low: number, high: number): number {
  * `≤ targetLine` (binary search). When every entry starts after the target, the first entry is returned
  * so a line above the first mapped block still scrolls to the document's top.
  *
- * @param sourceMap - The line-sorted, de-duplicated engine source map.
+ * A line may carry SEVERAL entries — lifting each entry to its block's visual start merges distinct
+ * blocks onto one key (see `liftSourceMapToBlockStarts`, which keeps them rather than discarding the
+ * extras the reverse click lookup needs). The group is ordered by layout position, so the search walks
+ * back to the group's first member: the highest-rendered block on that line, which is where a cursor
+ * sitting on it should scroll to.
+ *
+ * @param sourceMap - The engine source map, sorted by line and then by layout position.
  * @param targetLine - The assembled-document line to locate.
  * @returns The governing entry, or `null` when the map is empty.
  */
@@ -268,7 +276,9 @@ function findSourceMapEntry(
       high = mid - 1;
     }
   }
-  return sourceMap[found === -1 ? 0 : found];
+  if (found === -1) return sourceMap[0];
+  while (found > 0 && sourceMap[found - 1].line === sourceMap[found].line) found -= 1;
+  return sourceMap[found];
 }
 
 /** Presentational contract for the live PDF preview surface; all behaviour is injected. */
@@ -287,6 +297,24 @@ export interface PdfPreviewPanelProperties {
    * @param location - The diagnostic's source location to reveal in the editor.
    */
   onSelectLocation?: (location: DiagnosticLocation) => void;
+  /**
+   * Called when the user clicks somewhere on a rendered page that is NOT a link, so the editor can
+   * reveal the corresponding source. Receives the best-effort assembled-document line of the block at the
+   * click position (from the engine {@link sourceMap}); the layout reverse-maps it to a `{file, line}`.
+   * Link clicks are handled by pdf.js (internal destination scroll / external new tab) and never call this.
+   *
+   * @param assembledLine - The 1-based assembled-document line of the block at the click position.
+   */
+  onNavigateToSource?: (assembledLine: number) => void;
+  /**
+   * Called when the clicked block carries an EXACT source origin (preview renders stamp each block's
+   * `{path, sourceLine}` at render time), so the editor jumps to the precise file+line with no client-side
+   * reverse mapping and no staleness. Preferred over {@link onNavigateToSource} whenever an origin is present.
+   *
+   * @param path - Project-relative source file of the clicked block.
+   * @param line - 1-based line of the block within `path`.
+   */
+  onNavigateToExactSource?: (path: string, line: number) => void;
   /** The active preview mode; rendered in the header's HTML/PDF switch. */
   previewMode?: PreviewMode;
   /**
@@ -351,6 +379,8 @@ export function PdfPreviewPanel({
   phase,
   diagnostics,
   onSelectLocation,
+  onNavigateToSource,
+  onNavigateToExactSource,
   previewMode = "pdf",
   onPreviewModeChange,
   scrollToLine = null,
@@ -660,13 +690,26 @@ export function PdfPreviewPanel({
         container.scrollTop = pageElement.offsetTop + entry.yFraction * pageElement.offsetHeight - topGap;
         return;
       }
+      if (entry !== null) {
+        // The map resolved a block but its page is not in the page stack, so the entry describes a
+        // position that does not exist in this document. That used to fall through silently to the
+        // proportional guess, which lands at an unrelated fraction and can even scroll BACKWARDS — a
+        // broken lookup wearing the costume of a working one. The engine's source map should never
+        // name a page beyond the render (it is filtered against the real page count), so reaching here
+        // means the map and the rendered document have gone out of step; say so, then degrade.
+        // eslint-disable-next-line no-console -- a broken lookup must surface rather than silently misscroll.
+        console.warn(
+          `PDF scroll sync: source-map entry for assembled line ${entry.line} names page ${entry.page}, ` +
+            `which is not in the ${pageCount}-page render; falling back to a proportional scroll.`,
+        );
+      }
       // Fall through to the proportional sync when the map is empty or the mapped page is not in the DOM.
     }
 
     const span = Math.max(1, (totalLines ?? 1) - 1);
     const fraction = clamp((scrollToLine.line - 1) / span, 0, 1);
     container.scrollTop = fraction * (container.scrollHeight - container.clientHeight);
-  }, [scrollToLine, scrollSyncEnabled, totalLines, sourceMap, assembledLine]);
+  }, [scrollToLine, scrollSyncEnabled, totalLines, sourceMap, assembledLine, pageCount]);
 
   const hasDiagnostics = diagnostics !== undefined && diagnostics.length > 0;
   const statusLabel = phase ? PHASE_LABELS[phase] : PENDING_LABEL;
@@ -741,6 +784,39 @@ export function PdfPreviewPanel({
     if (event.key === "Enter") {
       event.preventDefault();
       commitJump();
+    }
+  };
+
+  /**
+   * Reveal the editor source of the block at a click position on a rendered page (best-effort). Clicks on
+   * a link annotation are left to pdf.js (internal destination scroll / external new tab). Otherwise the
+   * click's page and vertical fraction are mapped back through the engine source map to the block's
+   * assembled-document line, which the layout reverse-maps to a source `{file, line}`.
+   *
+   * @param event - The click event on the page stack.
+   */
+  const handlePagesClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    if (sourceMap === undefined || sourceMap.length === 0) return;
+    if (onNavigateToSource === undefined && onNavigateToExactSource === undefined) return;
+    if (!(event.target instanceof Element)) return;
+    // A link annotation renders as an anchor; let pdf.js follow it rather than jumping to source.
+    if (event.target.closest("a") !== null) return;
+    const pageElement = event.target.closest<HTMLElement>("[data-page]");
+    if (pageElement === null) return;
+    // A click that ended a drag-selection over the text layer is a copy, not a request to navigate.
+    if (isSelectionDragClick(pageElement)) return;
+    const page = Number(pageElement.dataset.page);
+    if (!Number.isFinite(page)) return;
+    const rect = pageElement.getBoundingClientRect();
+    const yFraction = rect.height > 0 ? clamp((event.clientY - rect.top) / rect.height, 0, 1) : 0;
+    const entry = assembledEntryAtPdfPosition(sourceMap, page, yFraction);
+    if (entry === undefined) return;
+    // Prefer the block's exact render-time origin when present (no reverse mapping, no staleness);
+    // otherwise fall back to the assembled line for the layout to reverse-map.
+    if (entry.path !== undefined && entry.sourceLine !== undefined && onNavigateToExactSource !== undefined) {
+      onNavigateToExactSource(entry.path, entry.sourceLine);
+    } else {
+      onNavigateToSource?.(entry.line);
     }
   };
 
@@ -890,6 +966,7 @@ export function PdfPreviewPanel({
         <div
           ref={pagesReference}
           aria-label="Rendered PDF pages"
+          onClick={handlePagesClick}
           className={cn(
             "flex min-h-full w-max min-w-full flex-col gap-4 p-4",
             pdf === null && "hidden"

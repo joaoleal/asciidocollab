@@ -2,6 +2,7 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorView } from '@codemirror/view';
 import type { Diagnostic } from '@codemirror/lint';
 import { hasDictionary } from './spellcheck-languages';
+import { extractProseSegments, spanToDocumentRange } from './prose-segments';
 
 /**
  * Prose spell-check. Tree-aware: verbatim blocks, macros,
@@ -9,28 +10,17 @@ import { hasDictionary } from './spellcheck-languages';
  * checked. Words on a per-user ignore list are never flagged. The dictionary
  * (`nspell` + `dictionary-en`) loads lazily off the typing path.
  *
+ * The "what is prose" model (segmentation, skip-node classification, offset map) now lives in the
+ * shared `prose-segments.ts` module reused by the Harper grammar linter; this file consumes it and
+ * keeps only the nspell-specific word tokenisation + dictionary wiring. When Harper is active it owns
+ * prose checking and this source is disabled; it is the Harper-off / engine-unavailable fallback.
+ *
  * The tokenisation, skip-node predicate, and ignore filtering are pure and
  * unit-tested; the live `nspell` dictionary + lint wiring is exercised by e2e.
  */
 
-/** Grammar node names whose text is NOT prose and must not be spell-checked. */
-export const SPELLCHECK_SKIP_NODES = new Set([
-  'ListingBlock', 'LiteralBlock', 'PassthroughBlock', 'CommentBlock', 'CommentLine',
-  'StemBlock', 'Monospace', 'AttributeEntry', 'AttributeReference', 'BlockMacro',
-  'InlineMacro', 'CrossReference', 'Footnote', 'Conditional', 'BlockAttributeLine',
-  'DocumentTitle',
-  // Inline non-prose constructs: URLs, UI/math macros, inline passthrough,
-  // anchors, callouts, and entities are verbatim/identifier content, not prose.
-  'Link', 'InlineStem', 'UiMacro', 'Passthrough', 'InlineAnchor', 'BiblioAnchor',
-  'Callout', 'Entity',
-  // `{set:name:value}` — the attribute name and value are identifiers, not prose.
-  'InlineSet',
-]);
-
-// `[.role]##body##` is a single token, but only the role NAME is markup — the body is ordinary prose
-// and must stay spell-checked. RoleSpan is handled out-of-band (skip the `[.role]` prefix only) rather
-// than added to SPELLCHECK_SKIP_NODES, which would suppress the body too.
-const ROLE_SPAN_NODE = 'RoleSpan';
+// Re-exported from the shared prose model so existing importers of these symbols keep working.
+export { SPELLCHECK_SKIP_NODES, headerMetadataRanges } from './prose-segments';
 
 const WORD_RE = /[A-Za-z][A-Za-z']*/g;
 
@@ -42,42 +32,6 @@ export interface WordToken {
   from: number;
   /** Document offset just past the word. */
   to: number;
-}
-
-/**
- * Byte ranges of the document-header author and revision lines, which AsciiDoc
- * treats as metadata (names, emails, brand words, version + date), not prose.
- *
- * These lines are only present when the document opens with a level-0 title: the
- * author line immediately follows it and the optional revision line follows that,
- * with the header ending at the first blank line, attribute entry (`:`), or
- * comment (`//`). The block tokenizer never emits the grammar's stub
- * `AuthorLine`/`RevisionLine` nodes (they need header context it cannot enforce),
- * so the spell-checker excludes these lines by position instead of by node name.
- *
- * @param text - The full document text.
- * @returns Up to two `[from, to)` ranges (author, then revision), or none.
- */
-export function headerMetadataRanges(text: string): Array<[number, number]> {
-  // A document header exists only when the first line is a level-0 title (`= `);
-  // `==`+ are section headings, not a title, so require exactly one `=`.
-  if (!/^=[ \t]/.test(text)) return [];
-  const ranges: Array<[number, number]> = [];
-  const firstBreak = text.indexOf('\n');
-  if (firstBreak === -1) return [];
-  let start = firstBreak + 1; // first char of the line after the title
-  for (let line = 0; line < 2; line++) {
-    const nextBreak = text.indexOf('\n', start);
-    const end = nextBreak === -1 ? text.length : nextBreak;
-    const content = text.slice(start, end);
-    // The header ends at a blank line; an attribute entry or comment is not an
-    // author/revision line (attributes are already skipped as their own nodes).
-    if (content.trim() === '' || content.startsWith(':') || content.startsWith('//')) break;
-    ranges.push([start, end]);
-    if (nextBreak === -1) break;
-    start = nextBreak + 1;
-  }
-  return ranges;
 }
 
 /** Tokenise prose text into word tokens with absolute offsets (`base` = text start offset). */
@@ -176,68 +130,22 @@ export function asciidocSpellcheckSource(
     const diagnostics: Diagnostic[] = [];
     const text = view.state.doc.toString();
 
-    // Classify every document char so a role-span body is checked as the word it renders to. Role-span
-    // MARKUP (`[.role]` and the `#`/`##` delimiters) is DROPped so the styled body rejoins the prose
-    // glued around it into one word — `[.underline]##O##nce` → `Once` (a valid word, not flagged), while
-    // `[.underline]##O##nceasa` → `Onceasa` (flagged). Every other non-prose node (verbatim blocks,
-    // links, entities, macros, `{set:…}`) becomes a BOUNDARY so its text is never checked AND a word
-    // glued to it stays a separate, checkable word (`&amp;wrold` still checks `wrold`).
-    // NOTE: only RoleSpan is reconstructed here. Unconstrained bold/italic (`a**b**c`, `un__der__score`)
-    // split a word across markup the same way but are not skip nodes, so their `*`/`_` marks are treated
-    // as ordinary punctuation by WORD_RE (each fragment checked separately) — a known, separate gap; the
-    // general fix is one "rendered inline text" model that drops every inline-formatting delimiter.
-    const KEEP = 0, DROP = 1, BOUNDARY = 2;
-    const cls = new Uint8Array(text.length);
-    tree.cursor().iterate((node) => {
-      if (node.name === ROLE_SPAN_NODE) {
-        const spanText = text.slice(node.from, node.to);
-        const bracketEnd = spanText.indexOf(']'); // end of the `[.role]` name
-        let delimiter = bracketEnd + 1, hashes = 0;
-        while (bracketEnd !== -1 && spanText[delimiter] === '#') { hashes++; delimiter++; }
-        if (bracketEnd === -1 || hashes === 0) {
-          // Malformed span — treat it all as a boundary rather than leaking markup as prose.
-          for (let index = node.from; index < node.to; index++) cls[index] = BOUNDARY;
-          return;
-        }
-        const bodyFrom = node.from + delimiter;            // first body char (after `[.role]##`)
-        const bodyTo = node.from + spanText.length - hashes; // first trailing `#`
-        for (let index = node.from; index < bodyFrom; index++) cls[index] = DROP; // `[.role]##` prefix
-        for (let index = bodyTo; index < node.to; index++) cls[index] = DROP;     // `##` suffix
-        return; // body chars stay KEEP so they join the surrounding prose
+    // The shared prose model does all the exclusion work: verbatim blocks/links/entities/macros are
+    // removed, a role-span body rejoins the prose glued around it (`[.underline]##O##nce` → `Once`), and
+    // the header byline is dropped. Each returned segment's `map` translates a word's segment-local
+    // offsets back to document offsets (a word reconstructed across dropped markup spans those
+    // delimiters, so the underline includes them).
+    const ignore = getIgnore();
+    for (const segment of extractProseSegments(tree, text)) {
+      for (const token of selectMisspelled(tokenizeWords(segment.text), checker.correct, ignore)) {
+        const { from, to } = spanToDocumentRange(segment, token.from, token.to);
+        diagnostics.push({
+          from,
+          to,
+          severity: 'info',
+          message: `“${token.word}” may be misspelled`,
+        });
       }
-      if (SPELLCHECK_SKIP_NODES.has(node.name)) {
-        for (let index = node.from; index < node.to; index++) cls[index] = BOUNDARY;
-      }
-    });
-
-    // The author/revision byline is parsed as an ordinary paragraph (the grammar's
-    // AuthorLine/RevisionLine tokens are never emitted), so exclude those header
-    // lines by position — a name or brand word there is metadata, not misspelled prose.
-    for (const [from, to] of headerMetadataRanges(text)) {
-      for (let index = from; index < to; index++) cls[index] = BOUNDARY;
-    }
-
-    // Materialise the visible text and a per-char map back to document offsets (boundary runs collapse
-    // to a single space — it is only ever a word separator, never part of a flagged word).
-    const parts: string[] = [];
-    const offsetMap: number[] = [];
-    for (let index = 0; index < text.length; ) {
-      const kind = cls[index];
-      if (kind === KEEP) { parts.push(text[index]); offsetMap.push(index); index++; }
-      else if (kind === DROP) { index++; }
-      else { parts.push(' '); offsetMap.push(index); index++; while (index < text.length && cls[index] === BOUNDARY) index++; }
-    }
-    const visible = parts.join('');
-
-    // Each token's offsets index `visible`; map its start/end back to the document for the diagnostic
-    // (a word reconstructed across markup spans the dropped delimiters, so the underline includes them).
-    for (const token of selectMisspelled(tokenizeWords(visible), checker.correct, getIgnore())) {
-      diagnostics.push({
-        from: offsetMap[token.from],
-        to: offsetMap[token.to - 1] + 1,
-        severity: 'info',
-        message: `“${token.word}” may be misspelled`,
-      });
     }
     return diagnostics;
   };

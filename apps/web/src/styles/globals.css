@@ -100,6 +100,11 @@
     --syntax-code-bg: 200 20% 94%;
     --attrref: 34 50% 39%;
     --syntax-callout: 330 50% 45%;
+    /* On-device grammar checker: one colour per writing-issue category (spelling / grammar / style),
+       reused across the underline, gutter marker, tooltip, panel, and status bar. */
+    --syntax-grammar-spelling: 0 68% 48%;
+    --syntax-grammar-grammar: 214 62% 48%;
+    --syntax-grammar-style: 35 78% 42%;
     --admon-note-fg: 200 70% 32%;
     --admon-note-bg: 200 55% 94%;
     --admon-tip-fg: 150 55% 30%;
@@ -165,6 +170,10 @@
     --syntax-code-bg: 200 14% 22%;
     --attrref: 38 55% 68%;
     --syntax-callout: 330 55% 72%;
+    /* Grammar checker categories, lightened for the dark theme (see the light block for roles). */
+    --syntax-grammar-spelling: 0 62% 66%;
+    --syntax-grammar-grammar: 214 64% 70%;
+    --syntax-grammar-style: 38 72% 62%;
     --admon-note-fg: 200 65% 74%;
     --admon-note-bg: 200 38% 22%;
     --admon-tip-fg: 150 50% 68%;

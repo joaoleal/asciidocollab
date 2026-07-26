@@ -17,8 +17,13 @@ import type { ParticipantPresence } from '@/hooks/use-collab-presence';
 import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { API_BASE_URL } from '@/lib/api/base-url';
 
-const sortComparator = (a: FileTreeNodeType, b: FileTreeNodeType) =>
-  a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+// Folders are grouped before files; within each group, entries are ordered alphabetically
+// (case-insensitive). This single comparator governs both the initial load and every real-time
+// SSE mutation, so the folders-first invariant holds after creates, renames and moves too.
+const sortComparator = (a: FileTreeNodeType, b: FileTreeNodeType) => {
+  if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+};
 
 function sortChildren(node: FileTreeNodeType): FileTreeNodeType {
   return {

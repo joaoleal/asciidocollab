@@ -21,6 +21,9 @@ export const AUDIT_FILE_RENAMED = 'file.renamed';
 export const AUDIT_SYMBOL_RENAMED = 'symbol.renamed';
 export const AUDIT_PROJECT_CONTENT_REPLACED = 'project.content_replaced';
 export const AUDIT_PROJECT_RENDER_CONFIG_UPDATED = 'project.render_config_updated';
+export const AUDIT_DICTIONARY_TERM_ADDED = 'grammar.dictionary_term_added';
+export const AUDIT_DICTIONARY_TERM_REMOVED = 'grammar.dictionary_term_removed';
+export const AUDIT_GRAMMAR_SETTINGS_UPDATED = 'grammar.settings_updated';
 
 // Authorization events
 export const AUDIT_AUTHZ_DENIED = 'authz.denied';

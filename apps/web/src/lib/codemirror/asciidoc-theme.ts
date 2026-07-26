@@ -81,6 +81,24 @@ export const asciidocEditorTheme = EditorView.theme({
   ".cm-gutter-lint .cm-lint-marker-warning": { content: "normal", backgroundColor: c("--warning") },
   ".cm-gutter-lint .cm-lint-marker-error": { content: "normal", backgroundColor: c("--destructive") },
   ".cm-gutter-lint .cm-lint-marker-info": { content: "normal", backgroundColor: c("--muted-foreground") },
+  // On-device grammar checker: colour each writing-issue category's underline from its design token
+  // (Principle V — no colour literals). The mark class is added by `lintToDiagnostic`; overriding the
+  // library's default severity wavy keeps spelling/grammar/style visually distinct at a glance.
+  ".cm-lintRange.cm-grammar-spelling": {
+    backgroundImage: "none",
+    textDecoration: `underline wavy ${c("--syntax-grammar-spelling")}`,
+    textDecorationSkipInk: "none",
+  },
+  ".cm-lintRange.cm-grammar-grammar": {
+    backgroundImage: "none",
+    textDecoration: `underline wavy ${c("--syntax-grammar-grammar")}`,
+    textDecorationSkipInk: "none",
+  },
+  ".cm-lintRange.cm-grammar-style": {
+    backgroundImage: "none",
+    textDecoration: `underline wavy ${c("--syntax-grammar-style")}`,
+    textDecorationSkipInk: "none",
+  },
   ".cm-tooltip": {
     backgroundColor: c("--popover"),
     color: c("--popover-foreground"),

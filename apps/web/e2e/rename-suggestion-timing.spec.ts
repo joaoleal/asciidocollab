@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
-import { createAdocFile, openProject, openFile, editorContent, renameFirstWord } from './helpers/editor';
+import { createAdocFile, openProject, openFile, editorContent, renameFirstWord, COLLAB_EDIT_TEST_TIMEOUT } from './helpers/editor';
 
 // Feature 033: the suggestion appears only after the ~1s settle, and after the cursor leaves
 // the definition it disappears ~5s later — unless the cursor returns within that window.
@@ -20,6 +20,7 @@ test.describe('033 — suggestion timing & location', () => {
   let projectId: string;
 
   test.beforeEach(async ({ page }) => {
+    test.setTimeout(COLLAB_EDIT_TEST_TIMEOUT); // these tests live-edit the collab editor — see the constant
     await signIn(page);
     projectId = await createProject(page, `Rename Timing ${Date.now()}`);
     await createAdocFile(page, projectId, 'main.adoc', ':edition: 1\n\nSee {edition}.\n\nMore body text here.\n');

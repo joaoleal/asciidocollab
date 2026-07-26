@@ -74,6 +74,18 @@ const MATH_BLOCK_ALIGN = 'align=center';
 /** Prefix for positional block attributes captured from an attribute line. */
 const POSITIONAL_PARAM_PREFIX = 'pos';
 
+/**
+ * The filler line emitted after a rewritten block so the replacement occupies exactly as many lines as
+ * the block it replaced (see {@link padToOriginalSpan}).
+ *
+ * An AsciiDoc LINE COMMENT, not a blank line. Blank lines are not inert: one after a block inside a list
+ * continuation (`+`) ends the continuation, so padding with them would silently detach the rest of an
+ * item from its list. A `//` line is dropped by the parser's reader before any block is built — it
+ * terminates nothing, joins nothing, and still counts as a physical line for `source_location.lineno`,
+ * which is exactly the property the padding exists for.
+ */
+const LINE_SPAN_FILLER = '//';
+
 const DIAGNOSTIC_DIAGRAM_UNSUPPORTED: DiagnosticCode = 'diagram-unsupported';
 const DIAGNOSTIC_RASTERIZED: DiagnosticCode = 'unsupported-image';
 const DIAGNOSTIC_REMOTE_SKIPPED: DiagnosticCode = 'remote-skipped';
@@ -760,6 +772,32 @@ async function runDiagramsMath(context: StageContext): Promise<StageResult> {
   return {};
 }
 
+/**
+ * Pad a block's replacement lines out to the line span of the block they replace, so the rewrite NEVER
+ * changes the document's line numbering.
+ *
+ * This stage rewrites the ASSEMBLED root document in place, but two coordinate systems keyed to the
+ * pre-rewrite text outlive it: the include-resolve stage's line→source provenance array (which the
+ * source-map hook indexes by the engine's `lineno` to stamp each block's origin file+line), and the web
+ * app's editor-line→assembled-line translation. Collapsing an 8-line diagram block to a single
+ * `image::` line shifted every engine `lineno` after it by −7 — cumulatively, block after block — so
+ * scroll sync landed further and further off and click-to-source attributed blocks to the wrong file
+ * near an include boundary. Preserving the span keeps ONE coordinate space for everything downstream.
+ *
+ * @param replacement - The lines the block was rewritten to (typically a single `image::` macro).
+ * @param originalLineCount - How many lines the replaced block occupied, attribute line through delimiter.
+ * @returns The replacement, extended with filler lines to the original span (never truncated).
+ */
+function padToOriginalSpan(
+  replacement: readonly string[],
+  originalLineCount: number,
+): readonly string[] {
+  const missing = originalLineCount - replacement.length;
+  return missing > 0
+    ? [...replacement, ...Array.from({ length: missing }, () => LINE_SPAN_FILLER)]
+    : replacement;
+}
+
 /** Render one detected block and return the lines that replace it (unchanged on skip/failure). */
 async function handleBlock(
   context: StageContext,
@@ -828,7 +866,9 @@ async function handleBlock(
     block.category === 'math'
       ? `${escapeAltForMacro(altText)},${MATH_BLOCK_ALIGN}`
       : escapeAltForMacro(altText);
-  return [`image::${target}[${attributes}]`];
+  // The macro goes FIRST so the rendered image keeps the replaced block's own start line; the filler
+  // that follows only restores the span (see padToOriginalSpan).
+  return padToOriginalSpan([`image::${target}[${attributes}]`], block.originalBlock.length);
 }
 
 /** Rewrite every detected inline math macro on a prose line to an inline `image:` reference. */

@@ -12,7 +12,7 @@
  */
 
 /** The identifier of a project-options section, as it appears in the `?section=` query parameter. */
-export type SettingsSectionId = 'general' | 'rendering' | 'pdf' | 'extensions' | 'danger';
+export type SettingsSectionId = 'general' | 'rendering' | 'pdf' | 'extensions' | 'html' | 'danger';
 
 /** One navigable section of the project options page. */
 export interface SettingsSection {
@@ -38,7 +38,11 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = Object.freeze([
   {
     id: 'general',
     label: 'General',
-    description: "The project's name, description, tags, language and main file.",
+    // Grammar checking is named here because it lives with Language rather than with the rendering
+    // options it is stored alongside: the feature only runs for English projects, so the setting that
+    // switches it off is the language one, and the two have to be read together.
+    description:
+      "The project's name, description, tags, language, grammar checking and main file.",
   },
   // The three sections below are named after the FORMAT each governs, because scope is the thing a
   // reader has to get right and the old names hid it. "Rendering" and "Extensions" both sounded
@@ -61,6 +65,12 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = Object.freeze([
     id: 'extensions',
     label: 'PDF Extensions',
     description: 'The converter extensions this project applies when it renders a PDF.',
+  },
+  {
+    id: 'html',
+    label: 'HTML Export',
+    description:
+      'How an exported HTML file is packaged and what colours it uses. These shape the exported file, not the live preview.',
   },
   {
     id: 'danger',

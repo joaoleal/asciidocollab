@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
 import type { Page } from '@playwright/test';
-import { createAdocFile, openProject, openFile, getEditorText, editorContent, renameFirstWord, expandPreview } from './helpers/editor';
+import { createAdocFile, openProject, openFile, getEditorText, editorContent, renameFirstWord, expandPreview, COLLAB_EDIT_TEST_TIMEOUT } from './helpers/editor';
 
 /** Select the attribute name in the definition line and replace it, leaving the cursor in it. */
 async function renameDefinitionTo(page: Page, newName: string): Promise<void> {
@@ -23,6 +23,7 @@ test.describe('033 — attribute rename suggestion', () => {
   let projectId: string;
 
   test.beforeEach(async ({ page }) => {
+    test.setTimeout(COLLAB_EDIT_TEST_TIMEOUT); // these tests live-edit the collab editor — see the constant
     await signIn(page);
     projectId = await createProject(page, `Rename Suggestion ${Date.now()}`);
   });

@@ -123,3 +123,16 @@ export {
   type PdfExtensionConflict,
   type GetPdfExtensionCatalogueInput,
 } from './project/get-pdf-extension-catalogue';
+
+// grammar/ (feature 042)
+export { AddDictionaryTermUseCase } from './grammar/add-dictionary-term';
+export { RemoveDictionaryTermUseCase } from './grammar/remove-dictionary-term';
+export { ListDictionaryTermsUseCase } from './grammar/list-dictionary-terms';
+export {
+  requireDictionaryEditor,
+  requireDictionaryMember,
+  DICTIONARY_RESOURCE_TYPE,
+} from './grammar/grammar-authorization';
+export { GetIgnoredLintsUseCase } from './grammar/get-ignored-lints';
+export { ReplaceIgnoredLintsUseCase } from './grammar/replace-ignored-lints';
+export { requireDocumentMember, IGNORED_LINT_RESOURCE_TYPE } from './grammar/ignored-lint-authorization';

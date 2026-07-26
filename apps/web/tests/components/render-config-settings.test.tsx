@@ -111,6 +111,16 @@ describe('RenderConfigSection', () => {
     expect(within(fontTree()).getByLabelText('assets/fonts')).toBeChecked();
   });
 
+  // "Not set" for admonition icons is not "no icons": the app seeds `icons=font` for every render, so
+  // the option has to name the default it lands on the way its siblings do — otherwise the setting
+  // reads as off while the preview shows icons.
+  it('names font icons as the effective default in the unset admonition-icons option', () => {
+    stub({ config: {} });
+    renderBoth();
+    expect(screen.getByLabelText('Admonition icons')).toHaveValue('');
+    expect(screen.getByRole('option', { name: /not set \(font icons\)/i })).toBeInTheDocument();
+  });
+
   it('saves a payload assembled from every edited control', async () => {
     const save = stub({ config: {} });
     renderBoth();
@@ -474,5 +484,103 @@ describe('a project whose files could not be listed', () => {
     stub({ config: { pdfTheme: 'deleted-theme.yml' } });
     renderSection('pdf');
     expect(resolvedTheme()).toMatch(/not in this project/i);
+  });
+});
+
+describe('HTML export section', () => {
+  it('seeds both controls from the stored config', () => {
+    stub({ config: { htmlExport: { packaging: 'zip', theme: 'auto' } } });
+    renderSection('html');
+    expect(screen.getByLabelText(/export format/i)).toHaveValue('zip');
+    expect(screen.getByLabelText(/colour scheme/i)).toHaveValue('auto');
+  });
+
+  it('shows the effective default in the "Not set" option, so an unset project is not a mystery', () => {
+    stub({ config: {} });
+    renderSection('html');
+    expect(screen.getByLabelText(/export format/i)).toHaveValue('');
+    expect(screen.getByRole('option', { name: /not set \(one self-contained file\)/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /not set \(light\)/i })).toBeInTheDocument();
+  });
+
+  it('saves each field under the htmlExport section', async () => {
+    const save = stub({ config: {} });
+    renderSection('html');
+    fireEvent.change(screen.getByLabelText(/export format/i), { target: { value: 'zip' } });
+    fireEvent.change(screen.getByLabelText(/colour scheme/i), { target: { value: 'dark' } });
+    fireEvent.click(screen.getByRole('button', { name: /save render options/i }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls.at(-1)?.[0]).toMatchObject({ htmlExport: { packaging: 'zip', theme: 'dark' } });
+  });
+
+  it('keeps the sibling field when only one is changed', async () => {
+    const save = stub({ config: { htmlExport: { theme: 'dark' } } });
+    renderSection('html');
+    fireEvent.change(screen.getByLabelText(/export format/i), { target: { value: 'zip' } });
+    fireEvent.click(screen.getByRole('button', { name: /save render options/i }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls.at(-1)?.[0]).toMatchObject({ htmlExport: { packaging: 'zip', theme: 'dark' } });
+  });
+
+  it('drops the whole section once every field is cleared back to "Not set"', async () => {
+    // Storing `{}` would be a project that has an HTML-export config saying nothing; clearing must
+    // leave a config indistinguishable from one that never had the section.
+    const save = stub({ config: { htmlExport: { packaging: 'zip' } } });
+    renderSection('html');
+    fireEvent.change(screen.getByLabelText(/export format/i), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /save render options/i }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls.at(-1)?.[0].htmlExport).toBeUndefined();
+  });
+
+  it('shares the one draft with the other sections, so saving here keeps their edits', async () => {
+    const save = stub({ config: { doctype: 'book' } });
+    render(
+      <RenderConfigProvider projectId="p1" canEdit>
+        <RenderConfigSection section="rendering" />
+        <RenderConfigSection section="html" />
+      </RenderConfigProvider>,
+    );
+    fireEvent.change(screen.getByLabelText(/colour scheme/i), { target: { value: 'light' } });
+    fireEvent.click(screen.getAllByRole('button', { name: /save render options/i })[0]);
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls.at(-1)?.[0]).toMatchObject({ doctype: 'book', htmlExport: { theme: 'light' } });
+  });
+
+  it('disables both controls for a viewer who may not edit', () => {
+    stub({ config: {} });
+    renderSection('html', false);
+    expect(screen.getByLabelText(/export format/i)).toBeDisabled();
+    expect(screen.getByLabelText(/colour scheme/i)).toBeDisabled();
+  });
+});
+
+describe('HTML export style', () => {
+  it('seeds the style control from the stored config and saves a change', async () => {
+    const save = stub({ config: { htmlExport: { style: 'asciidoctor' } } });
+    renderSection('html');
+    expect(screen.getByLabelText(/^style$/i)).toHaveValue('asciidoctor');
+    fireEvent.change(screen.getByLabelText(/^style$/i), { target: { value: 'asciidocollab' } });
+    fireEvent.click(screen.getByRole('button', { name: /save render options/i }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls.at(-1)?.[0]).toMatchObject({ htmlExport: { style: 'asciidocollab' } });
+  });
+
+  it('leaves style unset by default, which means each person exports in their own preview style', () => {
+    stub({ config: {} });
+    renderSection('html');
+    expect(screen.getByLabelText(/^style$/i)).toHaveValue('');
+    expect(
+      screen.getByRole('option', { name: /not set \(each person’s own preview style\)/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('clearing style back to "Not set" removes it without disturbing its siblings', async () => {
+    const save = stub({ config: { htmlExport: { style: 'asciidoctor', packaging: 'zip' } } });
+    renderSection('html');
+    fireEvent.change(screen.getByLabelText(/^style$/i), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /save render options/i }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls.at(-1)?.[0].htmlExport).toEqual({ packaging: 'zip' });
   });
 });

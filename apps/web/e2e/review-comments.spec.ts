@@ -86,11 +86,10 @@ test.describe('Review comments — thread lifecycle across two sessions', () => 
       await expect(rootCardA.getByTestId('review-reaction-👍')).toBeVisible({ timeout: 10_000 });
       await expect(rootCardA.getByTestId('review-reaction-👍')).toContainText('1', { timeout: 10_000 });
 
-      // ── Hide the panel via ReviewToggle: the open-count badge persists, the rail is gone ─────
-      await expect(page.getByTestId('review-toggle-count')).toHaveText('1', { timeout: 10_000 });
-      await page.getByTestId('review-toggle').click();
+      // ── Collapse the panel from its own rail, reopen it from the collapsed edge ──────────────
+      await expect(page.getByTestId('right-panel-count-comments')).toHaveText('1', { timeout: 10_000 });
+      await page.getByLabel('collapse panel').click();
       await expect(railA).toBeHidden({ timeout: 10_000 });
-      await expect(page.getByTestId('review-toggle-count')).toHaveText('1'); // still 1 open while hidden
       await page.getByTestId('review-toggle').click();
       await expect(railA).toBeVisible({ timeout: 10_000 });
 
@@ -101,8 +100,8 @@ test.describe('Review comments — thread lifecycle across two sessions', () => 
       await railA.getByRole('tab', { name: 'All' }).click();
       await expect(railA).toContainText('Please clarify this passage.', { timeout: 15_000 });
 
-      // Every open comment is resolved, so the toolbar badge disappears.
-      await expect(page.getByTestId('review-toggle-count')).toHaveCount(0, { timeout: 10_000 });
+      // Every open comment is resolved, so the rail's open-count badge disappears.
+      await expect(page.getByTestId('right-panel-count-comments')).toHaveCount(0, { timeout: 10_000 });
     } finally {
       await contextB.close();
     }

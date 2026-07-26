@@ -17,6 +17,21 @@ const railTab = (page: Page, name: RegExp) => page.getByRole('tab', { name });
 const outlineRow = (page: Page, name: string | RegExp) =>
   page.getByRole('navigation', { name: /section outline/i }).getByRole('button', { name });
 
+/**
+ * Make a left-panel view the one on screen.
+ *
+ * The rail is an activity bar: activating the tab of the view that is ALREADY showing TOGGLES the
+ * panel shut. So an unconditional click is not "show me this view" — for the view that happens to be
+ * active it hides the very thing the test is about to use, leaving its content present in the DOM but
+ * invisible. Click only when the view is not already selected, and reopen a panel that is collapsed.
+ */
+async function showView(page: Page, name: RegExp): Promise<void> {
+  const tab = railTab(page, name);
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+  const expand = page.getByRole('button', { name: /expand sidebar/i });
+  if (await expand.isVisible()) await expand.click();
+}
+
 async function waitSynced(page: Page): Promise<void> {
   await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
 }
@@ -46,7 +61,7 @@ test.describe('Outline follow-ups', () => {
 
     await page.goto(`/dashboard/projects/${projectId}`);
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-fmain.adoc').click();
     await waitSynced(page);
     await railTab(page, /outline/i).click();
@@ -57,7 +72,7 @@ test.describe('Outline follow-ups', () => {
 
     // Switch to the child file (still full scope) — the outline must STILL show the full document
     // (the foreign 'Main Sec' heading stays visible) without any toggling.
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-fchild.adoc').click();
     await waitSynced(page);
     await railTab(page, /outline/i).click();
@@ -65,7 +80,7 @@ test.describe('Outline follow-ups', () => {
     await expect(outlineRow(page, 'Main Sec')).toBeVisible({ timeout: 10_000 });
 
     // Switch back to the main file — again full scope stays honored with no double-click.
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-fmain.adoc').click();
     await waitSynced(page);
     await railTab(page, /outline/i).click();
@@ -89,7 +104,7 @@ test.describe('Outline follow-ups', () => {
 
     await page.goto(`/dashboard/projects/${projectId}`);
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-cmain.adoc').click();
     await waitSynced(page);
     await railTab(page, /outline/i).click();

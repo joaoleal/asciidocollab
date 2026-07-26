@@ -378,9 +378,15 @@ importers:
       dompurify:
         specifier: ^3.4.11
         version: 3.4.11
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       fonteditor-core:
         specifier: ^2.6.3
         version: 2.6.3
+      harper.js:
+        specifier: 2.4.0
+        version: 2.4.0
       highlight.js:
         specifier: ^11.11.1
         version: 11.11.1
@@ -5126,6 +5132,9 @@ packages:
     resolution: {integrity: sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==}
     engines: {node: ^12.20 || >= 14.13}
 
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
+
   figures@6.1.0:
     resolution: {integrity: sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg==}
     engines: {node: '>=18'}
@@ -5364,6 +5373,9 @@ packages:
     resolution: {integrity: sha512-4E71E0rpOaQuJR2A3xDZ+GM1HyWYv1clR58tC8emQNeQe3RH7MAzSbat+V0wG78LQBo6m6bzSG/L4pBuCsgnUQ==}
     engines: {node: '>=0.4.7'}
     hasBin: true
+
+  harper.js@2.4.0:
+    resolution: {integrity: sha512-tFSoBJ9MfVoIVYBCrUXS0ovJr6uZ9l4HjGmpaEcsm7Ea/OnBf+LPSwgcVJUfHQVktMmuWyYXoV2ejUU1HnXkug==}
 
   has-bigints@1.1.0:
     resolution: {integrity: sha512-R3pbpkcIqv2Pm3dUwgjclDRVmWpTJW2DcMzcIhEXEx1oh/CEMObMm3KLmRJOdvhM7o4uQBnwr8pzRK2sJWIqfg==}
@@ -13218,6 +13230,8 @@ snapshots:
       node-domexception: 1.0.0
       web-streams-polyfill: 3.3.3
 
+  fflate@0.8.3: {}
+
   figures@6.1.0:
     dependencies:
       is-unicode-supported: 2.1.0
@@ -13460,6 +13474,10 @@ snapshots:
       wordwrap: 1.0.0
     optionalDependencies:
       uglify-js: 3.19.3
+
+  harper.js@2.4.0:
+    dependencies:
+      fflate: 0.8.3
 
   has-bigints@1.1.0: {}
 

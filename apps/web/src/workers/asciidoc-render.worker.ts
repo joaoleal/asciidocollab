@@ -35,6 +35,18 @@ interface RenderRequest {
    * controls (`imagesdir`) still win.
    */
   projectAttributes?: Record<string, string>;
+  /**
+   * Whether to emit the editor's scroll-sync hints: `data-source-line` beside every block's id, and a
+   * synthetic `__src_<context>_<line>` id on the blocks that have none so there is an id to sit beside.
+   *
+   * On (the default) for the preview, which navigates by them. Off for an export, whose output is read
+   * by people and other tools rather than by this app: the hints are dead weight there, and the
+   * synthetic ids put app-internal names into the published id namespace beside the author's own
+   * anchors. Turning them off is a choice not to generate them, not a pass that strips them afterwards
+   * — nothing has to distinguish a synthetic id from a real one after the fact, and the export skips
+   * both whole-document rewrites instead of paying for a third.
+   */
+  sourceLineHints?: boolean;
 }
 
 // Asciidoctor convention: a value ending in `@` is an overridable "soft" default — an in-document
@@ -153,7 +165,8 @@ function diagramEngineForStyle(style: string): string | null {
 interface DiagramBlock {
   id: string;
   engine: string;
-  lineNum: number;
+  /** The file the diagram block was written in, and its line THERE (not in the assembled document). */
+  origin: { path: string; line: number };
   source: string;
 }
 
@@ -163,12 +176,41 @@ function escapeHtmlText(value: string): string {
 }
 
 /**
+ * The ` data-source-file="…"` fragment for an origin, or an empty string when the render knows no path.
+ *
+ * Omitted rather than emitted empty: an empty attribute would assert a provenance the worker does not
+ * have, and a consumer matching on it would find nothing. Absent means "single file, the one you are
+ * looking at", which is exactly what the line alone already says.
+ *
+ * @param path - The origin's project-relative path, possibly empty.
+ * @returns The attribute fragment, with a leading space, or an empty string.
+ */
+function sourceFileAttribute(path: string): string {
+  return path === '' ? '' : ` data-source-file="${escapeHtmlAttribute(path)}"`;
+}
+
+/**
+ * Escape a value for a double-quoted attribute.
+ *
+ * Separate from {@link escapeHtmlText} because that one leaves `"` alone, which is harmless in text and
+ * would end the attribute early here. The values escaped with this are project-relative FILE PATHS, and
+ * file names are author-controlled, so this is the boundary that keeps a name from closing the attribute
+ * and introducing markup of its own.
+ *
+ * @param value - The raw value to place inside double quotes.
+ * @returns The escaped value.
+ */
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtmlText(value).replaceAll('"', '&quot;');
+}
+
+/**
  * The inert diagram placeholder the main thread locates and renders natively. `div` + `class` +
  * `data-*` + escaped text is `html`-profile-safe, so the shared preview sanitizer keeps it intact; the
  * source is preserved (escaped text) so a later re-render re-derives the SVG rather than nesting.
  */
 function buildDiagramPlaceholder(diagram: DiagramBlock): string {
-  return `<div class="adc-diagram" data-diagram-engine="${diagram.engine}" data-source-line="${diagram.lineNum}">${escapeHtmlText(diagram.source)}</div>`;
+  return `<div class="adc-diagram" data-diagram-engine="${diagram.engine}" data-source-line="${diagram.origin.line}"${sourceFileAttribute(diagram.origin.path)}>${escapeHtmlText(diagram.source)}</div>`;
 }
 
 /**
@@ -310,6 +352,28 @@ interface RenderResult {
    * thread's lazy import of the on-screen diagram engines. Absent/`false` ⇒ no engine import.
    */
   diagramsPresent?: boolean;
+  /**
+   * The document header as Asciidoctor resolved it, for consumers that render OUTSIDE the app's own
+   * chrome. Embedded output carries the title (via `showtitle`) but never the author/revision line,
+   * because on screen the app already says whose document this is — a file saved to disk does not.
+   * Reported here rather than re-derived on the main thread: authors, revision lines and `lang` follow
+   * AsciiDoc's own header grammar, and the document that just parsed them is the authority on them.
+   */
+  details?: RenderDocumentDetails;
+}
+
+/** The resolved document-header values a standalone render needs; every part is optional. */
+interface RenderDocumentDetails {
+  /** The document title (`doctitle`). */
+  title?: string;
+  /** The author line (`author`, or the joined `authors` when there are several). */
+  author?: string;
+  /** The revision number (`revnumber`). */
+  revnumber?: string;
+  /** The revision date (`revdate`). */
+  revdate?: string;
+  /** The resolved document language (`lang`). */
+  lang?: string;
 }
 
 // A STEM BLOCK renders as `<div class="stemblock">` — a precise, stem-only signal in the output.
@@ -349,8 +413,11 @@ function getProcessor(): ReturnType<typeof Asciidoctor> {
 }
 
 onmessage = function (event: MessageEvent<RenderRequest>) {
-  const { requestId, content, imagesDir, mainPath, files, rootFileId, openFileId, showIncludes, projectAttributes } =
+  const { requestId, content, imagesDir, mainPath, files, rootFileId, openFileId, showIncludes, projectAttributes, sourceLineHints } =
     event.data;
+  // Absent means on: the preview is the dominant caller and navigates by these, so a request that says
+  // nothing gets the behaviour it has always had. An export opts out explicitly.
+  const wantSourceLineHints = sourceLineHints !== false;
   try {
     const proc = getProcessor();
     // `showtitle` renders the document title in embedded output. `imagesdir` is the base path
@@ -411,14 +478,37 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       openFileId === undefined
         ? (p: string) => files![p] ?? null
         : (p: string) => (p === openFilePath ? content : (files![p] ?? null));
-    const source =
+    // The assembly's provenance map is kept, not just its text. Asciidoctor reports every block's line in
+    // ASSEMBLED coordinates, which is a different coordinate system from the file the author is editing as
+    // soon as an `include::` inlines anything above it. Emitting assembled lines and expecting the editor
+    // to translate them is what made click-to-scroll land on the wrong block: only one of the two panels
+    // ever did the translation. Resolving each line back to (file, line) HERE means the markup states
+    // where a block actually came from, and no consumer has to know the assembled coordinate space exists.
+    const assembled =
       openFilePath && files && files[openFilePath] !== undefined
         ? assembleIncludes(openFilePath, readFile, {
             showIncludes,
             seedAttributes: buildAssemblerSeed(attributes),
             baseOffset,
-          }).content
-        : content;
+            // Only built when the hints are wanted: an export asks for neither, and the map is a parallel
+            // array the length of the assembled document.
+            withSourceMap: wantSourceLineHints,
+          })
+        : null;
+    const source = assembled === null ? content : assembled.content;
+    /**
+     * Resolve an assembled line number to the file and line it came from.
+     *
+     * Without an assembly there is nothing to translate: the rendered text IS the open file, so its own
+     * path and the line as reported stand. An out-of-range line (defensive only) is treated the same way
+     * rather than dropped, because a block with no provenance still deserves a position.
+     */
+    const originOf = (assembledLine: number): { path: string; line: number } => {
+      const entry = assembled?.sourceMap?.lineToSource[assembledLine - 1];
+      return entry === undefined
+        ? { path: openFilePath ?? '', line: assembledLine }
+        : { path: entry.path, line: entry.sourceLine };
+    };
     const asciidocDocument = proc.load(source, {
       safe: 'safe',
       sourcemap: true,
@@ -428,13 +518,13 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     // Collect source locations BEFORE conversion. Blocks that have no ID get a
     // synthetic one so we can inject data-source-line via a post-processing pass
     // on the raw HTML string (setAttribute alone does not produce HTML attributes).
-    const blockSourceLines: Array<{ id: string; lineNum: number }> = [];
+    const blockSourceLines: Array<{ id: string; origin: { path: string; line: number } }> = [];
     // Native-diagram blocks: located here (parsed style + source), then swapped for an inert placeholder
     // in the converted HTML so the main thread renders them on-screen (never the raw listing).
     const diagramBlocks: DiagramBlock[] = [];
     // Track the document title line number (from the level-0 section block).
     // The showtitle <h1> has no id attribute, so it needs special handling below.
-    let documentTitleLineNumber: number | null = null;
+    let documentTitleOrigin: { path: string; line: number } | null = null;
 
     // The assembled source, split once, so a block's data-source-line can be lifted to its visual start
     // (the topmost of its title/attribute metadata lines) instead of its delimiter — see blockStartLine.
@@ -453,7 +543,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       // Level-0 sections render as an <h1> via showtitle but have no id in the HTML.
       // Capture the line number for the post-processing step below.
       if (context === 'section' && typeof block.getLevel === 'function' && block.getLevel() === 0) {
-        documentTitleLineNumber = lineNumber;
+        documentTitleOrigin = originOf(lineNumber);
         continue;
       }
 
@@ -476,11 +566,15 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         diagramBlocks.push({
           id: diagramId,
           engine,
-          lineNum: startLine,
+          origin: originOf(startLine),
           source: typeof rawSource === 'string' ? rawSource : String(rawSource ?? ''),
         });
         continue;
       }
+
+      // Everything above this line serves the diagram swap, which happens either way. Only the
+      // scroll-sync bookkeeping below is optional.
+      if (!wantSourceLineHints) continue;
 
       const rawId: unknown = block.getId();
       let id: string = typeof rawId === 'string' ? rawId : '';
@@ -488,7 +582,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         id = `__src_${context}_${lineNumber}`;
         block.setId(id);
       }
-      blockSourceLines.push({ id, lineNum: startLine });
+      blockSourceLines.push({ id, origin: originOf(startLine) });
     }
 
     let html = String(asciidocDocument.convert());
@@ -498,6 +592,28 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     const stemAttribute =
       typeof asciidocDocument.getAttribute === 'function' ? asciidocDocument.getAttribute('stem') : undefined;
     const mathPresent = detectMathPresent(stemAttribute, source, html);
+
+    // The resolved header, for a consumer rendering this outside the app's chrome (see `details`).
+    // Read through the same `typeof` guard the stem lookup uses, so a processor build without
+    // `getAttribute` degrades to "no header metadata" instead of throwing mid-render.
+    const readAttribute = (name: string): string | undefined => {
+      const value =
+        typeof asciidocDocument.getAttribute === 'function' ? asciidocDocument.getAttribute(name) : undefined;
+      return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+    };
+    // `authors` carries every author when the header names several; `author` alone is the first of them.
+    const author = readAttribute('authors') ?? readAttribute('author');
+    const revnumber = readAttribute('revnumber');
+    const revdate = readAttribute('revdate');
+    const lang = readAttribute('lang');
+    const doctitle = readAttribute('doctitle');
+    const details: RenderDocumentDetails = {
+      ...(doctitle === undefined ? {} : { title: doctitle }),
+      ...(author === undefined ? {} : { author }),
+      ...(revnumber === undefined ? {} : { revnumber }),
+      ...(revdate === undefined ? {} : { revdate }),
+      ...(lang === undefined ? {} : { lang }),
+    };
 
     // Swap each native-diagram block's rendered listing for its inert placeholder (`html`-profile-safe
     // so the shared sanitizer keeps it). Done before the id-based source-line pass so the placeholder's
@@ -520,10 +636,12 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     // Inject data-source-line next to each id="..." attribute in a single pass
     // so the preview hook can use querySelector('[data-source-line="N"]').
     if (blockSourceLines.length > 0) {
-      const lineMap = new Map(blockSourceLines.map(({ id, lineNum }) => [id, lineNum]));
+      const originMap = new Map(blockSourceLines.map(({ id, origin }) => [id, origin]));
       html = html.replaceAll(/id="([^"]+)"/g, (_, id: string) => {
-        const lineNumber = lineMap.get(id);
-        return lineNumber === undefined ? `id="${id}"` : `id="${id}" data-source-line="${lineNumber}"`;
+        const origin = originMap.get(id);
+        return origin === undefined
+          ? `id="${id}"`
+          : `id="${id}" data-source-line="${origin.line}"${sourceFileAttribute(origin.path)}`;
       });
     }
 
@@ -531,11 +649,22 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     // Inject data-source-line directly so click-to-scroll works for line 1.
     // Use string replace (not /^<h1>/) to handle a leading newline Asciidoctor
     // sometimes emits in embedded mode.
-    if (documentTitleLineNumber !== null) {
-      html = html.replace('<h1>', `<h1 data-source-line="${documentTitleLineNumber}">`);
+    if (wantSourceLineHints && documentTitleOrigin !== null) {
+      html = html.replace(
+        '<h1>',
+        `<h1 data-source-line="${documentTitleOrigin.line}"${sourceFileAttribute(documentTitleOrigin.path)}>`,
+      );
     }
 
-    postMessage({ requestId, ok: true, html, error: null, mathPresent, diagramsPresent } satisfies RenderResult);
+    postMessage({
+      requestId,
+      ok: true,
+      html,
+      error: null,
+      mathPresent,
+      diagramsPresent,
+      details,
+    } satisfies RenderResult);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     postMessage({ requestId, ok: false, html: null, error: message } satisfies RenderResult);

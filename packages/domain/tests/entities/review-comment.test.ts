@@ -120,3 +120,44 @@ describe('ReviewComment anchor transitions', () => {
     expect(() => reply.reanchor(anchor())).toThrow(ReviewOperationInvalidError);
   });
 });
+
+describe('ReviewComment.refreshAnchorLineHint', () => {
+  test('replaces the hint and reports the change, leaving every other anchor field alone', () => {
+    const item = rootComment();
+    item.degradeToSection('intro/overview');
+
+    expect(item.refreshAnchorLineHint(42)).toBe(true);
+
+    expect(item.anchor?.lineHint).toBe(42);
+    // A re-measurement says nothing about whether the passage still resolves.
+    expect(item.anchor?.state).toBe('section');
+    expect(item.anchor?.sectionId).toBe('intro/overview');
+    expect(item.anchor?.quote?.exact).toBe('passage');
+  });
+
+  test('reports no change (and stays untouched) when the hint already matches', () => {
+    const item = rootComment();
+    const before = item.anchor;
+
+    expect(item.refreshAnchorLineHint(3)).toBe(false);
+
+    expect(item.anchor).toBe(before);
+    expect(item.anchor?.lineHint).toBe(3);
+  });
+
+  test('does NOT touch updatedAt — a derived re-measurement is not a user edit', async () => {
+    const item = rootComment();
+    const updatedAt = item.updatedAt.getTime();
+    // Guarantee a distinguishable clock tick, so an accidental `_touch()` cannot pass unnoticed.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(item.refreshAnchorLineHint(99)).toBe(true);
+
+    expect(item.updatedAt.getTime()).toBe(updatedAt);
+  });
+
+  test('throws for an item with no anchor', () => {
+    const reply = new ReviewComment(REPLY, PROJECT, DOCUMENT, ROOT, 'comment', 'r', AUTHOR);
+    expect(() => reply.refreshAnchorLineHint(1)).toThrow(ReviewOperationInvalidError);
+  });
+});

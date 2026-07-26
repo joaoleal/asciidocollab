@@ -56,6 +56,26 @@ export function buildAssembledLineToSource(snapshot: ProjectSnapshot): Assembled
 }
 
 /**
+ * Build the assembled-line→source provenance map for an OPEN-FILE-rooted assembly — the coordinate space
+ * the HTML preview worker keys its `data-source-line` attributes in (it assembles rooted at the open file,
+ * not the main document). Used to reverse a clicked block's `data-source-line` back to its `{path,
+ * sourceLine}` so the editor can jump there, including into an included file when include bodies are shown.
+ *
+ * @param openPath - The project-relative path of the previewed open file (the assembly root).
+ * @param readFile - Reads a project file's content by path, or null when unavailable.
+ * @param showIncludes - Whether include bodies are expanded inline (must match the preview's setting).
+ * @returns The assembled-line→source provenance map, or null when the assembler produced none.
+ */
+export function buildOpenFileLineToSource(
+  openPath: string,
+  readFile: (path: string) => string | null,
+  showIncludes: boolean,
+): AssembledLineToSource | null {
+  const assembled = assembleIncludes(openPath, readFile, { showIncludes, withSourceMap: true });
+  return assembled.sourceMap?.lineToSource ?? null;
+}
+
+/**
  * Whether a target file is part of the include tree rooted at `rootPath`: it IS the root, or the
  * assembled document (include-expanded from the root) contains at least one line originating in it. Used
  * to decide whether the open file belongs to the configured main document — if it does not, the preview
@@ -82,9 +102,17 @@ export function isPathInAssembledTree(
  * Lift each engine source-map entry's line to its block's VISUAL start (the block title/attribute lines
  * above its delimiter), so a click on a block's title line resolves to that block instead of the previous
  * one — the PDF-side twin of the HTML preview's `data-source-line` adjustment. Page/vertical positions are
- * preserved (the block still renders where it renders); only the key line moves up. The result is
- * re-sorted by line and de-duplicated (first entry per line wins) so the panel's binary search stays
- * valid. Returns the input unchanged when it is empty.
+ * preserved (the block still renders where it renders); only the key line moves up. Returns the input
+ * unchanged when it is empty.
+ *
+ * The result is re-sorted by line and then by layout position, and only EXACT position duplicates are
+ * collapsed. Lifting genuinely merges keys — a block's title line can already be another entry's line —
+ * and dropping every extra entry per line threw away real, distinctly-positioned blocks, so the reverse
+ * (click→source) lookup had nothing to resolve a click on them to. Two entries at the identical `(page,
+ * yFraction)` are indistinguishable to that lookup, so those are the only ones worth collapsing; the
+ * earliest line survives. The secondary position sort is what keeps the panel's forward binary search
+ * meaningful: the first entry of a line group is the one rendered highest, which is where a cursor on
+ * that line should scroll to.
  *
  * @param sourceMap - The engine-emitted, line-sorted source map (assembled-document coordinates).
  * @param assembledLines - The assembled document split into lines (same coordinates as the map).
@@ -99,14 +127,16 @@ export function liftSourceMapToBlockStarts(
     ...entry,
     line: blockStartLine(assembledLines, entry.line),
   }));
-  lifted.sort((a, b) => a.line - b.line);
+  lifted.sort((a, b) => a.line - b.line || a.page - b.page || a.yFraction - b.yFraction);
   const deduped: typeof lifted = [];
-  let lastLine: number | undefined;
   for (const entry of lifted) {
-    if (entry.line !== lastLine) {
-      deduped.push(entry);
-      lastLine = entry.line;
-    }
+    const previous = deduped.at(-1);
+    const samePosition =
+      previous !== undefined &&
+      previous.line === entry.line &&
+      previous.page === entry.page &&
+      previous.yFraction === entry.yFraction;
+    if (!samePosition) deduped.push(entry);
   }
   return deduped;
 }

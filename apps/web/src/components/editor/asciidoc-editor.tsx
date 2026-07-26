@@ -21,6 +21,16 @@ import { useAutoSave } from '@/hooks/use-auto-save';
 import { useEditorPreferences } from '@/hooks/use-editor-preferences';
 import { useIncludeCompletions, useImagePaths } from '@/hooks/use-include-completions';
 import { useEditorMount } from '@/hooks/use-editor-mount';
+import { useGrammarSettings } from '@/hooks/use-grammar-settings';
+import { useProjectDictionary } from '@/hooks/use-project-dictionary';
+import { useIgnoredLints } from '@/hooks/use-ignored-lints';
+import type { DictionaryTermDto } from '@asciidocollab/shared';
+import { GrammarStatus } from '@/components/grammar/grammar-status';
+import type { LintScope } from '@/lib/codemirror/harper/harper-linter-source';
+import { categoryCounts, type PositionedGrammarDiagnostic } from '@/lib/codemirror/harper/grammar-diagnostics';
+import { applyGrammarSuggestion } from '@/lib/codemirror/harper/apply-suggestion';
+import type { EngineSuggestion } from '@/lib/codemirror/harper/harper-engine';
+import type { GrammarEngineStatus } from '@/lib/codemirror/harper/harper-worker-client';
 import { useTableContext } from '@/hooks/use-table-context';
 import { OFFLINE_QUEUE_KEY_PREFIX } from '@/lib/editor-config';
 import type { SectionOutlineEntry } from '@/lib/codemirror/asciidoc-outline';
@@ -32,11 +42,95 @@ import { EditorStatusBar } from './editor-status-bar';
 import { computeMetrics } from '@/lib/codemirror/asciidoc-metrics';
 import { EditorChrome } from './editor-chrome';
 
+/** The grammar-panel state the editor surfaces to the layout so it can render the Grammar rail. */
+export interface EditorGrammarState {
+  /** The current grammar issues with live document positions. */
+  diagnostics: PositionedGrammarDiagnostic[];
+  /** The on-device engine's panel status: loading, ready, failed, or disabled for this project. */
+  status: GrammarEngineStatus;
+  /** How much the checker reports on: this file, or the whole `include::` document. */
+  lintScope: LintScope;
+  /**
+   * Change which prose the checker examines. A per-view preference — it never changes what other
+   * collaborators check.
+   *
+   * @param next - The scope to check from now on.
+   */
+  setLintScope: (next: LintScope) => void;
+  /**
+   * Navigate the editor to an issue.
+   *
+   * @param from - Document offset of the issue start.
+   * @param to - Document offset just past the issue.
+   */
+  navigate: (from: number, to: number) => void;
+  /**
+   * Apply a suggested fix.
+   *
+   * @param entry - The issue being resolved.
+   * @param suggestion - The chosen suggestion.
+   */
+  apply: (entry: PositionedGrammarDiagnostic, suggestion: EngineSuggestion) => void;
+  /** The project dictionary term records. */
+  dictionary: DictionaryTermDto[];
+  /** Whether the caller may add/remove dictionary terms (editor/owner). */
+  canManageDictionary: boolean;
+  /**
+   * Add a term to the project dictionary.
+   *
+   * @param term - The term to add.
+   */
+  addDictionaryTerm: (term: string) => void;
+  /**
+   * Remove a term from the project dictionary.
+   *
+   * @param termId - The id of the term to remove.
+   */
+  removeDictionaryTerm: (termId: string) => void;
+  /**
+   * Add the word an issue flagged to the project dictionary (reads the document text at the issue).
+   *
+   * @param entry - The issue whose flagged word to accept.
+   */
+  addIssueWordToDictionary: (entry: PositionedGrammarDiagnostic) => void;
+  /**
+   * Dismiss an issue for this reader alone, and remember the dismissal across reloads. Null when there
+   * is nowhere to store it, so the panel can leave the action out instead of offering a dismissal that
+   * does not last.
+   *
+   * @param entry - The issue to stop reporting.
+   */
+  ignore: ((entry: PositionedGrammarDiagnostic) => void) | null;
+  /** The engine's current rule on/off configuration (empty until the engine loads). */
+  ruleConfig: Record<string, boolean | null>;
+  /**
+   * The engine's one-line explanation of each rule, keyed by rule name (empty until the engine loads).
+   * The panel uses it as the hover text of the rule chip naming an issue's rule.
+   */
+  ruleDescriptions: Record<string, string>;
+  /**
+   * Toggle a rule on or off.
+   *
+   * @param rule - The rule name.
+   * @param enabled - The new state.
+   */
+  setRule: (rule: string, enabled: boolean) => void;
+  /** Reset every rule to the engine default. */
+  resetRules: () => void;
+}
+
 interface AsciiDocEditorProperties {
   content: string;
   canEdit: boolean;
   projectId?: string;
   fileNodeId?: string;
+  /**
+   * Called with the live grammar-panel state so the layout can render the Grammar rail.
+   *
+   * @param state - The current grammar issues plus the navigate/apply actions, or null once this
+   * editor goes away and there is no document being checked any more.
+   */
+  onGrammarStateChange?: (state: EditorGrammarState | null) => void;
   /**
    * ETag from the initial GET /content response — seeds external-change polling
    *  so it works from first load without requiring a save first.
@@ -189,6 +283,7 @@ export function AsciiDocEditor({
   canEdit,
   projectId,
   fileNodeId,
+  onGrammarStateChange,
   initialEtag,
   isAsciiDoc = true,
   softWrap: softWrapProperty,
@@ -229,6 +324,13 @@ export function AsciiDocEditor({
   // opened read-only, and the legacy clobbering PUT path must never run for it.
   const onCollabPath = collab != null || connectionState != null || collabUnavailable;
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1, totalLines: 1 });
+  // Live grammar issues + engine state, surfaced from the editor for the panel and status bar.
+  const [grammarDiagnostics, setGrammarDiagnostics] = useState<PositionedGrammarDiagnostic[]>([]);
+  const [grammarStatus, setGrammarStatus] = useState<GrammarEngineStatus>('disabled');
+  const grammarEngineReady = grammarStatus === 'ready';
+  const [lintScope, setLintScope] = useState<LintScope>('this-file');
+  const [ruleConfig, setRuleConfig] = useState<Record<string, boolean | null>>({});
+  const [ruleDescriptions, setRuleDescriptions] = useState<Record<string, string>>({});
   // Live word count / reading time for the status bar. Seeded from the
   // initial content and refreshed from each editor change.
   const [docText, setDocText] = useState(content);
@@ -241,6 +343,18 @@ export function AsciiDocEditor({
   const minimapEnabled = minimapEnabledProperty === undefined ? prefsMinimapEnabled : minimapEnabledProperty;
   // Spellcheck language comes from the project; fall back to English when the project leaves it unset.
   const effectiveSpellcheckLanguage = spellcheckLanguage ?? 'en';
+  // On-device grammar checking: gated on a real project (its render-config supplies the enable flag)
+  // whose language is English. Harper then owns prose checking and suppresses the nspell spellchecker.
+  // Use the SAME defaulted language as the spellchecker — a project that leaves its language unset
+  // falls back to English, so grammar checking is active by default there just as spellcheck is.
+  const grammarSettings = useGrammarSettings(projectId ?? '', effectiveSpellcheckLanguage);
+  // Gate on `loaded` too: until the render-config has actually been read, `enabled` reflects the
+  // "unset ⇒ default-on" assumption, which would warm up the WASM engine for a grammar-DISABLED
+  // project only to tear it down when the real config arrives. Wait for the real value first.
+  const grammarEnabled = Boolean(projectId) && grammarSettings.loaded && grammarSettings.enabled;
+  const dictionary = useProjectDictionary(projectId ?? '');
+  const canManageDictionary = canEdit;
+  const ignoredLints = useIgnoredLints(grammarEnabled ? (fileNodeId ?? null) : null);
   const includePaths = useIncludeCompletions(projectId ?? '');
   const imagePaths = useImagePaths(includePaths);
 
@@ -328,7 +442,17 @@ export function AsciiDocEditor({
   // the shared Y.Text is where relative positions are pinned.
   const commentFromSelectionReference = useRef<(from: number, to: number) => void>(() => {});
 
-  const { containerReference, viewReference } = useEditorMount({
+  // Store a dismissal against the open document. Passed as `undefined` when there is no document id:
+  // that removes the Ignore action rather than offering one that is forgotten on the next reload.
+  const { save: saveIgnoredLints } = ignoredLints;
+  const persistIgnoredLints = useCallback(
+    (next: string) => {
+      void saveIgnoredLints(next);
+    },
+    [saveIgnoredLints],
+  );
+
+  const { containerReference, viewReference, getHarperClient, ignoreGrammarIssue } = useEditorMount({
     content,
     canEdit: effectiveCanEdit,
     softWrap,
@@ -337,6 +461,15 @@ export function AsciiDocEditor({
     spellIgnore,
     spellcheckLanguage: effectiveSpellcheckLanguage,
     spellcheckEnabled,
+    grammarEnabled,
+    grammarLanguageIsEnglish: grammarSettings.languageIsEnglish,
+    grammarDialect: grammarSettings.dialect,
+    dictionaryTerms: dictionary.terms,
+    ignoredLintsBlob: ignoredLints.blob,
+    onIgnoredLintsChange: grammarEnabled && fileNodeId ? persistIgnoredLints : undefined,
+    lintScope,
+    onGrammarDiagnostics: setGrammarDiagnostics,
+    onGrammarStatusChange: setGrammarStatus,
     includePaths,
     imagePaths,
     onDocChange: handleChange,
@@ -355,6 +488,9 @@ export function AsciiDocEditor({
     initialLine,
     getProjectIndex,
     collabExtension,
+    // Read at (re)creation time, so a view recreated against an already-synced room is seeded with the
+    // room's text instead of opening blank. See getCollabDocText in useEditorMount.
+    getCollabDocText: collab ? () => collab.doc.getText(COLLAB_YTEXT_KEY).toString() : undefined,
     renameSuggestionExtension,
     renameRefreshNonce,
     remountKey: collab?.yjsStateId,
@@ -449,6 +585,132 @@ export function AsciiDocEditor({
     setDraftContent(null);
   }
 
+  // Grammar panel actions: navigate the editor to an issue, or apply a fix as an ordinary edit.
+  const navigateToGrammarIssue = useCallback((from: number, to: number) => {
+    const view = viewReference.current;
+    if (!view) return;
+    view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
+    view.focus();
+  }, [viewReference]);
+  const applyGrammarIssue = useCallback((entry: PositionedGrammarDiagnostic, suggestion: EngineSuggestion) => {
+    const view = viewReference.current;
+    if (view) applyGrammarSuggestion(view, entry.from, entry.to, suggestion);
+  }, [viewReference]);
+  // Offered only when the dismissal has somewhere to live, matching the tooltip's Ignore action.
+  const ignoreIssue = useMemo(
+    () =>
+      grammarEnabled && fileNodeId
+        ? (entry: PositionedGrammarDiagnostic) => ignoreGrammarIssue(entry.diagnostic)
+        : null,
+    [grammarEnabled, fileNodeId, ignoreGrammarIssue],
+  );
+  // Load the engine's rule config once it is ready (data-driven — never a hardcoded rule list), along
+  // with its rule descriptions, which name what each rule checks in the panel's rule chips. Both are
+  // read once per ready engine: the descriptions are static for a Harper version, so re-reading them on
+  // every rule toggle would just be hundreds of strings crossing the worker again.
+  useEffect(() => {
+    if (!grammarEngineReady) return;
+    let active = true;
+    const client = getHarperClient();
+    void client?.getLintConfig().then((config) => {
+      if (active) setRuleConfig(config);
+    });
+    void client?.getLintDescriptions().then((descriptions) => {
+      if (active) setRuleDescriptions(descriptions);
+    });
+    return () => {
+      active = false;
+    };
+  }, [grammarEngineReady, getHarperClient]);
+  // `setLintConfig` REPLACES the linter's whole configuration — harper.js documents it as "set the
+  // linter's current configuration", not a merge. Passing just the toggled rule therefore threw every
+  // other rule away: the next `getLintConfig()` returned a single-key object, so the Rules list
+  // collapsed to the one rule the user clicked, and Reset (which derived its key set from that same
+  // collapsed config) could not bring the others back either. Always send the full config with the one
+  // rule changed, read fresh from the engine rather than from React state so a stale closure cannot
+  // resurrect the same bug.
+  const setRule = useCallback((rule: string, enabled: boolean) => {
+    const client = getHarperClient();
+    if (!client) return;
+    void (async () => {
+      const current = await client.getLintConfig();
+      await client.setLintConfig({ ...current, [rule]: enabled });
+      setRuleConfig(await client.getLintConfig());
+      viewReference.current?.dispatch({});
+    })();
+  }, [getHarperClient, viewReference]);
+  const resetRules = useCallback(() => {
+    const client = getHarperClient();
+    if (!client) return;
+    void (async () => {
+      // Derive the key set from the engine, not from `ruleConfig`: state can lag, and reading it here
+      // is what made Reset unable to recover from the collapse described above.
+      const current = await client.getLintConfig();
+      const cleared = Object.fromEntries(Object.keys(current).map((name) => [name, null]));
+      await client.setLintConfig(cleared);
+      setRuleConfig(await client.getLintConfig());
+      viewReference.current?.dispatch({});
+    })();
+  }, [getHarperClient, viewReference]);
+
+  const { addTerm: addDictionaryTerm, removeTerm: removeDictionaryTerm } = dictionary;
+  const addIssueWordToDictionary = useCallback((entry: PositionedGrammarDiagnostic) => {
+    const view = viewReference.current;
+    if (!view) return;
+    const word = view.state.sliceDoc(entry.from, entry.to).trim();
+    if (word) void addDictionaryTerm(word);
+  }, [viewReference, addDictionaryTerm]);
+
+  // Bubble the grammar panel state (issues + actions) to the layout so it can render the Grammar rail.
+  useEffect(() => {
+    onGrammarStateChange?.({
+      diagnostics: grammarDiagnostics,
+      status: grammarStatus,
+      lintScope,
+      setLintScope,
+      navigate: navigateToGrammarIssue,
+      apply: applyGrammarIssue,
+      dictionary: dictionary.entries,
+      canManageDictionary,
+      addDictionaryTerm: (term) => void addDictionaryTerm(term),
+      removeDictionaryTerm: (termId) => void removeDictionaryTerm(termId),
+      addIssueWordToDictionary,
+      ignore: ignoreIssue,
+      ruleConfig,
+      ruleDescriptions,
+      setRule,
+      resetRules,
+    });
+  }, [
+    onGrammarStateChange,
+    grammarDiagnostics,
+    grammarStatus,
+    lintScope,
+    setLintScope,
+    navigateToGrammarIssue,
+    applyGrammarIssue,
+    dictionary.entries,
+    canManageDictionary,
+    addDictionaryTerm,
+    removeDictionaryTerm,
+    addIssueWordToDictionary,
+    ignoreIssue,
+    ruleConfig,
+    ruleDescriptions,
+    setRule,
+    resetRules,
+  ]);
+
+  // Take the panel down with the editor. This component is the only publisher of grammar state, so
+  // when it goes away nothing else can tell the layout the issues went with it: opening an image, a
+  // theme file, or a file that fails to load would otherwise leave the Writing panel listing the
+  // previous document's issues, with navigate/apply bound to a destroyed EditorView. React unmounts
+  // the outgoing editor before mounting the next one, so switching between two AsciiDoc files still
+  // ends with the new document's state, not this null.
+  useEffect(() => () => onGrammarStateChange?.(null), [onGrammarStateChange]);
+
+  const grammarCounts = useMemo(() => categoryCounts(grammarDiagnostics), [grammarDiagnostics]);
+
   return (
     <div
       className="asciidoc-editor flex flex-col h-full"
@@ -495,6 +757,9 @@ export function AsciiDocEditor({
             onRetry={handleRetry}
             wordCount={metrics.words}
             readingTimeMin={metrics.readingTimeMin}
+            // The check-scope toggle lives in the Writing panel's own controls, not here: it
+            // configures that panel, so it belongs beside it rather than in the shared status bar.
+            grammarStatus={<GrammarStatus counts={grammarCounts} engineReady={grammarEngineReady} />}
           />
         </div>
       )}

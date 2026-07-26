@@ -46,4 +46,22 @@ describe('ReviewAnchor', () => {
     expect(sectioned.sectionId).toBe('sec-9');
     expect(sectioned.quote!.exact).toBe('passage');
   });
+
+  test('withLineHint replaces only the hint, preserving relPos, quote, section and state', () => {
+    const base = new ReviewAnchor(new Uint8Array([1, 2]), quote, 3, 'sec-4', 'section');
+
+    const refreshed = base.withLineHint(120);
+
+    expect(refreshed.lineHint).toBe(120);
+    expect([...refreshed.relPos!]).toEqual([1, 2]);
+    expect(refreshed.quote!.exact).toBe('passage');
+    expect(refreshed.sectionId).toBe('sec-4');
+    expect(refreshed.state).toBe('section');
+    // The original is untouched — the anchor is a value object.
+    expect(base.lineHint).toBe(3);
+  });
+
+  test('withLineHint accepts null for an unknown position', () => {
+    expect(new ReviewAnchor(null, quote, 8, null).withLineHint(null).lineHint).toBeNull();
+  });
 });

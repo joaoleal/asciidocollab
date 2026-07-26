@@ -1,8 +1,9 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import DOMPurify from 'dompurify';
-import { PREVIEW_DEBOUNCE_MS } from '@/lib/editor-config';
+import { PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS } from '@/lib/editor-config';
 import { createRenderWorker } from '@/lib/create-render-worker';
+import { createMaxWaitDebounce, type MaxWaitDebounce } from '@/lib/max-wait-debounce';
 
 /** Lifecycle state of the preview panel. */
 export type PreviewState = 'idle' | 'pending' | 'rendering' | 'up-to-date' | 'error';
@@ -19,6 +20,8 @@ interface RenderRequest {
   showIncludes?: boolean;
   /** Project-level render-config attributes (soft-defaulted), seeded beneath the document's own. */
   projectAttributes?: Record<string, string>;
+  /** When false, the render omits the `data-source-line` hints this panel navigates by. */
+  sourceLineHints?: boolean;
 }
 
 interface RenderResult {
@@ -153,7 +156,10 @@ export function useAsciidocPreview({
 
   const workerReference = useRef<Worker | null>(null);
   const requestIdReference = useRef(0);
-  const debounceReference = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debounceReference = useRef<MaxWaitDebounce | null>(null);
+  if (debounceReference.current === null) {
+    debounceReference.current = createMaxWaitDebounce(PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS);
+  }
   const previewReference = useRef<HTMLDivElement | null>(null);
 
   // Mount Worker; teardown on unmount.
@@ -188,11 +194,10 @@ export function useAsciidocPreview({
     };
   }, []);
 
-  // Shared debounce helper — captured in effects via closure over current content.
+  // Shared debounce helper — captured in effects via closure over current content. Trailing debounce
+  // (PREVIEW_DEBOUNCE_MS) with a PREVIEW_MAX_WAIT_MS cap so a sustained edit still refreshes the preview.
   const scheduleRender = (currentContent: string) => {
-    if (debounceReference.current !== null) clearTimeout(debounceReference.current);
-    debounceReference.current = setTimeout(() => {
-      debounceReference.current = null;
+    debounceReference.current?.schedule(() => {
       requestIdReference.current += 1;
       setState('rendering');
       // When a main file is configured, assemble its include tree; the worker confines
@@ -218,20 +223,21 @@ export function useAsciidocPreview({
         content: currentContent,
         imagesDir: imagesDirectoryReference.current,
         showIncludes: showIncludesReference.current,
+        // The preview navigates by these: `revealLine` below looks the block up with
+        // `[data-source-line="N"]`. Stated rather than left to the default, because the export sets it
+        // the other way and the pair only makes sense read together.
+        sourceLineHints: true,
         ...(projectAttributesReference.current ? { projectAttributes: projectAttributesReference.current } : {}),
         ...(canAssemble ? { files, openFileId: openId } : {}),
         ...(canResolveScope ? { rootFileId: rootId, openFileId: openId, files } : {}),
       } satisfies RenderRequest);
-    }, PREVIEW_DEBOUNCE_MS);
+    });
   };
 
   // Handle isEnabled changes.
   useEffect(() => {
     if (!isEnabled) {
-      if (debounceReference.current !== null) {
-        clearTimeout(debounceReference.current);
-        debounceReference.current = null;
-      }
+      debounceReference.current?.cancel();
       setState('idle');
       return;
     }
@@ -248,10 +254,7 @@ export function useAsciidocPreview({
     scheduleRender(content);
 
     return () => {
-      if (debounceReference.current !== null) {
-        clearTimeout(debounceReference.current);
-        debounceReference.current = null;
-      }
+      debounceReference.current?.cancel();
     };
   }, [content]);
 
@@ -272,10 +275,25 @@ export function useAsciidocPreview({
     if (!scrollToLine || !previewReference.current) return;
     const { line } = scrollToLine;
 
-    // Try exact match first, then fall back to largest line number ≤ line.
-    let target = previewReference.current.querySelector<HTMLElement>(`[data-source-line="${line}"]`);
+    // Match on the FILE as well as the line. The rendered document can span several files (an assembled
+    // include tree), so a line number alone is ambiguous: the open file's line 5 and an included file's
+    // line 5 are different places, and whichever happened to come first in the DOM won. That ambiguity is
+    // what made clicking a line scroll to the wrong block — every element now states which file it came
+    // from, so the candidates are restricted to the file the editor is actually showing.
+    const openPath = openFileIdReference.current;
+    // Scope only when THIS render actually carried file provenance. A single-file render states just the
+    // line (there is only one file it could mean), so insisting on the attribute would match nothing and
+    // silently stop scrolling — worse than the ambiguity being fixed.
+    const scoped = openPath === undefined ? '' : `[data-source-file="${CSS.escape(openPath)}"]`;
+    const scope =
+      scoped !== '' && previewReference.current.querySelector(scoped) !== null ? scoped : '';
+    let target = previewReference.current.querySelector<HTMLElement>(
+      `${scope}[data-source-line="${line}"]`,
+    );
     if (!target) {
-      const all = previewReference.current.querySelectorAll<HTMLElement>('[data-source-line]');
+      // Nearest preceding block in the SAME file: a click between blocks (a blank line, a line inside a
+      // block's body) has no element of its own and should land on the block it belongs to.
+      const all = previewReference.current.querySelectorAll<HTMLElement>(`${scope}[data-source-line]`);
       let best: HTMLElement | null = null;
       let bestLine = 0;
       for (const element of all) {

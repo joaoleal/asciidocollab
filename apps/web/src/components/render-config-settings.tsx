@@ -18,6 +18,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import {
   Baseline,
   BookMarked,
+  Brush,
   FileType,
   FlaskConical,
   Image as ImageIcon,
@@ -25,6 +26,7 @@ import {
   ListOrdered,
   ListTree,
   Monitor,
+  Package,
   Palette,
   Plus,
   Quote,
@@ -44,6 +46,9 @@ import { FolderTreeSelect } from '@/components/folder-tree-select';
 import { useProjectRenderConfig } from '@/hooks/use-project-render-config';
 import { useProjectFolders, type FolderNode } from '@/hooks/use-project-folders';
 import {
+  HTML_EXPORT_PACKAGINGS,
+  HTML_EXPORT_STYLES,
+  HTML_EXPORT_THEMES,
   PDF_PAGE_SIZES,
   THEME_FILENAME_CONVENTION,
   resolveThemePath,
@@ -153,8 +158,14 @@ interface RenderConfigDraft {
   updateRow: (index: number, field: keyof AttributeRow, value: string) => void;
   removeRow: (index: number) => void;
   addRow: () => void;
-  /** Persist the merged whole configuration. */
-  save: () => Promise<void>;
+  /**
+   * Persist the merged whole configuration.
+   *
+   * Resolves to whether the write landed. A caller that saves this draft alongside something else
+   * (the General section saves the project and the config together) needs the answer: without it a
+   * rejected config write is invisible and the caller reports a save it did not make.
+   */
+  save: () => Promise<boolean>;
   /**
    * Throw away every unsaved edit, returning the draft to what is stored.
    *
@@ -286,7 +297,7 @@ export function RenderConfigProvider({
         touch();
         setRows((current) => [...current, { name: '', value: '' }]);
       },
-      async save(): Promise<void> {
+      async save(): Promise<boolean> {
         const customAttributes = fromRows(rows);
         // The merged WHOLE: `draft` already holds every section's options, and the two collection
         // fields are rebuilt from their own editors. A payload assembled per-section would drop the
@@ -303,6 +314,7 @@ export function RenderConfigProvider({
         const ok = await save(payload);
         setSaved(ok);
         if (ok) setDirty(false);
+        return ok;
       },
     };
     // `touch` is intentionally absent: it is a local closure over setState calls, stable in effect.
@@ -331,7 +343,7 @@ export function RenderConfigProvider({
 }
 
 /** Which group of render options a {@link RenderConfigSection} renders. */
-export type RenderConfigSectionId = 'rendering' | 'pdf';
+export type RenderConfigSectionId = 'rendering' | 'pdf' | 'html';
 
 /**
  * One section's worth of render options, plus the save control that persists the merged whole.
@@ -372,7 +384,9 @@ export function RenderConfigSection({ section }: { section: RenderConfigSectionI
       )}
 
       <fieldset className="space-y-6" disabled={!state.canEdit || state.saving}>
-        {section === 'rendering' ? <RenderingFields /> : <PdfFields />}
+        {section === 'rendering' && <RenderingFields />}
+        {section === 'pdf' && <PdfFields />}
+        {section === 'html' && <HtmlFields />}
       </fieldset>
 
       {state.canEdit && (
@@ -430,7 +444,11 @@ function RenderingFields(): React.JSX.Element {
               value={draft.icons ?? ''}
               onChange={(event) => set('icons', pick(event.target.value, ICONS_OPTIONS))}
             >
-              <option value="">Not set</option>
+              {/* The app renders admonitions with font icons when nothing is configured
+                  (APP_RENDER_DEFAULT_ATTRIBUTES), so "Not set" is not "no icons" — say which default
+                  it lands on, as every other unset option here does. A document that wants the plain
+                  text label back opts out with `:icons!:` in its header. */}
+              <option value="">Not set (font icons)</option>
               <option value="font">Font icons</option>
               <option value="image">Image icons</option>
             </select>
@@ -627,6 +645,114 @@ function RenderingFields(): React.JSX.Element {
 }
 
 /** The Asciidoctor-PDF options: page setup, theme selection and the font search path. */
+/**
+ * The options that shape the FILE an HTML export produces, rather than the document the engine
+ * renders — which is why neither becomes an Asciidoctor attribute.
+ *
+ * Both live on the project, not on the person exporting: the artifact a project hands out should have
+ * the same shape whoever produced it. The visual style itself (AsciidoCollab vs Asciidoctor) is
+ * deliberately NOT here — it stays the per-person preview preference the export reads at export time.
+ */
+function HtmlFields(): React.JSX.Element {
+  const { draft, set, canEdit, saving } = useRenderConfigDraft();
+  const disabled = !canEdit || saving;
+  const htmlExport = draft.htmlExport ?? {};
+
+  /**
+   * Merge one field into the section, dropping keys the user set back to "Not set" so an untouched
+   * option stores nothing at all — the section itself disappears once both are cleared, leaving a
+   * config that is indistinguishable from one that never had it.
+   */
+  function setHtmlExport(patch: Partial<NonNullable<RenderConfig['htmlExport']>>): void {
+    const merged = { ...htmlExport, ...patch };
+    const kept: NonNullable<RenderConfig['htmlExport']> = {};
+    if (merged.packaging !== undefined) kept.packaging = merged.packaging;
+    if (merged.style !== undefined) kept.style = merged.style;
+    if (merged.theme !== undefined) kept.theme = merged.theme;
+    set('htmlExport', Object.keys(kept).length > 0 ? kept : undefined);
+  }
+
+  return (
+    <>
+      <div className="space-y-4">
+        <SectionHeading>Packaging</SectionHeading>
+        <div className="space-y-2">
+          <FieldLabel htmlFor="rc-html-packaging" icon={Package}>
+            Export format
+          </FieldLabel>
+          <select
+            id="rc-html-packaging"
+            className={SELECT_CLASS}
+            disabled={disabled}
+            value={htmlExport.packaging ?? ''}
+            onChange={(event) =>
+              setHtmlExport({ packaging: pick(event.target.value, HTML_EXPORT_PACKAGINGS) })
+            }
+          >
+            <option value="">Not set (one self-contained file)</option>
+            <option value="single-file">One self-contained file</option>
+            <option value="zip">Zip with a separate assets folder</option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            A self-contained file embeds every image, diagram and equation, so it can be forwarded on
+            its own and read offline — at the cost of a larger file. A zip keeps images as real files
+            and stays smaller, but has to be unpacked before it can be read, and its{' '}
+            <code>index.html</code> is useless separated from the folder beside it.
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <SectionHeading>Appearance</SectionHeading>
+        <div className="space-y-2">
+          <FieldLabel htmlFor="rc-html-style" icon={Brush}>
+            Style
+          </FieldLabel>
+          <select
+            id="rc-html-style"
+            className={SELECT_CLASS}
+            disabled={disabled}
+            value={htmlExport.style ?? ''}
+            onChange={(event) => setHtmlExport({ style: pick(event.target.value, HTML_EXPORT_STYLES) })}
+          >
+            <option value="">Not set (each person&rsquo;s own preview style)</option>
+            <option value="asciidocollab">AsciidoCollab</option>
+            <option value="asciidoctor">Asciidoctor</option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Left unset, an export is dressed in whichever style the person exporting has selected in
+            their preview — the style is a reading preference, so nobody is forced out of theirs.
+            Choosing one pins it for everyone, so the project always hands out the same look.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <FieldLabel htmlFor="rc-html-theme" icon={Palette}>
+            Colour scheme
+          </FieldLabel>
+          <select
+            id="rc-html-theme"
+            className={SELECT_CLASS}
+            disabled={disabled}
+            value={htmlExport.theme ?? ''}
+            onChange={(event) => setHtmlExport({ theme: pick(event.target.value, HTML_EXPORT_THEMES) })}
+          >
+            <option value="">Not set (light)</option>
+            <option value="light">Always light</option>
+            <option value="dark">Always dark</option>
+            <option value="auto">Follow the reader&rsquo;s system setting</option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            An exported file has no app around it, so it has to commit to real colours. Light prints
+            correctly and is what a recipient expects of a document; dark matches a dark editor but
+            makes for a heavy print. This applies to the AsciidoCollab style only — the Asciidoctor
+            stylesheet is light-only.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function PdfFields(): React.JSX.Element {
   const {
     draft,

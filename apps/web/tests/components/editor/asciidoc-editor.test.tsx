@@ -127,7 +127,9 @@ jest.mock('@codemirror/view', () => {
 
 jest.mock('@codemirror/language-data', () => ({ languages: [] }));
 
-jest.mock('@codemirror/lint', () => ({ linter: () => ({}), lintGutter: () => ({}) }));
+// `forceLinting` is reached once grammar actually activates (refreshGrammarLints calls it after a rule
+// change), so it has to exist here even though nothing asserts on it.
+jest.mock('@codemirror/lint', () => ({ linter: () => ({}), lintGutter: () => ({}), forEachDiagnostic: () => {}, forceLinting: () => {} }));
 
 jest.mock('@codemirror/state', () => {
   return {
@@ -281,11 +283,44 @@ jest.mock('@/hooks/use-auto-save', () => ({
   useAutoSave: jest.fn(() => ({ saveState: 'saved', save: jest.fn() })),
 }));
 
+jest.mock('@/hooks/use-grammar-settings', () => ({
+  useGrammarSettings: jest.fn(() => ({ enabled: false, languageIsEnglish: false, dialect: 'en-GB', loaded: true })),
+}));
+
+jest.mock('@/hooks/use-ignored-lints', () => ({
+  useIgnoredLints: jest.fn(() => ({ blob: '', save: jest.fn(async () => true) })),
+}));
+
+// Stand in for the on-device engine so the rule-config round trip can be driven and observed. Only the
+// two config methods behave; everything else the client touches is absorbed, via a Proxy, so this fake
+// does not have to be re-taught every method the engine grows. Read lazily (the factory returns a
+// function that resolves `fakeEngine` when CALLED, after beforeEach has assigned it).
+let engineLintConfig: Record<string, boolean | null> = {};
+let engineSetLintConfig = jest.fn();
+const fakeEngine = new Proxy(
+  {
+    getLintConfig: async () => ({ ...engineLintConfig }),
+    setLintConfig: async (next: Record<string, boolean | null>) => {
+      engineSetLintConfig(next);
+      engineLintConfig = { ...next }; // the real API REPLACES, so model that faithfully
+    },
+  } as Record<string, unknown>,
+  {
+    get: (target, property) =>
+      property in target ? target[property as string] : async () => undefined,
+  },
+);
+jest.mock('@/lib/create-harper-worker', () => ({ createHarperEngine: () => fakeEngine }));
+
 // Import after mocks
 import { AsciiDocEditor } from '@/components/editor/asciidoc-editor';
 import { useEditorPreferences } from '@/hooks/use-editor-preferences';
 import { useAutoSave } from '@/hooks/use-auto-save';
+import { useGrammarSettings } from '@/hooks/use-grammar-settings';
+import { useIgnoredLints } from '@/hooks/use-ignored-lints';
 const mockUseAutoSave = useAutoSave as jest.Mock;
+const mockUseGrammarSettings = useGrammarSettings as jest.Mock;
+const mockUseIgnoredLints = useIgnoredLints as jest.Mock;
 
 type DropHandler = { drop: (event: unknown, view: unknown) => boolean };
 function getDropHandler(): DropHandler {
@@ -635,5 +670,126 @@ describe('AsciiDocEditor', () => {
       EditorState.create = originalCreate;
       expect(capturedExtensions).not.toContain(EditorView.lineWrapping);
     });
+  });
+});
+
+describe('AsciiDocEditor grammar gating', () => {
+  beforeEach(() => {
+    mockUseGrammarSettings.mockClear();
+    mockUseIgnoredLints.mockClear();
+  });
+
+  test('does not enable grammar until the render-config has actually loaded', () => {
+    // English + config says enabled, but the config has NOT been read yet (loaded=false). Enabling
+    // now would warm up (and immediately tear down) the WASM engine for a possibly-disabled project.
+    // The gate observes `grammarEnabled` via the ignored-lints hook, which is passed null when off.
+    mockUseGrammarSettings.mockReturnValue({ enabled: true, languageIsEnglish: true, dialect: 'en-GB', loaded: false });
+    render(<AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" />);
+    expect(mockUseIgnoredLints).toHaveBeenLastCalledWith(null);
+  });
+
+  test('enables grammar once the config has loaded and reports it enabled', () => {
+    mockUseGrammarSettings.mockReturnValue({ enabled: true, languageIsEnglish: true, dialect: 'en-GB', loaded: true });
+    render(<AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" />);
+    expect(mockUseIgnoredLints).toHaveBeenLastCalledWith('f1');
+  });
+
+  test('defaults the grammar language to English when the project leaves its language unset', () => {
+    // No spellcheckLanguage prop → the editor must gate grammar on the SAME English default the
+    // spellchecker uses, not on the raw null (which would disable grammar for every project that
+    // never set an explicit language — the common default).
+    render(<AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" />);
+    expect(mockUseGrammarSettings).toHaveBeenCalledWith('p1', 'en');
+  });
+
+  test('passes an explicitly configured project language through unchanged', () => {
+    render(<AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" spellcheckLanguage="fr" />);
+    expect(mockUseGrammarSettings).toHaveBeenCalledWith('p1', 'fr');
+  });
+});
+
+describe('AsciiDocEditor grammar state lifetime', () => {
+  test('publishes the grammar state while mounted', () => {
+    const onGrammarStateChange = jest.fn();
+    render(
+      <AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" onGrammarStateChange={onGrammarStateChange} />,
+    );
+    expect(onGrammarStateChange).toHaveBeenCalled();
+    expect(onGrammarStateChange.mock.calls.at(-1)![0]).not.toBeNull();
+  });
+
+  test('takes the panel down with the editor', () => {
+    // This is the only publisher, so nothing else can tell the layout the issues are gone. Without it,
+    // opening an image or a theme file left the Writing panel listing the previous document's issues,
+    // with navigate/apply bound to a destroyed view.
+    const onGrammarStateChange = jest.fn();
+    const { unmount } = render(
+      <AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" onGrammarStateChange={onGrammarStateChange} />,
+    );
+    unmount();
+    expect(onGrammarStateChange).toHaveBeenLastCalledWith(null);
+  });
+
+  // Regression: toggling one rule wiped every other rule out of the Writing → Rules list, leaving a
+  // single entry and no way back (Reset derived its key set from the same collapsed config). Cause:
+  // harper.js's `setLintConfig` REPLACES the whole configuration, and the editor was sending only the
+  // toggled rule.
+  describe('rule toggling preserves the rest of the config', () => {
+    beforeEach(() => {
+      engineLintConfig = { RuleA: null, RuleB: true, RuleC: false };
+      engineSetLintConfig = jest.fn();
+      mockUseGrammarSettings.mockReturnValue({ enabled: true, languageIsEnglish: true, dialect: 'en-GB', loaded: true });
+    });
+
+    /** Renders with grammar active and resolves the published grammar state once the engine is wired. */
+    async function grammarState(): Promise<{ setRule: (rule: string, enabled: boolean) => void; resetRules: () => void }> {
+      const published = jest.fn();
+      render(<AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" onGrammarStateChange={published} />);
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+      }
+      return published.mock.calls.at(-1)![0];
+    }
+
+    test('sends the full config with only the toggled rule changed', async () => {
+      const state = await grammarState();
+      await act(async () => {
+        state.setRule('RuleB', false);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(engineSetLintConfig).toHaveBeenCalled();
+      // The whole rule set must survive the write — not just the rule that was clicked.
+      expect(engineSetLintConfig.mock.calls.at(-1)![0]).toEqual({ RuleA: null, RuleB: false, RuleC: false });
+    });
+
+    test('reset clears every rule, not only the last one toggled', async () => {
+      const state = await grammarState();
+      await act(async () => {
+        state.setRule('RuleB', false);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await act(async () => {
+        state.resetRules();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(engineSetLintConfig.mock.calls.at(-1)![0]).toEqual({ RuleA: null, RuleB: null, RuleC: null });
+    });
+  });
+
+  test('offers dismissal only when there is a document to store it against', () => {
+    const withDocument = jest.fn();
+    const { unmount } = render(
+      <AsciiDocEditor content="x" canEdit projectId="p1" fileNodeId="f1" onGrammarStateChange={withDocument} />,
+    );
+    expect(withDocument.mock.calls.at(-1)![0].ignore).not.toBeNull();
+    unmount();
+
+    const withoutDocument = jest.fn();
+    render(<AsciiDocEditor content="x" canEdit projectId="p1" onGrammarStateChange={withoutDocument} />);
+    expect(withoutDocument.mock.calls.at(-1)![0].ignore).toBeNull();
   });
 });

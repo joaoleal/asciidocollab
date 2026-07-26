@@ -272,6 +272,41 @@ describe('useProjectSymbolIndex', () => {
     expect(mockGetContent.mock.calls.length).toBe(before); // 'c' is not a dependency — no rebuild
   });
 
+  // ...but skipping the REBUILD must not also preserve the stale COPY. The fetcher never re-reads a
+  // file already in the cache, so a frame dropped by the reachability filter used to strand that file's
+  // pre-change text: once it re-entered the graph (an `ifdef::` gate flipping back, an include line
+  // restored, or the root being retargeted) it was served from the stale copy until a refresh, an SSE
+  // reconnect, or a file-tree event for that id happened to clear it.
+  test('a frame for an unreachable file still invalidates its cached copy, so re-entering the graph re-reads it', async () => {
+    const { result, rerender } = renderHook(
+      ({ root }: { root: string }) =>
+        useProjectSymbolIndex({ projectId: 'p1', rootFileId: root, openFileId: 'main', liveContent: CONTENT.main }),
+      { initialProps: { root: 'main' } },
+    );
+    // Rooted at main, b.adoc is reachable and gets cached.
+    await waitFor(() => expect(result.current.index!.resolveXref('anchor-b')).not.toBe('unresolved'));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Retarget to a.adoc, which includes nothing — b.adoc leaves the graph but stays in the cache.
+    rerender({ root: 'a' });
+    await waitFor(() => expect(result.current.index!.resolveXref('anchor-b')).toBe('unresolved'));
+
+    // b.adoc changes while it is outside the graph: its anchor is renamed on the server.
+    mockGetContent.mockImplementation((_projectId: string, fileId: string) =>
+      Promise.resolve(fileId === 'b' ? '[[anchor-b-renamed]]\n' : (CONTENT[fileId] ?? '')),
+    );
+    const { onContentChanged } = latestSseHandlers();
+    await act(async () => {
+      onContentChanged({ type: 'content-changed', fileNodeId: 'b' });
+      await Promise.resolve();
+    });
+
+    // b.adoc re-enters the graph. It must be re-read, not served from the pre-change copy.
+    rerender({ root: 'main' });
+    await waitFor(() => expect(result.current.index!.resolveXref('anchor-b-renamed')).not.toBe('unresolved'));
+    expect(result.current.index!.resolveXref('anchor-b')).toBe('unresolved');
+  });
+
   test('rebuilds against the new root when the rootFileId prop changes (host retargets the main file)', async () => {
     const { result, rerender } = renderHook(
       ({ root }: { root: string }) =>

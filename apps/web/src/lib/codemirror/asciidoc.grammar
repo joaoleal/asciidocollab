@@ -263,7 +263,11 @@ AttributeReference { attrRef }
 // label are distinct sub-nodes (FR-045) so the theme can colour them differently (target = link,
 // label = body text). The interior tokens come from the scoped `@local tokens` group (below the main
 // `@tokens` block): `xrefChunkChars` is the target (first chunk) or label (after the `,` separator).
-CrossReference     { xrefOpen XrefTarget (xrefSep XrefLabel)? xrefClose }
+// `XrefTarget` is OPTIONAL because `xrefOpen` already consumed the target's first character as its
+// guard (see `xrefOpen`): a single-character target like `<<x>>` therefore leaves nothing for the
+// target chunk to match. Requiring it made that xref fail to parse, so the node stopped at `<<x` and
+// the trailing `>>` leaked out as ordinary prose (reaching the spell/grammar checker as markup).
+CrossReference     { xrefOpen XrefTarget? (xrefSep XrefLabel)? xrefClose }
 XrefTarget         { xrefChunkChars }
 XrefLabel          { xrefChunkChars }
 // The external tokenizer only fires at line start, so footnotes / inline macros that appear

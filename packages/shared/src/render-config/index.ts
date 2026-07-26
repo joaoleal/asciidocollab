@@ -7,7 +7,15 @@ export {
   PINNED_ATTRIBUTE_KEYS,
   PDF_PAGE_SIZES,
   EMPTY_RENDER_CONFIG,
+  HTML_EXPORT_PACKAGINGS,
+  HTML_EXPORT_STYLES,
+  HTML_EXPORT_THEMES,
+  DEFAULT_HTML_EXPORT_PACKAGING,
+  DEFAULT_HTML_EXPORT_THEME,
   type RenderConfig,
+  type HtmlExportPackaging,
+  type HtmlExportStyle,
+  type HtmlExportTheme,
 } from './config';
 // The theme-recognition rule itself lives in the zero-dependency `asciidoc-core` leaf, because the
 // server ring needs it too and `domain` may not import outward into this package. Re-exported here so

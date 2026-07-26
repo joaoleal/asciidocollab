@@ -12,6 +12,9 @@ jest.mock('@/contexts/current-user-context', () => ({
 jest.mock('@/hooks/use-pdf-export', () => ({
   usePdfExport: () => ({ exportPdf: jest.fn(), isExporting: false, diagnostics: [] }),
 }));
+jest.mock('@/hooks/use-html-export', () => ({
+  useHtmlExport: () => ({ exportHtml: jest.fn(), isExporting: false, failures: [] }),
+}));
 jest.mock('@/hooks/use-project-render-config', () => ({
   useProjectRenderConfig: () => ({ config: {}, loading: false, saving: false, error: null, save: jest.fn() }),
 }));
@@ -309,13 +312,14 @@ describe('ProjectEditorLayout', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
     await waitFor(() => expect(screen.getByTestId('file-tree-panel')).toBeInTheDocument());
 
-    const panel = screen.getByTestId('file-tree-panel');
-    expect(panel).not.toHaveClass('hidden');
+    expect(document.querySelector('#left-panel-body')).not.toHaveClass('hidden');
 
     const toggleButton = screen.getByRole('button', { name: /collapse sidebar/i });
     fireEvent.click(toggleButton);
 
-    expect(screen.getByTestId('file-tree-panel')).toHaveClass('hidden');
+    // Only the body hides; the rail stays as the activity bar (see the LeftPanel docs).
+    expect(document.querySelector('#left-panel-body')).toHaveClass('hidden');
+    expect(screen.getByRole('tablist', { name: 'Left panel views' })).toBeVisible();
   });
 
   // (a): canManage=true shows Settings and Members links

@@ -52,7 +52,30 @@ interface HarnessSourceMap {
   readonly entryCount: number;
   readonly sorted: boolean;
   readonly allEntriesValid: boolean;
+  readonly listLinesCovered: boolean;
+  readonly listPositionsDistinct: boolean;
   readonly sample: readonly HarnessSourceMapEntry[];
+}
+
+/** One paragraph whose source-map entry must still be keyed to its ORIGINAL assembled line. */
+interface HarnessAlignmentRow {
+  readonly needle: string;
+  readonly expectedLine: number;
+  readonly mapped: boolean;
+  readonly path: string | null;
+  readonly sourceLine: number | null;
+}
+
+interface HarnessAlignment {
+  readonly lineCountPreserved: boolean;
+  readonly linesAligned: boolean;
+  readonly originAttributed: boolean;
+  readonly scratchCapturesExcluded: boolean;
+  readonly pagesWithinDocument: boolean;
+  readonly paddingInert: boolean;
+  readonly pageCount: number;
+  readonly maxMappedPage: number;
+  readonly rows: readonly HarnessAlignmentRow[];
 }
 
 interface HarnessSummary {
@@ -62,6 +85,7 @@ interface HarnessSummary {
   readonly highlighting: HarnessHighlighting;
   readonly determinism: HarnessDeterminism;
   readonly sourceMap: HarnessSourceMap;
+  readonly alignment: HarnessAlignment;
   readonly suggestedWarmBudgetMs: number;
 }
 
@@ -167,9 +191,48 @@ function parseSummary(value: unknown): HarnessSummary {
       entryCount: numberAt(sourceMap['entryCount'], 'sourceMap.entryCount'),
       sorted: booleanAt(sourceMap['sorted'], 'sourceMap.sorted'),
       allEntriesValid: booleanAt(sourceMap['allEntriesValid'], 'sourceMap.allEntriesValid'),
+      listLinesCovered: booleanAt(sourceMap['listLinesCovered'], 'sourceMap.listLinesCovered'),
+      listPositionsDistinct: booleanAt(
+        sourceMap['listPositionsDistinct'],
+        'sourceMap.listPositionsDistinct',
+      ),
       sample: sourceMapSample(sourceMap['sample'], 'sourceMap.sample'),
     },
+    alignment: parseAlignment(root['alignment']),
     suggestedWarmBudgetMs: numberAt(root['suggestedWarmBudgetMs'], 'suggestedWarmBudgetMs'),
+  };
+}
+
+function parseAlignment(value: unknown): HarnessAlignment {
+  const source = record(value, 'alignment');
+  const rows = source['rows'];
+  if (!Array.isArray(rows)) {
+    throw new TypeError('Expected an array at alignment.rows');
+  }
+  return {
+    lineCountPreserved: booleanAt(source['lineCountPreserved'], 'alignment.lineCountPreserved'),
+    linesAligned: booleanAt(source['linesAligned'], 'alignment.linesAligned'),
+    originAttributed: booleanAt(source['originAttributed'], 'alignment.originAttributed'),
+    scratchCapturesExcluded: booleanAt(
+      source['scratchCapturesExcluded'],
+      'alignment.scratchCapturesExcluded',
+    ),
+    pagesWithinDocument: booleanAt(source['pagesWithinDocument'], 'alignment.pagesWithinDocument'),
+    paddingInert: booleanAt(source['paddingInert'], 'alignment.paddingInert'),
+    pageCount: numberAt(source['pageCount'], 'alignment.pageCount'),
+    maxMappedPage: numberAt(source['maxMappedPage'], 'alignment.maxMappedPage'),
+    rows: rows.map((item, index) => {
+      const row = record(item, `alignment.rows[${String(index)}]`);
+      const path = row['path'];
+      const sourceLine = row['sourceLine'];
+      return {
+        needle: String(row['needle']),
+        expectedLine: numberAt(row['expectedLine'], `alignment.rows[${String(index)}].expectedLine`),
+        mapped: booleanAt(row['mapped'], `alignment.rows[${String(index)}].mapped`),
+        path: typeof path === 'string' ? path : null,
+        sourceLine: typeof sourceLine === 'number' ? sourceLine : null,
+      };
+    }),
   };
 }
 
@@ -266,5 +329,62 @@ describeOrSkip('Asciidoctor-PDF engine (real wasm)', () => {
       expect(entry.yFraction).toBeGreaterThanOrEqual(0);
       expect(entry.yFraction).toBeLessThanOrEqual(1);
     }
+  });
+
+  it('covers list-item, dlist-term, and description lines (content laid out without a convert dispatch)', () => {
+    // Description-list terms/descriptions and (u/o/colist) list items are inked by convert_dlist /
+    // traverse_list_item, never dispatched through `convert`. Without the traverse_list_item hook and
+    // the dlist-term pass, clicking such a line in the editor would snap the preview to a preceding
+    // block. This asserts every one of those fixture lines now has its own source-map entry.
+    expect(summary.sourceMap.listLinesCovered).toBe(true);
+  });
+
+  it('keeps every line number intact when the diagrams-math stage rewrites a block', () => {
+    // The stage replaces a multi-line diagram/math block with a single `image::` macro, but the
+    // provenance array the origin stamps index into — and the app's editor-line→assembled-line
+    // translation — were both built against the PRE-rewrite text. Collapsing an 8-line mermaid block
+    // shifted every later `lineno` by −7, cumulatively, so scroll sync drifted further off with each
+    // block. The rewrite therefore has to preserve each block's line span.
+    expect(summary.alignment.lineCountPreserved).toBe(true);
+    // eslint-disable-next-line no-console
+    console.info('Alignment rows:', JSON.stringify(summary.alignment.rows));
+    for (const row of summary.alignment.rows) {
+      expect(`${row.needle}:${String(row.mapped)}`).toBe(`${row.needle}:true`);
+    }
+    expect(summary.alignment.linesAligned).toBe(true);
+  });
+
+  it('renders the padded rewrite byte-identically to the unpadded one', () => {
+    // Preserving the line span must cost nothing in fidelity: the filler is an AsciiDoc line comment,
+    // which the reader drops before any block is built, so stripping it cannot change the output.
+    expect(summary.alignment.paddingInert).toBe(true);
+  });
+
+  it('stamps the exact source origin on the right side of an include boundary', () => {
+    // The origin stamp reads `provenance[lineno - 1]`, so a shifted `lineno` does not merely land on
+    // the wrong line — near an include boundary it names the wrong FILE, and click-to-source opens a
+    // document the block never came from.
+    expect(summary.alignment.originAttributed).toBe(true);
+  });
+
+  it('excludes scratch-document captures taken while measuring a keep-together block', () => {
+    // Asciidoctor-PDF measures example/sidebar/admonition/quote blocks by converting them into a
+    // throwaway scratch document first. That document is a Marshal copy of the converter, so it carries
+    // these hooks and records positions from its own page numbering — and it records them FIRST, so the
+    // keep-first de-duplication pinned the measured block to a position that exists nowhere in the PDF.
+    // The paragraph inside the example block must sit between the markers that bracket it.
+    expect(summary.alignment.scratchCapturesExcluded).toBe(true);
+    // Backstop: nothing may claim a page beyond the finished document.
+    expect(summary.alignment.pageCount).toBeGreaterThan(0);
+    expect(summary.alignment.maxMappedPage).toBeLessThanOrEqual(summary.alignment.pageCount);
+    expect(summary.alignment.pagesWithinDocument).toBe(true);
+  });
+
+  it('records each list line at its own layout position, not a shared approximation', () => {
+    // Coverage alone let a term be recorded at the LIST's top rather than where it is inked, which
+    // put two different items on one point. Reverse lookup resolves a click to the last block at or
+    // above it, so the collision made clicking one item in the PDF jump to the other one's line in
+    // the editor. Distinct positions per list line are what make that reverse lookup unambiguous.
+    expect(summary.sourceMap.listPositionsDistinct).toBe(true);
   });
 });

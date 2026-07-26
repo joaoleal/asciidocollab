@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { EditorState, Compartment, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { refreshHeadingLevelsEffect } from '@/lib/codemirror/asciidoc-heading-levels';
@@ -14,6 +14,27 @@ import { outlineField } from '@/lib/codemirror/asciidoc-outline';
 import type { SectionOutlineEntry } from '@/lib/codemirror/asciidoc-outline';
 import { buildEditorExtensions, minimapExtension } from '@/lib/codemirror/editor-extensions';
 import { createSpellcheckLinter } from '@/lib/codemirror/editor-spellcheck-linter';
+import { createGrammarLinter, refreshGrammarLints } from '@/lib/codemirror/editor-grammar-linter';
+import { createHarperEngine } from '@/lib/create-harper-worker';
+import {
+  createHarperWorkerClient,
+  toGrammarEngineStatus,
+  type HarperWorkerClient,
+  type GrammarEngineStatus,
+} from '@/lib/codemirror/harper/harper-worker-client';
+import type { HarperLintSourceDeps } from '@/lib/codemirror/harper/harper-linter-source';
+import type { GrammarDiagnostic } from '@/lib/codemirror/harper/lint-to-diagnostic';
+import {
+  createIncludedFileLinter,
+  type IncludedFile,
+  type IncludedFileIssue,
+  type IncludedFileLinter,
+} from '@/lib/codemirror/harper/included-file-lint';
+import { resetDocumentScope, setDocumentScope } from '@/lib/codemirror/harper/document-scope-store';
+import { asciidocLanguage } from '@/lib/codemirror/asciidoc-language';
+import { DEFAULT_GRAMMAR_DIALECT, type GrammarDialect } from '@/lib/codemirror/harper/dialect';
+import { grammarDiagnosticsListener, type PositionedGrammarDiagnostic } from '@/lib/codemirror/harper/grammar-diagnostics';
+import type { LintScope } from '@/lib/codemirror/harper/harper-linter-source';
 import { reviewDecorations } from '@/lib/codemirror/review-decorations';
 import { reviewMarkerClickHandler, reviewMarkerHoverHandler, reviewCommentKeymap } from '@/lib/codemirror/review-interaction';
 import {
@@ -53,6 +74,16 @@ const SELECTION_SYNC_DEBOUNCE_MS = 80;
  */
 const SELECTION_REVEAL_SUPPRESS_MS = 350;
 
+/**
+ * How many times the cross-file ("Whole document") pass retries after the shared worker client
+ * supersedes it. A few attempts cover a burst of typing landing on top of the pass; beyond that the
+ * next trigger will re-run it anyway, so retrying forever would only burn the engine.
+ */
+const CROSS_FILE_LINT_ATTEMPTS = 3;
+
+/** Quiet period, in milliseconds, before a superseded cross-file pass tries again. */
+const CROSS_FILE_LINT_RETRY_MS = 1500;
+
 /** Lowercase the keys of an attribute map into a name set (Asciidoctor matches names case-insensitively). */
 function toLowercaseNames(scope: ReadonlyMap<string, string>): ReadonlySet<string> {
   const names = new Set<string>();
@@ -74,6 +105,38 @@ interface UseEditorMountOptions {
   spellcheckLanguage?: string;
   /** When false, spell-check produces no diagnostics regardless of language. Defaults to true. */
   spellcheckEnabled?: boolean;
+  /** When true (and the language is English), on-device grammar checking is active. Defaults to false. */
+  grammarEnabled?: boolean;
+  /** Whether the project language is English — the hard gate for grammar checking. Defaults to false. */
+  grammarLanguageIsEnglish?: boolean;
+  /** The English dialect grammar checking enforces. Defaults to British. */
+  grammarDialect?: GrammarDialect;
+  /** The project dictionary terms to hydrate into the worker via `importWords` (so they stop being flagged). */
+  dictionaryTerms?: string[];
+  /** The caller's privacy-hashed ignored-lints blob to hydrate via `importIgnoredLints` (so ignores persist). */
+  ignoredLintsBlob?: string;
+  /**
+   * Persist the caller's ignored-lints blob after they dismiss an issue. Omitted when there is nowhere
+   * to store it, which also removes the Ignore action — better than offering a dismissal that is
+   * forgotten on reload.
+   *
+   * @param blob - The engine's re-exported blob, to be stored as-is (opaque hashes, never prose).
+   */
+  onIgnoredLintsChange?: (blob: string) => void;
+  /** The view-local lint scope: this file (default), or the whole `include::` document. */
+  lintScope?: LintScope;
+  /**
+   * Called with the live grammar issues (for the panel + status bar) whenever they change.
+   *
+   * @param diagnostics - The current grammar diagnostics with live document positions.
+   */
+  onGrammarDiagnostics?: (diagnostics: PositionedGrammarDiagnostic[]) => void;
+  /**
+   * Called when grammar checking activates or deactivates (the engine loaded, or fell back to nspell).
+   *
+   * @param status - The on-device grammar engine's panel status (loading, ready, failed, or disabled).
+   */
+  onGrammarStatusChange?: (status: GrammarEngineStatus) => void;
   /**
    * Uploads a pasted/dropped image.
    *
@@ -140,11 +203,28 @@ interface UseEditorMountOptions {
    */
   revealRequest?: { line: number; nonce: number } | null;
   /**
-   * Collaboration binding extension (yCollab) for the collab path. When provided the editor
-   * mounts with an EMPTY document and is populated from Yjs sync; native CodeMirror
-   * history is omitted to avoid double-undo (per-user undo is handled by the Yjs UndoManager).
+   * Collaboration binding extension (yCollab) for the collab path. When provided the editor is
+   * populated from the bound `Y.Text` (empty on a first mount, see `getCollabDocText`); native
+   * CodeMirror history is omitted to avoid double-undo (per-user undo is handled by the Yjs
+   * UndoManager).
    */
   collabExtension?: Extension;
+  /**
+   * Current text of the bound `Y.Text`, read at view (re)creation time to seed the document.
+   *
+   * Note that yCollab's ySync plugin applies only INCREMENTAL `Y.Text` deltas — it never reads the
+   * type's existing content. A view created empty against an ALREADY-populated document therefore stays
+   * empty forever, because no further delta is coming, and the author's first keystroke then splices
+   * into index 0 of the real text and gets persisted. That is reachable in practice: when the sync
+   * handshake exceeds COLLAB_SYNC_TIMEOUT_MS the editor goes offline and drops the binding, and when
+   * `synced` finally arrives the binding returns — so `remountKey` goes id → undefined → id and the
+   * view is recreated against a `Y.Text` that is already full.
+   *
+   * Seeding from the live `Y.Text` makes creation idempotent: still empty on a first mount (unchanged
+   * behaviour), restored on a recreation after sync. Never seed the REST copy here — yCollab would
+   * append it to whatever Yjs subsequently delivers, duplicating the document.
+   */
+  getCollabDocText?: () => string;
   /**
    * The in-editor symbol rename-suggestion extension (feature 033). Built once by the editor with
    * stable getters, so it never forces a remount; omitted ⇒ no rename suggestions.
@@ -196,6 +276,15 @@ export function useEditorMount({
   spellIgnore,
   spellcheckLanguage = 'en',
   spellcheckEnabled = true,
+  grammarEnabled = false,
+  grammarLanguageIsEnglish = false,
+  grammarDialect = DEFAULT_GRAMMAR_DIALECT,
+  dictionaryTerms,
+  ignoredLintsBlob,
+  onIgnoredLintsChange,
+  lintScope = 'this-file',
+  onGrammarDiagnostics,
+  onGrammarStatusChange,
   uploadImage,
   includePaths,
   imagePaths = [],
@@ -215,6 +304,7 @@ export function useEditorMount({
   initialLine,
   revealRequest,
   collabExtension,
+  getCollabDocText,
   renameSuggestionExtension,
   renameRefreshNonce,
   remountKey,
@@ -229,7 +319,22 @@ export function useEditorMount({
   const languageCompartment = useRef(new Compartment());
   const lineWrapCompartment = useRef(new Compartment());
   const spellcheckCompartment = useRef(new Compartment());
+  const grammarCompartment = useRef(new Compartment());
   const minimapCompartment = useRef(new Compartment());
+  // The Harper worker client is created lazily the first time grammar checking activates, then reused.
+  const harperClientReference = useRef<HarperWorkerClient | null>(null);
+  const onGrammarDiagnosticsReference = useRef(onGrammarDiagnostics);
+  onGrammarDiagnosticsReference.current = onGrammarDiagnostics;
+  const onGrammarStatusChangeReference = useRef(onGrammarStatusChange);
+  onGrammarStatusChangeReference.current = onGrammarStatusChange;
+  const onIgnoredLintsChangeReference = useRef(onIgnoredLintsChange);
+  onIgnoredLintsChangeReference.current = onIgnoredLintsChange;
+  // Checks the OTHER files of the include tree for "Whole document" scope. Held across passes so its
+  // per-file parse cache survives, making a re-check of an unchanged tree nearly free.
+  const includedFileLinterReference = useRef<IncludedFileLinter | null>(null);
+  // True once the engine has loaded and the grammar lint source is live; drives disabling nspell so the
+  // two never double-flag a misspelling, and reverts to nspell if the engine never loads (degradation).
+  const [grammarActive, setGrammarActive] = useState(false);
   const includePathsReference = useRef<string[]>(includePaths);
   useEffect(() => { includePathsReference.current = includePaths; }, [includePaths]);
   const imagePathsReference = useRef<string[]>(imagePaths);
@@ -253,6 +358,9 @@ export function useEditorMount({
   useEffect(() => { onCommentFromSelectionReference.current = onCommentFromSelection; }, [onCommentFromSelection]);
   const getProjectIndexReference = useRef(getProjectIndex);
   useEffect(() => { getProjectIndexReference.current = getProjectIndex; }, [getProjectIndex]);
+  // Cross-file navigation seam, reused by the Writing panel to open an issue found in another file.
+  const onNavigateToXrefReference = useRef(onNavigateToXref);
+  useEffect(() => { onNavigateToXrefReference.current = onNavigateToXref; }, [onNavigateToXref]);
   const projectIndexAccessor = (): ProjectSymbolIndex | null => getProjectIndexReference.current?.() ?? null;
   // The open file's project-relative path (from the symbol index), used to write include::/image::
   // targets relative to the authoring file — AsciiDoc resolves directives relative to it, not the root.
@@ -366,14 +474,18 @@ export function useEditorMount({
     const ctrlClickTooltip = createCtrlClickTooltip(projectIndexAccessor);
 
     const state = EditorState.create({
-      // Collab path mounts EMPTY; yCollab populates from the synced Y.Text (B3).
-      doc: collabActive ? '' : content,
+      // Collab path seeds from the LIVE Y.Text: empty on a first mount, already-populated when the
+      // view is recreated after sync (the offline→synced round trip drops and restores the binding,
+      // which changes remountKey). Never the REST copy — yCollab would append it to whatever Yjs
+      // delivers. See getCollabDocText (B3).
+      doc: collabActive ? (getCollabDocText?.() ?? '') : content,
       extensions: buildEditorExtensions({
         compartments: {
           readOnly: readOnlyCompartment.current,
           language: languageCompartment.current,
           lineWrap: lineWrapCompartment.current,
           spellcheck: spellcheckCompartment.current,
+          grammar: grammarCompartment.current,
           minimap: minimapCompartment.current,
         },
         canEdit,
@@ -383,6 +495,9 @@ export function useEditorMount({
         getSpellIgnore: () => spellIgnore ?? [],
         spellcheckLanguage,
         spellcheckEnabled,
+        // Grammar starts empty at mount: the WASM engine loads asynchronously, and the lifecycle effect
+        // below reconfigures this compartment once it is ready (until then the nspell fallback is active).
+        grammarLinterDeps: null,
         uploadImage,
         getIncludePaths: () => includePathsReference.current,
         getImagePaths: () => imagePathsReference.current,
@@ -431,6 +546,9 @@ export function useEditorMount({
           reviewMarkerClickHandler(() => onReviewMarkerClickReference.current),
           reviewMarkerHoverHandler(() => onReviewMarkerHoverReference.current),
           reviewCommentKeymap(() => onCommentFromSelectionReference.current),
+          // Surface grammar issues to the panel + status bar. Inert (fires with an empty set) until the
+          // grammar lint source produces diagnostics, so it is safe to register on every editor instance.
+          grammarDiagnosticsListener((diagnostics) => onGrammarDiagnosticsReference.current?.(diagnostics)),
         ],
       }),
     });
@@ -438,6 +556,11 @@ export function useEditorMount({
     const view = new EditorView({ state, parent: containerReference.current });
     viewReference.current = view;
     try { onOutlineChange(view.state.field(outlineField)); } catch { /* field not installed */ }
+    // A seeded collab view starts with its content already in place, so the update listener's
+    // `docChanged` branch never runs for it and the host would keep the stale/empty text it last saw.
+    // Publish it explicitly; the parent bails when the value is unchanged, so a first mount (seed is
+    // '') costs nothing.
+    if (collabActive && view.state.doc.length > 0) onDocChange(view.state.doc.toString());
     // Seed the shared inherited-attributes field so heading-id derivation (rename detection, xref
     // completion) reflects a parent-set idprefix/idseparator/sectids, matching the server + preview.
     // Needed on (re)mount because the [inheritedAttributes] effect below does not re-run on a remount
@@ -449,7 +572,11 @@ export function useEditorMount({
     // provided — ordinary in-session mounts are unaffected. Skipped on the collab path: the
     // doc mounts empty and is populated by Yjs sync, so the restore is deferred until after
     // sync (handled by the editor component once `connectionState` reaches `synced`).
-    if (initialLine !== undefined && !collabActive) {
+    // A seeded collab view already holds its content, so the update listener's "restore once content
+    // FIRST arrives" branch will never fire for it — restore here instead, and latch it so the two
+    // paths can never both run.
+    if (initialLine !== undefined && (!collabActive || view.state.doc.length > 0)) {
+      if (collabActive) collabLineRestoredReference.current = true;
       const targetLine = clampToValidLine(initialLine, view.state.doc.lines);
       view.dispatch({ selection: { anchor: view.state.doc.line(targetLine).from }, scrollIntoView: true });
     }
@@ -585,16 +712,249 @@ export function useEditorMount({
     if (minimapEnabled) view.dispatch({});
   }, [minimapEnabled]);
 
-  // Sync the spell-check language / enabled preference live via its Compartment —
-  // a fresh lint source bound to the new language+enabled, so changes apply without a remount.
+  // Sync the spell-check language / enabled preference live via its Compartment — a fresh lint source
+  // bound to the new language+enabled, so changes apply without a remount. While grammar checking is
+  // active, nspell is suppressed (Harper owns prose checking) so the two never double-flag a word.
   useEffect(() => {
     if (!viewReference.current) return;
     viewReference.current.dispatch({
       effects: spellcheckCompartment.current.reconfigure(
-        createSpellcheckLinter(() => spellIgnore ?? [], spellcheckLanguage, spellcheckEnabled),
+        createSpellcheckLinter(() => spellIgnore ?? [], spellcheckLanguage, spellcheckEnabled && !grammarActive),
       ),
     });
-  }, [spellcheckLanguage, spellcheckEnabled, spellIgnore]);
+  }, [spellcheckLanguage, spellcheckEnabled, spellIgnore, grammarActive]);
 
-  return { containerReference, viewReference, handleHeadingClick };
+  /**
+   * Dismiss one issue for this user: tell the engine to stop reporting that lint, persist the blob it
+   * re-exports, and re-lint so the underline goes away without waiting for the next keystroke.
+   *
+   * The engine matches the lint by object identity against what it handed out, so a diagnostic that has
+   * outlived its lint (the cache was cleared and the document re-linted) is rejected. That is caught and
+   * dropped: the issue simply stays underlined, which is the honest outcome, and it can be dismissed
+   * again from the fresh diagnostic.
+   */
+  const ignoreGrammarIssue = useCallback((diagnostic: GrammarDiagnostic) => {
+    const client = harperClientReference.current;
+    if (!client) return;
+    void (async () => {
+      try {
+        await client.ignore(diagnostic.grammarSegmentText, diagnostic.grammarLint);
+      } catch {
+        return;
+      }
+      onIgnoredLintsChangeReference.current?.(await client.exportIgnoredLints());
+      const view = viewReference.current;
+      if (view) refreshGrammarLints(view);
+    })();
+  }, [viewReference]);
+
+  // Grammar-checking lifecycle: when active (enabled AND English), lazily construct the Harper worker
+  // client, warm it up off the typing path, and once the engine is ready reconfigure the grammar
+  // compartment to the live lint source (which flips `grammarActive`, disabling nspell above). If the
+  // WASM engine fails to load, `grammarActive` stays false so the editor remains fully usable with the
+  // nspell fallback (graceful degradation — Principle X). When inactive, the compartment is emptied.
+  useEffect(() => {
+    const view = viewReference.current;
+    if (!view) return;
+    const shouldActivate = grammarEnabled && grammarLanguageIsEnglish;
+
+    if (shouldActivate) {
+      let client = harperClientReference.current;
+      // A reused client carries the PREVIOUS dialect, and applying the new one is asynchronous. The
+      // lint source must not be installed until it has landed: reconfiguring first means the pass it
+      // triggers runs on the old dialect and flags British spellings in an American document (or the
+      // reverse) until the next keystroke. A rejection here is not fatal — the client reports its own
+      // failed status — so it is swallowed and warm-up proceeds to report it.
+      const dialectApplied = client
+        ? client.setDialect(grammarDialect).catch(() => undefined)
+        : Promise.resolve(undefined);
+      if (!client) {
+        client = createHarperWorkerClient(createHarperEngine(grammarDialect));
+        harperClientReference.current = client;
+      }
+
+      let cancelled = false;
+      const activeClient = client;
+      // Surface the engine's real lifecycle to the panel: `loading` while the WASM warms up, `ready`
+      // once it can lint, `failed` if init rejects — so the panel never shows an eternal "loading" for
+      // an engine that has actually failed. Report the current status immediately, then on every change.
+      const reportStatus = () => onGrammarStatusChangeReference.current?.(toGrammarEngineStatus(activeClient.getStatus()));
+      const unsubscribe = activeClient.onStatusChange(() => {
+        if (!cancelled) reportStatus();
+      });
+      reportStatus();
+      void dialectApplied
+        .then(() => activeClient.warmUp())
+        .then(() => {
+          if (cancelled || !activeClient.isReady() || !viewReference.current) return;
+          const deps: HarperLintSourceDeps = {
+            client: activeClient,
+            // Only offered when the host can store the dismissal; otherwise the tooltip shows fixes alone.
+            ...(onIgnoredLintsChangeReference.current === undefined ? {} : { onIgnore: ignoreGrammarIssue }),
+          };
+          viewReference.current.dispatch({
+            effects: grammarCompartment.current.reconfigure(createGrammarLinter(deps)),
+          });
+          setGrammarActive(true);
+          reportStatus(); // now `ready`
+        })
+        // `warmUp` re-throws anything that is not a HarperEngineInitError, and by then the client has
+        // already published `failed` — so the panel is correct and there is nothing left to do but keep
+        // the rejection from surfacing as an unhandled one.
+        .catch(() => undefined);
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }
+
+    // Inactive: grammar is gated off for this project — empty the compartment, fall back to nspell, and
+    // tell the panel it is `disabled` (a real end state, not a transient loading one).
+    view.dispatch({ effects: grammarCompartment.current.reconfigure([]) });
+    setGrammarActive(false);
+    onGrammarStatusChangeReference.current?.('disabled');
+    return;
+  }, [grammarEnabled, grammarLanguageIsEnglish, grammarDialect, ignoreGrammarIssue]);
+
+  // Reconcile the whole project dictionary into the worker once grammar is active and whenever the
+  // terms change, so accepted terms stop being flagged AND removed/cleared terms are flagged again —
+  // without a reload. `resetWords` replaces the worker's user dictionary (clear + import), so a term
+  // removed from the project (a shrunk set, including down to empty) actually takes effect.
+  useEffect(() => {
+    if (!grammarActive || !dictionaryTerms) return;
+    const client = harperClientReference.current;
+    if (!client) return;
+    void client.resetWords(dictionaryTerms).then(() => {
+      // A changed dictionary changes results, but the document did not change — ask the lint plugin
+      // explicitly, or an accepted term stays underlined until the next keystroke.
+      const view = viewReference.current;
+      if (view) refreshGrammarLints(view);
+    });
+  }, [grammarActive, dictionaryTerms]);
+
+  // Hydrate the caller's ignored-lints blob into the worker once grammar is active, so issues they
+  // dismissed in a previous session (or on another device) stay hidden. Re-lint after importing.
+  useEffect(() => {
+    if (!grammarActive || !ignoredLintsBlob) return;
+    const client = harperClientReference.current;
+    if (!client) return;
+    void client.importIgnoredLints(ignoredLintsBlob).then(() => {
+      const view = viewReference.current;
+      if (view) refreshGrammarLints(view);
+    });
+  }, [grammarActive, ignoredLintsBlob]);
+
+  // The include tree's file list, as a value an effect can depend on. Read during render (the hook
+  // re-renders on every edit, so a newly added or removed `include::` shows up promptly) and only while
+  // the cross-file pass is actually wanted, so a panel scoped to this file never walks the tree at all.
+  const documentScopeWanted = grammarActive && lintScope === 'whole-document';
+  const includeTreeSignature = documentScopeWanted
+    ? (projectIndexAccessor()?.tree.nodes.join('|') ?? '')
+    : '';
+
+  // "Whole document" scope: check the other files of the open file's `include::` tree and publish the
+  // result to the Writing panel. It deliberately does NOT run on the local user's keystrokes — those
+  // change only the open file, whose issues come from the live editor lint — so the trigger set is
+  // entering the scope, the engine becoming ready, the tree's file list changing, and a collaborator
+  // touching a project file. Combined with the linter's per-file parse cache and the worker's
+  // per-segment result cache, a repeat pass over an unchanged tree costs a few map lookups.
+  useEffect(() => {
+    if (!documentScopeWanted) {
+      resetDocumentScope();
+      return;
+    }
+    const client = harperClientReference.current;
+    const index = projectIndexAccessor();
+    if (!client || !index) {
+      resetDocumentScope();
+      return;
+    }
+
+    // The tree is rooted at the configured main file (or at the open file when none is configured). If
+    // the open file is not in it, the main document is not the document being edited, and "whole
+    // document" has no larger document to mean — say so rather than silently checking this file twice.
+    const openFileId = index.activeFileId;
+    const nodes = index.tree.nodes;
+    const reveal = (issue: IncludedFileIssue): void => {
+      onNavigateToXrefReference.current?.({
+        fileId: issue.fileId,
+        path: issue.path,
+        line: issue.line,
+        sameFile: false,
+      });
+    };
+    if (!nodes.includes(openFileId)) {
+      setDocumentScope({ state: 'outside-main', fileCount: 0, issues: [], reveal: null });
+      return;
+    }
+
+    const files: IncludedFile[] = [];
+    for (const fileId of nodes) {
+      if (fileId === openFileId) continue;
+      const path = index.pathOf(fileId);
+      const content = index.getContent(fileId);
+      if (path === null || content === null) continue; // not fetched yet — a later pass picks it up
+      files.push({ fileId, path, content });
+    }
+    if (files.length === 0) {
+      setDocumentScope({ state: 'alone', fileCount: 0, issues: [], reveal: null });
+      return;
+    }
+
+    let cancelled = false;
+    const linter = (includedFileLinterReference.current ??= createIncludedFileLinter({
+      parse: (text) => asciidocLanguage.parser.parse(text),
+    }));
+    setDocumentScope({ state: 'scanning', fileCount: files.length, issues: [], reveal });
+
+    void (async () => {
+      // The worker client is shared with the open file's lint source, and its staleness guard lets the
+      // newest request win — so an edit landing mid-pass aborts this one. Retry a bounded number of
+      // times rather than publishing a list that silently omits the files never reached.
+      // Whatever the last attempt did reach. Published as `incomplete` if every attempt was cut short,
+      // because publishing nothing left the panel saying "Checking N other files…" for the rest of the
+      // mount — recoverable only by toggling the scope, and indistinguishable from a slow pass.
+      let reached: readonly IncludedFileIssue[] = [];
+      let completed = false;
+      for (let attempt = 0; attempt < CROSS_FILE_LINT_ATTEMPTS && !cancelled; attempt++) {
+        const result = await linter.lint(files, { client, isCancelled: () => cancelled });
+        if (cancelled) return;
+        reached = result.issues;
+        if (result.completed) {
+          completed = true;
+          setDocumentScope({ state: 'checked', fileCount: files.length, issues: result.issues, reveal });
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, CROSS_FILE_LINT_RETRY_MS));
+      }
+      if (!completed && !cancelled) {
+        setDocumentScope({ state: 'incomplete', fileCount: files.length, issues: reached, reveal });
+      }
+      // This pass's own requests may have superseded an in-flight lint of the open file, leaving it with
+      // no diagnostics. Ask for one more pass over the open file so its underlines come back.
+      const view = viewReference.current;
+      if (!cancelled && view) refreshGrammarLints(view);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [documentScopeWanted, includeTreeSignature, renameRefreshNonce]);
+
+  // Leave nothing behind for the next editor: the panel's cross-file list belongs to this mount.
+  useEffect(() => resetDocumentScope, []);
+
+  // Dispose the Harper worker on unmount so its engine + worker are released.
+  useEffect(
+    () => () => {
+      void harperClientReference.current?.dispose();
+      harperClientReference.current = null;
+    },
+    [],
+  );
+
+  /** Accessor for the live Harper worker client (null until grammar activates), for the Rules tab. */
+  const getHarperClient = useCallback(() => harperClientReference.current, []);
+
+  return { containerReference, viewReference, handleHeadingClick, getHarperClient, ignoreGrammarIssue };
 }

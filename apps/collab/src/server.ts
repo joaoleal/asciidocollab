@@ -159,6 +159,45 @@ export async function createCollabServer(
           // Re-check connection count after the async lookup above — a new client may have
           // joined and called onRoomOpen while we were awaiting. If so, do not close the session.
           if (payload.document.getConnectionsCount() > 0) return;
+          // Flush the pending write-back BEFORE the session row goes away.
+          //
+          // GetFileNodeContentUseCase reads a document's LIVE text only while its CollaborationSession
+          // row exists, and otherwise trusts the file-store projection on the stated grounds that "a
+          // dormant document's file store is already current (the collab server writes back on
+          // disconnect)". But Hocuspocus runs that write-back only AFTER this hook resolves — it awaits
+          // the onDisconnect hooks and only then invokes the onClose callback that executes the
+          // debounced onStoreDocument. Closing the session first therefore opens a window in which the
+          // row is gone AND the projection still holds pre-edit text, so every reader that samples
+          // `GET /content` inside it gets stale content — and the web client caches file content
+          // write-once (include-tree-fetcher skips any id already cached), so a single stale sample
+          // sticks for the rest of the session. That is what made a child file's preview keep showing a
+          // parent attribute's old value after the author edited it and switched files.
+          //
+          // `immediately: true` cancels the pending debounce and runs the same store hooks now,
+          // serialised on the document's save mutex; afterwards Hocuspocus's own onClose sees nothing
+          // debounced and takes its "already stored" branch, so the document is not stored twice.
+          //
+          // Failures are absorbed deliberately: a stuck store must never keep the session row alive,
+          // which would 409 REST writes and make the file undeletable.
+          try {
+            await payload.instance.storeDocumentHooks(
+              payload.document,
+              {
+                clientsCount: 0,
+                document: payload.document,
+                documentName: payload.documentName,
+                instance: payload.instance,
+                lastContext: payload.context,
+                lastTransactionOrigin: null,
+              },
+              true,
+            );
+          } catch (error) {
+            logger.error(
+              { err: error, documentName: payload.documentName },
+              'Failed to flush the write-back before closing the collaboration session; the file store may lag',
+            );
+          }
           const result = await sessionCallbacks.onRoomClose(projectId, documentId);
           if (!result.success) {
             logger.error({ err: result.error, documentName: payload.documentName }, 'Failed to close collaboration session');

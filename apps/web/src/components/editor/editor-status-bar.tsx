@@ -24,11 +24,13 @@ interface EditorStatusBarProperties {
   wordCount?: number;
   /** Estimated reading time in minutes; omitted ⇒ not shown. */
   readingTimeMin?: number;
+  /** Grammar status readout (on-device indicator + per-category counts); omitted ⇒ not shown. */
+  grammarStatus?: React.ReactNode;
 }
 
 /** Compact status bar showing cursor position, document metrics, and save state. */
 export function EditorStatusBar({
-  line, col, totalLines, saveState, onRetry, wordCount, readingTimeMin,
+  line, col, totalLines, saveState, onRetry, wordCount, readingTimeMin, grammarStatus,
 }: EditorStatusBarProperties) {
   return (
     <div className="flex items-center gap-3 px-3 py-1 text-xs text-muted-foreground border-t bg-background select-none">
@@ -48,6 +50,7 @@ export function EditorStatusBar({
         </>
       )}
       <span className="flex-1" />
+      {grammarStatus}
       <span className={STATE_CLASSES[saveState]}>
         {STATE_LABELS[saveState]}
       </span>

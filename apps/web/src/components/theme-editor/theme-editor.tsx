@@ -23,7 +23,7 @@ import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import type * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
-import { collabExtensions } from '@/components/editor/editor-collab-extensions';
+import { collabExtensions, COLLAB_YTEXT_KEY } from '@/components/editor/editor-collab-extensions';
 import { AlertTriangle } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { THEME_SETTINGS, type ThemeSettingDescriptor } from '@asciidocollab/shared';
@@ -254,14 +254,15 @@ export function ThemeEditor({
 
     const instance = new EditorView({
       state: EditorState.create({
-        // Empty ANYWHERE on the collab path, matching `use-editor-mount`'s rule for the AsciiDoc
-        // editor. Yjs owns the text there and populates it on sync; seeding the REST copy as well
-        // appends it to whatever Yjs delivers, so the author opens a file containing two of itself.
-        //
-        // Keying this on the binding instead would avoid a brief blank while connecting, but at the
-        // cost of that duplication whenever a binding arrived after mount — silent corruption is a
-        // worse failure than a blank the parent's `collabPending` skeleton already covers.
-        doc: onCollabPath ? '' : content,
+        // Seed from the LIVE Y.Text when a binding exists, matching `use-editor-mount`. Seeding the
+        // REST copy would append it to whatever Yjs delivers (a file containing two of itself), but
+        // seeding the shared type cannot duplicate anything — it IS what Yjs holds. That matters
+        // because this effect keys on `collab?.doc`, so the offline→synced round trip (the binding
+        // drops on a sync timeout and returns on recovery) recreates the view against an
+        // already-populated room: with a hardcoded '' the view stays blank forever, since ySync only
+        // applies incremental deltas, and the author's first keystroke then splices into the middle of
+        // the real text. Still '' with no binding, so the parent's `collabPending` skeleton is unaffected.
+        doc: collab ? collab.doc.getText(COLLAB_YTEXT_KEY).toString() : (onCollabPath ? '' : content),
         extensions: buildThemeEditorExtensions({
           compartments,
           canEdit,

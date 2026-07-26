@@ -246,6 +246,64 @@ describe('PdfPreviewPanel', () => {
     expect(pageContainer.querySelector('.annotationLayer')).not.toBeNull();
   });
 
+  test('reveals the source of a clicked (non-link) page position via onNavigateToSource', async () => {
+    const onNavigateToSource = jest.fn();
+    const sourceMap = [
+      { line: 5, page: 1, yFraction: 0 },
+      { line: 12, page: 1, yFraction: 0.5 },
+    ];
+    render(
+      <PdfPreviewPanel
+        pdf={makePdf()}
+        isRendering={false}
+        sourceMap={sourceMap}
+        onNavigateToSource={onNavigateToSource}
+      />,
+    );
+    const canvas = await screen.findByLabelText('Rendered PDF page 1');
+    const pageContainer = canvas.parentElement!; // carries data-page="1"
+    fireEvent.click(pageContainer);
+    // jsdom's getBoundingClientRect is all zeros → yFraction 0 → the page's first block governs.
+    expect(onNavigateToSource).toHaveBeenCalledWith(5);
+  });
+
+  test('prefers a block’s exact render-time origin when the source-map entry carries one', async () => {
+    const onNavigateToSource = jest.fn();
+    const onNavigateToExactSource = jest.fn();
+    render(
+      <PdfPreviewPanel
+        pdf={makePdf()}
+        isRendering={false}
+        sourceMap={[{ line: 4, page: 1, yFraction: 0, path: 'ch/one.adoc', sourceLine: 12 }]}
+        onNavigateToSource={onNavigateToSource}
+        onNavigateToExactSource={onNavigateToExactSource}
+      />,
+    );
+    const canvas = await screen.findByLabelText('Rendered PDF page 1');
+    fireEvent.click(canvas.parentElement!);
+    expect(onNavigateToExactSource).toHaveBeenCalledWith('ch/one.adoc', 12);
+    expect(onNavigateToSource).not.toHaveBeenCalled();
+  });
+
+  test('a click on a link annotation is left to pdf.js and does not jump to source', async () => {
+    const onNavigateToSource = jest.fn();
+    render(
+      <PdfPreviewPanel
+        pdf={makePdf()}
+        isRendering={false}
+        sourceMap={[{ line: 5, page: 1, yFraction: 0 }]}
+        onNavigateToSource={onNavigateToSource}
+      />,
+    );
+    const canvas = await screen.findByLabelText('Rendered PDF page 1');
+    const annotationLayer = canvas.parentElement!.querySelector('.annotationLayer')!;
+    const anchor = document.createElement('a');
+    anchor.href = 'https://example.com';
+    annotationLayer.append(anchor);
+    fireEvent.click(anchor);
+    expect(onNavigateToSource).not.toHaveBeenCalled();
+  });
+
   test('turns an external link annotation into a hardened new-tab anchor', async () => {
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
     await waitFor(() => expect(mockAnnotationLayerRender).toHaveBeenCalledTimes(1));
@@ -932,9 +990,13 @@ describe('PdfPreviewPanel', () => {
     expect(scrollIntoViewMock).not.toHaveBeenCalled();
   });
 
-  test('falls back to proportional sync when the mapped page is not in the DOM', async () => {
+  test('warns, then falls back to proportional sync, when the mapped page is not in the DOM', async () => {
     // The map points at page 9, which this single-page document never renders, so the panel must
-    // degrade to the proportional path rather than scroll to a missing element.
+    // degrade to the proportional path rather than scroll to a missing element. It must also SAY so:
+    // the proportional guess lands at an unrelated fraction (and can scroll backwards), which silently
+    // masquerades as a working sync. The engine filters out-of-range pages, so reaching here means the
+    // map and the render have gone out of step and someone needs to see it.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const sourceMap = [{ line: 1, page: 9, yFraction: 0.5 }];
     const { rerender } = render(
       <PdfPreviewPanel
@@ -966,9 +1028,13 @@ describe('PdfPreviewPanel', () => {
 
     // The proportional path runs: (51 - 1) / (101 - 1) = 0.5 → 0.5 * (1000 - 200) = 400.
     expect(container.scrollTop).toBe(400);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('page 9'));
+    warn.mockRestore();
   });
 
   test('falls back to proportional sync when the source map is empty', () => {
+    // An empty map is an ordinary "no map this render" state, not a broken lookup: no warning.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { rerender } = render(
       <PdfPreviewPanel
         pdf={makePdf()}
@@ -997,6 +1063,8 @@ describe('PdfPreviewPanel', () => {
     );
 
     expect(container.scrollTop).toBe(400);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   test('does not scroll when sync is disabled even with a scroll request present', () => {

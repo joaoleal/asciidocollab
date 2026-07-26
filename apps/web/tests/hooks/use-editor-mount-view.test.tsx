@@ -703,6 +703,122 @@ describe('useEditorMount collab path', () => {
   });
 });
 
+/**
+ * Recreating the view against an ALREADY-populated room.
+ *
+ * yCollab's ySync plugin applies only incremental `Y.Text` deltas and never reads the type's existing
+ * content, so a view created empty against a populated room stays empty forever — no further delta is
+ * coming. The production trigger is the offline→synced round trip: the sync handshake exceeding
+ * COLLAB_SYNC_TIMEOUT_MS drops the binding (remountKey → undefined) and the later `synced` restores it
+ * (remountKey → room id), recreating the view after the room has content. It surfaced as intermittent
+ * e2e hangs where the editor was editable but its text had vanished.
+ */
+const ROOM_TEXT = ':edition: 1\n\nSee {edition} for details.\n';
+
+/** Collab options carrying the live-Y.Text seed accessor the production editor supplies. */
+function seeded(doc: Y.Doc, awareness: Awareness, overrides: Partial<MountOptions> = {}): MountOptions {
+  return collabOptions(doc, awareness, {
+    getCollabDocText: () => doc.getText('codemirror').toString(),
+    ...overrides,
+  });
+}
+
+describe('useEditorMount collab re-seed after sync', () => {
+  test('restores the document when the view is recreated after the room already has content', () => {
+    const doc = new Y.Doc();
+    const awareness = new Awareness(doc);
+
+    // Phase 1 — synced: the view mounts empty and ySync populates it.
+    const rendered = mount(seeded(doc, awareness, { remountKey: 'room-1' }));
+    act(() => { doc.getText('codemirror').insert(0, ROOM_TEXT); });
+    expect(rendered.getView().state.doc.toString()).toBe(ROOM_TEXT);
+
+    // Phase 2 — sync timeout: the binding is dropped and the file opens read-only from REST.
+    act(() => {
+      rendered.rerender(seeded(doc, awareness, { remountKey: undefined, collabExtension: undefined, canEdit: false }));
+    });
+
+    // Phase 3 — recovery: the binding returns, so the view is recreated against a populated room.
+    act(() => { rendered.rerender(seeded(doc, awareness, { remountKey: 'room-1', canEdit: true })); });
+
+    // Editable AND still showing its text — previously this left an editable, permanently empty editor.
+    expect(rendered.getView().state.readOnly).toBe(false);
+    expect(rendered.getView().state.doc.toString()).toBe(ROOM_TEXT);
+
+    rendered.unmount();
+    awareness.destroy();
+    doc.destroy();
+  });
+
+  test('seeding from the shared type does not duplicate it, and later edits keep the right offsets', () => {
+    const doc = new Y.Doc();
+    const awareness = new Awareness(doc);
+    doc.getText('codemirror').insert(0, ROOM_TEXT); // already synced before this view exists
+
+    const rendered = mount(seeded(doc, awareness, { remountKey: 'room-1' }));
+
+    // The seed must not be echoed back into the Y.Text — that is the failure mode that would make an
+    // author open a file containing two of itself (which seeding the REST copy instead would cause).
+    expect(rendered.getView().state.doc.toString()).toBe(ROOM_TEXT);
+    expect(doc.getText('codemirror').toString()).toBe(ROOM_TEXT);
+
+    // A remote delta still lands at the correct offset.
+    act(() => { doc.getText('codemirror').insert(0, ':lang: en\n'); });
+    expect(rendered.getView().state.doc.toString()).toBe(`:lang: en\n${ROOM_TEXT}`);
+
+    // And a local edit still round-trips into the Y.Text rather than splicing into the middle of it.
+    act(() => { rendered.getView().dispatch({ changes: { from: 0, to: 0, insert: '// hdr\n' } }); });
+    expect(doc.getText('codemirror').toString()).toBe(`// hdr\n:lang: en\n${ROOM_TEXT}`);
+
+    rendered.unmount();
+    awareness.destroy();
+    doc.destroy();
+  });
+
+  test('still mounts empty when the room has no content yet (first-mount behaviour unchanged)', () => {
+    const doc = new Y.Doc();
+    const awareness = new Awareness(doc);
+    const rendered = mount(seeded(doc, awareness, { remountKey: 'room-1' }));
+
+    expect(rendered.getView().state.doc.toString()).toBe('');
+
+    rendered.unmount();
+    awareness.destroy();
+    doc.destroy();
+  });
+
+  test('publishes the seeded text through onDocChange (no docChanged fires for a seeded view)', () => {
+    const doc = new Y.Doc();
+    const awareness = new Awareness(doc);
+    doc.getText('codemirror').insert(0, ROOM_TEXT);
+    const seen: string[] = [];
+
+    const rendered = mount(seeded(doc, awareness, { remountKey: 'room-1', onDocChange: (text) => seen.push(text) }));
+
+    // Without this the host would keep whatever text it last saw while the editor showed the room's.
+    expect(seen).toContain(ROOM_TEXT);
+
+    rendered.unmount();
+    awareness.destroy();
+    doc.destroy();
+  });
+
+  test('restores the remembered line on a seeded view, which never sees a first content arrival', () => {
+    const doc = new Y.Doc();
+    const awareness = new Awareness(doc);
+    doc.getText('codemirror').insert(0, 'alpha\nbeta\ngamma\n');
+
+    const rendered = mount(seeded(doc, awareness, { remountKey: 'room-1', initialLine: 2 }));
+
+    const view = rendered.getView();
+    expect(view.state.selection.main.head).toBe(view.state.doc.line(2).from);
+
+    rendered.unmount();
+    awareness.destroy();
+    doc.destroy();
+  });
+});
+
 /** Builds a drop event carrying the tree's custom node payload at the given coordinates. */
 function makeDropEvent(payload: string | null): DragEvent {
   const event = new Event('drop', { bubbles: true, cancelable: true }) as unknown as DragEvent;

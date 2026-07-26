@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
-import { createAdocFile, openProject, openFile, getEditorText, renameFirstWord } from './helpers/editor';
+import { createAdocFile, openProject, openFile, getEditorText, renameFirstWord, COLLAB_EDIT_TEST_TIMEOUT } from './helpers/editor';
 
 // Feature 033: renaming a section heading whose AUTO-GENERATED id is referenced offers to
 // update the cross-references to the new derived id — but only when the heading has no explicit id.
@@ -21,6 +21,7 @@ test.describe('033 — section-heading auto-id rename suggestion', () => {
   let projectId: string;
 
   test.beforeEach(async ({ page }) => {
+    test.setTimeout(COLLAB_EDIT_TEST_TIMEOUT); // these tests live-edit the collab editor — see the constant
     await signIn(page);
     projectId = await createProject(page, `Rename Heading ${Date.now()}`);
   });

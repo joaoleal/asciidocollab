@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { grammarDialectSchema } from '../grammar/grammar-config';
 
 /** Upper bound on a single free-form custom-attribute name/value, and on the number of them. */
 const CUSTOM_ATTR_MAX_LEN = 200;
@@ -40,6 +41,37 @@ const extensionIdSchema = z
 
 /** Asciidoctor-PDF named page sizes exposed in the UI (passed through verbatim as `pdf-page-size`). */
 export const PDF_PAGE_SIZES = ['A3', 'A4', 'A5', 'LETTER', 'LEGAL', 'LEDGER', 'TABLOID'] as const;
+
+/** How an HTML export is delivered: one portable file, or a zip with the assets kept separate. */
+export const HTML_EXPORT_PACKAGINGS = ['single-file', 'zip'] as const;
+/**
+ * The visual style an HTML export is dressed in: the app's own stylesheet, or the vendored
+ * Asciidoctor default. Deliberately the same two values the live preview offers, so a project pinning
+ * a style names the same thing a reader sees on screen.
+ */
+export const HTML_EXPORT_STYLES = ['asciidocollab', 'asciidoctor'] as const;
+/** The palette baked into an HTML export; `auto` emits both under `prefers-color-scheme`. */
+export const HTML_EXPORT_THEMES = ['light', 'dark', 'auto'] as const;
+
+/** How an HTML export is delivered. */
+export type HtmlExportPackaging = (typeof HTML_EXPORT_PACKAGINGS)[number];
+/** The visual style an HTML export is dressed in. */
+export type HtmlExportStyle = (typeof HTML_EXPORT_STYLES)[number];
+/** The palette baked into an HTML export. */
+export type HtmlExportTheme = (typeof HTML_EXPORT_THEMES)[number];
+
+/**
+ * The packaging used when a project has expressed no preference: one self-contained file. Chosen as
+ * the default because it is the only form that survives being forwarded on its own — a loose
+ * `index.html` from a zip is useless without the folder that came with it.
+ */
+export const DEFAULT_HTML_EXPORT_PACKAGING: HtmlExportPackaging = 'single-file';
+/**
+ * The palette used when a project has expressed no preference. Light, because an export is a document
+ * to be read, shared and printed, and because the vendored Asciidoctor stylesheet is light-only — so
+ * light is the one choice under which both preview styles agree.
+ */
+export const DEFAULT_HTML_EXPORT_THEME: HtmlExportTheme = 'light';
 
 /**
  * Attribute names a project-level config MUST NOT set — either the render engines pin them (setting
@@ -105,6 +137,26 @@ export const renderConfigSchema = z
     /** Treat every newline as a hard line break. */
     hardbreaks: z.boolean().optional(),
 
+    // --- On-device grammar & spelling checking ---
+    /**
+     * Enable on-device grammar, spelling, and style checking. Only meaningful — and only active — when
+     * the project's configured language is English (spec FR-024); the web hook treats an absent value
+     * as enabled for English projects. This is checker configuration, not a render attribute, so the
+     * resolver ignores it.
+     */
+    grammarCheckEnabled: z.boolean().optional(),
+    /**
+     * The English dialect grammar checking enforces (spec FR-023). Only meaningful when the project
+     * language is English; the web hook defaults an absent value to British. Checker configuration, not
+     * a render attribute — the resolver ignores it.
+     *
+     * Uses the shared `grammarDialectSchema` rather than restating the enum: this is the only endpoint
+     * that carries a dialect, so an inline copy here would have made the "single validation authority"
+     * in `grammar/grammar-config.ts` a claim with no consumer, free to drift from the value the editor
+     * actually enforces.
+     */
+    grammarDialect: grammarDialectSchema.optional(),
+
     // --- Paths / resolution ---
     /** Base directory (prefix) for image macro targets. */
     imagesdir: z.string().trim().max(STRING_OPTION_MAX_LEN).optional(),
@@ -149,6 +201,42 @@ export const renderConfigSchema = z
       .refine((map) => Object.keys(map).length <= CUSTOM_ATTR_MAX_COUNT, {
         message: `At most ${CUSTOM_ATTR_MAX_COUNT} custom attributes are allowed.`,
       })
+      .optional(),
+
+    // --- HTML export ---
+    /**
+     * How the HTML export is delivered and how it looks standing on its own.
+     *
+     * Neither field is an Asciidoctor attribute, so the resolver emits nothing for them — they
+     * describe the FILE the export produces, not the document the engine renders. They live here
+     * rather than in a user preference because both are properties of the artifact a project hands
+     * out: everyone exporting the same project should produce the same shape of file.
+     */
+    htmlExport: z
+      .object({
+        /**
+         * `single-file` (default) inlines every asset as a `data:` URI so the export is one portable
+         * file; `zip` writes `index.html` beside an `assets/` folder, which stays smaller and keeps
+         * images as real files at the cost of needing to be unpacked before it can be read.
+         */
+        packaging: z.enum(HTML_EXPORT_PACKAGINGS).optional(),
+        /**
+         * Which stylesheet the export is dressed in. ABSENT means "whatever the person exporting has
+         * selected in their own preview" — the style is a reading preference on screen, so leaving it
+         * unset keeps that freedom. Setting it pins the style for everyone, which is what a project
+         * handing out a document with a house look needs.
+         */
+        style: z.enum(HTML_EXPORT_STYLES).optional(),
+        /**
+         * Which palette is baked into the exported file. The app's own stylesheet is written against
+         * theme tokens that only resolve inside the app, so an export has to commit to real colours:
+         * `light` (default) always, `dark` always, or `auto` to emit both under
+         * `prefers-color-scheme` and let the reader's system decide. The vendored Asciidoctor
+         * stylesheet is light-only upstream, so this only changes the app's own style.
+         */
+        theme: z.enum(HTML_EXPORT_THEMES).optional(),
+      })
+      .strict()
       .optional(),
 
     // --- PDF converter extensions ---

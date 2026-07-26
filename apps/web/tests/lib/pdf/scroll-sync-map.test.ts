@@ -2,6 +2,7 @@ import type { ProjectSnapshot, PdfSourceMap } from '@asciidocollab/asciidoc-pdf'
 import {
   buildAssembledLineToSource,
   buildAssembledScrollContext,
+  buildOpenFileLineToSource,
   isPathInAssembledTree,
   liftSourceMapToBlockStarts,
   openLineToAssembledLine,
@@ -103,6 +104,41 @@ describe('buildAssembledLineToSource', () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildOpenFileLineToSource.
+// ---------------------------------------------------------------------------
+
+describe('buildOpenFileLineToSource', () => {
+  it('roots the provenance map at the OPEN file, not the main document', () => {
+    const files = {
+      'main.adoc': '= Title\n\ninclude::child.adoc[]\n',
+      'child.adoc': '= Child\n\nChild body.\n',
+    };
+    // Preview is rooted at the child (the open file); its first assembled line traces to the child.
+    const map = buildOpenFileLineToSource('child.adoc', read(files), false);
+    expect(map?.[0]).toEqual({ path: 'child.adoc', sourceLine: 1 });
+  });
+
+  it('attributes included lines to the included file when include bodies are shown', () => {
+    const files = {
+      'open.adoc': 'Intro.\n\ninclude::part.adoc[]\n',
+      'part.adoc': 'From the part.\n',
+    };
+    const map = buildOpenFileLineToSource('open.adoc', read(files), true);
+    expect(map?.some((provenance) => provenance.path === 'part.adoc')).toBe(true);
+  });
+
+  it('keeps every line attributed to the open file when include bodies are hidden', () => {
+    const files = {
+      'open.adoc': 'Intro.\n\ninclude::part.adoc[]\n',
+      'part.adoc': 'From the part.\n',
+    };
+    const map = buildOpenFileLineToSource('open.adoc', read(files), false);
+    // With bodies hidden, no assembled line originates from the included file — nothing to click into.
+    expect(map?.every((provenance) => provenance.path === 'open.adoc')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildAssembledScrollContext.
 // ---------------------------------------------------------------------------
 
@@ -141,11 +177,39 @@ describe('liftSourceMapToBlockStarts', () => {
     expect(lifted.map((mapEntry) => mapEntry.line)).toEqual([3, 5, 7]);
   });
 
-  it('keeps the map sorted by line and de-duplicated after lifting', () => {
+  it('keeps the map sorted by line and then by layout position after lifting', () => {
     const lifted = liftSourceMapToBlockStarts(sourceMap, assembledLines);
-    const lines = lifted.map((mapEntry) => mapEntry.line);
-    expect([...lines]).toEqual(lines.toSorted((a, b) => a - b));
-    expect(new Set(lines).size).toBe(lines.length);
+    const keys = lifted.map((mapEntry) => [mapEntry.line, mapEntry.page, mapEntry.yFraction]);
+    expect(keys).toEqual(
+      keys.toSorted((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]),
+    );
+  });
+
+  it('keeps a distinctly-positioned block that lifts onto a line another entry already holds', () => {
+    // The `====` entry (line 6) lifts onto the block's title line (5), which another block already holds.
+    // Both are real blocks rendered at their own positions, and dropping one left the reverse
+    // (click→source) lookup with nothing to resolve a click on it to.
+    const collidingMap: PdfSourceMap = [
+      { line: 5, page: 1, yFraction: 0.2 },
+      { line: 6, page: 2, yFraction: 0.88 },
+    ];
+    const lifted = liftSourceMapToBlockStarts(collidingMap, assembledLines);
+    expect(lifted.map((mapEntry) => mapEntry.line)).toEqual([5, 5]);
+    expect(lifted).toHaveLength(2);
+    // The earliest-rendered entry leads the group, so the forward lookup still lands on it.
+    expect(lifted[0].yFraction).toBe(0.2);
+    expect(lifted[1].page).toBe(2);
+  });
+
+  it('collapses only entries that share an exact layout position', () => {
+    // A `[horizontal]` dlist inks its term and description on one row: two entries, one position. They
+    // are indistinguishable to the reverse lookup, so the earlier line is kept and the other dropped.
+    const lines = ['= T', '', 'CPU:: the processor', ''];
+    const identical: PdfSourceMap = [
+      { line: 3, page: 1, yFraction: 0.3 },
+      { line: 3, page: 1, yFraction: 0.3 },
+    ];
+    expect(liftSourceMapToBlockStarts(identical, lines)).toHaveLength(1);
   });
 
   it('returns an empty map unchanged', () => {

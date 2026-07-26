@@ -127,7 +127,8 @@ describe('GET /projects/:projectId/download', () => {
     });
     const disposition = response.headers['content-disposition'] as string;
     expect(disposition).toMatch(/attachment/);
-    expect(disposition).toMatch(/My Project/);
+    // Slugified by the shared export-naming rule, the same one the PDF/HTML/zip exports use.
+    expect(disposition).toMatch(/my-project-\d{4}-\d{2}-\d{2}\.zip/);
   });
 
   test('Content-Disposition filename includes a date in YYYY-MM-DD format', async () => {
@@ -140,7 +141,12 @@ describe('GET /projects/:projectId/download', () => {
     expect(disposition).toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
-  test('non-ASCII project name emits filename*=UTF-8\'\'... in Content-Disposition (RFC 5987)', async () => {
+  test('a non-ASCII project name is transliterated, so the header carries plain ASCII', async () => {
+    // This route used to emit the raw name in the RFC 5987 `filename*` param and a lossy ASCII fallback
+    // in `filename` (é simply deleted, giving "Runion Notes"). It now applies the shared export-naming
+    // rule, which transliterates instead of deleting — so both params are the same ASCII slug and no
+    // percent-encoding is needed. The RFC 5987 param is still emitted, keeping this route's header shape
+    // identical to the other download routes, which do still carry real UTF-8 file names.
     const app = buildTestServer({ projectName: 'Réunion Notes' });
     const response = await app.inject({
       method: 'GET',
@@ -148,12 +154,11 @@ describe('GET /projects/:projectId/download', () => {
     });
     expect(response.statusCode).toBe(200);
     const disposition = response.headers['content-disposition'] as string;
-    // RFC 5987 encoded param must be present
     expect(disposition).toContain("filename*=UTF-8''");
-    // é = U+00E9 → UTF-8 0xC3 0xA9 → %C3%A9
-    expect(disposition).toContain('%C3%A9');
-    // ASCII fallback (é stripped → 'Runion Notes') must also be present
-    expect(disposition).toMatch(/filename="Runion Notes-\d{4}-\d{2}-\d{2}\.zip"/);
+    // é → e rather than é → nothing; the old behaviour produced "Runion".
+    expect(disposition).toMatch(/filename="reunion-notes-\d{4}-\d{2}-\d{2}\.zip"/);
+    expect(disposition).not.toContain('%');
+    expect(disposition).not.toContain('é');
   });
 
   test('fileStore.readStream() is called for each stored file (streaming, not buffering)', async () => {
@@ -261,7 +266,7 @@ describe('GET /projects/:projectId/download — live content in ZIP', () => {
     expect(response.headers['content-type']).toMatch(/application\/zip/);
     const disposition = response.headers['content-disposition'] as string;
     expect(disposition).toMatch(/attachment/);
-    expect(disposition).toMatch(/My Project/);
+    expect(disposition).toMatch(/my-project-\d{4}-\d{2}-\d{2}\.zip/);
     expect(disposition).toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
@@ -328,7 +333,7 @@ describe('GET /projects/:projectId/download — filename sanitization', () => {
     expect(response.statusCode).toBe(200);
     const disposition = response.headers['content-disposition'] as string;
     expect(disposition).not.toMatch(/\r|\n/);
-    expect(disposition).toMatch(/MyProject/);
+    expect(disposition).toMatch(/my-?project-\d{4}-\d{2}-\d{2}\.zip/);
   });
 
   test('double-quote in project name is stripped from Content-Disposition ZIP filename', async () => {
@@ -340,7 +345,7 @@ describe('GET /projects/:projectId/download — filename sanitization', () => {
     const response = await app.inject({ method: 'GET', url: `/projects/${PROJECT_ID}/download` });
     const disposition = response.headers['content-disposition'] as string;
     expect(disposition).not.toMatch(/"My"/);
-    expect(disposition).toMatch(/MyProject/);
+    expect(disposition).toMatch(/myproject-\d{4}-\d{2}-\d{2}\.zip/);
   });
 });
 

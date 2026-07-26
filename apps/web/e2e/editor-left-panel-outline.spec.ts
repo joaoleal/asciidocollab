@@ -38,6 +38,21 @@ const railTab = (page: Page, name: RegExp) => page.getByRole('tab', { name });
 const outlineRow = (page: Page, name: string | RegExp) =>
   page.getByRole('navigation', { name: /section outline/i }).getByRole('button', { name });
 
+/**
+ * Make a left-panel view the one on screen.
+ *
+ * The rail is an activity bar: activating the tab of the view that is ALREADY showing TOGGLES the
+ * panel shut. So an unconditional click is not "show me this view" — for the view that happens to be
+ * active it hides the very thing the test is about to use, leaving its content present in the DOM but
+ * invisible. Click only when the view is not already selected, and reopen a panel that is collapsed.
+ */
+async function showView(page: Page, name: RegExp): Promise<void> {
+  const tab = railTab(page, name);
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+  const expand = page.getByRole('button', { name: /expand sidebar/i });
+  if (await expand.isVisible()) await expand.click();
+}
+
 // --- Suite ------------------------------------------------------------------------------------
 
 test.describe('Editor left panel: Outline view (028)', () => {
@@ -160,7 +175,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
 
     // Switch back to Files (the file tree is hidden while Outline is active) to open a heading-less
     // document, then return to Outline → second empty state.
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-flat.adoc').click();
     await waitCollabSynced(page);
     await railTab(page, /outline/i).click();
@@ -190,7 +205,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await railTab(page, /outline/i).click();
 
     // Open main.adoc from the Files tab first.
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-main.adoc').click();
     await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
     await railTab(page, /outline/i).click();
@@ -217,7 +232,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
 
     // Open root.adoc (the main document).
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-root.adoc').click();
     await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
 
@@ -252,7 +267,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
 
     // Open doc.adoc (no session on appendix.adoc) and switch to the Outline tab.
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-doc.adoc').click();
     await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
     await railTab(page, /outline/i).click();
@@ -279,7 +294,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     // Session B (the outline watcher): open live-main.adoc and bring up the outline tab.
     await page.goto(`/dashboard/projects/${projectId}`);
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-live-main.adoc').click();
     await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
     await railTab(page, /outline/i).click();
@@ -328,7 +343,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
 
     // Open scope-main.adoc and switch to the Outline tab.
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await page.getByTestId('tree-node-scope-main.adoc').click();
     await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
     await railTab(page, /outline/i).click();
@@ -481,7 +496,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await expect(page.getByRole('button', { name: /^actions$/i })).toHaveCount(0);
 
     // Switching back restores them.
-    await railTab(page, /files/i).click();
+    await showView(page, /files/i);
     await expect(page.getByRole('button', { name: /^actions$/i }).first()).toBeVisible();
   });
 });

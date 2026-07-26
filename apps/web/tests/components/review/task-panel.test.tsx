@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import type { ReviewItemDto } from '@asciidocollab/shared';
+import type { AnchorDto, AnchorState, ReviewItemDto } from '@asciidocollab/shared';
 import { TaskPanel } from '@/components/review/task-panel';
 import { listProjectReviewItems, bulkDeleteProject } from '@/lib/api/review';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
@@ -51,6 +51,14 @@ const task = (overrides: Partial<ReviewItemDto> = {}): ReviewItemDto => ({
   ...overrides,
 });
 
+/** A faithful root anchor: the wire DTO's required `state` plus the stored line hint. */
+const anchored = (line: number, state: AnchorState = 'located'): AnchorDto => ({
+  relPos: 'AAAA',
+  quote: { prefix: '', exact: 'passage', suffix: '' },
+  lineHint: line,
+  state,
+});
+
 const comment = (overrides: Partial<ReviewItemDto> = {}): ReviewItemDto =>
   task({ id: 'c1', kind: 'comment', status: undefined, body: 'Please clarify', dueDate: undefined, ...overrides });
 
@@ -71,6 +79,23 @@ describe('TaskPanel', () => {
     render(<TaskPanel projectId="p1" currentUserId="me" />);
     const row = await screen.findByTestId('task-panel-row');
     expect(within(row).getByText('guide.adoc')).toBeInTheDocument();
+  });
+
+  test('orders rows by file then anchor position, not by the order the server returned', async () => {
+    mockList.mockResolvedValue([
+      task({ id: 'z-1', documentId: 'd2', fileName: 'zeta.adoc', anchor: anchored(1) }),
+      task({ id: 'a-orphan', documentId: 'd1', fileName: 'alpha.adoc', anchor: anchored(2, 'detached') }),
+      task({ id: 'a-40', documentId: 'd1', fileName: 'alpha.adoc', anchor: anchored(40) }),
+      task({ id: 'a-3', documentId: 'd1', fileName: 'alpha.adoc', anchor: anchored(3) }),
+    ]);
+    render(<TaskPanel projectId="p1" currentUserId="me" />);
+    await waitFor(() => expect(screen.getAllByTestId('task-panel-row')).toHaveLength(4));
+    expect(screen.getAllByTestId('task-panel-row').map((row) => row.dataset.itemId)).toEqual([
+      'a-3',
+      'a-40',
+      'a-orphan',
+      'z-1',
+    ]);
   });
 
   test('the "Assigned to me" toggle refetches with the current user id', async () => {

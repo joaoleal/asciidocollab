@@ -70,6 +70,7 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   sentInvitations         UserInvitation[]         @relation("InvitedBy")
   keyBindings             UserKeyBinding[]
+  ignoredLints            IgnoredLint[]
   editorPreferences       EditorPreferences?
   authoredReviewComments  ReviewComment[]          @relation("ReviewAuthor")
   assignedReviewItems     ReviewComment[]          @relation("ReviewAssignee")
@@ -97,6 +98,7 @@ model Project {
   collaborationSessions CollaborationSession[]
   reviewComments        ReviewComment[]
   renderConfig          ProjectRenderConfig?
+  dictionaryTerms       ProjectDictionaryTerm[]
 }
 
 model ProjectMember {
@@ -127,6 +129,7 @@ model FileNode {
   document            Document?
   asset               Asset?
   mainFileForProjects Project[]  @relation("ProjectMainFile")
+  ignoredLints        IgnoredLint[]
 
   @@unique([projectId, path])
   @@index([projectId])
@@ -357,6 +360,39 @@ model ProjectRenderConfig {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@map("project_render_configs")
+}
+
+// One accepted term in a project's shared grammar/spelling dictionary (feature 042 / US5). One row per
+// (project, term) so terms add/remove cheaply and propagate to every collaborator via the API.
+model ProjectDictionaryTerm {
+  id              String   @id @default(uuid()) @db.Uuid
+  projectId       String   @db.Uuid
+  term            String
+  createdByUserId String   @db.Uuid
+  createdAt       DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, term])
+  @@index([projectId])
+  @@map("project_dictionary_terms")
+}
+
+// A single author's private set of dismissed grammar issues for one document (feature 042 / US6). The
+// blob is exactly harper.js `exportIgnoredLints()` output — privacy-hashed, NOT raw prose — stored and
+// round-tripped verbatim, one row per (user, document). documentId reuses the FileNode id concept.
+model IgnoredLint {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @db.Uuid
+  documentId       String   @db.Uuid
+  ignoredLintsJson String   @default("")
+  updatedAt        DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fileNode FileNode @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, documentId])
+  @@map("ignored_lints")
 }
 
 model ReviewComment {

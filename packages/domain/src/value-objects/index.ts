@@ -16,6 +16,8 @@ export { AuditLogId } from './ids/audit-log-id';
 export { AuthAttemptTelemetryId } from './ids/auth-attempt-telemetry-id';
 export { ContentId } from './ids/content-id';
 export { ProjectRenderConfigId } from './ids/project-render-config-id';
+export { ProjectDictionaryTermId } from './ids/project-dictionary-term-id';
+export { IgnoredLintId } from './ids/ignored-lint-id';
 export { YjsStateId } from './ids/yjs-state-id';
 export { Email } from './identity/email';
 export { FilePath } from './files/file-path';

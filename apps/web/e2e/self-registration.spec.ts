@@ -6,7 +6,7 @@ import {
   adminSetOpenRegistration,
   adminDeleteUserByEmail,
 } from './helpers/test-user';
-import { clearMailpit, waitForEmail, extractVerificationToken } from './helpers/mailpit';
+import { clearMailpitFor, waitForEmail, extractVerificationToken } from './helpers/mailpit';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -96,8 +96,10 @@ test.describe('Self-registration with email verification', () => {
       await page.goto('/dashboard');
       await page.waitForURL(/\/verify-email-required/);
 
-      // Clear mailpit and click resend
-      await clearMailpit();
+      // Drop only THIS address's earlier registration email, so the `waitForEmail` below can only match
+      // the resent one. Emptying the whole mailbox would delete mail other concurrently-running specs
+      // are waiting for (Mailpit is shared across projects).
+      await clearMailpitFor(email);
       await page.getByRole('button', { name: /resend/i }).click();
 
       // Confirm success message appears

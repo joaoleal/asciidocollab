@@ -360,6 +360,75 @@ describe('createDiagramsMathStage', () => {
     expect(rewritten).not.toContain('../.gen/');
   });
 
+  // -------------------------------------------------------------------------
+  // Line-span preservation. The rewrite happens AFTER include-resolve has published the
+  // assembled-line→source provenance the engine's source map is indexed by, so a replacement that is
+  // shorter than the block it replaces silently shifts every later line's coordinates.
+  // -------------------------------------------------------------------------
+
+  it('keeps a rewritten diagram block on exactly the lines it replaced', async () => {
+    const render = renderMock(async () => okSvg());
+    const original = ['Intro', '', MERMAID_BLOCK, '', 'Outro'].join('\n');
+    const { ctx, vfs } = makeContext(original, [fakeShim('diagram', 'mermaid', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    const before = original.split('\n');
+    const after = (vfs.readText(ROOT_VFS_PATH) ?? '').split('\n');
+    expect(after).toHaveLength(before.length);
+    // Everything after the block keeps its exact 1-based line number.
+    expect(after.indexOf('Outro')).toBe(before.indexOf('Outro'));
+    // The macro takes the block's FIRST line; the filler restores the rest of the span.
+    expect(after[2]).toMatch(/^image::\.gen\//);
+    expect(after.slice(3, 6)).toEqual(['//', '//', '//']);
+  });
+
+  it('keeps every later line aligned across several diagram and math blocks', async () => {
+    const mermaid = renderMock(async () => okSvg('diagram'));
+    const math = renderMock(async () => okSvg('math'));
+    const stemBlock = ['[stem]', '++++', 'x^2 + y^2 = z^2', '++++'].join('\n');
+    const original = [
+      '= Title',
+      '',
+      MERMAID_BLOCK,
+      '',
+      'Between the blocks.',
+      '',
+      stemBlock,
+      '',
+      'The last paragraph.',
+    ].join('\n');
+    const { ctx, vfs } = makeContext(original, [
+      fakeShim('diagram', 'mermaid', mermaid),
+      fakeShim('math', 'mathjax', math),
+    ]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    const before = original.split('\n');
+    const after = (vfs.readText(ROOT_VFS_PATH) ?? '').split('\n');
+    expect(after).toHaveLength(before.length);
+    for (const needle of ['= Title', 'Between the blocks.', 'The last paragraph.']) {
+      expect(after.indexOf(needle)).toBe(before.indexOf(needle));
+    }
+  });
+
+  it('pads with line comments, never blank lines, so a list continuation survives', async () => {
+    // A blank line after a block inside a `+` continuation ENDS the continuation, detaching the rest of
+    // the item from its list. A `//` line is dropped by the reader and terminates nothing.
+    const render = renderMock(async () => okSvg());
+    const original = ['* item', '+', MERMAID_BLOCK, '+', 'still the same item'].join('\n');
+    const { ctx, vfs } = makeContext(original, [fakeShim('diagram', 'mermaid', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    const after = (vfs.readText(ROOT_VFS_PATH) ?? '').split('\n');
+    expect(after).toHaveLength(original.split('\n').length);
+    expect(after.filter((line) => line === '')).toHaveLength(0);
+    expect(after.at(-1)).toBe('still the same item');
+    expect(after.at(-2)).toBe('+');
+  });
+
   it('has the diagrams-math stage kind', () => {
     expect(createDiagramsMathStage().kind).toBe('diagrams-math');
   });

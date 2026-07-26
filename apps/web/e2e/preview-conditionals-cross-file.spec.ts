@@ -9,6 +9,7 @@ import {
   expandPreview,
   editorContent,
   EDITOR_EDITABLE_TIMEOUT,
+  COLLAB_EDIT_TEST_TIMEOUT,
 } from './helpers/editor';
 
 // Conditional preprocessor directives:
@@ -34,6 +35,7 @@ test.describe('preview conditionals across files', () => {
   let projectId: string;
 
   test.beforeEach(async ({ page }) => {
+    test.setTimeout(COLLAB_EDIT_TEST_TIMEOUT); // these tests live-edit the collab editor — see the constant
     await signIn(page);
     projectId = await createProject(page, `Preview Conditionals ${Date.now()}`);
   });

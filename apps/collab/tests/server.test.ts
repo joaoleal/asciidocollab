@@ -285,6 +285,7 @@ describe('createCollabServer', () => {
       documentName: '550e8400-e29b-41d4-a716-446655440001/550e8400-e29b-41d4-a716-446655440002',
       context: {}, // Hocuspocus did not carry documentId across hooks
       document: { getConnectionsCount: jest.fn().mockReturnValue(0) },
+      instance: { storeDocumentHooks: jest.fn() },
     });
 
     expect(documentRepository.findByYjsStateId).toHaveBeenCalled();
@@ -368,6 +369,7 @@ describe('createCollabServer', () => {
         documentName: `${projectId}/${yjsStateId}`,
         context: { documentId },
         document: mockHocuspocusDocument,
+        instance: { storeDocumentHooks: jest.fn() },
       }),
     ).resolves.toBeUndefined(); // must not throw
 
@@ -483,6 +485,85 @@ describe('createCollabServer', () => {
         documentName: `${projectId}/${yjsStateId}`,
         context: { documentId },
         document: mockHocuspocusDocument,
+        instance: { storeDocumentHooks: jest.fn() },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(sessionCallbacks.onRoomClose).toHaveBeenCalledTimes(1);
+  });
+
+  // The write-back MUST be flushed before the session row is deleted. GetFileNodeContentUseCase only
+  // reads a document's live text while its session row exists and otherwise trusts the file-store
+  // projection, so closing first exposes a window where the row is gone and the projection is still
+  // pre-edit — and the web client caches content write-once, so one stale read sticks for the session.
+  it('flushes the pending write-back BEFORE closing the collaboration session', async () => {
+    const settingRepo = {
+      get: jest.fn().mockResolvedValue('30'),
+      set: jest.fn(),
+    } as unknown as SystemSettingRepository;
+
+    const documentId = { value: '550e8400-e29b-41d4-a716-446655440010' };
+    const order: string[] = [];
+    const sessionCallbacks = {
+      onRoomOpen: jest.fn(),
+      onRoomClose: jest.fn().mockImplementation(async () => {
+        order.push('close');
+        return { success: true };
+      }),
+    } as unknown as Parameters<typeof createCollabServer>[3];
+    const documentRepository = {
+      findByYjsStateId: jest.fn().mockResolvedValue({ id: documentId }),
+    } as unknown as Parameters<typeof createCollabServer>[4];
+
+    const server = await createCollabServer({ port: 0 }, [makeExtension()], settingRepo, sessionCallbacks, documentRepository);
+    const cfg = (server as { configuration?: { onDisconnect?: (p: unknown) => Promise<void> } }).configuration;
+    if (!cfg?.onDisconnect) throw new Error('onDisconnect was not configured');
+
+    const storeDocumentHooks = jest.fn().mockImplementation(async () => {
+      order.push('store');
+    });
+
+    await cfg.onDisconnect({
+      clientsCount: 0,
+      documentName: '550e8400-e29b-41d4-a716-446655440001/550e8400-e29b-41d4-a716-446655440002',
+      context: { documentId },
+      document: { getConnectionsCount: jest.fn().mockReturnValue(0) },
+      instance: { storeDocumentHooks },
+    });
+
+    expect(order).toEqual(['store', 'close']);
+    // `immediately` must be true, or the store stays behind its debounce and the window reopens.
+    expect(storeDocumentHooks).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ clientsCount: 0 }), true);
+  });
+
+  // A stuck or failing store must never keep the session row alive: an orphaned active session 409s
+  // REST writes and makes the file undeletable, which is strictly worse than a lagging projection.
+  it('still closes the session when the write-back flush throws', async () => {
+    const settingRepo = {
+      get: jest.fn().mockResolvedValue('30'),
+      set: jest.fn(),
+    } as unknown as SystemSettingRepository;
+
+    const documentId = { value: '550e8400-e29b-41d4-a716-446655440010' };
+    const sessionCallbacks = {
+      onRoomOpen: jest.fn(),
+      onRoomClose: jest.fn().mockResolvedValue({ success: true }),
+    } as unknown as Parameters<typeof createCollabServer>[3];
+    const documentRepository = {
+      findByYjsStateId: jest.fn().mockResolvedValue({ id: documentId }),
+    } as unknown as Parameters<typeof createCollabServer>[4];
+
+    const server = await createCollabServer({ port: 0 }, [makeExtension()], settingRepo, sessionCallbacks, documentRepository);
+    const cfg = (server as { configuration?: { onDisconnect?: (p: unknown) => Promise<void> } }).configuration;
+    if (!cfg?.onDisconnect) throw new Error('onDisconnect was not configured');
+
+    await expect(
+      cfg.onDisconnect({
+        clientsCount: 0,
+        documentName: '550e8400-e29b-41d4-a716-446655440001/550e8400-e29b-41d4-a716-446655440002',
+        context: { documentId },
+        document: { getConnectionsCount: jest.fn().mockReturnValue(0) },
+        instance: { storeDocumentHooks: jest.fn().mockRejectedValue(new Error('store wedged')) },
       }),
     ).resolves.toBeUndefined();
 
