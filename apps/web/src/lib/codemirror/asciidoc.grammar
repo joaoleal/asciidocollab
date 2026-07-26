@@ -5,6 +5,14 @@
 
 @skip {}
 
+// Document-header position (before the title / after it / after the author line / past the header).
+// The byline is positional, but the position CANNOT be a grammar sequence: Asciidoctor allows
+// attribute entries and comment lines between the title, the author line and the revision line, and
+// spelling those runs out makes `AttributeEntry` ambiguous between header metadata and the next block
+// (a shift/reduce conflict lezer rejects). The tracker states the position directly, which also lets
+// it tell THE document title from a level-0 title appearing mid-document.
+@context blockContext from "./asciidoc-block-context"
+
 @external tokens blockTokenizer from "./asciidoc-block-tokens" {
   docTitleToken,
   heading1Token, heading2Token, heading3Token, heading4Token, heading5Token,
@@ -34,8 +42,10 @@
 }
 
 block {
-  DocumentTitle |
-  AuthorLine | RevisionLine |
+  // Document header. The implicit author line and the revision line are metadata ONLY in the header,
+  // but that position is tracked by `@context` above (see it for why a grammar sequence cannot express
+  // it), so here they are plain block alternatives the tokenizer emits only where the context allows.
+  DocumentTitle | AuthorLine | RevisionLine |
   Heading5 | Heading4 | Heading3 | Heading2 | Heading1 |
   AttributeEntry |
   CommentBlock |

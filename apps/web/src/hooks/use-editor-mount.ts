@@ -689,7 +689,13 @@ export function useEditorMount({
         EditorView.editable.of(canEdit),
       ]),
     });
-  }, [canEdit]);
+    // The grammar tooltip's one-click fixes are decided per lint pass from the view's read-only state,
+    // and a permission change arrives without a document change (an observer promoted mid-session, a
+    // collab session lost). Ask for a fresh pass, or the previous pass's fix buttons stay on screen.
+    // They would refuse to apply — `applyGrammarSuggestion` re-checks — but offering a control that
+    // does nothing is worse than not offering it, so this is the visible half of the same gate.
+    if (grammarActive) refreshGrammarLints(viewReference.current);
+  }, [canEdit, grammarActive]);
 
   // Sync the soft-wrap preference live via its Compartment.
   useEffect(() => {
@@ -824,12 +830,23 @@ export function useEditorMount({
     if (!grammarActive || !dictionaryTerms) return;
     const client = harperClientReference.current;
     if (!client) return;
-    void client.resetWords(dictionaryTerms).then(() => {
-      // A changed dictionary changes results, but the document did not change — ask the lint plugin
-      // explicitly, or an accepted term stays underlined until the next keystroke.
-      const view = viewReference.current;
-      if (view) refreshGrammarLints(view);
-    });
+    void client
+      .resetWords(dictionaryTerms)
+      .then(() => {
+        // A changed dictionary changes results, but the document did not change — ask the lint plugin
+        // explicitly, or an accepted term stays underlined until the next keystroke.
+        const view = viewReference.current;
+        if (view) refreshGrammarLints(view);
+      })
+      .catch((error: unknown) => {
+        // `resetWords` clears the worker's dictionary BEFORE re-importing, so a rejection anywhere in
+        // that pair leaves the engine with NO accepted terms while the Dictionary panel still lists
+        // them all — it reads the server, not the engine. That divergence is invisible without this:
+        // the reader sees an accepted word underlined and no indication why. Reported rather than
+        // rethrown, because a failed hydration must not take down a working editor.
+        // eslint-disable-next-line no-console -- an accepted term that is still flagged must surface.
+        console.error('Failed to hydrate the project dictionary into the grammar engine.', error);
+      });
   }, [grammarActive, dictionaryTerms]);
 
   // Hydrate the caller's ignored-lints blob into the worker once grammar is active, so issues they
@@ -838,10 +855,18 @@ export function useEditorMount({
     if (!grammarActive || !ignoredLintsBlob) return;
     const client = harperClientReference.current;
     if (!client) return;
-    void client.importIgnoredLints(ignoredLintsBlob).then(() => {
-      const view = viewReference.current;
-      if (view) refreshGrammarLints(view);
-    });
+    void client
+      .importIgnoredLints(ignoredLintsBlob)
+      .then(() => {
+        const view = viewReference.current;
+        if (view) refreshGrammarLints(view);
+      })
+      .catch((error: unknown) => {
+        // Same shape as the dictionary hydration above: a rejection here silently resurrects issues the
+        // reader already dismissed, with nothing on screen to explain it.
+        // eslint-disable-next-line no-console -- a resurrected dismissed issue must surface.
+        console.error('Failed to hydrate dismissed grammar issues into the engine.', error);
+      });
   }, [grammarActive, ignoredLintsBlob]);
 
   // The include tree's file list, as a value an effect can depend on. Read during render (the hook

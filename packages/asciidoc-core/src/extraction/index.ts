@@ -15,6 +15,11 @@
 
 export { realHeadingOffsets, headingToId } from './headings';
 export { LEVELOFFSET_ENTRY_RE, VERBATIM_FENCE_RE } from './grammar';
+// The verbatim/comment region scanner. Exported because "which characters are a code sample" is the
+// same question for the editor's prose extraction as for reference/attribute extraction, and the
+// grammar cannot answer it: a delimited block's body is modelled as flat raw lines, so a listing
+// NESTED in an example/sidebar/quote block produces no node of its own.
+export { verbatimRanges } from './text-ranges';
 export {
   parseIncludeLevelOffset,
   hasIncludeLevelOffsetOption,
@@ -23,7 +28,7 @@ export {
   effectiveLevelOffset,
   tracePersistedLevelOffset,
 } from './level-offset';
-export { applyLineAttributes } from './document-order';
+export { applyLineAttributes, attributeEntryLineRanges } from './document-order';
 export { extractReferences, extractSymbols, resolveReference, definitionSymbols } from './references';
 export {
   extractAttributeDefinitions,

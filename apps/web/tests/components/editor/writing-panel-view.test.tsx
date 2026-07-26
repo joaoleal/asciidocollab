@@ -40,11 +40,13 @@ function grammarState(): EditorGrammarState {
     navigate: jest.fn(),
     apply: jest.fn(),
     dictionary: [],
+    canEditDocument: true,
     canManageDictionary: true,
     addDictionaryTerm: jest.fn(),
     removeDictionaryTerm: jest.fn(),
     addIssueWordToDictionary: jest.fn(),
     ignore: jest.fn(),
+    canConfigureRules: true,
     ruleConfig: {},
     ruleDescriptions: {},
     setRule: jest.fn(),
@@ -131,6 +133,35 @@ describe('WritingPanelView', () => {
     expect(railProperties.current['onIgnore']).toBeNull();
   });
 
+  test('tells the rail to render read-only when the editor reports the document is not editable', () => {
+    render(
+      <WritingPanelView
+        view="issues"
+        onViewChange={jest.fn()}
+        grammar={{ ...grammarState(), canEditDocument: false }}
+      />,
+    );
+    expect(railProperties.current['readOnly']).toBe(true);
+  });
+
+  test('leaves the rail editable when the editor reports the document is editable', () => {
+    render(<WritingPanelView view="issues" onViewChange={jest.fn()} grammar={grammarState()} />);
+    expect(railProperties.current['readOnly']).toBe(false);
+  });
+
+  test('renders the rail read-only when no editor is mounted, since there is nothing to apply a fix to', () => {
+    render(<WritingPanelView view="issues" onViewChange={jest.fn()} grammar={null} />);
+    expect(railProperties.current['readOnly']).toBe(true);
+  });
+
+  test('still lets a reader who cannot edit dismiss an issue for themselves', () => {
+    // The dismissal is privacy-hashed, stored against the reader's own user id, and never shown to
+    // anyone else — the server authorizes it for any project member. Withholding it would take a
+    // viewer's only way to quieten a false positive.
+    const grammar = { ...grammarState(), canEditDocument: false };
+    render(<WritingPanelView view="issues" onViewChange={jest.fn()} grammar={grammar} />);
+    expect(railProperties.current['onIgnore']).toBe(grammar.ignore);
+  });
 });
 
 describe('WritingPanelView — surfaces read from the editor handle', () => {
@@ -182,6 +213,41 @@ describe('WritingPanelView — surfaces read from the editor handle', () => {
     (rulesProperties.current['onResetDefaults'] as () => void)();
     expect(grammar.setRule).toHaveBeenCalledWith('SpellCheck', false);
     expect(grammar.resetRules).toHaveBeenCalled();
+  });
+
+  test('the Rules tab is read-only when the editor reports the reader may not configure rules', () => {
+    render(
+      <WritingPanelView
+        view="rules"
+        onViewChange={jest.fn()}
+        grammar={{ ...grammarState(), canConfigureRules: false }}
+      />,
+    );
+    expect(rulesProperties.current['readOnly']).toBe(true);
+  });
+
+  test('the Rules tab is editable when the editor reports the reader may configure rules', () => {
+    render(<WritingPanelView view="rules" onViewChange={jest.fn()} grammar={grammarState()} />);
+    expect(rulesProperties.current['readOnly']).toBe(false);
+  });
+
+  test('the Rules tab stays editable for a reader whose DOCUMENT is not editable but whose role allows it', () => {
+    // A text file with no collaborative backing forces `canEditDocument` false for everyone, owners
+    // included. The rule config is view-local, so that per-file transport condition must not take the
+    // toggles away — only the reader's project role may.
+    render(
+      <WritingPanelView
+        view="rules"
+        onViewChange={jest.fn()}
+        grammar={{ ...grammarState(), canEditDocument: false, canConfigureRules: true }}
+      />,
+    );
+    expect(rulesProperties.current['readOnly']).toBe(false);
+  });
+
+  test('the Rules tab is read-only when no editor is mounted, since there are no rules to change', () => {
+    render(<WritingPanelView view="rules" onViewChange={jest.fn()} grammar={null} />);
+    expect(rulesProperties.current['readOnly']).toBe(true);
   });
 
   test('the Rules tab degrades to an empty rule set with no editor', () => {

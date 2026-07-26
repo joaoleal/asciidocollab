@@ -4,7 +4,7 @@ import { buildParser } from '@lezer/generator';
 import type { LRParser } from '@lezer/lr';
 import { EditorState } from '@codemirror/state';
 import { LRLanguage, LanguageSupport, ensureSyntaxTree } from '@codemirror/language';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 import { parseTableContext, tableContextField, tableHasExplicitHeader } from '@/lib/codemirror/asciidoc-table-context';
 import {
   parseTable,
@@ -24,6 +24,8 @@ try {
   parser = buildParser(grammarSource, {
     externalTokenizer: (_name: string, terms: Record<string, number>) =>
       createTestBlockTokenizer(terms),
+    contextTracker: (terms: Record<string, number>) =>
+      createTestBlockContext(terms),
   }) as LRParser;
 } catch {
   parser = null as unknown as LRParser;

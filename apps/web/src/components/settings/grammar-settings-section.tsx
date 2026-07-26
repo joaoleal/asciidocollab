@@ -86,7 +86,13 @@ export function GrammarSettingsSection({
             type="checkbox"
             checked={enabled && languageIsEnglish}
             disabled={disabled}
-            onChange={(event) => onEnabledChange(event.target.checked)}
+            onChange={(event) => {
+              // And refused in the handler as well. Both `disabled` attributes above are rendering
+              // decisions; this is the one place that cannot be undone from outside the component, so
+              // a re-enabled control or a synthesised change still writes nothing.
+              if (disabled) return;
+              onEnabledChange(event.target.checked);
+            }}
           />
           <span className={cn(disabled && 'text-muted-foreground')}>Enable grammar checking</span>
         </label>
@@ -101,6 +107,10 @@ export function GrammarSettingsSection({
             value={dialect}
             disabled={disabled}
             onChange={(event) => {
+              // Refused in the handler for the same reason as the toggle above: the dialect is
+              // project-wide configuration, so it must not be writable from a control that only looks
+              // disabled.
+              if (disabled) return;
               // Narrowed with the shared guard, not a hand-written literal pair: the options are
               // rendered from GRAMMAR_DIALECTS, so a check listing the dialects itself would silently
               // swallow the selection of any dialect added to that list.

@@ -175,6 +175,13 @@ export interface GrammarRailProperties {
    * issue names its rule whether or not they have arrived.
    */
   ruleDescriptions?: RuleDescriptions;
+  /**
+   * When true the reader may not edit the open document, so every fix chip renders disabled with the
+   * reason on hover and {@link GrammarRailProperties.onApply} is never called. Issues, their messages
+   * and their proposed corrections stay fully visible — reading a document includes reading what is
+   * wrong with it.
+   */
+  readOnly?: boolean;
   /** Extra class names for the container. */
   className?: string;
 }
@@ -199,6 +206,7 @@ export function GrammarRail({
   onIgnore,
   onAddToDictionary,
   ruleDescriptions = {},
+  readOnly = false,
   className,
 }: GrammarRailProperties): React.JSX.Element {
   const groups = groupByCategory(diagnostics);
@@ -265,7 +273,13 @@ export function GrammarRail({
                         ? { ruleDescription: ruleDescriptions[entry.diagnostic.grammarLint.rule] }
                         : {})}
                       onSelect={() => onNavigate(entry.from, entry.to)}
-                      onApply={(suggestion) => onApply(entry, suggestion)}
+                      readOnly={readOnly}
+                      onApply={(suggestion) => {
+                        // Belt to the popover's braces: the chips are already disabled, but this
+                        // component — not the popover — is the one told whether the reader may edit.
+                        if (readOnly) return;
+                        onApply(entry, suggestion);
+                      }}
                       {...(onIgnore ? { onIgnore: () => onIgnore(entry) } : {})}
                       {...(onAddToDictionary && category === 'spelling'
                         ? { onAddToDictionary: () => onAddToDictionary(entry) }

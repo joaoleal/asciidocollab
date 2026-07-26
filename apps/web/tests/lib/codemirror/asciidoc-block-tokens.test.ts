@@ -4,6 +4,7 @@ import { Tree } from '@lezer/common';
 import { blockTokenizer } from '@/lib/codemirror/asciidoc-block-tokens';
 import { asciidocLanguage } from '@/lib/codemirror/asciidoc-language';
 import { createBlockTokenLogic } from '@/lib/codemirror/asciidoc-block-token-logic';
+import { BODY, HEADER_AFTER_TITLE, HEADER_AFTER_AUTHOR } from '@/lib/codemirror/asciidoc-block-context-logic';
 
 /**
  * Wiring test for `asciidoc-block-tokens.ts`. The jest transform loads the generated
@@ -79,14 +80,33 @@ interface MockResult {
 
 /**
  * Run the shared logic over `documentContent` with the read cursor starting at `startPos`.
- * `canShift` controls `Stack.canShift` (used for paragraph/continuation branches).
+ *
+ * `canShift` controls `Stack.canShift`, which every BLOCK-start branch now consults through
+ * `acceptBlockToken` (not just the paragraph/continuation/blank-line branches): a block construct is
+ * only tokenized where the parser could actually attach it, so a delimited block's verbatim body no
+ * longer has its content read as constructs.
+ *
+ * The default models a parser at a BLOCK BOUNDARY — the position these line-recognition tests
+ * describe — so every block token may start here, while `paragraphLineToken`/`continuationLineToken`
+ * may NOT: those two shift only mid-paragraph / inside a list item, and admitting them would absorb
+ * every line as continuation text before any block branch is reached. Pass an explicit `canShift` to
+ * model a restricted position (mid-paragraph, inside a list item, or inside a delimited block body).
+ *
+ * `context` is the second gate, and the one that decides the byline: `Stack.context` carries the
+ * document-header state (see `asciidoc-block-context-logic.ts`), and the author/revision branches
+ * demand `HEADER_AFTER_TITLE` / `HEADER_AFTER_AUTHOR`. It defaults to `BODY`, the ordinary
+ * everywhere-else position, so a name-shaped line at a generic block boundary stays prose.
  */
 function runLogic(
   documentContent: string,
-  options: { startPos?: number; canShift?: (term: number) => boolean } = {},
+  options: { startPos?: number; canShift?: (term: number) => boolean; context?: number } = {},
 ): MockResult {
   const startPos = options.startPos ?? 0;
-  const canShift = options.canShift ?? (() => false);
+  const context = options.context ?? BODY;
+  const canShift =
+    options.canShift ??
+    ((term) =>
+      term !== TERMS['paragraphLineToken'] && term !== TERMS['continuationLineToken']);
   const codes = [...documentContent].map((char) => char.codePointAt(0) ?? 0);
   let pos = startPos;
   let accepted: number | null = null;
@@ -119,6 +139,9 @@ function runLogic(
   const stack: Stack = {
     canShift(term: number): boolean {
       return canShift(term);
+    },
+    get context(): number {
+      return context;
     },
   } as unknown as Stack;
 
@@ -168,7 +191,13 @@ describe('createBlockTokenLogic block detection', () => {
   // A delimited-block delimiter ends an open paragraph even when a continuation is shiftable
   // (Asciidoctor `block_terminates_paragraph`): it must NOT be absorbed but emit its delim token.
   describe('delimited-block delimiter terminates an open paragraph (not absorbed)', () => {
-    const inParagraph = { canShift: (term: number) => term === TERMS.paragraphLineToken };
+    // Mid-paragraph, but modelled the way the REAL `Stack.canShift` behaves: it simulates reductions,
+    // so with a paragraph open the parser can both continue it (`paragraphLineToken`) AND reduce it to
+    // start a new block — every block-start term is shiftable here. Only `continuationLineToken` is
+    // not (that shifts inside a list item / description entry, which this position is not). Asserted
+    // against the real parser: `prose\n****\nbody\n****` yields `Paragraph` + `SidebarBlock`, and
+    // `prose\nendif::[]` yields `Paragraph` + `Conditional`.
+    const inParagraph = { canShift: (term: number) => term !== TERMS['continuationLineToken'] };
     const expectDelim = (line: string, token: string) =>
       expect(runLogic(line, inParagraph).token).toBe(token);
 
@@ -685,5 +714,93 @@ describe('createBlockTokenLogic block detection', () => {
         canShift: (term) => term === TERMS.continuationLineToken,
       }).token,
     ).toBe('continuationLineToken');
+  });
+
+  // ── Document-header byline (author / revision lines) ──────────────────────────
+  // These two tokens are emitted only where the parse CONTEXT says the document header is at the
+  // author / revision position — Asciidoctor allows attribute entries and comment lines between those
+  // lines, which no grammar sequence can express (see `asciidoc-block-context-logic.ts`). The
+  // positions are modelled here by that context; the real transitions are asserted end-to-end in
+  // `asciidoc-grammar.test.ts`.
+  describe('author / revision lines', () => {
+    /** The header position where an author line may be recognised. */
+    const underTitle = { context: HEADER_AFTER_TITLE };
+    /** The header position where a revision line may be recognised. */
+    const underAuthor = { context: HEADER_AFTER_AUTHOR };
+
+    const expectAuthor = (line: string, expected: string | null) =>
+      expect(runLogic(line, underTitle).token).toBe(expected);
+    const expectRevision = (line: string, expected: string | null) =>
+      expect(runLogic(line, underAuthor).token).toBe(expected);
+
+    test('name + email', () =>
+      expectAuthor('The AsciidoCollab Team <hello@asciidocollab.example>\n', 'authorLineToken'));
+    test('single name', () => expectAuthor('Jane\n', 'authorLineToken'));
+    test('two names', () => expectAuthor('Jane Doe\n', 'authorLineToken'));
+    test('three names', () => expectAuthor('Jane Q. Doe\n', 'authorLineToken'));
+    test('name with hyphen and apostrophe', () => expectAuthor("Anne-Marie O'Neill\n", 'authorLineToken'));
+    test('`;`-separated authors', () =>
+      expectAuthor('Jane Doe <j@x.io>; John Roe <r@x.io>\n', 'authorLineToken'));
+    test('author line at end of input (no trailing newline)', () =>
+      expectAuthor('Jane Doe', 'authorLineToken'));
+    test('trailing whitespace is tolerated', () => expectAuthor('Jane Doe   \n', 'authorLineToken'));
+    test('the whole line (newline included) is consumed', () =>
+      expect(runLogic('Jane Doe\nnext\n', underTitle).acceptedAt).toBe(9));
+
+    test('four name words is prose, not an author line', () =>
+      expectAuthor('This document explains things\n', null));
+    test('a sentence with punctuation is prose', () =>
+      expectAuthor('This explains, briefly.\n', null));
+    test('an angle-bracket segment without an `@` is not an email', () =>
+      expectAuthor('Jane Doe <not-an-email>\n', null));
+    test('an email containing a space is not an email', () =>
+      expectAuthor('Jane Doe <a b@x.io>\n', null));
+    test('a leading space disqualifies the line', () => expectAuthor(' Jane Doe\n', null));
+    // Not a byline ⇒ the line falls through to the branch that really owns it. In the header those
+    // two ARE an attribute entry and a comment line, which is exactly what Asciidoctor consumes
+    // between the title and the byline.
+    test('an attribute entry is an entry, not an author line', () =>
+      expectAuthor(':toc: left\n', 'attrEntryToken'));
+    test('a comment line is a comment, not an author line', () =>
+      expectAuthor('// a note\n', 'commentLineToken'));
+    test('an empty `;` segment disqualifies the line', () =>
+      expectAuthor('Jane;;Doe\n', 'descListToken')); // `;;` is a description-list separator
+    test('a blank line is not an author line', () => expectAuthor('\n', null));
+    test('an over-long line is not an author line', () =>
+      expectAuthor(`${'w'.repeat(600)}\n`, null));
+
+    test('a quote fence under the title opens the block, not an author line', () =>
+      expect(runLogic('____\n', { ...underTitle, canShift: () => true }).token).toBe('quoteDelim'));
+    test('a conditional directive under the title is not an author line', () =>
+      expect(runLogic('endif::[]\n', { ...underTitle, canShift: () => true }).token).toBe('conditionalToken'));
+
+    test('version only', () => expectRevision('v1.0\n', 'revisionLineToken'));
+    test('version without the `v`', () => expectRevision('1.0\n', 'revisionLineToken'));
+    test('version + date', () => expectRevision('v1.0, 2026-07-18\n', 'revisionLineToken'));
+    test('bare date', () => expectRevision('2026-07-18\n', 'revisionLineToken'));
+    test('version + date + remark', () =>
+      expectRevision('1.0, Jan 01, 2013: Ring in the new year\n', 'revisionLineToken'));
+    test('version + remark', () => expectRevision('v1.0: first cut\n', 'revisionLineToken'));
+    test('revision line at end of input', () => expectRevision('v1.0', 'revisionLineToken'));
+
+    test('a version not starting with a digit is prose', () => expectRevision('Version two\n', null));
+    test('a digit followed by prose is not a revision line', () =>
+      expectRevision('2 apples a day\n', null));
+    test('an ordered list item is a list item, not a revision line', () =>
+      expectRevision('1. Step one\n', 'orderedMarker'));
+    test('a numeric description-list term is a description list, not a revision line', () =>
+      expectRevision('1:: definition\n', 'descListToken'));
+    test('an attribute entry is an entry, not a revision line', () =>
+      expectRevision(':toclevels: 3\n', 'attrEntryToken'));
+    test('an over-long line is not a revision line', () =>
+      expectRevision(`v1.0, ${'x'.repeat(600)}\n`, null));
+
+    // The gates are independent: neither token is emitted outside its own header position.
+    test('an author-shaped line is not emitted at the revision position', () =>
+      expectRevision('Jane Doe <j@x.io>\n', null));
+    test('a revision-shaped line is not emitted at the author position', () =>
+      expectAuthor('v1.0, 2026-07-18\n', null));
+    test('neither is emitted at a generic block boundary', () =>
+      expect(runLogic('Jane Doe\n').token).toBeNull());
   });
 });

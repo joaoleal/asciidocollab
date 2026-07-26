@@ -11,9 +11,8 @@ import {
   tokenizeWords,
   selectMisspelled,
   SPELLCHECK_SKIP_NODES,
-  headerMetadataRanges,
 } from '@/lib/codemirror/asciidoc-spellcheck';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 // Build the parser from the grammar source (as the fold tests do) rather than
 // importing the production language module: the generated `asciidoc-parser.js`
@@ -22,6 +21,7 @@ const grammarPath = path.resolve(__dirname, '../../../src/lib/codemirror/asciido
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const lezerParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 const langExtension = new LanguageSupport(LRLanguage.define({ name: 'asciidoc', parser: lezerParser }));
 
@@ -82,26 +82,6 @@ describe('tokenizeWords', () => {
   });
 });
 
-describe('headerMetadataRanges', () => {
-  test('marks the author and revision lines under a document title', () => {
-    const text = '= Title\nThe Brand Team <a@b.co>\nv1.0, 2026-07-18\n\nBody.\n';
-    const ranges = headerMetadataRanges(text);
-    expect(ranges.map(([from, to]) => text.slice(from, to))).toEqual([
-      'The Brand Team <a@b.co>',
-      'v1.0, 2026-07-18',
-    ]);
-  });
-  test('returns nothing when there is no document title', () => {
-    expect(headerMetadataRanges('Just a paragraph.\nSecond line.\n')).toEqual([]);
-    expect(headerMetadataRanges('== Section heading\nText.\n')).toEqual([]);
-  });
-  test('stops at a blank line, attribute entry, or comment', () => {
-    expect(headerMetadataRanges('= Title\n\nBody.\n')).toEqual([]);
-    expect(headerMetadataRanges('= Title\n:toc:\nBody.\n')).toEqual([]);
-    expect(headerMetadataRanges('= Title\n// note\nBody.\n')).toEqual([]);
-  });
-});
-
 const isCorrect = (word: string) => ['hello', 'world'].includes(word.toLowerCase());
 
 describe('selectMisspelled', () => {
@@ -130,6 +110,10 @@ describe('SPELLCHECK_SKIP_NODES', () => {
     for (const node of ['Link', 'InlineStem', 'UiMacro', 'Callout', 'Entity', 'Passthrough', 'InlineAnchor', 'BiblioAnchor', 'InlineSet']) {
       expect(SPELLCHECK_SKIP_NODES.has(node)).toBe(true);
     }
+    // The header byline is metadata (names, emails, brand words, a version and a date), and the
+    // tokenizer emits these nodes only in header position.
+    expect(SPELLCHECK_SKIP_NODES.has('AuthorLine')).toBe(true);
+    expect(SPELLCHECK_SKIP_NODES.has('RevisionLine')).toBe(true);
     // RoleSpan is NOT a full skip node — only its `[.role]` name is markup; the body is prose.
     expect(SPELLCHECK_SKIP_NODES.has('RoleSpan')).toBe(false);
     // Prose-bearing nodes are NOT skipped.

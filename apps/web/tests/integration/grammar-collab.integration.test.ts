@@ -13,7 +13,7 @@ import { applyGrammarSuggestion } from '@/lib/codemirror/harper/apply-suggestion
 import { collabExtensions, COLLAB_YTEXT_KEY } from '@/components/editor/editor-collab-extensions';
 import type { HarperWorkerClient, SegmentInput, SegmentLints } from '@/lib/codemirror/harper/harper-worker-client';
 import type { EngineLint } from '@/lib/codemirror/harper/harper-engine';
-import { createTestBlockTokenizer } from '../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../helpers/asciidoc-test-tokenizer';
 
 // The concurrent-edit + no-leak scenario the plan requires an integration test for (US3 / SC-002/004):
 // an accepted fix is an ordinary CRDT edit, so it merges with a collaborator's concurrent edit without
@@ -23,6 +23,7 @@ const grammarPath = path.resolve(__dirname, '../../src/lib/codemirror/asciidoc.g
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const lezerParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 const langExtension = new LanguageSupport(LRLanguage.define({ name: 'asciidoc', parser: lezerParser }));
 

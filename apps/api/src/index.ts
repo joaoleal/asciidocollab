@@ -249,6 +249,7 @@ async function start() {
         document: app.repos.document,
         asset: app.repos.asset,
         projectRenderConfig: app.repos.projectRenderConfig,
+        projectDictionary: app.repos.projectDictionary,
         systemSetting: app.repos.systemSetting,
       },
       fileStore: app.stores.fileStore,

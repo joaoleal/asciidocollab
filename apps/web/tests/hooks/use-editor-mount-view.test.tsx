@@ -21,13 +21,14 @@ jest.mock('@/lib/codemirror/asciidoc-language', () => {
   const { buildParser } = jest.requireActual('@lezer/generator');
   const { LRLanguage, LanguageSupport } = jest.requireActual('@codemirror/language');
   const { asciidocHighlightTags } = jest.requireActual('@/lib/codemirror/asciidoc-highlight-tags');
-  const { createTestBlockTokenizer } = jest.requireActual('../helpers/asciidoc-test-tokenizer');
+  const { createTestBlockTokenizer, createTestBlockContext } = jest.requireActual('../helpers/asciidoc-test-tokenizer');
   const grammarSource = fs.readFileSync(
     path.resolve(__dirname, '../../src/lib/codemirror/asciidoc.grammar'),
     'utf8',
   );
   const parser = buildParser(grammarSource, {
     externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+    contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
   }).configure({ props: [asciidocHighlightTags] });
   const language = LRLanguage.define({ parser });
   return { asciidoc: () => new LanguageSupport(language) };

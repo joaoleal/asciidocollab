@@ -129,6 +129,7 @@ const defaultProps = {
   canManage: false,
   canEdit: true,
   canModifyFiles: true,
+  canManageDictionary: true,
   userId: 'u-test',
 };
 

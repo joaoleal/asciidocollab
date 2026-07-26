@@ -132,6 +132,55 @@ describe('SuggestionPopover', () => {
     expect(screen.queryByTestId('grammar-issue-rule')).not.toBeInTheDocument();
   });
 
+  // A viewer/observer may read the issue and the correction it proposes; only accepting it writes to
+  // the shared document. So the chips stay visible and legible, and are disabled with the reason —
+  // matching how the review controls treat a reader who may not act.
+  describe('a reader who may not edit the document', () => {
+    test('still sees the issue and every proposed correction', () => {
+      render(<SuggestionPopover diagnostic={diagnostic()} onApply={() => {}} readOnly />);
+      expect(screen.getByText('“wrold” may be misspelled')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'world' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'word' })).toBeInTheDocument();
+    });
+
+    test('cannot apply a fix: the chips are disabled and explain why', () => {
+      const onApply = jest.fn();
+      render(<SuggestionPopover diagnostic={diagnostic()} onApply={onApply} readOnly />);
+      const chip = screen.getByRole('button', { name: 'world' });
+      expect(chip).toBeDisabled();
+      expect(chip).toHaveAttribute('title', 'You do not have permission to edit this file.');
+      fireEvent.click(chip);
+      expect(onApply).not.toHaveBeenCalled();
+    });
+
+    test('does not apply even when the click reaches the handler anyway', () => {
+      // `disabled` is a rendering decision; the click path is guarded independently so a forced or
+      // synthesised activation cannot slip a document edit through.
+      const onApply = jest.fn();
+      render(<SuggestionPopover diagnostic={diagnostic()} onApply={onApply} readOnly />);
+      const chip = screen.getByRole('button', { name: 'world' });
+      chip.removeAttribute('disabled');
+      fireEvent.click(chip);
+      expect(onApply).not.toHaveBeenCalled();
+    });
+
+    test('leaves the chips live for a reader who may edit', () => {
+      const onApply = jest.fn();
+      render(<SuggestionPopover diagnostic={diagnostic()} onApply={onApply} readOnly={false} />);
+      const chip = screen.getByRole('button', { name: 'world' });
+      expect(chip).toBeEnabled();
+      fireEvent.click(chip);
+      expect(onApply).toHaveBeenCalledWith({ text: 'world', kind: 'replace' });
+    });
+
+    test('still offers Ignore, which changes nothing anyone else can see', () => {
+      const onIgnore = jest.fn();
+      render(<SuggestionPopover diagnostic={diagnostic()} onApply={() => {}} onIgnore={onIgnore} readOnly />);
+      fireEvent.click(screen.getByRole('button', { name: /ignore/i }));
+      expect(onIgnore).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test('renders no chips when the issue has no suggestions', () => {
     render(<SuggestionPopover diagnostic={diagnostic({ grammarSuggestions: [] })} onApply={() => {}} />);
     expect(screen.getByText('“wrold” may be misspelled')).toBeInTheDocument();

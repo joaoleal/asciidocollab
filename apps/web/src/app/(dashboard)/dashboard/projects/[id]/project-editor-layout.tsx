@@ -121,6 +121,14 @@ interface ContentAreaProperties {
   selectedFile: SelectedFile | null;
   contentState: FileContentState;
   canEdit: boolean;
+  /** Project-role permission for the shared dictionary (no admin bypass). See the layout's prop. */
+  canManageDictionary: boolean;
+  /**
+   * The reader's UN-NARROWED edit permission, for the view-local rule config only. `canEdit` above is
+   * `editorCanEdit`, which already folds in `offline`/`collabUnavailable`; those must not disable a
+   * control that writes nothing. See the editor's prop.
+   */
+  canConfigureRules: boolean;
   projectId: string;
   /**
    * Surfaces the editor's live grammar-panel state so the layout can render the Grammar rail.
@@ -217,6 +225,8 @@ function ContentArea({
   selectedFile,
   contentState,
   canEdit,
+  canManageDictionary,
+  canConfigureRules,
   projectId,
   assetCache,
   projectLanguage,
@@ -312,6 +322,8 @@ function ContentArea({
       key={selectedFile.nodeId}
       content={contentOverride ?? contentState.content ?? ''}
       canEdit={canEdit}
+      canManageDictionary={canManageDictionary}
+      canConfigureRules={canConfigureRules}
       projectId={projectId}
       fileNodeId={selectedFile.nodeId}
       onGrammarStateChange={onGrammarStateChange}
@@ -366,6 +378,13 @@ interface ProjectEditorLayoutProperties {
    * 403. See page.tsx.
    */
   canModifyFiles: boolean;
+  /**
+   * Whether the user may write the project's shared grammar dictionary. Excludes the admin bypass for
+   * the same reason as {@link canModifyFiles} — `requireDictionaryEditor` authorizes on project role
+   * alone — and unlike the document editor nothing else covers it, since a dictionary write is a REST
+   * call with no collaboration session to force read-only. See page.tsx.
+   */
+  canManageDictionary: boolean;
   /** Authenticated user id — scopes the persisted last-selection so accounts stay isolated. */
   userId: string;
 }
@@ -380,6 +399,7 @@ export function ProjectEditorLayout({
   canManage,
   canEdit,
   canModifyFiles,
+  canManageDictionary,
   userId,
 }: ProjectEditorLayoutProperties) {
   const { selectedFile, contentState, selectFile, clearSelection } = useFileSelection(projectId);
@@ -1322,6 +1342,8 @@ export function ProjectEditorLayout({
               selectedFile={selectedFile}
               contentState={contentState}
               canEdit={editorCanEdit}
+              canManageDictionary={canManageDictionary}
+              canConfigureRules={canEdit}
               projectId={projectId}
               onGrammarStateChange={setGrammarState}
               assetCache={assetCache}

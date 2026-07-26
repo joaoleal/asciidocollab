@@ -39,19 +39,31 @@ export function suggestionChange(
 /**
  * Apply a suggestion to the document as a normal editor transaction.
  *
+ * Accepting a fix is the ONLY grammar action that writes shared content, so permission is re-checked
+ * HERE rather than trusted from whichever surface offered it. `EditorState.readOnly` carries the
+ * editor's live effective edit permission (set from `effectiveCanEdit`, which folds in the observer
+ * role and a missing collaborative backing), and CodeMirror only applies it to USER input — a
+ * programmatic `dispatch` goes straight through. Without this guard a fix chip left on screen by a
+ * stale render, a lint action invoked from the keyboard, or any other programmatic caller would edit a
+ * document the reader may not change: the collaboration server drops an observer's updates, so the
+ * text would silently diverge from everyone else's.
+ *
  * @param view - The editor view whose document is edited.
  * @param from - Document offset of the start of the problem span.
  * @param to - Document offset just past the problem span.
  * @param suggestion - The suggestion to apply.
+ * @returns Whether the fix was applied; false when the editor is read-only for this reader.
  */
 export function applyGrammarSuggestion(
   view: EditorView,
   from: number,
   to: number,
   suggestion: EngineSuggestion,
-): void {
+): boolean {
+  if (view.state.readOnly) return false;
   const change: ChangeSpec = suggestionChange(from, to, suggestion);
   view.dispatch({ changes: change });
+  return true;
 }
 
 /**

@@ -1,6 +1,6 @@
 /* @jest-environment jsdom */
 
-import { EditorState } from '@codemirror/state';
+import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import {
   suggestionChange,
@@ -13,6 +13,13 @@ import type { EngineSuggestion } from '@/lib/codemirror/harper/harper-engine';
 const replace = (text: string): EngineSuggestion => ({ text, kind: 'replace' });
 const remove = (): EngineSuggestion => ({ text: '', kind: 'remove' });
 const insertAfter = (text: string): EngineSuggestion => ({ text, kind: 'insert-after' });
+
+/** A view over `text` that the reader may not edit — what an observer/viewer gets. */
+function readOnlyView(text: string): EditorView {
+  return new EditorView({
+    state: EditorState.create({ doc: text, extensions: [EditorState.readOnly.of(true)] }),
+  });
+}
 
 describe('suggestionChange', () => {
   test('a replace suggestion swaps the problem span for the replacement text', () => {
@@ -48,6 +55,57 @@ describe('applyGrammarSuggestion', () => {
     expect(documentChanges).toEqual(['a world here']);
     view.destroy();
   });
+
+  // Accepting a fix is the ONE grammar action that writes shared content, and CodeMirror's readOnly
+  // facet only refuses USER input — a programmatic dispatch goes straight through it. Before this
+  // guard, a viewer/observer could click a fix chip (or a lint tooltip action) and the document
+  // actually changed under them, diverging from the copy the collaboration server keeps.
+  describe('a read-only editor', () => {
+    test('refuses the fix and leaves the document untouched', () => {
+      const view = readOnlyView('a wrold here');
+      expect(applyGrammarSuggestion(view, 2, 7, replace('world'))).toBe(false);
+      expect(view.state.doc.toString()).toBe('a wrold here');
+      view.destroy();
+    });
+
+    test('dispatches no transaction at all, so no collaborator sees an edit', () => {
+      const documentChanges: string[] = [];
+      const observer = EditorView.updateListener.of((update) => {
+        if (update.docChanged) documentChanges.push(update.state.doc.toString());
+      });
+      const view = new EditorView({
+        state: EditorState.create({ doc: 'a wrold here', extensions: [EditorState.readOnly.of(true), observer] }),
+      });
+      applyGrammarSuggestion(view, 2, 7, replace('world'));
+      expect(documentChanges).toEqual([]);
+      view.destroy();
+    });
+
+    test('refuses every suggestion kind, not only replacements', () => {
+      const view = readOnlyView('a wrold here');
+      expect(applyGrammarSuggestion(view, 2, 7, remove())).toBe(false);
+      expect(applyGrammarSuggestion(view, 2, 7, insertAfter(','))).toBe(false);
+      expect(view.state.doc.toString()).toBe('a wrold here');
+      view.destroy();
+    });
+
+    test('applies again as soon as the reader regains permission', () => {
+      // The check reads the view's live state rather than anything captured when the fix was offered,
+      // so an observer promoted mid-session does not have to reopen the file.
+      const readOnly = new Compartment();
+      const view = new EditorView({
+        state: EditorState.create({
+          doc: 'a wrold here',
+          extensions: [readOnly.of(EditorState.readOnly.of(true))],
+        }),
+      });
+      expect(applyGrammarSuggestion(view, 2, 7, replace('world'))).toBe(false);
+      view.dispatch({ effects: readOnly.reconfigure(EditorState.readOnly.of(false)) });
+      expect(applyGrammarSuggestion(view, 2, 7, replace('world'))).toBe(true);
+      expect(view.state.doc.toString()).toBe('a world here');
+      view.destroy();
+    });
+  });
 });
 
 describe('suggestionLabel', () => {
@@ -66,6 +124,18 @@ describe('grammarSuggestionActions', () => {
     const view = new EditorView({ state: EditorState.create({ doc: 'a wrold here' }) });
     actions[0].apply(view, 2, 7);
     expect(view.state.doc.toString()).toBe('a world here');
+    view.destroy();
+  });
+
+  test('the action refuses on a read-only editor, so a stale tooltip cannot edit the document', () => {
+    // The linter strips these actions for a reader who may not edit, but the action itself must also
+    // refuse: a tooltip rendered before the permission changed is still on screen and still clickable.
+    const actions = grammarSuggestionActions([replace('world')]);
+    const view = new EditorView({
+      state: EditorState.create({ doc: 'a wrold here', extensions: [EditorState.readOnly.of(true)] }),
+    });
+    actions[0].apply(view, 2, 7);
+    expect(view.state.doc.toString()).toBe('a wrold here');
     view.destroy();
   });
 });

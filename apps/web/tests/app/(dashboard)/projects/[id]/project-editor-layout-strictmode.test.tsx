@@ -87,6 +87,7 @@ const defaultProps = {
   canManage: true,
   canEdit: true,
   canModifyFiles: true,
+  canManageDictionary: true,
   userId: 'user-1',
 };
 

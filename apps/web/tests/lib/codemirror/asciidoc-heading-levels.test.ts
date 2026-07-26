@@ -16,7 +16,7 @@ import {
   parseLevelOffset,
   type HeadingLevelInfo,
 } from '@/lib/codemirror/asciidoc-heading-levels';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 // The CodeMirror projection of the effective-heading-level rule. The effective-level computation
 // itself (computeHeadingLevels / parseLevelOffset) lives in ./asciidoc-effective-levels and is
@@ -30,6 +30,7 @@ const grammarPath = path.resolve(__dirname, '../../../src/lib/codemirror/asciido
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const lezerParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 const asciidocLang = new LanguageSupport(LRLanguage.define({ name: 'asciidoc', parser: lezerParser }));
 

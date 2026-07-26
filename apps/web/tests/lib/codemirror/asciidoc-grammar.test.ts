@@ -3,7 +3,7 @@ import path from 'node:path';
 import { buildParser } from '@lezer/generator';
 import type { LRParser } from '@lezer/lr';
 import type { Tree } from '@lezer/common';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 const grammarPath = path.resolve(__dirname, '../../../src/lib/codemirror/asciidoc.grammar');
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
@@ -12,6 +12,7 @@ let parser: LRParser;
 try {
   parser = buildParser(grammarSource, {
     externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+    contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
   }) as LRParser;
 } catch {
   parser = null as unknown as LRParser;
@@ -1021,6 +1022,418 @@ example block
 
     test('consecutive list items are still siblings (the list started as a list)', () => {
       expect(collectNodes(parseDocument('* one\n* two\n'), 'UnorderedListItem').length).toBe(2);
+    });
+  });
+
+  // ── Delimited-block bodies are verbatim ─────────────────────────────────────
+
+  // A delimited block's body is verbatim: a line inside it that LOOKS like a block construct is
+  // sample text, not a construct. The external tokenizer used to emit a block token there anyway,
+  // handing the parser a token `blockBody` cannot shift. It error-recovered by closing the block at
+  // the opening fence and re-reading the CLOSING fence as the opening of a NEW block that ran to EOF
+  // — so every line after the block was swallowed as body text of a block that never closes and was
+  // silently never spell/grammar checked. `acceptBlockToken` now gates each branch on
+  // `Stack.canShift`, so these lines fall through to the grammar's `rawBodyLine` instead.
+  describe('Delimited-block bodies do not break on construct-shaped lines', () => {
+    // Each body line is a construct that previously split the block in two. The trailing paragraph is
+    // the regression witness: it only exists when the block closed at its own fence.
+    const constructLines: Array<[string, string]> = [
+      ['attribute entry', ':name: value'],
+      ['section heading', '== Heading'],
+      ['block macro', 'image::a.png[]'],
+      ['line comment', '// note'],
+      ['list item', '* item'],
+      ['ordered item', '. item'],
+      ['conditional directive', 'ifdef::env[]'],
+      ['block title', '.A title'],
+      ['block attribute line', '[source,ruby]'],
+      ['a DIFFERENT block delimiter', '===='],
+      ['thematic break', "'''"],
+      ['description list term', 'term:: definition'],
+    ];
+
+    test.each(constructLines)('a listing body containing %s stays one block', (_label, line) => {
+      const tree = parseDocument(`----\n${line}\n----\n\nProse below.\n`);
+      expect(collectNodes(tree, 'ListingBlock').length).toBe(1);
+      expect(collectNodes(tree, 'ListingFence').length).toBe(2);
+      // The witness: trailing prose is a real Paragraph, so the checker sees it.
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test.each(constructLines)('a literal body containing %s stays one block', (_label, line) => {
+      const tree = parseDocument(`....\n${line}\n....\n\nProse below.\n`);
+      expect(collectNodes(tree, 'LiteralBlock').length).toBe(1);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('the exact header shape from the bug report leaves following prose checkable', () => {
+      const tree = parseDocument('----\n:toc: left\n:sectnums:\n:product-name: AsciidoCollab\n----\n\nProse below.\n');
+      expect(collectNodes(tree, 'ListingBlock').length).toBe(1);
+      expect(hasNode(tree, 'AttributeEntry')).toBe(false); // verbatim body, not attribute entries
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('an unterminated block still runs to EOF (unchanged)', () => {
+      const tree = parseDocument('----\n:name: value\nstill inside\n');
+      expect(collectNodes(tree, 'ListingBlock').length).toBe(1);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    test('the block still closes on its OWN delimiter', () => {
+      const tree = parseDocument('----\ncode\n----\n\nAfter.\n');
+      expect(collectNodes(tree, 'ListingFence').length).toBe(2);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    // The INLINE branches (emphasis marks, hard break) run before the line-start gate, so they fire on
+    // body lines too and need the same `canShift` gate. A body line that merely BEGINS with a
+    // constrained mark — a shell snippet, a Markdown bullet — otherwise emitted an inline token
+    // `blockBody` cannot shift, splitting the block exactly like the block-start tokens did.
+    test.each([
+      ['bold', '*bold* text'],
+      ['italic', '_italic_ text'],
+      ['monospace', '`npm install` then run'],
+      ['a Markdown bullet', '* list item in a snippet'],
+      ['a hard break', 'trailing line +'],
+    ])('a listing body whose line starts with %s stays one block', (_label, line) => {
+      const tree = parseDocument(`----\n${line}\n----\n\nProse below.\n`);
+      expect(collectNodes(tree, 'ListingBlock').length).toBe(1);
+      expect(collectNodes(tree, 'ListingFence').length).toBe(2);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    // …while the same marks in real prose are untouched: the gate declines only where the parser
+    // could not attach the token, and a paragraph can shift every one of these.
+    test('inline emphasis still parses in ordinary prose, at line start and mid-line', () => {
+      expect(hasNode(parseDocument('*bold* opens the line\n'), 'Bold')).toBe(true);
+      expect(hasNode(parseDocument('mid `mono` line\n'), 'Monospace')).toBe(true);
+      expect(hasNode(parseDocument('_italic_ opens it\n'), 'Italic')).toBe(true);
+    });
+
+    // Asciidoctor spells an unset two ways and the shared `ATTR_ENTRY_LINE_RE` accepts both, but the
+    // tokenizer recognised only `:name: value` — so an unset emitted no token, fell through to
+    // paragraph text, and its name reached the spell checker as prose.
+    test.each([
+      ['bang after the name', ':sectnums!:'],
+      ['bang before the name', ':!sectnums:'],
+    ])('an unset attribute entry with the %s is recognised', (_label, line) => {
+      const tree = parseDocument(`${line}\n`);
+      expect(hasNode(tree, 'AttributeEntry')).toBe(true);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    test('a bang with no name is not an attribute entry', () => {
+      expect(hasNode(parseDocument(':!:\n'), 'AttributeEntry')).toBe(false);
+      expect(hasNode(parseDocument(':!\n'), 'AttributeEntry')).toBe(false);
+    });
+
+    test('an unset inside a listing body stays verbatim', () => {
+      const tree = parseDocument('----\n:sectnums!:\n----\n\nProse below.\n');
+      expect(collectNodes(tree, 'ListingBlock').length).toBe(1);
+      expect(hasNode(tree, 'AttributeEntry')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    // At a real block boundary every construct above is still a construct — the gate only declines
+    // where the parser could not attach the token, so ordinary documents parse exactly as before.
+    test.each(constructLines)('%s is still recognised at a block boundary', (_label, line) => {
+      const tree = parseDocument(`${line}\n`);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    // The document-header byline tokens are gated the same way: a listing body line that LOOKS like
+    // an author or revision line is sample text. (`canShift` is false there for a second reason — the
+    // grammar admits these tokens only under a DocumentTitle — but the block must stay intact either
+    // way, so it is asserted explicitly.)
+    test.each([
+      ['author line', 'The AsciidoCollab Team <hello@asciidocollab.example>'],
+      ['revision line', 'v1.0, 2026-07-18'],
+    ])('a listing body containing an %s stays one block', (_label, line) => {
+      const tree = parseDocument(`= Title\n\n----\n${line}\n----\n\nProse below.\n`);
+      expect(collectNodes(tree, 'ListingBlock').length).toBe(1);
+      expect(collectNodes(tree, 'ListingFence').length).toBe(2);
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(hasNode(tree, 'RevisionLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+  });
+
+  // ── Document header (title + author line + revision line) ───────────────────
+
+  // An implicit author line and the revision line under it are metadata ONLY in the document header.
+  // Because the tokenizer emitted neither, the author line opened a Paragraph — and an AsciiDoc
+  // paragraph absorbs every following non-blank line — so the revision line AND the whole run of
+  // `:name: value` attribute entries under it became ParagraphContinuation and never highlighted.
+  // The tokenizer now emits both, gated on the parse CONTEXT (`asciidoc-block-context-logic.ts`), which
+  // is what tells it where in Asciidoctor's header walk the parser is.
+  describe('Document header byline', () => {
+    // The exact header from the "Guided Tour" demo project that exposed the bug.
+    const guidedTourHeader =
+      '= AsciidoCollab: A Guided Tour\n' +
+      'The AsciidoCollab Team <hello@asciidocollab.example>\n' +
+      'v1.0, 2026-07-18\n' +
+      ':toc: left\n' +
+      ':toclevels: 3\n' +
+      ':icons: font\n' +
+      ':experimental:\n' +
+      ':sectnums:\n' +
+      ':sectnumlevels: 3\n' +
+      ':stem:\n' +
+      ':product-name: AsciidoCollab\n' +
+      ':showcase-version: 1.0\n';
+
+    test('parses the title, the author line, and the revision line as their own nodes', () => {
+      const tree = parseDocument(guidedTourHeader);
+      expect(collectNodes(tree, 'DocumentTitle').length).toBe(1);
+      const authors = collectNodes(tree, 'AuthorLine');
+      const revisions = collectNodes(tree, 'RevisionLine');
+      expect(authors.length).toBe(1);
+      expect(revisions.length).toBe(1);
+      // Each node spans exactly its own line, newline included.
+      const lines = guidedTourHeader.split('\n');
+      const authorFrom = lines[0].length + 1;
+      const revisionFrom = authorFrom + lines[1].length + 1;
+      expect(authors[0]).toEqual({ from: authorFrom, to: revisionFrom });
+      expect(revisions[0]).toEqual({ from: revisionFrom, to: revisionFrom + lines[2].length + 1 });
+    });
+
+    test('every attribute entry under the byline parses as AttributeEntry (the reported bug)', () => {
+      const tree = parseDocument(guidedTourHeader);
+      expect(collectNodes(tree, 'AttributeEntry').length).toBe(9);
+      // The regression witness: nothing is absorbed into a paragraph any more.
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+      expect(hasNode(tree, 'ParagraphContinuation')).toBe(false);
+    });
+
+    test('the rest of the document after the header still parses normally', () => {
+      const tree = parseDocument(`${guidedTourHeader}\n== First Section\n\nBody text.\n`);
+      expect(hasNode(tree, 'Heading1')).toBe(true);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('a header with a title but NO author line still parses its attribute entries', () => {
+      const tree = parseDocument('= Title\n:toc: left\n:sectnums:\n:product-name: X\n');
+      expect(collectNodes(tree, 'AttributeEntry').length).toBe(3);
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    test('an author line with no revision line under it leaves the attributes intact', () => {
+      const tree = parseDocument('= Title\nJane Doe <jane@example.com>\n:toc: left\n:sectnums:\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(hasNode(tree, 'RevisionLine')).toBe(false);
+      expect(collectNodes(tree, 'AttributeEntry').length).toBe(2);
+    });
+
+    test('multiple `;`-separated authors are one author line', () => {
+      const tree = parseDocument('= Title\nJane Doe <jane@example.com>; John Roe <john@example.com>\nv2.0\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+    });
+
+    // ── The header context is what makes this safe ────────────────────────────
+
+    test('an author-shaped line in ordinary body text stays a paragraph', () => {
+      const tree = parseDocument('= Title\n\n== Section\n\nJane Doe <jane@example.com>\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('an author-shaped line at the very start of a document stays a paragraph', () => {
+      const tree = parseDocument('Jane Doe <jane@example.com>\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('an author-shaped line under a SECTION heading stays a paragraph', () => {
+      const tree = parseDocument('== Section\nJane Doe <jane@example.com>\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('a revision line NOT preceded by an author line stays a paragraph', () => {
+      const tree = parseDocument('= Title\n\nv1.0, 2026-07-18\n');
+      expect(hasNode(tree, 'RevisionLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('a revision-shaped line directly under the title (no author line) is the AUTHOR slot', () => {
+      // Asciidoctor reads the line under the title as the author line; a revision line only ever
+      // follows an author line. `v1.0` is not author-shaped either (the `.` cannot start a word after
+      // a space run), so it must NOT become a RevisionLine — it stays ordinary paragraph text.
+      const tree = parseDocument('= Title\nv1.0, 2026-07-18\n:toc: left\n');
+      expect(hasNode(tree, 'RevisionLine')).toBe(false);
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(hasNode(tree, 'Paragraph')).toBe(true);
+    });
+
+    test('a prose sentence under the title is not an author line (too many words)', () => {
+      const tree = parseDocument('= Title\nThis document explains how the editor works.\n\nMore.\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(2);
+    });
+
+    test('an attribute entry directly under the title is an AttributeEntry, not an author line', () => {
+      const tree = parseDocument('= Title\n:toc: left\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'AttributeEntry').length).toBe(1);
+    });
+
+    test('a quote-block fence directly under the title opens the block, not an author line', () => {
+      // `____` satisfies Asciidoctor's author-NAME pattern (`_` is a word char); consuming it as a
+      // byline would leave the quote block unclosed and swallow the rest of the document.
+      const tree = parseDocument('= Title\n____\nquoted\n____\n\nAfter.\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'QuoteBlock').length).toBe(1);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    // ── Asciidoctor's header walk, which no grammar sequence could express ─────
+    // `parse_header_metadata` consumes attribute entries (discarding comment lines) BEFORE the author
+    // line, again BETWEEN the author and revision lines, and again after. Keying the byline off the
+    // immediately preceding DocumentTitle node missed every one of these shapes: the byline reverted
+    // to a paragraph that then absorbed the whole run of entries below it.
+
+    test('attribute entries between the title and the author line do not break the byline', () => {
+      const tree = parseDocument('= Title\n:toc: left\nJane Doe <jane@example.com>\nv1.0\n:sectnums:\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+      expect(collectNodes(tree, 'AttributeEntry').length).toBe(2);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    test('a comment line between the title and the author line does not break the byline', () => {
+      const tree = parseDocument('= Title\n// a note\nJane Doe\nv1.0\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    test('attribute entries between the author and revision lines do not break the revision line', () => {
+      const tree = parseDocument('= Title\nJane Doe\n:toc:\n// note\nv1.0, 2026-07-18\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    test('entries and comments ABOVE the title still leave a real document header', () => {
+      const tree = parseDocument('// Copyright 2026\n:doctype: book\n= Title\nJane Doe\nv1.0\n');
+      expect(collectNodes(tree, 'DocumentTitle').length).toBe(1);
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+    });
+
+    test('a blank line after the title ends the header, so no byline follows it', () => {
+      const tree = parseDocument('= Title\n\nJane Doe\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('a level-0 title MID-DOCUMENT opens no byline', () => {
+      // The sequence-based rule admitted a byline under ANY DocumentTitle, so this short sentence
+      // became header metadata: highlighted as a name and silently dropped from spell/grammar checking.
+      const tree = parseDocument('Intro paragraph.\n\n= Another Title\nDogs eat food\n\nMore.\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(3);
+    });
+
+    test('a second level-0 title after a real header opens no second byline', () => {
+      const tree = parseDocument('= Real\nAda Zyxwv\n\nBody\n\n= Another Title\nDogs eat food\n\nMore.\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(3);
+    });
+
+    test('a leading blank line does not cost the document its header', () => {
+      // A truly empty line is the grammar's `nl`, which has no exported term id, so the tracker saw an
+      // unknown term and dropped straight to BODY: one stray newline at the top of a file and the whole
+      // byline highlighted as prose, with every attribute entry under it absorbed into the paragraph.
+      // Asciidoctor calls `reader.skip_blank_lines` before looking for the title.
+      const tree = parseDocument('\n= Title\nJane Doe\nv1.0\n:toc: left\n\nBody.\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+      expect(collectNodes(tree, 'AttributeEntry').length).toBe(1);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1); // only the body paragraph
+    });
+
+    test('several leading blank lines, empty and whitespace-only alike, are skipped', () => {
+      const tree = parseDocument('\n \n\n= Title\nJane Doe\n\nBody.\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+    });
+
+    test('a block-attribute line above the title does not cost the header either', () => {
+      // `parse_block_metadata_lines` runs BEFORE the doctitle is looked for, so `[#custom]` attaches to
+      // the document and the byline still follows.
+      const tree = parseDocument('[#custom-id]\n= Title\nJane Doe\n\nBody.\n');
+      expect(collectNodes(tree, 'BlockAttributeLine').length).toBe(1);
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+    });
+
+    test('a block TITLE above the doctitle ends the header, as Asciidoctor does', () => {
+      // Asciidoctor refuses a block title above the document title outright, so there is no header to
+      // put a byline in. Deliberately not in the tracker's pre-title set.
+      const tree = parseDocument('.Caption\n= Title\nJane Doe\n\nBody.\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+    });
+
+    test('a paragraph before the title means there is no header at all', () => {
+      const tree = parseDocument('Intro.\n= Title\nJane Doe\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+    });
+
+    // ── What may sit ABOVE the title ─────────────────────────────────────────
+    // `parse_document_header` opens with `reader.skip_blank_lines`, then `parse_block_metadata_lines`,
+    // and only then looks for the doctitle. A file that begins with a stray newline or a licence
+    // header therefore still HAS a header — and used to lose it entirely, because a truly empty line
+    // reached the context tracker as the grammar's `nl` (which has no exported term id) and dropped
+    // HEADER_START to BODY. The byline then highlighted as prose and every `:name: value` under it was
+    // spell/grammar checked.
+
+    test('a leading BLANK line does not destroy the header', () => {
+      const tree = parseDocument('\n= Title\nJane Doe\nv1.0\n:toc: left\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+      expect(collectNodes(tree, 'AttributeEntry').length).toBe(1);
+      expect(hasNode(tree, 'Paragraph')).toBe(false);
+    });
+
+    test('several leading blank lines are still skipped', () => {
+      const tree = parseDocument('\n\n\n= Title\nJane Doe\n');
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+    });
+
+    test('a whitespace-only leading line behaves identically to an empty one', () => {
+      // The two spellings of "blank" reached the tracker as different terms, which is what made the
+      // empty-line case fail while this one worked.
+      expect(collectNodes(parseDocument(' \n= Title\nJane Doe\n'), 'AuthorLine').length).toBe(1);
+      expect(collectNodes(parseDocument('\n= Title\nJane Doe\n'), 'AuthorLine').length).toBe(1);
+    });
+
+    test('a block-attribute line above the title does not destroy the header', () => {
+      const tree = parseDocument('[#custom-id]\n= Title\nJane Doe\nv1.0\n');
+      expect(hasNode(tree, 'BlockAttributeLine')).toBe(true);
+      expect(collectNodes(tree, 'AuthorLine').length).toBe(1);
+      expect(collectNodes(tree, 'RevisionLine').length).toBe(1);
+    });
+
+    test('a block TITLE above the document title leaves no header (Asciidoctor abandons it)', () => {
+      // parser.rb: "block title is not allowed above document title" — the header is finalized before
+      // any metadata is read, so the line under the title is ordinary prose.
+      const tree = parseDocument('.Caption\n= Title\nJane Doe\n');
+      expect(hasNode(tree, 'BlockTitle')).toBe(true);
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('a leading blank line does NOT manufacture a header where there is none', () => {
+      const tree = parseDocument('\nJane Doe <jane@example.com>\n');
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
+      expect(collectNodes(tree, 'Paragraph').length).toBe(1);
+    });
+
+    test('blank lines inside the body are unaffected', () => {
+      const tree = parseDocument('= T\n\nOne.\n\n\nTwo.\n');
+      expect(collectNodes(tree, 'Paragraph').length).toBe(2);
+      expect(hasNode(tree, 'AuthorLine')).toBe(false);
     });
   });
 });

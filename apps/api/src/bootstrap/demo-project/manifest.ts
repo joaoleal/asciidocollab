@@ -233,6 +233,36 @@ export const DEMO_FILES: readonly DemoFileSpec[] = [
   },
 ];
 
+/** One pre-accepted word in the demo project's shared grammar/spelling dictionary. */
+export interface DemoDictionaryTermSpec {
+  /** Fixed UUID v4 of the term's row, so re-seeding is idempotent like every other demo id. */
+  readonly id: string;
+  /** The accepted word exactly as it should be spelled. */
+  readonly term: string;
+}
+
+/**
+ * Attribution for the seeded dictionary terms. The demo has no owner — every member is a `VIEWER`
+ * (see the provisioner) — so the terms are attributed to this fixed, well-known bootstrap identity
+ * rather than to whichever user happened to trigger the seed.
+ *
+ * `ProjectDictionaryTerm.createdByUserId` is a bare UUID column with no foreign key to `User`, so this
+ * id needs no matching account; it is a v4 UUID because the domain `UserId` validates that shape.
+ */
+export const DEMO_DICTIONARY_AUTHOR_ID = '010adaac-c3a9-48fb-8872-9772315a6147';
+
+/**
+ * Terms the Guided Tour ships with in its project dictionary, so the on-device checker does not flag
+ * the three names the tutorial says on nearly every page. They have to be seeded rather than added by
+ * hand: the demo is read-only for everyone (managing the dictionary needs editor/owner, and the demo
+ * grants nobody either), so there is no one who could accept them after the fact.
+ */
+export const DEMO_DICTIONARY_TERMS: readonly DemoDictionaryTermSpec[] = [
+  { id: 'd8ab024d-51ab-491c-9b76-b95f7b88ecce', term: 'AsciiDoc' },
+  { id: '00b34e17-be36-4cbe-b1f6-7c39a45daf49', term: 'Asciidoctor' },
+  { id: '0ed7787e-ec3c-446f-bbdd-40603fcd6af2', term: 'AsciidoCollab' },
+];
+
 /**
  * Reads the on-disk source bytes for a demo file.
  *
@@ -262,11 +292,12 @@ export const DEMO_CONTENT_HASH_KEY = 'demo.guidedTour.contentHash';
 
 /**
  * Computes a stable SHA-256 fingerprint of everything that defines the demo
- * project: its structural manifest (ids, names, tags, render config, folder/file
- * layout) and the raw bytes of every bundled file. Any edit to the tutorial
- * content, the theme, the render config, or the tree shape changes the hash,
- * which is how the start-up reconciler detects that a previously-seeded demo is
- * outdated and rebuilds it.
+ * project: its structural manifest (ids, names, tags, render config, dictionary,
+ * folder/file layout) and the raw bytes of every bundled file. Any edit to the
+ * tutorial content, the theme, the render config, the accepted terms, or the tree
+ * shape changes the hash, which is how the start-up reconciler detects that a
+ * previously-seeded demo is outdated and rebuilds it — which is also what installs
+ * a newly-added dictionary term on an install that already has the demo.
  *
  * @param dataDirectory - Absolute path of the bundled `apps/api/data/demo-project` directory.
  * @returns The lowercase hex SHA-256 digest of the demo's content and structure.
@@ -282,6 +313,7 @@ export async function computeDemoContentHash(dataDirectory: string): Promise<str
       description: DEMO_PROJECT_DESCRIPTION,
       tags: DEMO_PROJECT_TAGS,
       renderConfig: DEMO_RENDER_CONFIG,
+      dictionary: DEMO_DICTIONARY_TERMS,
       mainFileId: DEMO_MAIN_FILE_ID,
       folders: DEMO_FOLDERS,
       files: DEMO_FILES,

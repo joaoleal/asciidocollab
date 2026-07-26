@@ -116,5 +116,53 @@ describe('GrammarSettingsSection', () => {
       />,
     );
     expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByLabelText('English dialect')).toBeDisabled();
+    expect(screen.getByRole('group', { name: 'Grammar checking' })).toBeDisabled();
+  });
+
+  test('writes nothing for a viewer even if the controls are re-enabled behind its back', () => {
+    // These settings are project-wide: the dialect and the enable flag change what every collaborator
+    // checks against. `disabled` is only a rendering decision, so both handlers refuse as well — and
+    // the server independently requires editor/owner on the render-config PUT that carries them.
+    const onEnabledChange = jest.fn();
+    const onDialectChange = jest.fn();
+    render(
+      <GrammarSettingsSection
+        enabled
+        dialect="en-GB"
+        languageIsEnglish
+        canEdit={false}
+        onEnabledChange={onEnabledChange}
+        onDialectChange={onDialectChange}
+      />,
+    );
+    const toggle = screen.getByRole('checkbox');
+    const dialect = screen.getByLabelText('English dialect');
+    toggle.removeAttribute('disabled');
+    dialect.removeAttribute('disabled');
+    fireEvent.click(toggle);
+    fireEvent.change(dialect, { target: { value: 'en-US' } });
+    expect(onEnabledChange).not.toHaveBeenCalled();
+    expect(onDialectChange).not.toHaveBeenCalled();
+  });
+
+  test('writes nothing for a non-English project either, however the change arrives', () => {
+    const onEnabledChange = jest.fn();
+    const onDialectChange = jest.fn();
+    render(
+      <GrammarSettingsSection
+        enabled
+        dialect="en-GB"
+        languageIsEnglish={false}
+        canEdit
+        onEnabledChange={onEnabledChange}
+        onDialectChange={onDialectChange}
+      />,
+    );
+    const toggle = screen.getByRole('checkbox');
+    toggle.removeAttribute('disabled');
+    fireEvent.click(toggle);
+    expect(onEnabledChange).not.toHaveBeenCalled();
+    expect(onDialectChange).not.toHaveBeenCalled();
   });
 });

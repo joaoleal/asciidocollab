@@ -19,7 +19,7 @@ import type { LRParser } from '@lezer/lr';
 import type { Tree } from '@lezer/common';
 import { asciidocHighlightStyle } from '@/lib/codemirror/asciidoc-theme';
 import { asciidocHighlightTags } from '@/lib/codemirror/asciidoc-highlight-tags';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 // ── Parser setup ─────────────────────────────────────────────────────────────
 
@@ -29,6 +29,8 @@ const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const parser: LRParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) =>
     createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) =>
+    createTestBlockContext(terms),
 }).configure({ props: [asciidocHighlightTags] }) as LRParser;
 
 // ── Representative quickstart §2 sample (feature 030 spec) ───────────────────

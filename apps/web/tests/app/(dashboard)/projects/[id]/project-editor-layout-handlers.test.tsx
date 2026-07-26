@@ -87,6 +87,7 @@ jest.mock('@/components/editor/asciidoc-editor', () => ({
               removeDictionaryTerm: () => {},
               addIssueWordToDictionary: () => {},
               ignore: null,
+              canConfigureRules: false,
               ruleConfig: {},
               ruleDescriptions: {},
               setRule: () => {},
@@ -328,6 +329,7 @@ const defaultProps = {
   canManage: true,
   canEdit: true,
   canModifyFiles: true,
+  canManageDictionary: true,
   userId: 'u-test',
 };
 

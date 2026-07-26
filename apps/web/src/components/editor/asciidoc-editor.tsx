@@ -73,7 +73,14 @@ export interface EditorGrammarState {
   apply: (entry: PositionedGrammarDiagnostic, suggestion: EngineSuggestion) => void;
   /** The project dictionary term records. */
   dictionary: DictionaryTermDto[];
-  /** Whether the caller may add/remove dictionary terms (editor/owner). */
+  /**
+   * Whether the caller may change the open document — the editor's EFFECTIVE edit permission, which
+   * folds the observer role and a missing collaborative backing into the project role. Gates accepting
+   * a fix, the one grammar action that writes shared content; the panel renders the fix chips disabled
+   * when it is false rather than hiding the correction they name.
+   */
+  canEditDocument: boolean;
+  /** Whether the caller may add/remove dictionary terms (editor/owner, and not an observer). */
   canManageDictionary: boolean;
   /**
    * Add a term to the project dictionary.
@@ -101,6 +108,12 @@ export interface EditorGrammarState {
    * @param entry - The issue to stop reporting.
    */
   ignore: ((entry: PositionedGrammarDiagnostic) => void) | null;
+  /**
+   * Whether the caller may change which checks run. Narrower than {@link canEditDocument}: the rule
+   * config is view-local (nothing is persisted or sent to anyone), so a per-FILE transport condition
+   * has no business revoking it — only the reader's project role does, exactly as for the dictionary.
+   */
+  canConfigureRules: boolean;
   /** The engine's current rule on/off configuration (empty until the engine loads). */
   ruleConfig: Record<string, boolean | null>;
   /**
@@ -122,6 +135,28 @@ export interface EditorGrammarState {
 interface AsciiDocEditorProperties {
   content: string;
   canEdit: boolean;
+  /**
+   * Whether the user may write the PROJECT's shared dictionary — a narrower permission than
+   * {@link canEdit}, which carries the global-admin bypass. `requireDictionaryEditor` authorizes on
+   * project membership alone, so an admin who is only a viewer here must not be offered a control the
+   * API answers 403 to; and unlike a document edit, nothing downstream forces that admin read-only.
+   *
+   * Defaults to {@link canEdit} for hosts that do not distinguish the two (the editor is also rendered
+   * standalone in tests and previews). The project editor MUST pass the role-only value.
+   */
+  canManageDictionary?: boolean;
+  /**
+   * Whether the user's project ROLE lets them change which checks run. Separate from {@link canEdit}
+   * because that prop arrives already narrowed by the host: the project editor passes `editorCanEdit`,
+   * which folds in `offline` and `collabUnavailable` (see `use-managed-collab.ts`). Those are per-FILE
+   * transport conditions, and the rule config is view-local — nothing is persisted and nothing is sent
+   * to anyone — so letting them revoke it would leave a project OWNER who opens one unbacked text file,
+   * or who briefly goes offline, with every rule toggle disabled for a control that writes nothing.
+   *
+   * Defaults to {@link canEdit} for hosts that do not distinguish the two (the editor is also rendered
+   * standalone in tests and previews). The project editor MUST pass the role-only value.
+   */
+  canConfigureRules?: boolean;
   projectId?: string;
   fileNodeId?: string;
   /**
@@ -281,6 +316,8 @@ function editorStyle(fontSize: number): EditorCssVariables {
 export function AsciiDocEditor({
   content,
   canEdit,
+  canManageDictionary: canManageDictionaryProperty,
+  canConfigureRules: canConfigureRulesProperty,
   projectId,
   fileNodeId,
   onGrammarStateChange,
@@ -353,7 +390,42 @@ export function AsciiDocEditor({
   // project only to tear it down when the real config arrives. Wait for the real value first.
   const grammarEnabled = Boolean(projectId) && grammarSettings.loaded && grammarSettings.enabled;
   const dictionary = useProjectDictionary(projectId ?? '');
-  const canManageDictionary = canEdit;
+  // Observers get a read-only editor that still renders live remote edits. A text doc with
+  // no collaborative backing is also forced read-only so it can never be edited via legacy autosave.
+  // Declared here, above its first use: every grammar action that writes anything shared is gated on
+  // THIS value, not on the raw `canEdit` prop. Gating on the prop was the bug — it says only what the
+  // reader's project role allows and knows nothing about the observer role or a document with no
+  // collaborative backing, so a read-only viewer was offered (and could invoke) every mutating action.
+  const effectiveCanEdit = collab?.role === 'observer' || collabUnavailable ? false : canEdit;
+  // The project dictionary is shared content: adding a term stops that word being flagged for every
+  // collaborator, in every file. The server independently requires editor/owner (`requireDictionaryEditor`).
+  //
+  // Deliberately NOT `effectiveCanEdit`: the dictionary is scoped to the PROJECT, not to the open file,
+  // and the server authorizes it on the project role alone. `collabUnavailable` is a per-FILE transport
+  // condition (a text document whose collab record is missing), so folding it in would let one unbacked
+  // file revoke a project-level capability the server would grant — Add/Remove would vanish from the
+  // Dictionary tab, and `addIssueWordToDictionary` would silently no-op, for an owner. The observer role
+  // IS the project role restated (`toCollabRole` maps `viewer` → `observer`), so it stays in the check.
+  //
+  // The base permission is the host-supplied, admin-free one where given: `canEdit` includes the
+  // global-admin bypass and the dictionary API does not, so an admin who is only a viewer of this
+  // project would otherwise be shown controls the server answers 403 to.
+  const canManageDictionary =
+    collab?.role === 'observer' ? false : (canManageDictionaryProperty ?? canEdit);
+  // Which checks run is view-local: nothing is persisted, nothing is sent to anyone, and the config
+  // lives on the session-wide Harper client rather than on this file. So it takes the same shape as
+  // the dictionary gate and for the same reason — the per-FILE transport conditions have no business
+  // revoking it, or a project OWNER who opens one unbacked text file (or who briefly goes offline)
+  // would find every rule toggle and Reset disabled for a control that writes nothing.
+  //
+  // It reads the host-supplied ROLE permission, NOT the `canEdit` prop, because the project editor has
+  // already folded `offline`/`collabUnavailable` into that prop (`use-managed-collab.ts` →
+  // `editorCanEdit`). Deriving from it here would silently reinstate exactly the coupling this exists
+  // to avoid — as it did — while the local `effectiveCanEdit` below narrows it further still. The
+  // observer role stays in the check: it IS the reader's project role restated, and a reader offered
+  // no other writing control should not be steering the checker either.
+  const canConfigureRules =
+    collab?.role === 'observer' ? false : (canConfigureRulesProperty ?? canEdit);
   const ignoredLints = useIgnoredLints(grammarEnabled ? (fileNodeId ?? null) : null);
   const includePaths = useIncludeCompletions(projectId ?? '');
   const imagePaths = useImagePaths(includePaths);
@@ -377,10 +449,6 @@ export function AsciiDocEditor({
     () => (collab ? collabExtensions(collab.doc, collab.awareness) : undefined),
     [collab?.doc, collab?.awareness],
   );
-
-  // Observers get a read-only editor that still renders live remote edits. A text doc with
-  // no collaborative backing is also forced read-only so it can never be edited via legacy autosave.
-  const effectiveCanEdit = collab?.role === 'observer' || collabUnavailable ? false : canEdit;
 
   // In-editor symbol rename-suggestion (feature 033). Built once with ref-based getters so it never
   // forces a remount; the getters always read the current project/file. Detection only fires while
@@ -592,10 +660,14 @@ export function AsciiDocEditor({
     view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
     view.focus();
   }, [viewReference]);
+  // Accepting a fix edits the shared document, so it refuses outright for a reader who may not — the
+  // panel already disables the chips, and `applyGrammarSuggestion` re-checks the view's own read-only
+  // state, but neither is a reason for the editor to hand out an action it knows is not allowed.
   const applyGrammarIssue = useCallback((entry: PositionedGrammarDiagnostic, suggestion: EngineSuggestion) => {
+    if (!effectiveCanEdit) return;
     const view = viewReference.current;
     if (view) applyGrammarSuggestion(view, entry.from, entry.to, suggestion);
-  }, [viewReference]);
+  }, [viewReference, effectiveCanEdit]);
   // Offered only when the dismissal has somewhere to live, matching the tooltip's Ignore action.
   const ignoreIssue = useMemo(
     () =>
@@ -629,7 +701,17 @@ export function AsciiDocEditor({
   // collapsed config) could not bring the others back either. Always send the full config with the one
   // rule changed, read fresh from the engine rather than from React state so a stale closure cannot
   // resurrect the same bug.
+  //
+  // Both refuse for a reader who may not edit. The rule config is view-local (it changes only what
+  // this collaborator's checker reports, and is never persisted or sent to anyone), so this is not a
+  // write-authorization boundary — it is consistency: a read-only viewer is offered no other writing
+  // control, and leaving these live makes the panel claim an authority over the checker that the rest
+  // of the surface denies. The panel disables the controls too; refusing here as well keeps a stale
+  // render or a programmatic call from slipping through. The gate is `canConfigureRules`, NOT
+  // `effectiveCanEdit`: consistency with the reader's ROLE is the point, and a file that merely lacks
+  // collaborative backing makes nobody a reader.
   const setRule = useCallback((rule: string, enabled: boolean) => {
+    if (!canConfigureRules) return;
     const client = getHarperClient();
     if (!client) return;
     void (async () => {
@@ -638,8 +720,9 @@ export function AsciiDocEditor({
       setRuleConfig(await client.getLintConfig());
       viewReference.current?.dispatch({});
     })();
-  }, [getHarperClient, viewReference]);
+  }, [canConfigureRules, getHarperClient, viewReference]);
   const resetRules = useCallback(() => {
+    if (!canConfigureRules) return;
     const client = getHarperClient();
     if (!client) return;
     void (async () => {
@@ -651,15 +734,28 @@ export function AsciiDocEditor({
       setRuleConfig(await client.getLintConfig());
       viewReference.current?.dispatch({});
     })();
-  }, [getHarperClient, viewReference]);
+  }, [canConfigureRules, getHarperClient, viewReference]);
 
+  // Every dictionary write goes through one of these three, and each refuses for a reader who may not
+  // manage the dictionary. The panel hides the controls as well, but hiding is a rendering decision:
+  // these are the handlers a stale render, a shortcut, or a programmatic caller would reach, and the
+  // server would answer them with a 403 the user never asked for.
   const { addTerm: addDictionaryTerm, removeTerm: removeDictionaryTerm } = dictionary;
+  const addTermToDictionary = useCallback((term: string) => {
+    if (!canManageDictionary) return;
+    void addDictionaryTerm(term);
+  }, [canManageDictionary, addDictionaryTerm]);
+  const removeTermFromDictionary = useCallback((termId: string) => {
+    if (!canManageDictionary) return;
+    void removeDictionaryTerm(termId);
+  }, [canManageDictionary, removeDictionaryTerm]);
   const addIssueWordToDictionary = useCallback((entry: PositionedGrammarDiagnostic) => {
+    if (!canManageDictionary) return;
     const view = viewReference.current;
     if (!view) return;
     const word = view.state.sliceDoc(entry.from, entry.to).trim();
     if (word) void addDictionaryTerm(word);
-  }, [viewReference, addDictionaryTerm]);
+  }, [viewReference, canManageDictionary, addDictionaryTerm]);
 
   // Bubble the grammar panel state (issues + actions) to the layout so it can render the Grammar rail.
   useEffect(() => {
@@ -671,11 +767,13 @@ export function AsciiDocEditor({
       navigate: navigateToGrammarIssue,
       apply: applyGrammarIssue,
       dictionary: dictionary.entries,
+      canEditDocument: effectiveCanEdit,
       canManageDictionary,
-      addDictionaryTerm: (term) => void addDictionaryTerm(term),
-      removeDictionaryTerm: (termId) => void removeDictionaryTerm(termId),
+      addDictionaryTerm: addTermToDictionary,
+      removeDictionaryTerm: removeTermFromDictionary,
       addIssueWordToDictionary,
       ignore: ignoreIssue,
+      canConfigureRules,
       ruleConfig,
       ruleDescriptions,
       setRule,
@@ -690,11 +788,13 @@ export function AsciiDocEditor({
     navigateToGrammarIssue,
     applyGrammarIssue,
     dictionary.entries,
+    effectiveCanEdit,
     canManageDictionary,
-    addDictionaryTerm,
-    removeDictionaryTerm,
+    addTermToDictionary,
+    removeTermFromDictionary,
     addIssueWordToDictionary,
     ignoreIssue,
+    canConfigureRules,
     ruleConfig,
     ruleDescriptions,
     setRule,

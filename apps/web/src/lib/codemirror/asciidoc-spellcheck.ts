@@ -19,8 +19,8 @@ import { extractProseSegments, spanToDocumentRange } from './prose-segments';
  * unit-tested; the live `nspell` dictionary + lint wiring is exercised by e2e.
  */
 
-// Re-exported from the shared prose model so existing importers of these symbols keep working.
-export { SPELLCHECK_SKIP_NODES, headerMetadataRanges } from './prose-segments';
+// Re-exported from the shared prose model so existing importers of this symbol keep working.
+export { SPELLCHECK_SKIP_NODES } from './prose-segments';
 
 const WORD_RE = /[A-Za-z][A-Za-z']*/g;
 

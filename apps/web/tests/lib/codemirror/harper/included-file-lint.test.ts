@@ -5,7 +5,7 @@ import type { Tree } from '@lezer/common';
 import { createIncludedFileLinter, type IncludedFile } from '@/lib/codemirror/harper/included-file-lint';
 import type { HarperWorkerClient, SegmentInput, SegmentLints } from '@/lib/codemirror/harper/harper-worker-client';
 import type { EngineLint } from '@/lib/codemirror/harper/harper-engine';
-import { createTestBlockTokenizer } from '../../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../../helpers/asciidoc-test-tokenizer';
 
 // The generated parser ships as ESM the commonjs transform cannot load, so the grammar is built from
 // source — the approach every other prose-extraction suite uses. The linter takes `parse` as an input
@@ -13,6 +13,7 @@ import { createTestBlockTokenizer } from '../../../helpers/asciidoc-test-tokeniz
 const grammarPath = path.resolve(__dirname, '../../../../src/lib/codemirror/asciidoc.grammar');
 const lezerParser = buildParser(fs.readFileSync(grammarPath, 'utf8'), {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 
 function parse(text: string): Tree {

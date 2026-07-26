@@ -35,6 +35,12 @@ export interface SuggestionPopoverProperties {
    * making the message a control would be a button that goes where you already are.
    */
   onSelect?: () => void;
+  /**
+   * When true the reader may not edit the document, so the fix chips render disabled with the reason
+   * on hover instead of vanishing (viewer/observer mode). They stay visible because seeing the
+   * correction the checker proposes is reading, not writing; only accepting it is a change.
+   */
+  readOnly?: boolean;
   /** Extra class names for the container. */
   className?: string;
 }
@@ -44,6 +50,11 @@ export interface SuggestionPopoverProperties {
  * suggested fix, plus optional "add to dictionary" and "ignore" actions. Purely presentational — the
  * caller owns applying the fix (an ordinary document change) and the dictionary/ignore side effects —
  * so it renders identically in the editor tooltip and the review panel.
+ *
+ * Permission is expressed two ways, matching the review components: an action the reader may not take
+ * at all is simply not passed (`onAddToDictionary` is omitted for a reader who cannot manage the
+ * dictionary), while the fix chips — which double as the display of the proposed correction — are
+ * rendered disabled with the reason on hover when {@link SuggestionPopoverProperties.readOnly} is set.
  *
  * @param properties - The diagnostic and the action callbacks.
  * @returns The popover element.
@@ -55,6 +66,7 @@ export function SuggestionPopover({
   onAddToDictionary,
   onIgnore,
   onSelect,
+  readOnly = false,
   className,
 }: SuggestionPopoverProperties): React.JSX.Element {
   const dot = (
@@ -104,7 +116,15 @@ export function SuggestionPopover({
               size="sm"
               variant="secondary"
               className="h-6 px-2 text-xs"
-              onClick={() => onApply(suggestion)}
+              // Disabled rather than hidden for a reader who may not edit, so the proposed correction
+              // is still legible; the click path is guarded too, because `disabled` is a rendering
+              // decision and this component is not where the document is owned.
+              disabled={readOnly}
+              {...(readOnly ? { title: 'You do not have permission to edit this file.' } : {})}
+              onClick={() => {
+                if (readOnly) return;
+                onApply(suggestion);
+              }}
             >
               {suggestionLabel(suggestion)}
             </Button>

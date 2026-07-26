@@ -145,6 +145,61 @@ describe('GrammarRail', () => {
     expect(onApply.mock.calls[0][1]).toEqual({ text: 'world', kind: 'replace' });
   });
 
+  // The panel is the second surface offering a one-click fix, and it is driven by React state rather
+  // than by the editor, so it needs the same gate — a viewer could otherwise rewrite the document from
+  // the Writing panel while the editor beside it sat read-only.
+  describe('a reader who may not edit the document', () => {
+    function readOnlyRail(onApply = jest.fn()) {
+      render(
+        <GrammarRail
+          diagnostics={[entry(4, 'spelling', '“wrold” misspelled', [{ text: 'world', kind: 'replace' }])]}
+          status="ready"
+          onNavigate={() => {}}
+          onApply={onApply}
+          readOnly
+        />,
+      );
+      return onApply;
+    }
+
+    test('still lists the issues and what the checker would change them to', () => {
+      readOnlyRail();
+      expect(screen.getByText('“wrold” misspelled')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'world' })).toBeInTheDocument();
+    });
+
+    test('cannot apply a fix from the panel', () => {
+      const onApply = readOnlyRail();
+      const chip = screen.getByRole('button', { name: 'world' });
+      expect(chip).toBeDisabled();
+      fireEvent.click(chip);
+      expect(onApply).not.toHaveBeenCalled();
+    });
+
+    test('refuses the fix even if the chip is re-enabled behind its back', () => {
+      const onApply = readOnlyRail();
+      const chip = screen.getByRole('button', { name: 'world' });
+      chip.removeAttribute('disabled');
+      fireEvent.click(chip);
+      expect(onApply).not.toHaveBeenCalled();
+    });
+
+    test('still navigates to an issue, which reads the document rather than writing it', () => {
+      const onNavigate = jest.fn();
+      render(
+        <GrammarRail
+          diagnostics={[entry(4, 'spelling', 'Wordy phrase')]}
+          status="ready"
+          onNavigate={onNavigate}
+          onApply={() => {}}
+          readOnly
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Wordy phrase' }));
+      expect(onNavigate).toHaveBeenCalledWith(4, 9);
+    });
+  });
+
   test('shows a loading state while the engine warms up', () => {
     render(<GrammarRail diagnostics={[]} status="loading" onNavigate={() => {}} onApply={() => {}} />);
     expect(screen.getByText('Starting the checker…')).toBeInTheDocument();

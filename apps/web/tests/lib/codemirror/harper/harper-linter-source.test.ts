@@ -10,12 +10,13 @@ import { harperLintSource, buildGrammarDiagnostics } from '@/lib/codemirror/harp
 import type { HarperWorkerClient, SegmentLints, SegmentInput } from '@/lib/codemirror/harper/harper-worker-client';
 import type { EngineLint } from '@/lib/codemirror/harper/harper-engine';
 import type { ProseSegment } from '@/lib/codemirror/prose-segments';
-import { createTestBlockTokenizer } from '../../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../../helpers/asciidoc-test-tokenizer';
 
 const grammarPath = path.resolve(__dirname, '../../../../src/lib/codemirror/asciidoc.grammar');
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const lezerParser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 });
 const langExtension = new LanguageSupport(LRLanguage.define({ name: 'asciidoc', parser: lezerParser }));
 

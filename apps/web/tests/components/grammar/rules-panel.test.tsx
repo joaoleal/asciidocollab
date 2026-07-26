@@ -64,4 +64,62 @@ describe('RulesPanel', () => {
     expect(onToggle).toHaveBeenCalledWith('SpellCheck', true);
   });
 
+  // A reader who cannot edit the document is offered no control that changes how it is checked. The
+  // rule list itself stays readable — only the mutating controls go inert.
+  describe('read-only', () => {
+    const renderReadOnly = (onToggle = jest.fn(), onResetDefaults = jest.fn()) => {
+      render(<RulesPanel config={config} onToggle={onToggle} onResetDefaults={onResetDefaults} readOnly />);
+      return { onToggle, onResetDefaults };
+    };
+
+    test('every rule toggle is disabled', () => {
+      renderReadOnly();
+      for (const rule of ['SpellCheck', 'LongSentences', 'OxfordComma']) {
+        expect(screen.getByText(rule).closest('label')!.querySelector('input')!).toBeDisabled();
+      }
+    });
+
+    test('Reset is disabled', () => {
+      renderReadOnly();
+      expect(screen.getByRole('button', { name: 'Reset' })).toBeDisabled();
+    });
+
+    test('clicking a toggle does not call onToggle', () => {
+      const { onToggle } = renderReadOnly();
+      fireEvent.click(screen.getByText('SpellCheck').closest('label')!.querySelector('input')!);
+      expect(onToggle).not.toHaveBeenCalled();
+    });
+
+    test('clicking Reset does not call onResetDefaults', () => {
+      const { onResetDefaults } = renderReadOnly();
+      fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+      expect(onResetDefaults).not.toHaveBeenCalled();
+    });
+
+    // Defence in depth: `disabled` suppresses the browser-generated event, so the handler guard is
+    // what a stale render or a programmatic dispatch actually meets. Fire the change directly.
+    test('a change event dispatched past the disabled attribute is still refused', () => {
+      const { onToggle } = renderReadOnly();
+      const input = screen.getByText('SpellCheck').closest('label')!.querySelector('input')!;
+      fireEvent.change(input, { target: { checked: true } });
+      expect(onToggle).not.toHaveBeenCalled();
+    });
+
+    test('the rules stay listed and searchable', () => {
+      renderReadOnly();
+      expect(screen.getByText('SpellCheck')).toBeInTheDocument();
+      expect(screen.getByLabelText('Search rules')).toBeEnabled();
+    });
+
+    test('the controls are live again when not read-only', () => {
+      const onToggle = jest.fn();
+      render(<RulesPanel config={config} onToggle={onToggle} onResetDefaults={() => {}} />);
+      const input = screen.getByText('SpellCheck').closest('label')!.querySelector('input')!;
+      expect(input).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Reset' })).toBeEnabled();
+      fireEvent.click(input);
+      expect(onToggle).toHaveBeenCalledWith('SpellCheck', true);
+    });
+  });
+
 });

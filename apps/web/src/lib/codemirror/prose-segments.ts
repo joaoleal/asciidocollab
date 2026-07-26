@@ -1,4 +1,6 @@
 import type { Tree, SyntaxNode } from '@lezer/common';
+import { attributeEntryLineRanges, verbatimRanges } from '@asciidocollab/asciidoc-core';
+import { isRevisionLineText } from './asciidoc-block-token-helpers';
 
 /**
  * Prose extraction + offset mapping — the shared "what is prose" model reused by both the nspell
@@ -6,10 +8,12 @@ import type { Tree, SyntaxNode } from '@lezer/common';
  * so it unit-tests against a raw Lezer tree.
  *
  * This module owns the single authority for the classification (verbatim blocks, macros, attributes,
- * URLs, role-span markup, header metadata) via the KEEP/DROP/BOUNDARY logic; the one addition grammar
- * needs over spelling is **segmentation at block boundaries** — each contiguous prose block is its own
- * segment, so grammar rules never see the end of one paragraph glued to the start of the next across a
- * skipped code block (which would manufacture false positives).
+ * URLs, role-span markup, header metadata) via the KEEP/DROP/BOUNDARY logic — by syntax-tree node
+ * name, plus one construct the tree cannot answer for, which is excluded by POSITION instead (the
+ * attribute entries a header paragraph absorbs when the byline is declined). The one addition grammar
+ * needs over spelling is **segmentation at block boundaries** —
+ * each contiguous prose block is its own segment, so grammar rules never see the end of one paragraph
+ * glued to the start of the next across a skipped code block (which would manufacture false positives).
  */
 
 /** Grammar node names whose text is NOT prose and must not be spell/grammar-checked. */
@@ -18,6 +22,11 @@ export const SPELLCHECK_SKIP_NODES = new Set([
   'StemBlock', 'Monospace', 'AttributeEntry', 'AttributeReference', 'BlockMacro',
   'InlineMacro', 'CrossReference', 'Footnote', 'Conditional', 'BlockAttributeLine',
   'DocumentTitle',
+  // The document-header byline: names, emails, brand words, a version and a date are metadata, not
+  // prose. The tokenizer emits these nodes only in header position — the `@context` tracker in
+  // `asciidoc-block-context-logic.ts` states where Asciidoctor's header walk allows each of them — so
+  // the same text lower in the document stays an ordinary, checked paragraph.
+  'AuthorLine', 'RevisionLine',
   // Inline non-prose constructs: URLs, UI/math macros, inline passthrough,
   // anchors, callouts, and entities are verbatim/identifier content, not prose.
   'Link', 'InlineStem', 'UiMacro', 'Passthrough', 'InlineAnchor', 'BiblioAnchor',
@@ -60,41 +69,6 @@ const TABLE_BLOCK_NODE = 'TableBlock';
  * skip can leave the author's space stranded before it (`In section <<install-guide>>.` → `In section .`).
  */
 const CLOSING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', ')', ']', '}']);
-
-/**
- * Byte ranges of the document-header author and revision lines, which AsciiDoc treats as metadata
- * (names, emails, brand words, version + date), not prose.
- *
- * These lines are only present when the document opens with a level-0 title: the author line
- * immediately follows it and the optional revision line follows that, with the header ending at the
- * first blank line, attribute entry (`:`), or comment (`//`). The block tokenizer never emits the
- * grammar's stub `AuthorLine`/`RevisionLine` nodes (they need header context it cannot enforce), so
- * these lines are excluded by position instead of by node name.
- *
- * @param text - The full document text.
- * @returns Up to two `[from, to)` ranges (author, then revision), or none.
- */
-export function headerMetadataRanges(text: string): Array<[number, number]> {
-  // A document header exists only when the first line is a level-0 title (`= `);
-  // `==`+ are section headings, not a title, so require exactly one `=`.
-  if (!/^=[ \t]/.test(text)) return [];
-  const ranges: Array<[number, number]> = [];
-  const firstBreak = text.indexOf('\n');
-  if (firstBreak === -1) return [];
-  let start = firstBreak + 1; // first char of the line after the title
-  for (let line = 0; line < 2; line++) {
-    const nextBreak = text.indexOf('\n', start);
-    const end = nextBreak === -1 ? text.length : nextBreak;
-    const content = text.slice(start, end);
-    // The header ends at a blank line; an attribute entry or comment is not an
-    // author/revision line (attributes are already skipped as their own nodes).
-    if (content.trim() === '' || content.startsWith(':') || content.startsWith('//')) break;
-    ranges.push([start, end]);
-    if (nextBreak === -1) break;
-    start = nextBreak + 1;
-  }
-  return ranges;
-}
 
 /** A contiguous run of prose with a per-character map back to document offsets. */
 export interface ProseSegment {
@@ -146,13 +120,123 @@ function classify(tree: Tree | SyntaxNode, text: string): Uint8Array {
     }
   });
 
-  // The author/revision byline parses as an ordinary paragraph (the grammar's AuthorLine/RevisionLine
-  // tokens are never emitted), so exclude those header lines by position — names/brands/versions there
-  // are metadata, not prose.
-  for (const [from, to] of headerMetadataRanges(text)) {
-    for (let index = from; index < to; index++) cls[index] = BOUNDARY;
+  // Verbatim regions (listing / literal / passthrough / comment blocks, fences included, plus `//`
+  // line comments) are code samples, never prose. The node rules above already skip a TOP-LEVEL
+  // `ListingBlock`, but the grammar models every delimited block's body as flat raw lines, so a
+  // listing NESTED inside an example/sidebar/quote/admonition block produces no node at all and its
+  // code would be spell- and grammar-checked as the outer block's prose — false positives on a very
+  // common AsciiDoc shape, and ones the author cannot act on. `verbatimRanges` answers this from the
+  // text, matching each fence to the delimiter that opened it, and is the SAME authority the preview
+  // and reference-extraction layers use to decide what is a code sample.
+  for (const { from, to } of verbatimRanges(text)) {
+    for (let index = from; index < Math.min(to, text.length); index++) cls[index] = BOUNDARY;
+  }
+
+  // Attribute entries (`:toc: left`, `:product-name: AsciidoCollab`, `:sectnums!:`, a `\`-wrapped
+  // value) are configuration, not writing: the name is an AsciiDoc syntax identifier and the value is
+  // overwhelmingly a token, path, version, or brand word. At a block boundary they parse as
+  // `AttributeEntry` and are already skipped by node.
+  //
+  // Restricted to the DOCUMENT HEADER, and only as a safety net for it. Elsewhere an attribute-shaped
+  // line is NOT an attribute entry: Asciidoctor recognises entries only at a block boundary, so
+  // `:note: the ratio was mesured wrong` sitting inside a paragraph is ordinary prose — and the
+  // tokenizer agrees, parsing it as paragraph continuation. Masking it document-wide silently dropped
+  // that line from checking, hiding real typos in real sentences, which is a worse failure than the
+  // false positives this exists to prevent. In the header the risk is the other way round: the byline
+  // predicates are deliberately conservative, and a declined author line reopens the paragraph
+  // absorption that swallows every entry under it, so the net stays.
+  const entryRanges = attributeEntryLineRanges(text);
+  const headerEnd = documentHeaderEnd(text, entryRanges);
+  for (const { from, to } of entryRanges) {
+    if (from >= headerEnd) break; // ranges are ascending — past the header, nothing else qualifies
+    for (let index = from; index < Math.min(to, text.length); index++) cls[index] = BOUNDARY;
   }
   return cls;
+}
+
+/**
+ * Offset at which the AsciiDoc document header ends. Everything from there on is body, where a
+ * construct is only a construct at a block boundary and the syntax tree is the authority.
+ *
+ * A header exists only when the document reaches a level-0 title (`= `) across nothing but the lines
+ * Asciidoctor lets precede one — blank lines, comment lines, attribute entries and block-attribute
+ * lines, the same set `blockContext`'s HEADER_START admits. It is the only shape in which the byline
+ * can absorb the entries beneath it. Without such a title, there is no header and the answer is 0: a
+ * document that opens with prose or a list has none, so an attribute-shaped line anywhere in it is
+ * body text. Requiring the title on line ONE was the earlier bug: a licence comment or a stray leading
+ * newline turned the safety net off for exactly the documents that carry a full header.
+ *
+ * The walk mirrors Asciidoctor's `parse_header_metadata` (parser.rb), which is what decides whether a
+ * line renders as configuration or as writing: attribute entries (comment lines discarded with them)
+ * are consumed BEFORE the author line, again BETWEEN the author and revision lines, and again after —
+ * and the author line itself is read UNCONDITIONALLY, whatever its shape, while the revision line is
+ * taken only if it matches. So the header is
+ * `title, entry*, [any one line], entry*, [revision], entry*`, and it ends at the first line that
+ * sequence does not reach.
+ *
+ * Mirroring it (rather than requiring the byline to sit directly under the title, as the GRAMMAR does)
+ * is what keeps the mask a working safety net: with `= T\n:a: 1\nJoao Leal\n:b: 2\n\nBody.` the
+ * tokenizer declines the byline — an entry precedes it — so `Joao Leal` opens a paragraph that absorbs
+ * `:b: 2`, no `AttributeEntry` node is emitted for it, and stopping the header at the declined byline
+ * left that entry to be spell-checked as prose. Stopping at the first BLANK line is the other failure:
+ * a header that ends at a body line (`= T\nAda Zyxwv\nv1.0\nBody line.\n:note: a real sentence`) would
+ * mask the `:note:` paragraph continuation under it, hiding a genuine typo.
+ *
+ * @param text - The full document text.
+ * @param entryRanges - The document's attribute-entry spans, ascending (each starts at a line start
+ *   and covers any `\`-continuation lines), so the walk agrees with the mask that uses them.
+ * @returns The exclusive end offset of the header region (0 when the document has no header).
+ */
+function documentHeaderEnd(text: string, entryRanges: ReadonlyArray<{ from: number; to: number }>): number {
+  const entryEnds = new Map(entryRanges.map(({ from, to }) => [from, to]));
+  const lineEndAt = (start: number): number => {
+    const nextBreak = text.indexOf('\n', start);
+    return nextBreak === -1 ? text.length : nextBreak;
+  };
+  const nextLineAt = (start: number): number => Math.min(lineEndAt(start) + 1, text.length);
+  /** Advance over the run of attribute entries and comment lines Asciidoctor consumes at this point. */
+  const skipEntriesAndComments = (start: number): number => {
+    let position = start;
+    while (position < text.length) {
+      const entryEnd = entryEnds.get(position);
+      if (entryEnd !== undefined) {
+        position = Math.min(entryEnd, text.length); // an entry owns its `\`-continuation lines
+        continue;
+      }
+      if (!text.startsWith('//', position)) return position;
+      position = nextLineAt(position);
+    }
+    return position;
+  };
+  /** True at the end of the document or on a blank line, both of which close the header. */
+  const isBlankAt = (position: number): boolean =>
+    position >= text.length || text.slice(position, lineEndAt(position)).trim() === '';
+
+  // Find the document title across the lines that may precede it. `==`+ is a section heading, not a
+  // level-0 title, so require exactly one `=`; anything that is not blank, a comment, an entry or a
+  // block-attribute line is body, and a body line before the title means the document has no header.
+  // A block TITLE (`.Caption`) is body here for the same reason it is in the context tracker:
+  // Asciidoctor abandons header parsing when one sits above the doctitle.
+  let titleStart = 0;
+  for (;;) {
+    titleStart = skipEntriesAndComments(titleStart);
+    if (titleStart >= text.length) return 0;
+    const line = text.slice(titleStart, lineEndAt(titleStart));
+    if (/^=[ \t]/.test(line)) break;
+    // Blank and block-attribute lines are transparent above the title; anything else ends the search.
+    if (line.trim() !== '' && !/^\[.*\][ \t]*$/.test(line)) return 0;
+    titleStart = nextLineAt(titleStart);
+  }
+  const firstBreak = text.indexOf('\n', titleStart);
+  if (firstBreak === -1) return text.length; // a title and nothing else
+
+  let position = skipEntriesAndComments(firstBreak + 1);
+  if (isBlankAt(position)) return position;
+  position = skipEntriesAndComments(nextLineAt(position)); // the author line, whatever it says
+  if (!isBlankAt(position) && isRevisionLineText(text.slice(position, lineEndAt(position)))) {
+    position = skipEntriesAndComments(nextLineAt(position));
+  }
+  return position;
 }
 
 /** True when a document character is horizontal/vertical whitespace. */

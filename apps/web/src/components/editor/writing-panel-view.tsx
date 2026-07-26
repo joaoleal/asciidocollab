@@ -67,6 +67,12 @@ export function WritingPanelView({ view, onViewChange, grammar }: WritingPanelVi
             status={grammar?.status ?? 'disabled'}
             onNavigate={(from, to) => grammar?.navigate(from, to)}
             onApply={(entry, suggestion) => grammar?.apply(entry, suggestion)}
+            // Accepting a fix is the only writing action that changes the shared document, so it is
+            // gated on the editor's effective edit permission — which, unlike the project role alone,
+            // accounts for an observer session and for a file with no collaborative backing. With no
+            // editor mounted there is nothing to apply a fix to, so read-only is also the honest
+            // default. The issues themselves stay listed either way.
+            readOnly={!grammar?.canEditDocument}
             // Passed straight through as null when unavailable, so the rail leaves the control out
             // rather than rendering one that no-ops.
             onIgnore={grammar?.ignore ?? null}
@@ -89,6 +95,14 @@ export function WritingPanelView({ view, onViewChange, grammar }: WritingPanelVi
             config={grammar?.ruleConfig ?? {}}
             onToggle={(rule, enabled) => grammar?.setRule(rule, enabled)}
             onResetDefaults={() => grammar?.resetRules()}
+            // The rule config is view-local, so this is consistency rather than authorization: a
+            // reader who cannot apply a suggestion should not be able to change which checks run
+            // either. Gated on the reader's ROLE (`canConfigureRules`) and not on the document's
+            // effective edit permission — the latter also folds in a missing collaborative backing,
+            // which is a per-file transport condition that would otherwise disable these toggles for
+            // a project owner. With no editor mounted there are no rules to change, so read-only is
+            // the honest default.
+            readOnly={!grammar?.canConfigureRules}
           />
         )}
       </div>

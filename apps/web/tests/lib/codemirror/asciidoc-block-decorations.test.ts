@@ -11,7 +11,7 @@ import {
   STEM_BODY_CLASS,
 } from '@/lib/codemirror/asciidoc-block-decorations';
 import { asciidocHighlightTags } from '@/lib/codemirror/asciidoc-highlight-tags';
-import { createTestBlockTokenizer } from '../../helpers/asciidoc-test-tokenizer';
+import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 /**
  * Block-marker decoration tests (feature 030). The leading `.` of a block title recedes,
@@ -23,6 +23,7 @@ const grammarPath = path.resolve(__dirname, '../../../src/lib/codemirror/asciido
 const grammarSource = fs.readFileSync(grammarPath, 'utf8');
 const parser = buildParser(grammarSource, {
   externalTokenizer: (_name: string, terms: Record<string, number>) => createTestBlockTokenizer(terms),
+  contextTracker: (terms: Record<string, number>) => createTestBlockContext(terms),
 }).configure({ props: [asciidocHighlightTags] }) as LRParser;
 
 function markers(source: string) {
