@@ -88,6 +88,25 @@ function runGuard(layers: Record<string, FixtureLayer>): { code: number; output:
 const INNER: FixtureLayer = { name: '@fixture/inner', allowedImports: [] };
 const OUTER: FixtureLayer = { name: '@fixture/outer', allowedImports: ['inner'] };
 
+/**
+ * A source file whose multi-line template literal is followed by a comment naming a package, then by
+ * `tail`. Module-scoped because a helper defined inside a test body trips
+ * `unicorn/consistent-function-scoping`.
+ *
+ * @param tail - The last line of the file, used to vary between clean prose and a real import.
+ * @returns The file contents.
+ */
+function fileWithTemplateThen(tail: string): string {
+  return [
+    'export const link = `',
+    '  https://example.test/docs',
+    '`;',
+    "// A note that says: import from '@fixture/outer' — prose, not code.",
+    tail,
+    '',
+  ].join('\n');
+}
+
 describe('architecture guard', () => {
   test('passes a tree that respects its rules', () => {
     const { code, output } = runGuard({
@@ -159,6 +178,45 @@ describe('architecture guard', () => {
     });
     expect(output).toContain('clean');
     expect(code).toBe(0);
+  });
+
+  test('does NOT fail on prose in a comment BELOW an apostrophe in JSX text', () => {
+    // An apostrophe outside a string literal (JSX text, most often) used to put the comment scanner
+    // into string state for the rest of the file, so every comment below it was scanned as code — and
+    // a sentence naming a package failed CI as if it were an import. A quote state now ends at the
+    // newline, since a `'`/`"` literal cannot span one.
+    const jsx = [
+      "export function A() { return <p>Don't do that</p>; }",
+      "/** A doc block: import from '@fixture/outer' happens in the outer layer only. */",
+      "// A note that says: import from '@fixture/outer' — prose, not code.",
+      'export const ok = 1;',
+      '',
+    ].join('\n');
+    const { code, output } = runGuard({
+      inner: { ...INNER, files: { 'index.ts': jsx } },
+      outer: OUTER,
+    });
+    expect(output).toContain('clean');
+    expect(code).toBe(0);
+  });
+
+  test('a multi-line template literal does not derail the comment scanner after it', () => {
+    // Template literals really do span lines, so their state must survive a newline — a `//` inside
+    // one (a URL, say) is content, not a comment start. Both directions are pinned: prose naming a
+    // package below the template is still stripped, and a genuine import below it is still seen.
+    const clean = runGuard({
+      inner: { ...INNER, files: { 'index.ts': fileWithTemplateThen('export const ok = 1;') } },
+      outer: OUTER,
+    });
+    expect(clean.output).toContain('clean');
+    expect(clean.code).toBe(0);
+
+    const violating = runGuard({
+      inner: { ...INNER, files: { 'index.ts': fileWithTemplateThen("import '@fixture/outer';") } },
+      outer: OUTER,
+    });
+    expect(violating.code).toBe(1);
+    expect(violating.output).toContain('inner → outer');
   });
 
   test('still sees a real import that shares a line with a comment', () => {

@@ -114,6 +114,14 @@ function loadConfig() {
  * that direction is harmless: it can only DROP an import from consideration, never invent one, and a
  * line defining a regex is not a line importing a package.
  *
+ * A `'` or `"` state ENDS at a newline, because in JavaScript such a literal cannot span one. Without
+ * that bound, an apostrophe in JSX text (`<p>Don't do that</p>`) — or any other stray quote outside a
+ * real literal — put the scanner into string state for the REST OF THE FILE, so every comment below it
+ * was scanned as code and prose mentioning a package name was reported as a genuine cross-layer import:
+ * a CI failure over a sentence, which is precisely what this function exists to prevent. Template
+ * literals keep their multi-line state, since those really do span lines. What survives is a stray
+ * quote and a package-naming comment on the SAME line, which the tests below pin as the known bound.
+ *
  * @param text - The source text.
  * @returns The same text with comment bodies replaced by spaces.
  */
@@ -143,7 +151,10 @@ function stripComments(text) {
     // Inside a string or template literal: copy through, honouring escapes.
     out += char;
     if (char === '\\') { out += text[index + 1] ?? ''; index++; continue; }
-    if (char === state) state = 'code';
+    if (char === state) { state = 'code'; continue; }
+    // An unterminated `'`/`"` was never a literal (a JSX apostrophe, most often); a newline ends it so
+    // the damage cannot run past this line. A template literal legitimately spans lines and continues.
+    if (char === '\n' && state !== '`') state = 'code';
   }
   return out;
 }
