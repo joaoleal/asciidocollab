@@ -1,0 +1,11 @@
+= Chapter Two
+
+A second included chapter, so offset composition has to hold across more than one include.
+
+== A Section Of Chapter Two
+
+Prose.
+
+=== A Subsection Of Chapter Two
+
+Prose, two levels below this file's own title and three below the assembled root.

@@ -1,0 +1,77 @@
+= Tables, Lists, Admonitions And Footnotes
+:idprefix:
+:idseparator: -
+
+Everything here is counted, numbered or labelled by the engine, so a change in any of them shows up
+as different output for identical input.
+
+== Lists
+
+* First bullet
+* Second bullet
+** Nested bullet
+*** Deeper bullet
+* Third bullet
+
+. First step
+. Second step
+.. Nested step
+. Third step
+
+Term one::
+The first description.
+Term two::
+The second description.
+
+* [ ] An unchecked task
+* [x] A checked task
+
+== Table
+
+.A table with a header row and a footer
+[cols="1,2,1", options="header,footer"]
+|===
+| Column A | Column B | Column C
+
+| a1 | b1 | c1
+| a2 | b2 | c2
+
+| total | | 2
+|===
+
+[cols="2*"]
+|===
+| A table with no header, so the engine's default cell handling applies
+| and a second cell
+|===
+
+== Admonitions
+
+NOTE: A note admonition, which the engine labels.
+
+TIP: A tip admonition.
+
+WARNING: A warning admonition.
+
+CAUTION: A caution admonition.
+
+IMPORTANT: An important admonition.
+
+[NOTE]
+====
+A block-form admonition, which renders differently from the inline form above.
+====
+
+== Footnotes
+
+A sentence with a footnote.footnote:[The first footnote, which the engine numbers.]
+A second sentence with another.footnote:[The second footnote — numbering across the two is the point.]
+A named footnote, referenced twice.footnote:named[The named footnote's text.]
+And the second reference to it.footnote:named[]
+
+== Quotes
+
+[quote, A. Author, A Source]
+____
+A quoted block, attributed.
+____

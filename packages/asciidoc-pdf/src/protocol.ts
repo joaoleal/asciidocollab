@@ -224,6 +224,48 @@ export interface PdfSourceMapEntry {
  */
 export type PdfSourceMap = readonly PdfSourceMapEntry[];
 
+/**
+ * The stages of a render that happen INSIDE the render VM, in milliseconds. Every value is ≥ 0.
+ *
+ * All optional: a figure the VM could not report is absent, never zero. Zero is a measurement — it
+ * says a stage ran and cost nothing — and reading "not measured" as "free" points every conclusion
+ * about where a render's time goes at the wrong stage.
+ *
+ * Each figure is SELF time: these stages nest inside one another (fonts are parsed during the walk,
+ * dry runs happen inside it), and each one excludes the others it contains. So they can be summed —
+ * to the instrumented part of the convert, which is less than `convertMs` because the engine's own
+ * loading and setup are not stages of anything.
+ */
+export interface PdfVmStages {
+  /** Parsing the assembled document. */
+  readonly parseMs?: number;
+  /** The converter's tree walk, excluding the dry runs, font work and serialisation inside it. */
+  readonly converterWalkMs?: number;
+  /** The dry runs: every keep-together block is laid out once to measure it and again for real. */
+  readonly dryRunMs?: number;
+  /** Font parsing and subsetting. */
+  readonly fontMs?: number;
+  /** Rendering and writing the PDF byte stream. */
+  readonly serializeMs?: number;
+}
+
+/**
+ * Where one render's time went, stage by stage, in milliseconds. Every value is ≥ 0.
+ *
+ * The four declared here are measured on the main thread, around the calls the controller makes; the
+ * inherited ones are measured inside the render VM and sit inside `convertMs`.
+ */
+export interface PdfRenderStages extends PdfVmStages {
+  /** Booting the render VM. `0` when it was already warm — a measurement, not a gap. */
+  readonly vmBootMs: number;
+  /** Writing the project snapshot into the VFS. */
+  readonly populateMs: number;
+  /** The ordered pre-conversion stages (includes, citations, diagrams and math, image guard, assets). */
+  readonly pipelineMs: number;
+  /** Wall time of the convert call, as the main thread sees it — the VM stages are inside this. */
+  readonly convertMs: number;
+}
+
 /** Logical timings and counters for budget tracking and observability. */
 export interface RenderStats {
   /** Cold-start (VM instantiation) time, present only on the first render. */
@@ -234,6 +276,11 @@ export interface RenderStats {
   readonly cacheHits: number;
   /** How many SVG renders fell back to a PNG raster because the PDF engine could not draw them. */
   readonly rasterFallbacks: number;
+  /**
+   * Where {@link RenderStats.renderMs} went. Additive: a consumer reading only the totals above
+   * behaves exactly as it did before the breakdown existed.
+   */
+  readonly stages: PdfRenderStages;
 }
 
 /** A successful render returned to the main thread, possibly carrying non-fatal diagnostics. */

@@ -1,0 +1,40 @@
+= Source Blocks
+:source-highlighter: rouge
+
+A declared language reaches the app's highlighting pass; an undeclared one deliberately does not.
+
+[source,ruby]
+----
+def greet(name)
+  puts "Hello, #{name}"
+end
+----
+
+[source,javascript]
+----
+export function greet(name) {
+  console.log(`Hello, ${name}`);
+}
+----
+
+[source]
+----
+this block declares no language, so nothing may tokenise it
+  indentation and <angle brackets> must survive verbatim
+----
+
+----
+A plain listing block, with no source style at all.
+----
+
+[source,ruby]
+----
+require 'json' # <1>
+JSON.generate({ 'ok' => true }) # <2>
+----
+<1> Callouts number independently of the lists elsewhere in the document.
+<2> A second callout, so an off-by-one in numbering is visible.
+
+....
+A literal block, which is a different element from a listing block.
+....

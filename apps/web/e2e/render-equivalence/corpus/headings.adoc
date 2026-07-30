@@ -1,0 +1,33 @@
+= Headings At Every Level
+:idprefix:
+:idseparator: -
+
+Intro paragraph before the first section, so the level-0 title is not the only heading in play.
+
+== Level One
+
+Prose under level one.
+
+=== Level Two
+
+Prose under level two.
+
+==== Level Three
+
+Prose under level three.
+
+===== Level Four
+
+Prose under level four.
+
+====== Level Five
+
+Prose under level five — the deepest heading AsciiDoc renders.
+
+== Level One Again
+
+A second top-level section, so numbering (where enabled) has more than one branch to get right.
+
+=== Second Branch
+
+Prose.

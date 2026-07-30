@@ -399,6 +399,9 @@ importers:
       mermaid:
         specifier: ^11.16.0
         version: 11.16.0
+      morphdom:
+        specifier: ^2.7.8
+        version: 2.7.8
       next:
         specifier: 16.2.11
         version: 16.2.11(@babel/core@7.29.7)(@playwright/test@1.60.0)(@types/node@24.12.4)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -6310,6 +6313,9 @@ packages:
 
   moo@0.5.3:
     resolution: {integrity: sha512-m2fmM2dDm7GZQsY7KK2cme8agi+AAljILjQnof7p1ZMDe6dQ4bdnSMx0cPppudoeNv5hEFQirN6u+O4fDE0IWA==}
+
+  morphdom@2.7.8:
+    resolution: {integrity: sha512-D/fR4xgGUyVRbdMGU6Nejea1RFzYxYtyurG4Fbv2Fi/daKlWKuXGLOdXtl+3eIwL110cI2hz1ZojGICjjFLgTg==}
 
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
@@ -14518,6 +14524,8 @@ snapshots:
   mkdirp@3.0.1: {}
 
   moo@0.5.3: {}
+
+  morphdom@2.7.8: {}
 
   ms@2.1.3: {}
 

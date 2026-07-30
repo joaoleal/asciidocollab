@@ -1,0 +1,44 @@
+= Attributes And Conditionals
+:project-name: AsciiDoc Collab
+:release: 2.1
+:empty-attribute:
+:sectnums:
+
+Attribute resolution order is the whole subject here: what a reference resolves to depends on where
+in the document it is read.
+
+The project is {project-name}, release {release}.
+
+:release: 3.0
+
+After a redefinition, the same reference reads {release} — document order decides.
+
+== Conditional Regions
+
+ifdef::project-name[]
+This line is included because `project-name` is set.
+endif::[]
+
+ifdef::not-set-anywhere[]
+This line must never appear in the output.
+endif::[]
+
+ifndef::not-set-anywhere[]
+This line is included because `not-set-anywhere` is unset.
+endif::[]
+
+ifeval::[{release} >= 3.0]
+This line is included by an expression evaluated against the attribute's current value.
+endif::[]
+
+ifeval::[{release} < 3.0]
+This line must never appear in the output.
+endif::[]
+
+== Empty And Unset
+
+An empty attribute resolves to nothing: "{empty-attribute}" — the quotes are the whole of it.
+
+:release!:
+
+An unset attribute leaves its reference unresolved: {release}

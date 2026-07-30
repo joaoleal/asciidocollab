@@ -1060,3 +1060,48 @@ describe('useAsciidocPreview — live re-render on reachable-file change', () =>
     expect(lastWorker().postMessage.mock.calls[1][0].files['child.adoc']).toBe('= Child\n');
   });
 });
+
+// ── useAsciidocPreview — reported render cost ────────────────────────────────
+
+describe('useAsciidocPreview — reported render cost', () => {
+  const timings = { parseMs: 4, convertMs: 18, postProcessMs: 3, totalMs: 27 };
+
+  it('reports nothing before any render has completed', () => {
+    const { result } = renderHook(() =>
+      useAsciidocPreview({ content: '= Hello', isEnabled: true, scrollToLine: null }),
+    );
+
+    expect(result.current.timings).toBeNull();
+  });
+
+  it('reports what the completed render cost', () => {
+    const { result } = renderHook(() =>
+      useAsciidocPreview({ content: '= Hello', isEnabled: true, scrollToLine: null }),
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Hello</h1>', error: null, timings }));
+
+    expect(result.current.timings).toEqual(timings);
+  });
+
+  it('keeps the last successful figures when a later render fails', () => {
+    const { result, rerender } = renderHook(
+      ({ content }: { content: string }) =>
+        useAsciidocPreview({ content, isEnabled: true, scrollToLine: null }),
+      { initialProps: { content: '= Hello' } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Hello</h1>', error: null, timings }));
+
+    // A failed render carries no breakdown; reporting zeros — or nothing — would read as a document
+    // that suddenly became free to render, which is what the adaptive delay would then act on.
+    act(() => rerender({ content: '= Hello\n\n[[' }));
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 2, ok: false, html: null, error: 'boom' }));
+
+    expect(result.current.state).toBe('error');
+    expect(result.current.timings).toEqual(timings);
+  });
+});

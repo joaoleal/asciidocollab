@@ -5,49 +5,7 @@ import { resolveAttributeScope, effectiveLevelOffset } from '@asciidocollab/asci
 import { RENDER_INTRINSIC_ATTRIBUTES } from '../lib/asciidoc/render-intrinsics';
 import { resolveSandboxedPath } from '../lib/asciidoc/sandbox-path';
 import { blockStartLine } from '../lib/asciidoc/block-start-line';
-
-interface RenderRequest {
-  requestId: number;
-  content: string;
-  /** Base path Asciidoctor prepends to relative image targets (the project's image endpoint). */
-  imagesDir?: string;
-  /**
-   * When set together with {@link RenderRequest.files}, the worker assembles the include tree rooted
-   * at this project-relative main-file path (sandbox-confined via `resolveSandboxedPath`) and
-   * renders the assembled document instead of `content`. Absent ⇒ render `content` as-is.
-   */
-  mainPath?: string;
-  /** Project-relative path → content map supplying the include assembly. */
-  files?: Record<string, string>;
-  /**
-   * Project main-file path (root) for cross-document attribute resolution. The open
-   * file's `{name}` references resolve to the value in effect at its first include-point under this
-   * root. `null`/absent ⇒ standalone resolution (the file's own attributes only).
-   */
-  rootFileId?: string | null;
-  /** The previewed open file's path — the scope whose inherited attributes are seeded. */
-  openFileId?: string;
-  /** When false (default), the assembler hides included bodies and emits placeholders. */
-  showIncludes?: boolean;
-  /**
-   * Project-level render-config attributes (already soft-defaulted with a trailing `@`). Seeded FIRST
-   * so the document's inherited scope and its own header both override them, and so the host render
-   * controls (`imagesdir`) still win.
-   */
-  projectAttributes?: Record<string, string>;
-  /**
-   * Whether to emit the editor's scroll-sync hints: `data-source-line` beside every block's id, and a
-   * synthetic `__src_<context>_<line>` id on the blocks that have none so there is an id to sit beside.
-   *
-   * On (the default) for the preview, which navigates by them. Off for an export, whose output is read
-   * by people and other tools rather than by this app: the hints are dead weight there, and the
-   * synthetic ids put app-internal names into the published id namespace beside the author's own
-   * anchors. Turning them off is a choice not to generate them, not a pass that strips them afterwards
-   * — nothing has to distinguish a synthetic id from a real one after the fact, and the export skips
-   * both whole-document rewrites instead of paying for a third.
-   */
-  sourceLineHints?: boolean;
-}
+import type { RenderRequest, RenderResult, RenderDocumentDetails, RenderTimings } from './render-protocol';
 
 // Asciidoctor convention: a value ending in `@` is an overridable "soft" default — an in-document
 // attribute entry of the same name may still override it. We mark every seeded inherited-scope value
@@ -333,49 +291,6 @@ function highlightCodeBlocks(html: string): string {
   });
 }
 
-interface RenderResult {
-  requestId: number;
-  ok: boolean;
-  html: string | null;
-  error: string | null;
-  /**
-   * True when the rendered document contains STEM (math) output that is in effect, meaning the
-   * resolved `:stem:` attribute is set AND Asciidoctor emitted stem markup carrying its delimiters.
-   * The worker never renders math itself (client-side); this flag lets the
-   * preview lazy-load MathJax only when there is math to typeset. Absent/`false` means no MathJax
-   * load, so stem delimiters written where `:stem:` is not in effect stay as literal text.
-   */
-  mathPresent?: boolean;
-  /**
-   * True when the rendered document carries at least one native-diagram placeholder
-   * (`<div class="adc-diagram">`). The worker never renders diagrams itself; this flag gates the main
-   * thread's lazy import of the on-screen diagram engines. Absent/`false` ⇒ no engine import.
-   */
-  diagramsPresent?: boolean;
-  /**
-   * The document header as Asciidoctor resolved it, for consumers that render OUTSIDE the app's own
-   * chrome. Embedded output carries the title (via `showtitle`) but never the author/revision line,
-   * because on screen the app already says whose document this is — a file saved to disk does not.
-   * Reported here rather than re-derived on the main thread: authors, revision lines and `lang` follow
-   * AsciiDoc's own header grammar, and the document that just parsed them is the authority on them.
-   */
-  details?: RenderDocumentDetails;
-}
-
-/** The resolved document-header values a standalone render needs; every part is optional. */
-interface RenderDocumentDetails {
-  /** The document title (`doctitle`). */
-  title?: string;
-  /** The author line (`author`, or the joined `authors` when there are several). */
-  author?: string;
-  /** The revision number (`revnumber`). */
-  revnumber?: string;
-  /** The revision date (`revdate`). */
-  revdate?: string;
-  /** The resolved document language (`lang`). */
-  lang?: string;
-}
-
 // A STEM BLOCK renders as `<div class="stemblock">` — a precise, stem-only signal in the output.
 const STEM_BLOCK_OUTPUT_RE = /class="stemblock"/;
 // An INLINE stem is authored with one of these macros. Inline stem leaves NO distinctive wrapper in
@@ -413,6 +328,10 @@ function getProcessor(): ReturnType<typeof Asciidoctor> {
 }
 
 onmessage = function (event: MessageEvent<RenderRequest>) {
+  // Taken before anything else so the reported total covers the whole handler, include assembly and
+  // block walk included — the stages below deliberately leave those out, and a total that started
+  // later would hide them instead of leaving them visible as the remainder.
+  const startedAt = performance.now();
   const { requestId, content, imagesDir, mainPath, files, rootFileId, openFileId, showIncludes, projectAttributes, sourceLineHints } =
     event.data;
   // Absent means on: the preview is the dominant caller and navigates by these, so a request that says
@@ -509,11 +428,13 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         ? { path: openFilePath ?? '', line: assembledLine }
         : { path: entry.path, line: entry.sourceLine };
     };
+    const parseStartedAt = performance.now();
     const asciidocDocument = proc.load(source, {
       safe: 'safe',
       sourcemap: true,
       attributes,
     });
+    const parseMs = performance.now() - parseStartedAt;
 
     // Collect source locations BEFORE conversion. Blocks that have no ID get a
     // synthetic one so we can inject data-source-line via a post-processing pass
@@ -585,7 +506,12 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       blockSourceLines.push({ id, origin: originOf(startLine) });
     }
 
+    const convertStartedAt = performance.now();
     let html = String(asciidocDocument.convert());
+    // Also the start of the post-conversion window: everything from here to the reply is the worker's
+    // own work on the converted HTML.
+    const convertedAt = performance.now();
+    const convertMs = convertedAt - convertStartedAt;
 
     // Gate client-side math on the RESOLVED `:stem:` value (cross-document scope already seeded
     // above), not on the raw delimiters Asciidoctor always emits for stem macros.
@@ -656,6 +582,14 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       );
     }
 
+    const finishedAt = performance.now();
+    const timings: RenderTimings = {
+      parseMs,
+      convertMs,
+      postProcessMs: finishedAt - convertedAt,
+      totalMs: finishedAt - startedAt,
+    };
+
     postMessage({
       requestId,
       ok: true,
@@ -664,6 +598,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       mathPresent,
       diagramsPresent,
       details,
+      timings,
     } satisfies RenderResult);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

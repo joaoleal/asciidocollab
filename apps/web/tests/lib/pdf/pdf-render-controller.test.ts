@@ -400,6 +400,129 @@ describe('PdfRenderController', () => {
     expect(posted[0].stats.cacheHits).toBe(1);
   });
 
+  it('breaks the render cost down into the stages the main thread can observe', async () => {
+    // A clock each collaborator moves by what it "spent", so every stage figure below is a value the
+    // test set — the point being which stage each one is attributed to.
+    let clock = 0;
+    const spend = (ms: number) => {
+      clock += ms;
+    };
+    const slowStage: PipelineStage = {
+      kind: 'diagrams-math',
+      run: () => {
+        spend(40);
+        return Promise.resolve({ diagnostics: [] });
+      },
+    };
+
+    const { controller, messages } = makeHarness({
+      now: () => clock,
+      vm: {
+        warmup: () => {
+          spend(900);
+          return Promise.resolve({ coldStart: true });
+        },
+      },
+      populate: () => {
+        spend(20);
+        return { written: [], rejected: [], rootPresent: true };
+      },
+      buildPipeline: (arguments_) => ({ ...makeBuildPipeline(arguments_), stages: [slowStage] }),
+      runConvert: () => {
+        spend(300);
+        return Promise.resolve<ConvertOutcome>({
+          ok: true,
+          pdf: new Blob([new Uint8Array([1])], { type: 'application/pdf' }),
+          bytes: new Uint8Array([1]),
+          diagnostics: [],
+        });
+      },
+    });
+
+    await controller.handleMessage({ type: 'render', request: makeRequest() });
+
+    const { stats } = results(messages)[0]!;
+    expect(stats.stages).toEqual(
+      expect.objectContaining({ vmBootMs: 900, populateMs: 20, pipelineMs: 40, convertMs: 300 }),
+    );
+    // The whole-render figure still covers everything, so the breakdown never contradicts the total.
+    expect(stats.renderMs).toBeGreaterThanOrEqual(1260);
+  });
+
+  it('folds the stages the convert measured inside the VM into the same breakdown', async () => {
+    const { controller, messages } = makeHarness({
+      runConvert: () =>
+        Promise.resolve<ConvertOutcome>({
+          ok: true,
+          pdf: new Blob([new Uint8Array([1])], { type: 'application/pdf' }),
+          bytes: new Uint8Array([1]),
+          diagnostics: [],
+          vmStages: { parseMs: 30, converterWalkMs: 700, dryRunMs: 1200, fontMs: 250, serializeMs: 180 },
+        }),
+    });
+
+    await controller.handleMessage({ type: 'render', request: makeRequest() });
+
+    const { stages } = results(messages)[0]!.stats;
+    expect(stages).toEqual(
+      expect.objectContaining({
+        parseMs: 30,
+        converterWalkMs: 700,
+        dryRunMs: 1200,
+        fontMs: 250,
+        serializeMs: 180,
+      }),
+    );
+  });
+
+  it('carries no in-VM stage keys at all when the convert measured none', async () => {
+    const { controller, messages } = makeHarness();
+
+    await controller.handleMessage({ type: 'render', request: makeRequest() });
+
+    const { stages } = results(messages)[0]!.stats;
+    expect(Object.keys(stages).toSorted()).toEqual(['convertMs', 'pipelineMs', 'populateMs', 'vmBootMs']);
+  });
+
+  it('reports a warm VM as no boot time rather than omitting the stage', async () => {
+    let clock = 0;
+    const { controller, messages } = makeHarness(
+      {
+        now: () => clock,
+        vm: {
+          warmup: () => {
+            clock += 900;
+            return Promise.resolve({ coldStart: false });
+          },
+        },
+      },
+      [false],
+    );
+
+    await controller.handleMessage({ type: 'render', request: makeRequest() });
+
+    // A warm VM did not boot; the 900 ms above is the fake being deliberately slow about saying so.
+    // What the stage reports is boot time, and there was none — which is a measurement, not a gap.
+    const { stats } = results(messages)[0]!;
+    expect(stats.stages.vmBootMs).toBe(0);
+    expect(stats.coldStartMs).toBeUndefined();
+  });
+
+  it('reports the raster fallbacks the pipeline counted, not a fixed zero', async () => {
+    const rasterizingStage: PipelineStage = {
+      kind: 'diagrams-math',
+      run: () => Promise.resolve({ diagnostics: [], rasterFallbacks: 2 }),
+    };
+
+    const { controller, messages } = makeHarness({
+      buildPipeline: (arguments_) => ({ ...makeBuildPipeline(arguments_), stages: [rasterizingStage] }),
+    });
+
+    await controller.handleMessage({ type: 'render', request: makeRequest() });
+
+    expect(results(messages)[0].stats.rasterFallbacks).toBe(2);
+  });
+
   it('discards a render explicitly cancelled while its pipeline stages run', async () => {
     const stagePaused = deferred<void>();
     const pausingStage: PipelineStage = {

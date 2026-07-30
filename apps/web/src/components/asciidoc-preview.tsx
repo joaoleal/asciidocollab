@@ -12,6 +12,8 @@ import { useAsciidocPreview } from '@/hooks/use-asciidoc-preview';
 import { PdfDiagnostics } from '@/components/pdf-diagnostics';
 import type { RenderDiagnostic, DiagnosticCode } from '@asciidocollab/asciidoc-pdf';
 import type { DiagramWarning } from '@/components/diagrams/render-diagrams';
+import { RenderStatsOverlay, type RenderStatRow } from '@/components/preview/render-stats-overlay';
+import type { RenderTimings } from '@/workers/render-protocol';
 import { PreviewStyleControl, type PreviewStyleValue } from '@/components/preview-style-control';
 import { PreviewModeToggle, type PreviewMode } from '@/components/preview-mode-toggle';
 import { ShowIncludesControl } from '@/components/show-includes-control';
@@ -24,6 +26,22 @@ import {
 // Re-exported for back-compat: the AsciiDoc file-name rule now lives in lib/asciidoc/file-name
 // (single presentation copy of the domain rule), but existing callers import it from here.
 export { isAsciiDocumentFile as isAsciiDocFile } from '@/lib/asciidoc/file-name';
+
+/**
+ * The last render's stage costs as overlay rows, or nothing before one has been measured.
+ *
+ * The mapping lives here rather than in the overlay because the two preview formats report
+ * structurally different things, and each is the authority on how to read its own figures.
+ */
+function webPreviewStatRows(timings: RenderTimings | null | undefined): readonly RenderStatRow[] {
+  if (timings === null || timings === undefined) return [];
+  return [
+    { label: 'parse', value: timings.parseMs, unit: 'ms' },
+    { label: 'convert', value: timings.convertMs, unit: 'ms' },
+    { label: 'post-process', value: timings.postProcessMs, unit: 'ms' },
+    { label: 'total', value: timings.totalMs, unit: 'ms' },
+  ];
+}
 
 /** The diagram render-warning code shown as an error (a genuine draw failure); the rest are warnings. */
 const DIAGRAM_ERROR_CODE: DiagnosticCode = 'malformed-diagram';
@@ -200,7 +218,7 @@ export function AsciiDocPreview({
   // Default image base path: AsciiDoc image macros reference files by path, so point Asciidoctor's
   // `imagesdir` at the project's image endpoint (see GET /projects/:id/images/*).
   const imagesDirectory = `${API_BASE_URL}/projects/${projectId}/images`;
-  const { html, state, error, previewRef, mathPresent, diagramsPresent } = useAsciidocPreview({
+  const { html, state, error, previewRef, mathPresent, diagramsPresent, timings } = useAsciidocPreview({
     content,
     isEnabled,
     scrollToLine,
@@ -368,7 +386,8 @@ export function AsciiDocPreview({
   }, [html]);
 
   return (
-    <div className="flex flex-col h-full">
+    // `relative` positions the development-only render-cost overlay against the whole panel.
+    <div className="relative flex flex-col h-full">
       <div className="flex items-center justify-between px-3 py-1.5 border-b shrink-0">
         {/* Left anchor: the HTML/PDF switch sits in the SAME position in both preview modes so the
             header stays stable when the mode changes. Falls back to a static label when this preview
@@ -447,6 +466,10 @@ export function AsciiDocPreview({
           />
         </div>
       )}
+
+      {/* Outside the scroll container, and so outside `.asciidoc-preview-content`: the document's own
+          styles stay scoped to the document, and this chrome cannot be mistaken for part of it. */}
+      <RenderStatsOverlay title="Web preview" rows={webPreviewStatRows(timings)} />
 
       <div ref={previewRef} className="flex-1 overflow-auto p-4" data-testid="preview-scroll-container">
         {!isEnabled || state === 'idle' ? (

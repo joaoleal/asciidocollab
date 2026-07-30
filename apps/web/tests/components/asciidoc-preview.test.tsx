@@ -456,3 +456,40 @@ describe('AsciiDocPreview', () => {
     });
   });
 });
+
+// ── Render-cost overlay ──────────────────────────────────────────────────────
+
+describe('AsciiDocPreview render-cost overlay', () => {
+  it('shows what the last render cost, outside the document content', () => {
+    mockUsePreview.mockReturnValue({
+      html: '<h1>Hello</h1>',
+      state: 'up-to-date',
+      error: null,
+      previewRef: fakeReference,
+      timings: { parseMs: 4, convertMs: 18, postProcessMs: 3, totalMs: 27 },
+    });
+
+    const { container } = render(
+      <AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />,
+    );
+
+    expect(screen.getByText('27 ms')).toBeInTheDocument();
+    // Document-rendering styles are scoped to `.asciidoc-preview-content`; app chrome inside it would
+    // be styled as though it were part of the author's document.
+    expect(container.querySelector('.asciidoc-preview-content')?.textContent).not.toContain('27 ms');
+  });
+
+  it('shows no cost overlay before a render has been measured', () => {
+    mockUsePreview.mockReturnValue({
+      html: '<h1>Hello</h1>',
+      state: 'up-to-date',
+      error: null,
+      previewRef: fakeReference,
+      timings: null,
+    });
+
+    render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+
+    expect(screen.queryByText(/render cost/i)).not.toBeInTheDocument();
+  });
+});

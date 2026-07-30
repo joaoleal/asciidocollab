@@ -31,7 +31,9 @@ import type {
   FromWorker,
   GeneratedAsset,
   IncludeAssembler,
+  PdfRenderStages,
   PdfSourceMap,
+  PdfVmStages,
   PipelineStage,
   PipelineStageKind,
   PopulateResult,
@@ -117,6 +119,8 @@ export type ConvertOutcome =
       readonly diagnostics: readonly ConvertDiagnosticInput[];
       /** The engine-emitted block source map for scroll sync, when the convert produced one. */
       readonly sourceMap?: PdfSourceMap;
+      /** What the stages inside the render VM cost, when the convert was able to measure them. */
+      readonly vmStages?: PdfVmStages;
     }
   | { readonly ok: false; readonly error: RenderError };
 
@@ -294,7 +298,10 @@ export class PdfRenderController {
     // Warm the VM (cold start reported exactly once).
     const warmupStartedAt = this.now();
     const { coldStart } = await this.deps.vm.warmup();
-    const coldStartMs = coldStart ? this.now() - warmupStartedAt : undefined;
+    // Boot time, which is `0` for an already-warm VM. Distinct from `coldStartMs`: that one is only
+    // ever the session's first render, while this is a per-render figure the breakdown always carries.
+    const vmBootMs = coldStart ? this.now() - warmupStartedAt : 0;
+    const coldStartMs = coldStart ? vmBootMs : undefined;
     if (coldStart) {
       this.emitProgress(requestId, PHASE.VM_INIT);
     }
@@ -303,7 +310,9 @@ export class PdfRenderController {
     }
 
     // Map the snapshot into the VFS; a missing root is a fatal, structured failure.
+    const populateStartedAt = this.now();
     const populated = this.deps.populate(snapshot, changedPaths);
+    const populateMs = this.now() - populateStartedAt;
     if (!populated.rootPresent) {
       this.postError({
         requestId,
@@ -327,7 +336,9 @@ export class PdfRenderController {
       includeAssembler: this.deps.buildIncludeAssembler(),
       resolveSandboxedPath: this.deps.resolveSandboxedPath,
     });
+    const pipelineStartedAt = this.now();
     const pipelineOutcome = await runPipeline(pipeline.stages, pipeline.context);
+    const pipelineMs = this.now() - pipelineStartedAt;
     if (this.isSuperseded(request) || pipelineOutcome.cancelled) {
       return;
     }
@@ -342,7 +353,9 @@ export class PdfRenderController {
 
     // Convert.
     this.emitProgress(requestId, PHASE.CONVERTING);
+    const convertStartedAt = this.now();
     const converted = await this.deps.runConvert(request);
+    const convertMs = this.now() - convertStartedAt;
     if (this.isSuperseded(request)) {
       return;
     }
@@ -359,10 +372,24 @@ export class PdfRenderController {
       normalizeConvertDiagnostic(diagnostic, snapshot.rootPath),
     );
     const allDiagnostics: readonly RenderDiagnostic[] = [...pipelineOutcome.diagnostics, ...normalized];
+    // The in-VM figures sit INSIDE `convertMs` — they subdivide it rather than adding to it, which is
+    // why they are spread into the same breakdown instead of being reported beside it. A convert that
+    // measured none simply contributes no keys.
+    const stages: PdfRenderStages = {
+      vmBootMs,
+      populateMs,
+      pipelineMs,
+      convertMs,
+      ...converted.vmStages,
+    };
     const stats: RenderStats = {
       renderMs: this.now() - startedAt,
+      stages,
       cacheHits: countingCache.hits(),
-      rasterFallbacks: 0,
+      // Counted by the stage that does the rendering. It was reported as a flat `0` for as long as
+      // the field existed, which reads as "nothing rasterized" — a claim about the render rather
+      // than the absence of one.
+      rasterFallbacks: pipelineOutcome.rasterFallbacks,
       ...(coldStartMs === undefined ? {} : { coldStartMs }),
     };
 

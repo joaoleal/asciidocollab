@@ -105,13 +105,16 @@ function makeSnapshot(files: Record<string, string>, rootPath = 'main.adoc'): Pr
   };
 }
 
+/** A stage breakdown of zeros: this fixture's render cost is not what the tests below are about. */
+const NO_STAGE_COST = { vmBootMs: 0, populateMs: 0, pipelineMs: 0, convertMs: 0 };
+
 function makeResult(requestId: string, sourceMap?: RenderResult['sourceMap']): RenderResult {
   return {
     requestId,
     mode: 'preview',
     pdf: new Blob(['%PDF'], { type: 'application/pdf' }),
     diagnostics: [],
-    stats: { renderMs: 1, cacheHits: 0, rasterFallbacks: 0 },
+    stats: { renderMs: 1, cacheHits: 0, rasterFallbacks: 0, stages: NO_STAGE_COST },
     ...(sourceMap === undefined ? {} : { sourceMap }),
   };
 }
@@ -253,6 +256,33 @@ describe('usePdfPreview', () => {
 
     expect(result.current.diagnostics).toHaveLength(1);
     expect(result.current.diagnostics[0]!.code).toBe('remote-skipped');
+  });
+
+  it('surfaces what the render cost, as the engine reported it', () => {
+    const { result } = renderHook(() =>
+      usePdfPreview({ snapshot: makeSnapshot({ 'main.adoc': '= Doc' }), isEnabled: true }),
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    const withStats: RenderResult = {
+      ...makeResult('1'),
+      stats: {
+        coldStartMs: 900,
+        renderMs: 3200,
+        cacheHits: 4,
+        rasterFallbacks: 1,
+        stages: { vmBootMs: 900, populateMs: 40, pipelineMs: 260, convertMs: 2000 },
+      },
+    };
+    act(() => lastWorker().emit({ type: 'result', result: withStats }));
+
+    expect(result.current.stats).toEqual({
+      coldStartMs: 900,
+      renderMs: 3200,
+      cacheHits: 4,
+      rasterFallbacks: 1,
+      stages: { vmBootMs: 900, populateMs: 40, pipelineMs: 260, convertMs: 2000 },
+    });
   });
 
   it('exposes a fatal error and stops rendering', () => {

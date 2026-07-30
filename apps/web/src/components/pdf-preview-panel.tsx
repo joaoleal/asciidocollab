@@ -11,9 +11,10 @@ import {
   type PDFDocumentProxy,
   type RenderTask,
 } from "pdfjs-dist";
-import type { PdfSourceMap, RenderDiagnostic, RenderPhase } from "@asciidocollab/asciidoc-pdf";
+import type { PdfSourceMap, RenderDiagnostic, RenderPhase, RenderStats } from "@asciidocollab/asciidoc-pdf";
 import { Button } from "@/components/ui/button";
 import { PdfDiagnostics } from "@/components/pdf-diagnostics";
+import { RenderStatsOverlay, type RenderStatRow } from "@/components/preview/render-stats-overlay";
 import { PreviewModeToggle, type PreviewMode } from "@/components/preview-mode-toggle";
 import type { ScrollRequest } from "@/hooks/use-asciidoc-preview";
 import { assembledEntryAtPdfPosition } from "@/lib/pdf/pdf-click-to-source";
@@ -281,6 +282,39 @@ function findSourceMapEntry(
   return sourceMap[found];
 }
 
+/**
+ * The page-formatted render's figures as overlay rows: the whole-render counters first, then each
+ * stage that was actually measured.
+ *
+ * A stage the render could not measure is left out entirely rather than shown as `0 ms`. The in-VM
+ * stages are optional precisely because "not measured" and "took no time" are different facts, and
+ * a breakdown that renders them the same way invites the wrong conclusion about where the time goes.
+ */
+function pageRenderStatRows(stats: RenderStats | undefined): readonly RenderStatRow[] {
+  if (stats === undefined) return [];
+  const { stages } = stats;
+  const rows: RenderStatRow[] = [
+    { label: "render", value: stats.renderMs, unit: "ms" },
+    { label: "cache hits", value: stats.cacheHits },
+    { label: "raster fallbacks", value: stats.rasterFallbacks },
+    { label: "vm boot", value: stages.vmBootMs, unit: "ms" },
+    { label: "populate", value: stages.populateMs, unit: "ms" },
+    { label: "pipeline", value: stages.pipelineMs, unit: "ms" },
+    { label: "convert", value: stages.convertMs, unit: "ms" },
+  ];
+  const inVm: readonly (readonly [string, number | undefined])[] = [
+    ["parse", stages.parseMs],
+    ["converter walk", stages.converterWalkMs],
+    ["dry runs", stages.dryRunMs],
+    ["fonts", stages.fontMs],
+    ["serialize", stages.serializeMs],
+  ];
+  for (const [label, value] of inVm) {
+    if (value !== undefined) rows.push({ label, value, unit: "ms" });
+  }
+  return rows;
+}
+
 /** Presentational contract for the live PDF preview surface; all behaviour is injected. */
 export interface PdfPreviewPanelProperties {
   /** The most recent rendered PDF, or `null` before the first render completes. */
@@ -291,6 +325,8 @@ export interface PdfPreviewPanelProperties {
   phase?: RenderPhase;
   /** Non-fatal warnings gathered while producing the preview. */
   diagnostics?: readonly RenderDiagnostic[];
+  /** What the latest render cost, for the development-only cost overlay. */
+  stats?: RenderStats;
   /**
    * Invoked with a diagnostic's source location so the editor can reveal it.
    *
@@ -378,6 +414,7 @@ export function PdfPreviewPanel({
   isRendering,
   phase,
   diagnostics,
+  stats,
   onSelectLocation,
   onNavigateToSource,
   onNavigateToExactSource,
@@ -825,7 +862,8 @@ export function PdfPreviewPanel({
       aria-label="PDF preview"
       aria-busy={isRendering}
       className={cn(
-        "flex h-full flex-col overflow-hidden rounded-md border border-border bg-muted/30",
+        // `relative` positions the development-only render-cost overlay against the whole panel.
+        "relative flex h-full flex-col overflow-hidden rounded-md border border-border bg-muted/30",
         className
       )}
     >
@@ -958,6 +996,10 @@ export function PdfPreviewPanel({
           This file isn&apos;t part of the main document; it&apos;s previewed on its own.
         </div>
       ) : null}
+
+      {/* Panel chrome, outside the scrolling page stack, so it never scrolls away from what it
+          describes and never sits among the rendered pages. */}
+      <RenderStatsOverlay title="Page preview" rows={pageRenderStatRows(stats)} />
 
       <div ref={scrollReference} className="relative flex-1 overflow-auto">
         {/* The stack grows to `max-content` (as wide as the widest page) but never narrower than the

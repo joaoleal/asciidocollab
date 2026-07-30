@@ -760,3 +760,75 @@ describe('invokeConvert — failure', () => {
     expect(result.error.code).toBe(CONVERT_ERROR_CODES.READ_OUTPUT_FAILED);
   });
 });
+
+// ---------------------------------------------------------------------------
+// In-VM stage timings.
+// ---------------------------------------------------------------------------
+
+describe('invokeConvert — in-VM stage timings', () => {
+  it('times the stages that only exist inside the VM, including the dry runs', async () => {
+    const vm = new FakeVm();
+    await invokeConvert({ vm, request: request() });
+
+    const code = vm.evalCalls.find((program) => program.includes('convert_file')) ?? '';
+    // The dry runs are the figure this instrumentation exists for: Asciidoctor-PDF lays every
+    // keep-together block out twice, and no measurement taken outside the VM can separate that cost
+    // from the rest of the conversion.
+    expect(code).toContain(':dry_run');
+    expect(code).toContain(':parse');
+    // Carried out on the SAME result file the convert outcome already uses, rather than a second
+    // write-and-read of its own.
+    expect(code).toContain("'timings'");
+    expect(code).toContain("File.write('/out/result.json'");
+  });
+
+  it('carries the figures the convert program reported back on the result', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: [],
+        timings: { parseMs: 40, converterWalkMs: 900, dryRunMs: 1500, fontMs: 260, serializeMs: 300 },
+      }),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.vmStages).toEqual({
+      parseMs: 40,
+      converterWalkMs: 900,
+      dryRunMs: 1500,
+      fontMs: 260,
+      serializeMs: 300,
+    });
+  });
+
+  it('reports no in-VM figures at all when the convert reported none', async () => {
+    const vm = new FakeVm();
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    // Absent, never zeroed: a stage that could not be measured must not read as a stage that cost
+    // nothing, or the breakdown invites exactly the wrong conclusion about where the time goes.
+    expect(result.vmStages).toBeUndefined();
+  });
+
+  it('drops a figure that is not a usable duration rather than passing it through', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: [],
+        timings: { parseMs: 40, converterWalkMs: 'slow', dryRunMs: -3, fontMs: null },
+      }),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.vmStages).toEqual({ parseMs: 40 });
+  });
+});

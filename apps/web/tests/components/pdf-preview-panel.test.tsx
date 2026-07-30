@@ -1148,4 +1148,57 @@ describe('PdfPreviewPanel', () => {
       screen.getByText(/remote image was skipped/i)
     ).toBeInTheDocument();
   });
+  test('shows what the last render cost, stage by stage', () => {
+    render(
+      <PdfPreviewPanel
+        pdf={makePdf()}
+        isRendering={false}
+        stats={{
+          renderMs: 3200,
+          cacheHits: 4,
+          rasterFallbacks: 1,
+          coldStartMs: 900,
+          stages: {
+            vmBootMs: 900,
+            populateMs: 40,
+            pipelineMs: 260,
+            convertMs: 2000,
+            parseMs: 30,
+            converterWalkMs: 700,
+            dryRunMs: 1200,
+            fontMs: 250,
+            serializeMs: 180,
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByText('render')).toBeInTheDocument();
+    expect(screen.getByText('3200 ms')).toBeInTheDocument();
+    // The dry runs are the figure the page-format instrumentation exists to expose.
+    expect(screen.getByText('dry runs')).toBeInTheDocument();
+    expect(screen.getByText('1200 ms')).toBeInTheDocument();
+    // Counters are counts, not durations.
+    expect(screen.getByText('raster fallbacks')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
+  });
+
+  test('omits a stage the render could not measure rather than showing it as free', () => {
+    render(
+      <PdfPreviewPanel
+        pdf={makePdf()}
+        isRendering={false}
+        stats={{
+          renderMs: 120,
+          cacheHits: 0,
+          rasterFallbacks: 0,
+          stages: { vmBootMs: 0, populateMs: 10, pipelineMs: 20, convertMs: 90 },
+        }}
+      />
+    );
+
+    expect(screen.getByText('convert')).toBeInTheDocument();
+    expect(screen.queryByText('dry runs')).not.toBeInTheDocument();
+    expect(screen.queryByText('font')).not.toBeInTheDocument();
+  });
 });

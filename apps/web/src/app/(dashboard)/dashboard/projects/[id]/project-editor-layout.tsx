@@ -988,6 +988,7 @@ export function ProjectEditorLayout({
     phase: previewPhase,
     diagnostics: previewDiagnostics,
     sourceMap: previewSourceMap,
+    stats: previewStats,
   } = usePdfPreview({
     snapshot: previewSnapshot,
     isEnabled: pdfPreviewActive,
@@ -1422,6 +1423,7 @@ export function ProjectEditorLayout({
                     isRendering={isPreviewRendering}
                     phase={previewPhase}
                     diagnostics={previewDiagnostics}
+                    stats={previewStats}
                     onSelectLocation={handleDiagnosticLocation}
                     onNavigateToSource={handlePdfSourceNavigate}
                     onNavigateToExactSource={handlePdfExactSourceNavigate}

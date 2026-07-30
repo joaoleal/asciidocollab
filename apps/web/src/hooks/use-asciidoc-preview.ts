@@ -4,36 +4,10 @@ import DOMPurify from 'dompurify';
 import { PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS } from '@/lib/editor-config';
 import { createRenderWorker } from '@/lib/create-render-worker';
 import { createMaxWaitDebounce, type MaxWaitDebounce } from '@/lib/max-wait-debounce';
+import type { RenderRequest, RenderResult, RenderTimings } from '@/workers/render-protocol';
 
 /** Lifecycle state of the preview panel. */
 export type PreviewState = 'idle' | 'pending' | 'rendering' | 'up-to-date' | 'error';
-
-interface RenderRequest {
-  requestId: number;
-  content: string;
-  imagesDir?: string;
-  mainPath?: string;
-  files?: Record<string, string>;
-  rootFileId?: string | null;
-  openFileId?: string;
-  /** When false (default), the assembler hides included bodies and emits placeholders. */
-  showIncludes?: boolean;
-  /** Project-level render-config attributes (soft-defaulted), seeded beneath the document's own. */
-  projectAttributes?: Record<string, string>;
-  /** When false, the render omits the `data-source-line` hints this panel navigates by. */
-  sourceLineHints?: boolean;
-}
-
-interface RenderResult {
-  requestId: number;
-  ok: boolean;
-  html: string | null;
-  error: string | null;
-  /** True when the worker detected in-effect STEM math (resolved `:stem:` + stem markup). */
-  mathPresent?: boolean;
-  /** True when the worker emitted ≥1 `adc-diagram` placeholder (a diagram block is present). */
-  diagramsPresent?: boolean;
-}
 
 /**
  * A scroll request object. Each click in the editor produces a new instance so
@@ -109,6 +83,14 @@ export interface UseAsciidocPreviewResult {
    * lazy-load the heavy diagram engines (mermaid/vega/graphviz) only when a diagram is present.
    */
   diagramsPresent: boolean;
+  /**
+   * What the most recent SUCCESSFUL render cost, by stage, or null before the first one completes.
+   *
+   * A failed render leaves this at the last successful figures rather than clearing them: it carries
+   * no breakdown of its own, and both consumers — the development overlay and the delay derived from
+   * measured cost — are better served by the last real measurement of this document than by nothing.
+   */
+  timings: RenderTimings | null;
 }
 
 /**
@@ -133,6 +115,7 @@ export function useAsciidocPreview({
   const [error, setError] = useState<string | null>(null);
   const [mathPresent, setMathPresent] = useState(false);
   const [diagramsPresent, setDiagramsPresent] = useState(false);
+  const [timings, setTimings] = useState<RenderTimings | null>(null);
 
   // Held in a ref so the debounced render always posts the current base path without
   // re-running the debounce effects when it changes (it is stable per editor session).
@@ -180,6 +163,8 @@ export function useAsciidocPreview({
         // The `adc-diagram` placeholders survive DOMPurify (a plain div with data-* attributes), so
         // the sanitized HTML still carries the blocks the lazily-loaded engine will hydrate.
         setDiagramsPresent(result.diagramsPresent === true);
+        // Only ever replaced by another successful render's figures — see `timings` on the result type.
+        if (result.timings !== undefined) setTimings(result.timings);
         setError(null);
         setState('up-to-date');
       } else {
@@ -308,5 +293,5 @@ export function useAsciidocPreview({
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [scrollToLine]);
 
-  return { html, state, error, previewRef: previewReference, mathPresent, diagramsPresent };
+  return { html, state, error, previewRef: previewReference, mathPresent, diagramsPresent, timings };
 }

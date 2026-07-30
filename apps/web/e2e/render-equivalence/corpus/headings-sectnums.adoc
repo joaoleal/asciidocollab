@@ -1,0 +1,22 @@
+= Numbered Headings
+:sectnums:
+:sectnumlevels: 4
+:idprefix:
+:idseparator: -
+
+Section numbering is applied by the engine, so a numbering change is a rendering change even when
+every heading's text is untouched.
+
+== First Chapter
+
+=== First Section
+
+==== First Subsection
+
+===== Unnumbered At This Depth
+
+Beyond `sectnumlevels` the engine stops numbering; the boundary is part of what is being compared.
+
+== Second Chapter
+
+=== Second Section

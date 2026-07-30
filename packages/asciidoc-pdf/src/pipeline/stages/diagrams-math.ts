@@ -664,13 +664,28 @@ interface RenderRequestForBlock {
 }
 
 /**
+ * What this run of the stage did, beyond rewriting the document and reporting diagnostics.
+ *
+ * Mutable and threaded through the render path because the count is accumulated across every block
+ * and inline macro in the document, and the stage returns once at the end.
+ */
+interface RenderTally {
+  /** Renders that produced a PNG because the SVG used something the PDF engine cannot draw. */
+  rasterFallbacks: number;
+}
+
+/**
  * Resolve a block to a placed {@link GeneratedAsset} (rendering on a cache miss, reusing on a hit) or
  * `null` when the shim reports the source malformed. Ensures the asset bytes are present in the VFS
- * and records the raster-fallback diagnostic when a render fell back to PNG.
+ * and records the raster-fallback diagnostic — and tallies it — when a render fell back to PNG.
+ *
+ * A cache hit is deliberately not counted, matching the diagnostic beside it: reusing an asset that
+ * once rasterized is not a render that fell back, and the hit is already reported on its own.
  */
 async function renderOrReuse(
   context: StageContext,
   request: RenderRequestForBlock,
+  tally: RenderTally,
 ): Promise<GeneratedAsset | null> {
   const sourceHash = computeSourceHash({
     source: request.source,
@@ -705,6 +720,7 @@ async function renderOrReuse(
     };
     context.cache.set(asset);
     if (asset.rasterFallback) {
+      tally.rasterFallbacks += 1;
       context.diagnostics.report({
         severity: SEVERITY_WARNING,
         code: DIAGNOSTIC_RASTERIZED,
@@ -754,14 +770,15 @@ async function runDiagramsMath(context: StageContext): Promise<StageResult> {
 
   const resource = rootPath;
   const out: string[] = [];
+  const tally: RenderTally = { rasterFallbacks: 0 };
 
   for (const event of scanDocument(original)) {
     if (event.kind === 'block') {
-      out.push(...(await handleBlock(context, event.block, resource)));
+      out.push(...(await handleBlock(context, event.block, resource, tally)));
     } else if (event.kind === 'verbatim') {
       out.push(...event.lines);
     } else {
-      out.push(await rewriteInlineMath(context, event, resource));
+      out.push(await rewriteInlineMath(context, event, resource, tally));
     }
   }
 
@@ -769,7 +786,7 @@ async function runDiagramsMath(context: StageContext): Promise<StageResult> {
   if (rewritten !== original) {
     context.vfs.writeText(rootVfsPath, rewritten);
   }
-  return {};
+  return { rasterFallbacks: tally.rasterFallbacks };
 }
 
 /**
@@ -803,6 +820,7 @@ async function handleBlock(
   context: StageContext,
   block: ScannedBlock,
   resource: string,
+  tally: RenderTally,
 ): Promise<readonly string[]> {
   if (block.category === 'diagram-unsupported') {
     context.diagnostics.report({
@@ -848,15 +866,19 @@ async function handleBlock(
     params: block.params,
     title: block.title,
   });
-  const asset = await renderOrReuse(context, {
-    shim,
-    source: block.source,
-    params: block.params,
-    category: block.category,
-    resource,
-    line: block.line,
-    altText,
-  });
+  const asset = await renderOrReuse(
+    context,
+    {
+      shim,
+      source: block.source,
+      params: block.params,
+      category: block.category,
+      resource,
+      line: block.line,
+      altText,
+    },
+    tally,
+  );
   if (asset === null) {
     return block.originalBlock;
   }
@@ -876,6 +898,7 @@ async function rewriteInlineMath(
   context: StageContext,
   event: { readonly line: string; readonly matches: readonly InlineMatch[] },
   resource: string,
+  tally: RenderTally,
 ): Promise<string> {
   if (event.matches.length === 0) {
     return event.line;
@@ -899,15 +922,19 @@ async function rewriteInlineMath(
       source: match.block.source,
       params: match.block.params,
     });
-    const asset = await renderOrReuse(context, {
-      shim,
-      source: match.block.source,
-      params: match.block.params,
-      category: 'math',
-      resource,
-      line: match.block.line,
-      altText,
-    });
+    const asset = await renderOrReuse(
+      context,
+      {
+        shim,
+        source: match.block.source,
+        params: match.block.params,
+        category: 'math',
+        resource,
+        line: match.block.line,
+        altText,
+      },
+      tally,
+    );
     if (asset === null) {
       result += macro;
       continue;

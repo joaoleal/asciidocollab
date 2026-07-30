@@ -1,0 +1,52 @@
+<h1 data-source-line="1" data-source-file="source-blocks.adoc">Source Blocks</h1>
+<div id="__src_paragraph_4" data-source-line="4" data-source-file="source-blocks.adoc" class="paragraph">
+<p>A declared language reaches the app&#8217;s highlighting pass; an undeclared one deliberately does not.</p>
+</div>
+<div id="__src_listing_7" data-source-line="6" data-source-file="source-blocks.adoc" class="listingblock">
+<div class="content">
+<pre class="highlight hljs"><code class="language-ruby" data-lang="ruby"><span class="hljs-keyword">def</span> <span class="hljs-title function_">greet</span>(<span class="hljs-params">name</span>)
+  puts <span class="hljs-string">&quot;Hello, <span class="hljs-subst">#{name}</span>&quot;</span>
+<span class="hljs-keyword">end</span></code></pre>
+</div>
+</div>
+<div id="__src_listing_14" data-source-line="13" data-source-file="source-blocks.adoc" class="listingblock">
+<div class="content">
+<pre class="highlight hljs"><code class="language-javascript" data-lang="javascript"><span class="hljs-keyword">export</span> <span class="hljs-keyword">function</span> <span class="hljs-title function_">greet</span>(<span class="hljs-params">name</span>) {
+  <span class="hljs-variable language_">console</span>.<span class="hljs-title function_">log</span>(<span class="hljs-string">`Hello, <span class="hljs-subst">${name}</span>`</span>);
+}</code></pre>
+</div>
+</div>
+<div id="__src_listing_21" data-source-line="20" data-source-file="source-blocks.adoc" class="listingblock">
+<div class="content">
+<pre class="highlight"><code>this block declares no language, so nothing may tokenise it
+  indentation and &lt;angle brackets&gt; must survive verbatim</code></pre>
+</div>
+</div>
+<div id="__src_listing_26" data-source-line="26" data-source-file="source-blocks.adoc" class="listingblock">
+<div class="content">
+<pre>A plain listing block, with no source style at all.</pre>
+</div>
+</div>
+<div id="__src_listing_31" data-source-line="30" data-source-file="source-blocks.adoc" class="listingblock">
+<div class="content">
+<pre class="highlight"><code class="language-ruby" data-lang="ruby">require 'json' <i class="conum" data-value="1"></i><b>(1)</b>
+JSON.generate({ 'ok' =&gt; true }) <i class="conum" data-value="2"></i><b>(2)</b></code></pre>
+</div>
+</div>
+<div id="__src_colist_36" data-source-line="36" data-source-file="source-blocks.adoc" class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Callouts number independently of the lists elsewhere in the document.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>A second callout, so an off-by-one in numbering is visible.</td>
+</tr>
+</table>
+</div>
+<div id="__src_literal_38" data-source-line="38" data-source-file="source-blocks.adoc" class="literalblock">
+<div class="content">
+<pre>A literal block, which is a different element from a listing block.</pre>
+</div>
+</div>

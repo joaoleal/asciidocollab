@@ -9,6 +9,7 @@ import type {
   RenderMode,
   RenderPhase,
   RenderRequest,
+  RenderStats,
   ToWorker,
   PdfExtensionBundle,
 } from '@asciidocollab/asciidoc-pdf';
@@ -72,6 +73,12 @@ export interface UsePdfPreviewResult {
    * falls back to a proportional sync).
    */
   sourceMap?: PdfSourceMap;
+  /**
+   * What the latest successful render cost, as the engine measured it, or undefined before the first
+   * one completes. The worker has always computed these figures and the result frame has always
+   * carried them; nothing on the main thread read them, so no one could see what a render cost.
+   */
+  stats?: RenderStats;
 }
 
 /**
@@ -94,6 +101,7 @@ export function usePdfPreview({
   const [diagnostics, setDiagnostics] = useState<readonly RenderDiagnostic[]>([]);
   const [error, setError] = useState<RenderError | undefined>(undefined);
   const [sourceMap, setSourceMap] = useState<PdfSourceMap | undefined>(undefined);
+  const [stats, setStats] = useState<RenderStats | undefined>(undefined);
 
   // Read at post time rather than captured, so the debounced render that eventually fires carries the
   // CURRENT bundle. A bundle arriving while a render was already queued must not send stale sources.
@@ -143,6 +151,7 @@ export function usePdfPreview({
         setPdf(message.result.pdf);
         setDiagnostics(message.result.diagnostics);
         setSourceMap(message.result.sourceMap);
+        setStats(message.result.stats);
         setError(undefined);
         setIsRendering(false);
       } else if (isErrorMessage(message)) {
@@ -224,5 +233,5 @@ export function usePdfPreview({
     };
   }, [snapshot]);
 
-  return { pdf, isRendering, phase, diagnostics, error, sourceMap };
+  return { pdf, isRendering, phase, diagnostics, error, sourceMap, stats };
 }

@@ -1,0 +1,58 @@
+<h1 data-source-line="1" data-source-file="diagrams-stem.adoc">Diagrams And Equations</h1>
+<div id="preamble">
+<div class="sectionbody">
+<div id="__src_paragraph_4" data-source-line="4" data-source-file="diagrams-stem.adoc" class="paragraph">
+<p>The comparison here is over what conversion EMITS — a placeholder for a diagram, delimited markup for
+an equation. Neither is drawn or typeset until after conversion, on the main thread.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_diagrams" data-source-line="7" data-source-file="diagrams-stem.adoc">Diagrams</h2>
+<div class="sectionbody">
+<div class="adc-diagram" data-diagram-engine="mermaid" data-source-line="9" data-source-file="diagrams-stem.adoc">graph TD;
+  A[Start] --&gt; B{Decision};
+  B --&gt;|yes| C[Do the thing];
+  B --&gt;|no| D[Stop];</div>
+<div class="adc-diagram" data-diagram-engine="graphviz" data-source-line="17" data-source-file="diagrams-stem.adoc">digraph G {
+  a -&gt; b;
+  b -&gt; c;
+}</div>
+<div class="adc-diagram" data-diagram-engine="vegalite" data-source-line="25" data-source-file="diagrams-stem.adoc">{
+  "mark": "bar",
+  "data": { "values": [ { "a": "A", "b": 28 } ] }
+}</div>
+<div id="__src_listing_34" data-source-line="33" data-source-file="diagrams-stem.adoc" class="listingblock">
+<div class="content">
+<pre>Alice -&gt; Bob: a diagram engine with no offline renderer</pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_equations" data-source-line="38" data-source-file="diagrams-stem.adoc">Equations</h2>
+<div class="sectionbody">
+<div id="__src_stem_41" data-source-line="40" data-source-file="diagrams-stem.adoc" class="stemblock">
+<div class="content">
+\$\sqrt{4} = 2\$
+</div>
+</div>
+<div id="__src_paragraph_45" data-source-line="45" data-source-file="diagrams-stem.adoc" class="paragraph">
+<p>An inline equation \$a^2 + b^2 = c^2\$ inside a sentence.</p>
+</div>
+<div id="__src_paragraph_47" data-source-line="47" data-source-file="diagrams-stem.adoc" class="paragraph">
+<p>A latexmath macro: \(\int_0^1 x\,dx = \tfrac{1}{2}\).</p>
+</div>
+<div id="__src_paragraph_49" data-source-line="49" data-source-file="diagrams-stem.adoc" class="paragraph">
+<p>An asciimath macro: \$sum_(i=1)^n i = (n(n+1))/2\$.</p>
+</div>
+<div id="__src_paragraph_51" data-source-line="51" data-source-file="diagrams-stem.adoc" class="paragraph">
+<p>A source block that merely CONTAINS delimiter-like characters and is not math at all:</p>
+</div>
+<div id="__src_listing_54" data-source-line="53" data-source-file="diagrams-stem.adoc" class="listingblock">
+<div class="content">
+<pre class="highlight hljs"><code class="language-ruby" data-lang="ruby">pattern = <span class="hljs-regexp">/\[0-9\]+/</span></code></pre>
+</div>
+</div>
+</div>
+</div>
