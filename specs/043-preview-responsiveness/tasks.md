@@ -164,7 +164,7 @@ visible; render a much larger document and confirm the reported timings grow acc
       it against the **unmodified current engine**, writing one HTML fixture per corpus document to
       `apps/web/e2e/render-equivalence/fixtures/previous-engine/`. This is the only moment this capture
       is possible (FR-023c, `contracts/render-equivalence.md` §G1 Reference capture)
-- [ ] T011 [US3] Run the baseline measurement pass against the unmodified application and write
+- [X] T011 [US3] Run the baseline measurement pass against the unmodified application and write
       `specs/043-preview-responsiveness/baseline.md`, recording for each figure the document used and
       its line count, the measured value, how it was obtained, and the date. Required coverage:
       time-to-first-render after a file switch (feeds SC-003); delay from last keystroke to refresh
@@ -192,7 +192,7 @@ without stacking refreshes on slow documents.
 pausing; the preview updates at least once during that stretch, showing text entered after the previous
 update.
 
-- [ ] T012 [US1] Extend `MaxWaitDebounce` in `apps/web/src/lib/max-wait-debounce.ts` with `flush()`
+- [X] T012 [US1] Extend `MaxWaitDebounce` in `apps/web/src/lib/max-wait-debounce.ts` with `flush()`
       and `setInProgress(busy)`, implementing the full transition table in
       `contracts/refresh-schedule.md` §S2: max-wait elapsing while a render is in progress
       **suppresses** and records `deferredByProgress`; `setInProgress(false)` with a deferred pending
@@ -200,18 +200,18 @@ update.
       the first without the second makes the guarantee fire once and lapse silently for the rest of
       the session, which is the same defect class this feature exists to fix (FR-004, FR-004a, FR-005,
       SC-001a)
-- [ ] T013 [US1] Remove the per-edit cleanup in `apps/web/src/hooks/use-asciidoc-preview.ts`
+- [X] T013 [US1] Remove the per-edit cleanup in `apps/web/src/hooks/use-asciidoc-preview.ts`
       (`:251-259`) that calls `cancel()` before every re-schedule and so re-arms the max-wait cap from
       zero on every keystroke, move cancellation to an unmount-only effect, and drive `setInProgress`
       from the hook's in-flight state (FR-001, FR-002, `contracts/refresh-schedule.md` §S1)
-- [ ] T014 [US1] Apply the identical fix in `apps/web/src/hooks/use-pdf-preview.ts` (`:222-225`) and
+- [X] T014 [US1] Apply the identical fix in `apps/web/src/hooks/use-pdf-preview.ts` (`:222-225`) and
       drive `setInProgress` from its existing `isRendering` state, so the page-formatted preview honours
       the same guarantee and self-limits on renders longer than the interval (FR-004)
-- [ ] T015 [P] [US1] Correct the `PREVIEW_MAX_WAIT_MS` documentation in
+- [X] T015 [P] [US1] Correct the `PREVIEW_MAX_WAIT_MS` documentation in
       `apps/web/src/lib/editor-config.ts` (`:23-28`) to state the actual contract — "at least once per
       maximum-staleness interval, or as soon as the refresh in progress finishes, whichever is later" —
       so the stated guarantee and the shipped behaviour agree (FR-004b)
-- [ ] T016 [US1] Deliver the story's acceptance coverage as `apps/web/e2e/preview-refresh-guarantee.spec.ts`:
+- [X] T016 [US1] Deliver the story's acceptance coverage as `apps/web/e2e/preview-refresh-guarantee.spec.ts`:
       continuous typing refreshes the preview at least once per interval on **both** preview formats;
       on a slow-rendering document at most one refresh is in progress at any moment and refreshes
       continue for as long as the typing does (SC-001, SC-001a)
@@ -229,7 +229,7 @@ when it dies, and switching never shows an error message or a blank panel.
 observe each switch showing the new file's rendered content with no intervening error message or blank
 panel, noticeably faster than a full application reload.
 
-- [ ] T017 [US2] Replace `apps/web/src/lib/create-render-worker.ts` with the retained, supervised
+- [X] T017 [US2] Replace `apps/web/src/lib/create-render-worker.ts` with the retained, supervised
       holder exposing exactly `acquireRenderWorker(handlers) → { post, release, retry }` per
       `contracts/refresh-schedule.md` §S4. **`release()` reaching zero consumers must NOT terminate the
       worker** — it arms an idle-retention timer, and `acquire()` cancels it, so a format switch or
@@ -245,23 +245,23 @@ panel, noticeably faster than a full application reload.
       `RENDER_WORKER_IDLE_RETENTION_MS` (60_000) as named constants in
       `apps/web/src/lib/editor-config.ts` (FR-006, FR-007, FR-007a, FR-012, FR-012a, FR-012b, FR-012c,
       data-model §RenderWorkerHolder)
-- [ ] T018 [US2] Consume the holder from `apps/web/src/hooks/use-asciidoc-preview.ts` — acquire once
+- [X] T018 [US2] Consume the holder from `apps/web/src/hooks/use-asciidoc-preview.ts` — acquire once
       per hook instance, release on unmount — and implement the file-switch sequence from
       `contracts/refresh-schedule.md` §S5: post immediately rather than waiting for the trailing delay
       (FR-005), keep the previous content visible with `state: 'rendering'` (FR-009), reset
       `previewRef.current.scrollTop` to 0 (FR-010), and discard superseded in-flight results via the
       existing `requestId` guard (FR-011). Expose `engineFailed` and `retryEngine` on the return value
       (`contracts/render-result.md` C2)
-- [ ] T019 [US2] Remove the file-keyed remount `key={selectedFile?.nodeId}` on `<AsciiDocPreview>` in
+- [X] T019 [US2] Remove the file-keyed remount `key={selectedFile?.nodeId}` on `<AsciiDocPreview>` in
       `apps/web/src/app/(dashboard)/dashboard/projects/[id]/project-editor-layout.tsx:1393`, and fix
       `apps/web/src/components/asciidoc-preview.tsx:452-453` so the "preview not available for this
       file type" message is shown only for files that genuinely cannot be previewed, never for
       `state === 'idle'` during a switch between two previewable files (FR-008, FR-009)
-- [ ] T020 [US2] Add the persistent engine-failure surface to
+- [X] T020 [US2] Add the persistent engine-failure surface to
       `apps/web/src/components/asciidoc-preview.tsx`: when `engineFailed` is set, stop restarting
       automatically and show a persistent error offering a manual retry that calls `retryEngine`
       (FR-012b, FR-012c)
-- [ ] T021 [US2] Deliver the story's acceptance coverage as `apps/web/e2e/preview-file-switch.spec.ts`:
+- [X] T021 [US2] Deliver the story's acceptance coverage as `apps/web/e2e/preview-file-switch.spec.ts`:
       repeated switching between two previewable files shows zero error messages and zero blank panels;
       switching web→page→web format does not repeat the engine-startup cost; **closing the preview
       panel and reopening it does not repeat it either** (FR-007a — the case a consumer-counted
@@ -283,18 +283,18 @@ follows the typing visibly more closely while the large document's preview is no
 
 **Depends on**: US3 — this is a data dependency (`RenderResult.timings.totalMs`), not a preference.
 
-- [ ] T022 [P] [US4] Create the pure function `adaptiveDelayMs(lastRenderMs: number | null): number` in
+- [X] T022 [P] [US4] Create the pure function `adaptiveDelayMs(lastRenderMs: number | null): number` in
       `apps/web/src/lib/preview/adaptive-delay.ts` implementing
       `clamp(lastRenderMs × 2, PREVIEW_ADAPTIVE_MIN_MS, PREVIEW_DEBOUNCE_MS)`, returning
       `PREVIEW_DEBOUNCE_MS` when `lastRenderMs` is `null`. Add `PREVIEW_ADAPTIVE_MIN_MS` (120) as a
       named constant in `apps/web/src/lib/editor-config.ts` — no literals at the call site
       (Principle I). The behaviour table in `contracts/refresh-schedule.md` §S3 is the specification
       (FR-003)
-- [ ] T023 [US4] Feed the most recent **successful** render's `timings.totalMs` into the schedule in
+- [X] T023 [US4] Feed the most recent **successful** render's `timings.totalMs` into the schedule in
       `apps/web/src/hooks/use-asciidoc-preview.ts` via `adaptiveDelayMs`, held in a ref and seeded
       `null`. A failed render carries no timings and must leave the delay unchanged rather than
       resetting it (FR-003, US4 scenario 4)
-- [ ] T024 [US4] Deliver the story's performance assertion as
+- [X] T024 [US4] Deliver the story's performance assertion as
       `apps/web/e2e/preview-adaptive-delay.spec.ts`: a ~100-line document refreshes within 200 ms of
       the last keystroke, and a ~15,000-line document refreshes no later than the figure recorded in
       `baseline.md`. Performance assertions are in scope here by explicit spec request (SC-005, plan
@@ -316,7 +316,7 @@ the equations are not re-typeset, and the scroll position is retained.
 **⚠️ Largest change surface in the feature.** The ~23 existing preview e2e specs assert against the
 rendered DOM, not the hook's `html` string, and are the primary regression net.
 
-- [ ] T025 [US5] Create `apps/web/src/lib/preview/morph-preview.ts` wrapping `morphdom` and exporting
+- [X] T025 [US5] Create `apps/web/src/lib/preview/morph-preview.ts` wrapping `morphdom` and exporting
       `morphPreview(container: HTMLElement, incoming: DocumentFragment): MorphOutcome`. Implement both
       delegated decisions from `contracts/morph-policy.md`: `getNodeKey` returns author `[[anchor]]`
       and auto-generated heading ids but **`undefined` for synthetic `__src_<context>_<line>` ids and
@@ -329,18 +329,18 @@ rendered DOM, not the hook's `html` string, and are the primary regression net.
       — getting `getNodeKey` backwards turns every insertion into a full-document rebuild while every
       other behaviour still looks correct (FR-013, FR-014, FR-015, FR-016, FR-017, FR-020a, FR-020b,
       research R2)
-- [ ] T026 [US5] Mark diagrams that failed to draw with an explicit marker attribute in
+- [X] T026 [US5] Mark diagrams that failed to draw with an explicit marker attribute in
       `apps/web/src/components/diagrams/render-diagrams.ts`, so the skip rule can distinguish
       "unchanged source" from "successfully drawn" and retry a failed diagram on the next refresh
       instead of freezing it on screen permanently (FR-016a)
-- [ ] T027 [US5] Change the sanitiser call at `apps/web/src/hooks/use-asciidoc-preview.ts:175` to
+- [X] T027 [US5] Change the sanitiser call at `apps/web/src/hooks/use-asciidoc-preview.ts:175` to
       `DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, RETURN_DOM_FRAGMENT: true })` — same
       sanitiser, same profile, same allow-list, same call site, return type only. The other three call
       sites (`asciidoc-paste.ts:40`, `use-html-export.ts:317`, `render-diagrams.ts:122`) are
       **untouched**. **Principle VIII/IX obligation**: this deliverable is not done until a payload
       rejected in string mode is proven rejected identically in fragment mode — same input, same
       verdict (FR-018, research R3, `contracts/render-result.md` C3)
-- [ ] T028 [US5] Move the commit into `apps/web/src/hooks/use-asciidoc-preview.ts`: sanitise to a
+- [X] T028 [US5] Move the commit into `apps/web/src/hooks/use-asciidoc-preview.ts`: sanitise to a
       fragment and `morphPreview` it into a new `outputRef`, adding `outputRef` and `renderNonce` to the
       return surface while **retaining `html`** as the render's identity for tests and the export path.
       `renderNonce` bumps after each successful commit because `html` is no longer a valid "the DOM
@@ -350,11 +350,11 @@ rendered DOM, not the hook's `html` string, and are the primary regression net.
       not as a follow-up task. Because `apps/web` jest is transpile-only and `tsc` excludes `tests/`,
       confirm the contract itself with `pnpm --filter @asciidocollab/web typecheck`, not with a green
       test run (`contracts/render-result.md` C2, research R8)
-- [ ] T029 [US5] Update `apps/web/src/components/asciidoc-preview.tsx`: drop
+- [X] T029 [US5] Update `apps/web/src/components/asciidoc-preview.tsx`: drop
       `dangerouslySetInnerHTML`, supply `outputRef` as the morph target, re-key the three effects
       currently depending on `html` (`:260`, `:308`, `:368`) onto `renderNonce`, and set `aria-busy` on
       the container while a render is in flight, clearing it on completion (FR-019, FR-020, FR-020c)
-- [ ] T030 [US5] Run the full existing preview e2e suite **unmodified** as the regression net
+- [X] T030 [US5] Run the full existing preview e2e suite **unmodified** as the regression net
       (`pnpm --filter @asciidocollab/web exec playwright test e2e/preview-` plus
       `editor-preview-*.spec.ts`, `collab-consistency-preview.spec.ts`, `project-preview.spec.ts`) and
       deliver the story's acceptance coverage as `apps/web/e2e/preview-morph-preservation.spec.ts`:
@@ -362,7 +362,7 @@ rendered DOM, not the hook's `html` string, and are the primary regression net.
       `scrollTop` across a refresh in an image-bearing document, and keyboard focus surviving a refresh
       wherever the focused element still exists (SC-006, SC-007, SC-007a). The existing scroll-sync and
       click-to-source specs MUST pass unmodified — that is the Principle VIII verification obligation
-- [ ] T031 [US5] Measure main-thread work during a sustained editing session on the same
+- [X] T031 [US5] Measure main-thread work during a sustained editing session on the same
       diagram-and-equation document used for the baseline, and confirm it is no greater than the figure
       recorded in `specs/043-preview-responsiveness/baseline.md`; record the post-change figure there
       alongside it. The plan's Principle XIII argument is that replacing a whole-document `innerHTML`
@@ -391,7 +391,7 @@ two preview formats still agree via a comparison that reads both outputs.
 it. G0's first run is expected to fail on divergences that predate this feature — a clean first run is
 more likely evidence that the normalisation is too permissive than that the renderer is perfect.
 
-- [ ] T032 [US6] Build the **pinned** HTML reference toolchain and its harness under
+- [X] T032 [US6] Build the **pinned** HTML reference toolchain and its harness under
       `apps/web/e2e/render-equivalence/harness/`: a digest-pinned base image, a `--frozen` locked gem
       closure, a fixed `SOURCE_DATE_EPOCH`, and an image tag derived from a hash of those definition
       files, by generalising `apps/web/e2e/pdf-parity/tools/reference-image.mjs` to build *a*
@@ -403,38 +403,38 @@ more likely evidence that the normalisation is too permissive than that the rend
       `contracts/render-equivalence.md` §G0 — including the canonical
       `<adc-diagram type="TYPE">SOURCE</adc-diagram>` reduction that both sides collapse to.
       **Anything not on that enumerated list that differs is a failure** (FR-025c, FR-025c-i, FR-025d)
-- [ ] T033 [US6] Add `apps/web/e2e/render-equivalence/web-format-reference.spec.ts` comparing in-app
+- [X] T033 [US6] Add `apps/web/e2e/render-equivalence/web-format-reference.spec.ts` comparing in-app
       web-format output against the canonical reference build for every corpus document, and triage the
       first run's divergences — each is either normalised via a named pass or enumerated as a deliberate
       divergence with justification. Zero unexplained differences. **This is the gate that discharges
       Principle XV** (FR-025c, FR-025d, SC-010d)
-- [ ] T034 [US6] Add `apps/web/e2e/render-equivalence/web-format-equivalence.spec.ts` comparing current
+- [X] T034 [US6] Add `apps/web/e2e/render-equivalence/web-format-equivalence.spec.ts` comparing current
       output against the `fixtures/previous-engine/` fixtures captured in T010, under the FR-024
       normalisation: inter-element whitespace and attribute **ordering** normalised away; attribute
       values, element structure, hierarchy and text compared; `id` attributes and
       `data-source-line`/`data-source-file` compared **exactly** and never normalised, because unlike
       whitespace they carry behaviour. This is a **regression** gate and does not discharge Principle XV
       (FR-025a, FR-024, FR-024a, SC-010, SC-010a)
-- [ ] T035 [US6] Extend `apps/web/e2e/pdf-parity/harness/pdftools.ts` with internal link-destination
+- [X] T035 [US6] Extend `apps/web/e2e/pdf-parity/harness/pdftools.ts` with internal link-destination
       extraction — walk each page's `/Annots` for `/Subtype /Link` and resolve the destination to a page
       and named target. Today the harness exposes `pageCount`, `extractText`, `pageInkMaps` and
       `compareInkMaps` only. Without this the third dimension of FR-025b is unimplementable and would
       quietly degrade to a two-dimension check still reported as satisfying the requirement (FR-025e,
       SC-010e)
-- [ ] T036 [US6] Add `apps/web/e2e/render-equivalence/cross-format-agreement.spec.ts` comparing
+- [X] T036 [US6] Add `apps/web/e2e/render-equivalence/cross-format-agreement.spec.ts` comparing
       web-formatted and page-formatted output on the three dimensions both media can express: rendered
       block text sequence, heading hierarchy and numbering, and cross-reference target set (using
       T035's extraction). Fonts, spacing, colour, page breaks and layout are explicitly **not**
       compared — those remain the province of the existing parity suite (FR-025, FR-025b, SC-010b,
       SC-010e)
-- [ ] T037 [US6] Upgrade `asciidoctor` from `^3.0.4` to `4.0.6` in `apps/web/package.json` and convert
+- [X] T037 [US6] Upgrade `asciidoctor` from `^3.0.4` to `4.0.6` in `apps/web/package.json` and convert
       the now-async API in `apps/web/src/workers/asciidoc-render.worker.ts` — `load`/`convert` return
       Promises, so `onmessage` (`:415-672`) becomes an async handler; the `requestId` staleness protocol
       is unaffected. **Re-verify each document API call explicitly against v4** — `findBy`,
       `getSourceLocation`, `getStyle`, `getSource`, `setId`, `getAttribute`, `convert` — because those
       objects are dynamically typed at that boundary, so a rename is a silent behaviour change rather
       than a compile error. Gates T033, T034 and T036 must all be green after the change (research R4)
-- [ ] T038 [US6] Measure conversion time and the downloaded size of the conversion code against
+- [X] T038 [US6] Measure conversion time and the downloaded size of the conversion code against
       `specs/043-preview-responsiveness/baseline.md`, record the result in that artifact, and run the
       pre-existing page-format parity suite **unchanged** to confirm the page-formatted path was not
       disturbed. Invoke it so it **actually runs** — `scripts/ci/pdf-parity.sh` directly, or
@@ -457,15 +457,15 @@ any other story.
 **Independent Test**: render a document past the observed failure threshold and confirm it either
 completes, or fails with a message naming the limit — not with an engine crash.
 
-- [ ] T039 [US7] Determine the page-formatted path's actual supported document size by measurement in
+- [X] T039 [US7] Determine the page-formatted path's actual supported document size by measurement in
       `packages/asciidoc-pdf`, characterising the out-of-memory failure observed at roughly 1,700
       lines / 80 pages, and record the measured bound in
       `specs/043-preview-responsiveness/baseline.md` (FR-027)
-- [ ] T040 [US7] Raise the supported bound to cover the measured range where the measurement supports
+- [X] T040 [US7] Raise the supported bound to cover the measured range where the measurement supports
       it, and where a document genuinely exceeds it, fail with a clear, actionable message naming the
       limit and what to do about it rather than an opaque engine crash — keeping the application usable.
       Implement in `packages/asciidoc-pdf/src/pipeline/` (FR-027, FR-027a)
-- [ ] T041 [US7] Re-measure the reported degradation of repeated renders in a reused **page-format
+- [X] T041 [US7] Re-measure the reported degradation of repeated renders in a reused **page-format
       render VM** (~3 s rising to ~11 s over eight consecutive renders, against 2.9–3.4 s for a fresh
       VM each time) on an **otherwise idle machine** — the original figures were taken while the e2e
       suite occupied the same machine, so they may measure contention rather than degradation — and
@@ -477,11 +477,11 @@ completes, or fails with a message naming the limit — not with an engine crash
       changes the profile they describe. Leaving them would keep an artifact describing an arrangement
       the product no longer uses, still cited as current, which is the same failure this task exists to
       end (FR-028, FR-028a, FR-028b, SC-012)
-- [ ] T042 [US7] Deliver the story's acceptance coverage as
+- [X] T042 [US7] Deliver the story's acceptance coverage as
       `apps/web/e2e/pdf-preview-large-document.spec.ts`: a document at least twice the previously
       observed failure threshold either renders to the page format successfully or fails with a message
       naming the supported limit — zero opaque engine crashes (SC-011)
-- [ ] T043 [US7] Re-run the page-format reference-parity suite after T041 and confirm SC-010c still
+- [X] T043 [US7] Re-run the page-format reference-parity suite after T041 and confirm SC-010c still
       holds. T038's check predates this story, and T041 may change page-format render-VM reuse — which
       is squarely on the path SC-010c covers, so "unchanged throughout this feature" is not established
       by a check taken before the change. Invoke it so it actually runs, per T038's caution (SC-010c)
@@ -493,14 +493,14 @@ parity after the change.
 
 ## Phase 10: Polish & Cross-Cutting Concerns
 
-- [ ] T044 [P] Audit every caller of `stripReservedAttributes` in
+- [X] T044 [P] Audit every caller of `stripReservedAttributes` in
       `packages/asciidoc-core/src/extraction/document-order.ts:32` **before changing it** —
       `include-graph.ts:81`, `attribute-scope.ts:85` and `attribute-scope.ts:183` — then either make it
       return a copy as its documentation claims, or document the in-place mutation it actually performs.
       This is the single authority feeding attribute scope, `{ref}` resolution and the include graph,
       and the in-place delete has been the real behaviour long enough that callers may depend on it.
       Independent of all seven stories; may land at any point after the audit (FR-026)
-- [ ] T045 [P] Write `apps/web/e2e/render-equivalence/README.md` documenting what each of the four
+- [X] T045 [P] Write `apps/web/e2e/render-equivalence/README.md` documenting what each of the four
       gates proves, which principle each discharges, why the page-format parity suite cannot serve as
       the web-format gate, and why the HTML oracle carries its own pinned definition set rather than
       sharing the PDF one — so those distinctions survive the next person to touch it

@@ -54,9 +54,10 @@ const collectCoverageFrom = [
   // jest runtime — Web/Shared Worker entry scripts (worker-global scope: `onconnect`,
   // `self`, no module exports) and the render-worker factory (`new Worker(new URL(...,
   // import.meta.url))`, which `import.meta` makes unloadable under the commonjs transform;
-  // it exists precisely so consumers MOCK it). Everything else is unit-tested.
+  // it exists precisely so consumers MOCK it). Everything else is unit-tested — including the
+  // render-worker holder, whose lifetime policy is unit-tested against the mocked spawn factory.
   '!src/**/*.worker.ts',
-  '!src/lib/create-render-worker.ts',
+  '!src/lib/spawn-render-worker.ts',
   '!src/lib/create-pdf-worker.ts',
   // Grammar-worker factory: `new Worker(new URL(…, import.meta.url))` again, unloadable under the
   // commonjs transform and existing precisely so consumers MOCK it. The engine behaviour it wires up

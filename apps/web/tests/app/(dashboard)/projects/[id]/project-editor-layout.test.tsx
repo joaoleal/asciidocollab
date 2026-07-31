@@ -530,8 +530,13 @@ describe('ProjectEditorLayout', () => {
     expect(lastPreviewContent).toBe('user typed content');
   });
 
-  // Issue 6: switching files must remount AsciiDocPreview so stale HTML is never shown
-  it('remounts AsciiDocPreview when switching between different AsciiDoc files', async () => {
+  // This test used to require the opposite — that switching files REMOUNTED the preview, on the
+  // grounds that a remount is what stops the previous file's HTML lingering. It buys that by throwing
+  // away the panel's render engine on every switch and resetting it to a state that reads as "this
+  // file cannot be previewed", which is the flash of "preview not available" the reader sees on every
+  // file switch. Keeping the previous render out of the way is the panel's own job, and it does it by
+  // discarding superseded results — not by being destroyed and rebuilt.
+  it('keeps the preview mounted across a switch between AsciiDoc files, handing it the new content', async () => {
     const { useFileSelection } = jest.requireMock('@/hooks/use-file-selection');
     useFileSelection.mockReturnValue({
       selectedFile: { nodeId: 'file-a', nodeName: 'a.adoc', nodePath: '/a.adoc', nodeType: 'file' },
@@ -559,8 +564,10 @@ describe('ProjectEditorLayout', () => {
 
     const secondPreviewElement = screen.getByTestId('asciidoc-preview');
 
-    // key={selectedFile.nodeId} must force a remount — a new DOM element must appear
-    expect(secondPreviewElement).not.toBe(firstPreviewElement);
+    // The same panel, still holding its engine, now previewing the other file.
+    expect(secondPreviewElement).toBe(firstPreviewElement);
+    const { AsciiDocPreview: MockPreview } = jest.requireMock('@/components/asciidoc-preview');
+    expect(MockPreview.mock.calls.at(-1)?.[0]?.content).toBe('= File B');
   });
 
   // Issue C1: AsciiDocEditor must receive projectId and fileNodeId for auto-save to work

@@ -224,14 +224,28 @@ export function usePdfPreview({
   }, [isEnabled]);
 
   // Debounce snapshot changes (the primary edit-driven render trigger).
+  //
+  // Deliberately WITHOUT a cleanup. React runs an effect's cleanup before every re-run, so cancelling
+  // here would cancel on every edit — which clears the max-wait cap along with the trailing timer and
+  // re-arms it from zero, so the cap could never elapse and the preview never refreshed during
+  // sustained typing. It also bought nothing: schedule() already replaces the pending run and restarts
+  // the trailing timer, which is all per-edit cancellation was ever achieving. Cancellation belongs to
+  // unmount alone, below.
   useEffect(() => {
     if (!isEnabled || snapshot === null) return;
     scheduleRender(snapshot);
-
-    return () => {
-      debounceReference.current?.cancel();
-    };
   }, [snapshot]);
+
+  // Mirror the render lifecycle into the debounce: while one is in flight the max-wait cap holds its
+  // run back instead of stacking a second render on it, and reporting completion — a result or an
+  // error alike, both of which clear `isRendering` — releases the held-back refresh immediately.
+  // Without that release the guarantee would fire once and then lapse for the rest of the session.
+  useEffect(() => {
+    debounceReference.current?.setInProgress(isRendering);
+  }, [isRendering]);
+
+  // Drop any pending render when the hook goes away, so nothing fires into a torn-down component.
+  useEffect(() => () => debounceReference.current?.cancel(), []);
 
   return { pdf, isRendering, phase, diagnostics, error, sourceMap, stats };
 }

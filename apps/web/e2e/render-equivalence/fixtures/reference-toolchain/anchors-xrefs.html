@@ -1,0 +1,57 @@
+<h1>Anchors And Cross References</h1>
+<div id="preamble">
+<div class="sectionbody">
+<div class="paragraph">
+<p>An identifier is behaviour, not presentation: change one and every reference to it silently stops
+resolving while the visible text stays identical.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="author-anchor">Section With An Author Anchor</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Referenced below by both cross-reference forms.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="hash-anchor">Section With A Shorthand Anchor</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Also referenced below.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="auto-identified-section">Auto Identified Section</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>This heading has no anchor of its own, so the engine derives one from its text.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="references">References</h2>
+<div class="sectionbody">
+<div class="ulist">
+<ul>
+<li>
+<p>Angle-bracket form: <a href="#author-anchor">Section With An Author Anchor</a></p>
+</li>
+<li>
+<p>Angle-bracket form with text: <a href="#hash-anchor">the shorthand anchor</a></p>
+</li>
+<li>
+<p>Macro form: <a href="#author-anchor">the author anchor</a></p>
+</li>
+<li>
+<p>To an auto-generated identifier: <a href="#auto-identified-section">the auto-identified section</a></p>
+</li>
+</ul>
+</div>
+<div id="block-anchor" class="paragraph">
+<p>A paragraph carrying its own anchor, referenced as <a href="#block-anchor">this paragraph</a>.</p>
+</div>
+</div>
+</div>

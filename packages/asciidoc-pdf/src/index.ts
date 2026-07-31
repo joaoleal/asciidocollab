@@ -21,6 +21,7 @@ export * from './vm/ruby-pdf-vm';
 export * from './vfs/populate';
 export * from './cache/content-address';
 export * from './pipeline/orchestrator';
+export * from './pipeline/document-size-limit';
 export * from './pipeline/stages/include-resolve';
 export * from './pipeline/stages/citations';
 export * from './pipeline/stages/diagrams-math';

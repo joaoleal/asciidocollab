@@ -24,7 +24,7 @@ This heading has no anchor of its own, so the engine derives one from its text.
 * Angle-bracket form: <<author-anchor>>
 * Angle-bracket form with text: <<hash-anchor,the shorthand anchor>>
 * Macro form: xref:author-anchor[the author anchor]
-* To an auto-generated identifier: <<_auto_identified_section,the auto-identified section>>
+* To an auto-generated identifier: <<auto-identified-section,the auto-identified section>>
 
 [[block-anchor]]
 A paragraph carrying its own anchor, referenced as <<block-anchor,this paragraph>>.

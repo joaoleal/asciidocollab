@@ -9,7 +9,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { strFromU8, unzipSync } from 'fflate';
 
 // The real factory reaches for `import.meta.url`, which the CommonJS test runtime cannot parse.
-jest.mock('@/lib/create-render-worker', () => ({ createRenderWorker: jest.fn() }));
+jest.mock('@/lib/spawn-render-worker', () => ({ spawnRenderWorker: jest.fn() }));
 
 // The diagram/maths pass needs a live browser to measure in; what matters here is only what it hands
 // back — the typeset markup and MathJax's injected stylesheet, absolute font URLs and all. It runs AFTER

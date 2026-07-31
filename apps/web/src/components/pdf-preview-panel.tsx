@@ -11,7 +11,13 @@ import {
   type PDFDocumentProxy,
   type RenderTask,
 } from "pdfjs-dist";
-import type { PdfSourceMap, RenderDiagnostic, RenderPhase, RenderStats } from "@asciidocollab/asciidoc-pdf";
+import type {
+  PdfSourceMap,
+  RenderDiagnostic,
+  RenderError,
+  RenderPhase,
+  RenderStats,
+} from "@asciidocollab/asciidoc-pdf";
 import { Button } from "@/components/ui/button";
 import { PdfDiagnostics } from "@/components/pdf-diagnostics";
 import { RenderStatsOverlay, type RenderStatRow } from "@/components/preview/render-stats-overlay";
@@ -325,6 +331,15 @@ export interface PdfPreviewPanelProperties {
   phase?: RenderPhase;
   /** Non-fatal warnings gathered while producing the preview. */
   diagnostics?: readonly RenderDiagnostic[];
+  /**
+   * The failure that ended the latest render, when one did. Distinct from {@link diagnostics}, which
+   * ride alongside a preview that was nevertheless produced: this is the render not happening, so the
+   * panel says so instead of leaving its "the preview will appear here" invitation on screen — an
+   * invitation that, after a refusal, is a promise the panel is never going to keep. The message is
+   * the engine layer's own author-facing text and is shown verbatim; it is where a refusal explains
+   * itself, such as a document past the supported size naming that size and the ways around it.
+   */
+  error?: RenderError;
   /** What the latest render cost, for the development-only cost overlay. */
   stats?: RenderStats;
   /**
@@ -414,6 +429,7 @@ export function PdfPreviewPanel({
   isRendering,
   phase,
   diagnostics,
+  error,
   stats,
   onSelectLocation,
   onNavigateToSource,
@@ -750,7 +766,10 @@ export function PdfPreviewPanel({
 
   const hasDiagnostics = diagnostics !== undefined && diagnostics.length > 0;
   const statusLabel = phase ? PHASE_LABELS[phase] : PENDING_LABEL;
-  const showEmptyState = pdf === null && !isRendering;
+  // The empty state and the failure notice are alternatives, never both: one says a preview is coming,
+  // the other says this one is not. A refusal that left the invitation underneath it would read as the
+  // panel still working on something.
+  const showEmptyState = pdf === null && !isRendering && error === undefined;
 
   // The readout follows the target scale the user is asking for so it updates instantly on zoom/resize,
   // ahead of the debounced crisp re-render. Before a fit measurement lands it reads "Fit".
@@ -996,6 +1015,21 @@ export function PdfPreviewPanel({
           This file isn&apos;t part of the main document; it&apos;s previewed on its own.
         </div>
       ) : null}
+
+      {/* The render that did not happen, and why. Above the page stack rather than inside it, because
+          whatever is still painted below belongs to an earlier document — the notice has to be readable
+          without scrolling past pages it does not describe. The engine's message is shown as written:
+          it is the layer that knows the reason, and a refusal an author cannot act on is the thing this
+          surface exists to prevent. */}
+      {error === undefined ? null : (
+        <div
+          role="alert"
+          data-testid="pdf-preview-error"
+          className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          {error.message}
+        </div>
+      )}
 
       {/* Panel chrome, outside the scrolling page stack, so it never scrolls away from what it
           describes and never sits among the rendered pages. */}

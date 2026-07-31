@@ -8,6 +8,7 @@ import {
   type ToWorker,
 } from '@asciidocollab/asciidoc-pdf';
 import { usePdfPreview } from '@/hooks/use-pdf-preview';
+import { PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS } from '@/lib/editor-config';
 import {
   createMermaidPrerenderer,
   type IdleScheduler,
@@ -107,6 +108,28 @@ function makeSnapshot(files: Record<string, string>, rootPath = 'main.adoc'): Pr
 
 /** A stage breakdown of zeros: this fixture's render cost is not what the tests below are about. */
 const NO_STAGE_COST = { vmBootMs: 0, populateMs: 0, pipelineMs: 0, convertMs: 0 };
+
+/** One keystroke every half trailing-delay — fast enough that the trailing timer can never elapse. */
+const KEYSTROKE_INTERVAL_MS = PREVIEW_DEBOUNCE_MS / 2;
+
+/**
+ * Type for `durationMs` of wall clock without ever pausing long enough for the trailing debounce.
+ * Under this input the trailing timer is restarted before it can fire, so the maximum-wait cap is the
+ * only thing that can still refresh the preview — which is exactly what these tests are about.
+ *
+ * @param durationMs - How long the uninterrupted burst lasts.
+ * @param type - Feeds the next value of the edited document to the hook under test.
+ * @returns The document text after the final keystroke.
+ */
+function typeWithoutPausing(durationMs: number, type: (documentText: string) => void): string {
+  let text = '= Doc';
+  for (let elapsed = 0; elapsed < durationMs; elapsed += KEYSTROKE_INTERVAL_MS) {
+    text += 'x';
+    act(() => type(text));
+    act(() => jest.advanceTimersByTime(KEYSTROKE_INTERVAL_MS));
+  }
+  return text;
+}
 
 function makeResult(requestId: string, sourceMap?: RenderResult['sourceMap']): RenderResult {
   return {
@@ -459,5 +482,66 @@ describe('usePdfPreview', () => {
       shimVersion: createMermaidShim().version,
     });
     expect(previewAssets.map((asset) => asset.sourceHash)).toEqual([expectedHash]);
+  });
+});
+
+// ── usePdfPreview — refreshing while typing never pauses ─────────────────────
+
+describe('usePdfPreview — refresh while typing without pause', () => {
+  it('refreshes once the maximum wait elapses even though typing never pauses', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= Doc' }) } },
+    );
+
+    const typed = typeWithoutPausing(PREVIEW_MAX_WAIT_MS + KEYSTROKE_INTERVAL_MS, (documentText) =>
+      rerender({ snapshot: makeSnapshot({ 'main.adoc': documentText }) }),
+    );
+    await flushPrepass();
+
+    // The trailing delay never came due, so this render exists only because the cap forced it.
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(1);
+    const posted = renders[0]!.request.snapshot.files['main.adoc']!;
+    // It carried an edit made during the burst, not the value the hook mounted with.
+    expect(typed.startsWith(posted)).toBe(true);
+    expect(posted).not.toBe('= Doc');
+  });
+
+  it('holds the refresh back while a render is in flight and runs it when that render finishes', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= Doc' }) } },
+    );
+
+    // Two whole cap windows of uninterrupted typing, with the worker never answering the first
+    // render: the second expiry must be held back rather than stacked on the render still running.
+    typeWithoutPausing(PREVIEW_MAX_WAIT_MS * 2 + KEYSTROKE_INTERVAL_MS, (documentText) =>
+      rerender({ snapshot: makeSnapshot({ 'main.adoc': documentText }) }),
+    );
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // The in-flight render reports back with work still pending, so the held-back refresh runs —
+    // without waiting for another cap window.
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+    await flushPrepass();
+
+    expect(renderCalls(lastWorker())).toHaveLength(2);
+  });
+
+  it('cancels the pending refresh when the hook unmounts', () => {
+    const { unmount } = renderHook(() =>
+      usePdfPreview({ snapshot: makeSnapshot({ 'main.adoc': '= Doc' }), isEnabled: true }),
+    );
+
+    // A render is scheduled but neither timer has come due yet.
+    expect(renderCalls(lastWorker())).toHaveLength(0);
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+
+    // Both the trailing timer and the cap are gone — nothing is left armed to fire into a dead hook.
+    expect(jest.getTimerCount()).toBe(0);
   });
 });

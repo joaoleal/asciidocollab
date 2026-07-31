@@ -1,0 +1,32 @@
+[
+  {
+    "context": "listing",
+    "style": "source",
+    "source": "def greet(name)\n  puts \"Hello, #{name}\"\nend"
+  },
+  {
+    "context": "listing",
+    "style": "source",
+    "source": "export function greet(name) {\n  console.log(`Hello, ${name}`);\n}"
+  },
+  {
+    "context": "listing",
+    "style": "source",
+    "source": "this block declares no language, so nothing may tokenise it\n  indentation and <angle brackets> must survive verbatim"
+  },
+  {
+    "context": "listing",
+    "style": "listing",
+    "source": "A plain listing block, with no source style at all."
+  },
+  {
+    "context": "listing",
+    "style": "source",
+    "source": "require 'json' # <1>\nJSON.generate({ 'ok' => true }) # <2>"
+  },
+  {
+    "context": "literal",
+    "style": "literal",
+    "source": "A literal block, which is a different element from a listing block."
+  }
+]

@@ -274,4 +274,69 @@ describe('createRubyPdfVm', () => {
       expect(factoryCalls()).toBe(0);
     });
   });
+
+  describe('render budget', () => {
+    it('never lets a second render run on the instance that served the first', async () => {
+      const { vm, bridges, factoryCalls } = setup();
+
+      await vm.warmup();
+      vm.renderCompleted();
+      const second = await vm.warmup();
+
+      expect(second.coldStart).toBe(true);
+      expect(factoryCalls()).toBe(2);
+      expect(bridges[0]?.disposeCount).toBe(1);
+      expect(bridges[1]?.instantiateCount).toBe(1);
+    });
+
+    it('disposes the spent instance BEFORE instantiating its replacement, so the two never coexist', async () => {
+      const liveAtInstantiate: boolean[] = [];
+      const { vm, bridges } = setup((bridge, index) => {
+        bridge.instantiateImpl = async () => {
+          liveAtInstantiate.push(bridges.slice(0, index).some((earlier) => earlier.ready));
+        };
+      });
+
+      await vm.warmup();
+      vm.renderCompleted();
+      await vm.warmup();
+
+      expect(liveAtInstantiate).toEqual([false, false]);
+    });
+
+    it('keeps a pre-warmed instance that has not rendered — pre-warming is not wasted', async () => {
+      const { vm, bridges, factoryCalls } = setup();
+
+      await vm.warmup();
+      await vm.warmup();
+      await vm.warmup();
+
+      expect(factoryCalls()).toBe(1);
+      expect(bridges[0]?.disposeCount).toBe(0);
+    });
+
+    it('serves the render that follows a boot, then retires that instance in turn', async () => {
+      const { vm, factoryCalls } = setup();
+
+      await vm.warmup();
+      vm.renderCompleted();
+      await vm.warmup();
+      vm.renderCompleted();
+      await vm.warmup();
+
+      expect(factoryCalls()).toBe(3);
+    });
+
+    it('ignores a completed render reported with no instance to attribute it to', async () => {
+      const { vm, factoryCalls } = setup();
+
+      expect(() => vm.renderCompleted()).not.toThrow();
+      const outcome = await vm.warmup();
+
+      // The report landed on nothing, so the instance booted next is fresh and still owes a render.
+      expect(outcome.coldStart).toBe(true);
+      await vm.warmup();
+      expect(factoryCalls()).toBe(1);
+    });
+  });
 });

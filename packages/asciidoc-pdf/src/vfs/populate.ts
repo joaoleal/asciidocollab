@@ -145,15 +145,26 @@ const textEncoder = new TextEncoder();
  * Map a {@link ProjectSnapshot} (text `files` + `binaryAssets` bytes) into the `/project` VFS tree.
  *
  * In cold mode every snapshot key is written; in delta mode (`options.changedPaths`) only the listed
- * keys are rewritten and untouched files stay in place. Each key is re-validated as defense in depth:
- * traversal/absolute/remote/NUL keys are rejected and reported rather than written or thrown.
+ * keys are rewritten and untouched files stay in place. A delta requested against a VFS that does not
+ * already hold the project is upgraded to a full population — see the check in the body. Each key is
+ * re-validated as defense in depth: traversal/absolute/remote/NUL keys are rejected and reported
+ * rather than written or thrown.
  */
 export function populateProject(
   port: VfsWritePort,
   snapshot: ProjectSnapshot,
   options: PopulateOptions = {},
 ): PopulateResult {
-  const changed = options.changedPaths ? new Set(options.changedPaths) : null;
+  // A delta is only meaningful against a VFS that still holds the previous population. It does not
+  // when the render is running in a VM instance that was booted for it — the instance carries a fresh,
+  // empty filesystem, so writing only the changed files would leave the document's includes, images
+  // and fonts missing, and the render would either fail on a root that is not there or silently
+  // produce a document with holes in it. Detected by looking for the root, which every population
+  // writes: absent means nothing has been populated here yet, so everything is written.
+  const vfsRetainsProject =
+    rejectionReason(snapshot.rootPath) === null && port.exists(projectPath(snapshot.rootPath));
+  const changed =
+    options.changedPaths && vfsRetainsProject ? new Set(options.changedPaths) : null;
   const written: string[] = [];
   const rejected: RejectedPath[] = [];
 

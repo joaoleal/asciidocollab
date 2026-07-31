@@ -209,6 +209,25 @@ describe('populateProject', () => {
     expect(result.rootPresent).toBe(true);
   });
 
+  it('writes everything when the VFS no longer holds the project, ignoring the delta', () => {
+    // What a render served by a VM instance booted for it sees: an empty filesystem. Honouring the
+    // delta there would leave the document's other files missing, and the render would either fail on
+    // an absent root or quietly produce a document with holes in it.
+    const vfs = new FakeVfs();
+    const snapshot = makeSnapshot({
+      files: { 'main.adoc': '= V2\n', 'chapters/intro.adoc': '== Intro V2\n' },
+      rootPath: 'main.adoc',
+    });
+
+    const result = populateProject(vfs, snapshot, { changedPaths: ['chapters/intro.adoc'] });
+
+    expect(result.written).toEqual([
+      `${PROJECT_ROOT}/main.adoc`,
+      `${PROJECT_ROOT}/chapters/intro.adoc`,
+    ]);
+    expect(result.rootPresent).toBe(true);
+  });
+
   it('still validates paths in delta mode', () => {
     const vfs = new FakeVfs();
     const snapshot = makeSnapshot({

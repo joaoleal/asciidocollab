@@ -15,7 +15,8 @@
 // API (`tex2chtmlPromise` / `asciimath2chtmlPromise`), replacing the delimited text/content node with
 // the produced container. These tests assert that contract: lazy single load, dual-notation config,
 // the right convert call per expression with delimiters stripped, the produced node replacing the
-// delimited source (so NO `$`/`\$` survives), idempotent re-render, and graceful failure.
+// delimited source (so NO `$`/`\$` survives), INCREMENTAL re-render (an already-typeset expression
+// keeps the very node it had), and graceful failure.
 
 import { renderMath, resetMathJaxForTest } from '@/components/math/render-math';
 
@@ -360,16 +361,36 @@ describe('renderMath', () => {
     expect(tex2chtmlPromiseMock).toHaveBeenCalledTimes(2);
   });
 
-  it('re-renders idempotently: a second pass restores the source then re-converts (no double-wrap)', async () => {
+  it('leaves an already-typeset expression alone — the same node, and no second conversion', async () => {
+    // This pass runs after every refresh, and a refresh reaches the container as a PATCH: an
+    // expression still typeset here is one whose source the patch left alone, because putting a
+    // typeset expression back to its delimiters is precisely what the patch does when the source
+    // changed. Converting it again would spend MathJax's time to arrive at the same output while
+    // discarding the node on screen — and with it anything the browser hangs off that node.
     const container = makeContainer(String.raw`<p>\$sqrt(4)\$</p>`);
     await renderMath(container);
+    const typeset = container.querySelector('mjx-container');
     await renderMath(container);
 
-    // Each pass converts the single expression exactly once — the prior render was restored to its
-    // `\$…\$` source first, so the second pass sees the same one expression (not zero, not two).
-    expect(asciimath2chtmlPromiseMock).toHaveBeenCalledTimes(2);
+    expect(asciimath2chtmlPromiseMock).toHaveBeenCalledTimes(1);
     expect(container.querySelectorAll('mjx-container').length).toBe(1);
     expect(container.textContent ?? '').not.toContain('$');
+    // Identity, not equality: an identical replacement would still have been a re-typeset.
+    expect(container.querySelector('mjx-container')).toBe(typeset);
+  });
+
+  it('typesets an expression the patch has put back to its delimited source', async () => {
+    // The counterpart to the check above: leaving typeset expressions alone must not become a way of
+    // never noticing a changed one. An edited expression arrives as delimited text again, exactly as
+    // it did on the first pass, and is converted afresh.
+    const container = makeContainer(String.raw`<p>\$sqrt(4)\$</p>`);
+    await renderMath(container);
+    container.innerHTML = String.raw`<p>\$sqrt(9)\$</p>`; // what patching an edited expression leaves
+    await renderMath(container);
+
+    expect(asciimath2chtmlPromiseMock).toHaveBeenCalledTimes(2);
+    expect(asciimath2chtmlPromiseMock).toHaveBeenLastCalledWith('sqrt(9)', { display: false });
+    expect(container.querySelectorAll('mjx-container').length).toBe(1);
   });
 
   it('leaves a malformed expression in place without throwing (conversion rejects)', async () => {
@@ -426,14 +447,13 @@ describe('renderMath', () => {
     expect(container.innerHTML).toBe(before);
   });
 
-  it('does not double-convert text already inside a produced mjx-container', async () => {
+  it('does not convert text already inside a produced mjx-container', async () => {
     // A produced container whose label happens to contain delimiter-like text must be skipped on a
-    // re-scan (the walker rejects text inside mjx-container).
+    // re-scan (the walker rejects text inside mjx-container), so a second pass finds nothing to do.
     const container = makeContainer(String.raw`<p>\(x\)</p>`);
     await renderMath(container);
     tex2chtmlPromiseMock.mockClear();
-    // Re-run WITHOUT restoring would be wrong; renderMath restores then re-converts exactly once.
     await renderMath(container);
-    expect(tex2chtmlPromiseMock).toHaveBeenCalledTimes(1);
+    expect(tex2chtmlPromiseMock).not.toHaveBeenCalled();
   });
 });

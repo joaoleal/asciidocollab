@@ -1,0 +1,40 @@
+<h1>Attributes And Conditionals</h1>
+<div id="preamble">
+<div class="sectionbody">
+<div class="paragraph">
+<p>Attribute resolution order is the whole subject here: what a reference resolves to depends on where
+in the document it is read.</p>
+</div>
+<div class="paragraph">
+<p>The project is AsciiDoc Collab, release 2.1.</p>
+</div>
+<div class="paragraph">
+<p>After a redefinition, the same reference reads 3.0 — document order decides.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_conditional_regions">1. Conditional Regions</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>This line is included because <code>project-name</code> is set.</p>
+</div>
+<div class="paragraph">
+<p>This line is included because <code>not-set-anywhere</code> is unset.</p>
+</div>
+<div class="paragraph">
+<p>This line is included by an expression evaluated against the attribute&#8217;s current value.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_empty_and_unset">2. Empty And Unset</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>An empty attribute resolves to nothing: "" — the quotes are the whole of it.</p>
+</div>
+<div class="paragraph">
+<p>An unset attribute leaves its reference unresolved: {release}</p>
+</div>
+</div>
+</div>

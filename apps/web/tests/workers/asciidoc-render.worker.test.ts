@@ -6,15 +6,16 @@
  * worker's message handler is captured and called synchronously in tests.
  *
  * Asciidoctor is mocked here so tests focus on the worker's message handling and
- * HTML post-processing logic without requiring the real (Opal-based) library.
+ * HTML post-processing logic without requiring the real library. The engine's `load` and `convert`
+ * are asynchronous, so the doubles resolve promises and every render is awaited before it is read.
  */
 
-let onMessageHandler: ((event: MessageEvent) => void) | null = null;
+let onMessageHandler: ((event: MessageEvent) => Promise<void>) | null = null;
 const postMessageMock = jest.fn();
 
 // Shim the worker globals before the module is imported.
 Object.defineProperty(globalThis, 'onmessage', {
-  set(handler: (event: MessageEvent) => void) {
+  set(handler: (event: MessageEvent) => Promise<void>) {
     onMessageHandler = handler;
   },
   get() {
@@ -44,12 +45,8 @@ import {
   withAppRenderDefaults,
 } from '@/lib/asciidoc/render-app-defaults';
 
-jest.mock('asciidoctor', () => {
-  const MockAsciidoctor = jest.fn().mockReturnValue({
-    load: mockLoad,
-  });
-  return MockAsciidoctor;
-});
+// The engine exposes `load` as a module function, not a processor factory, and it resolves a promise.
+jest.mock('asciidoctor', () => ({ __esModule: true, load: mockLoad }));
 
 function makeBlock(options: {
   lineNumber: number | null;
@@ -61,9 +58,10 @@ function makeBlock(options: {
   const mockId = jest.fn().mockReturnValue(id);
   const localSetId = jest.fn((newId: string) => { mockId.mockReturnValue(newId); });
   const block: Record<string, unknown> = {
-    getSourceLocation: jest.fn().mockReturnValue(
-      lineNumber === null ? null : { getLineNumber: jest.fn().mockReturnValue(lineNumber) },
-    ),
+    // The block's own line accessor, which is what the worker asks: the engine answers it for every
+    // node it hands back, including the table cells whose source-location cursor it stores stripped of
+    // its methods. `undefined` is how it reports a node it has no position for.
+    getLineNumber: jest.fn().mockReturnValue(lineNumber ?? undefined),
     getId: mockId,
     setId: localSetId,
     getContext: jest.fn().mockReturnValue(context),
@@ -74,7 +72,11 @@ function makeBlock(options: {
   return block as ReturnType<typeof jest.fn> & typeof block;
 }
 
-function sendMessage(data: {
+/**
+ * Drive one render, and settle before returning. The handler is asynchronous, so the reply exists only
+ * once the promise it returns has settled; asserting without awaiting would read no reply at all.
+ */
+async function sendMessage(data: {
   requestId: number;
   content: string;
   imagesDir?: string;
@@ -83,9 +85,9 @@ function sendMessage(data: {
   rootFileId?: string | null;
   openFileId?: string;
   sourceLineHints?: boolean;
-}) {
+}): Promise<void> {
   if (onMessageHandler) {
-    onMessageHandler({ data } as MessageEvent);
+    await onMessageHandler({ data } as MessageEvent);
   } else {
     throw new Error('onmessage handler not registered');
   }
@@ -106,7 +108,7 @@ describe('asciidoc-render.worker', () => {
 
     // Default: convert returns HTML with id attributes matching the block IDs
     // that the worker injects via setId.
-    mockConvert.mockReturnValue(
+    mockConvert.mockResolvedValue(
       '<h2 id="__src_section_1" class="sect1">Title</h2>' +
       '<div id="__src_paragraph_3" class="paragraph"><p>Content</p></div>',
     );
@@ -115,16 +117,17 @@ describe('asciidoc-render.worker', () => {
       makeBlock({ lineNumber: 3, id: null, context: 'paragraph' }),
       makeBlock({ lineNumber: null }), // no source location — skipped
     ]);
-    // Default: no `:stem:` in effect (getAttribute('stem') ⇒ undefined) so math is never flagged
-    // unless a test sets it. Mirrors the real Asciidoctor document API the worker reads.
-    mockGetAttribute.mockReturnValue(undefined);
-    mockLoad.mockReturnValue({ findBy: mockFindBy, convert: mockConvert, getAttribute: mockGetAttribute });
+    // Default: no `:stem:` in effect so math is never flagged unless a test sets it. The engine
+    // answers `null` — not `undefined` — for an attribute that is unset or was never set, which is what
+    // the worker's own guard is written against.
+    mockGetAttribute.mockReturnValue(null);
+    mockLoad.mockResolvedValue({ findBy: mockFindBy, convert: mockConvert, getAttribute: mockGetAttribute });
   });
 
   // (a) ok=true with data-source-line injected for blocks that have IDs
-  it('posts RenderResult with ok=true and data-source-line in HTML for valid input', () => {
+  it('posts RenderResult with ok=true and data-source-line in HTML for valid input', async () => {
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 1, content: '= Hello\n\nWorld' });
+    await sendMessage({ requestId: 1, content: '= Hello\n\nWorld' });
 
     expect(postMessageMock).toHaveBeenCalledTimes(1);
     const result = postMessageMock.mock.calls[0][0];
@@ -137,8 +140,8 @@ describe('asciidoc-render.worker', () => {
   // (a2) a block's data-source-line is lifted to its VISUAL start — the block title (and attribute)
   // lines above the delimiter — so a click on the `.Example block` title scrolls to the block itself
   // instead of falling back to the previous block.
-  it('maps a titled block to its title line, not its delimiter line', () => {
-    mockConvert.mockReturnValueOnce(
+  it('maps a titled block to its title line, not its delimiter line', async () => {
+    mockConvert.mockResolvedValueOnce(
       '<div id="__src_example_6" class="exampleblock">' +
         '<div class="title">Example block</div>' +
         '<div class="content"><div id="__src_paragraph_7" class="paragraph"><p>inside</p></div></div>' +
@@ -150,7 +153,7 @@ describe('asciidoc-render.worker', () => {
     ]);
     require('@/workers/asciidoc-render.worker');
     // Line 5 is the `.Example block` title; line 6 is the `====` delimiter Asciidoctor reports.
-    sendMessage({
+    await sendMessage({
       requestId: 6,
       content: '= T\n\nBefore.\n\n.Example block\n====\ninside\n====',
     });
@@ -163,10 +166,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (b) ok=false with error when Asciidoctor throws
-  it('posts RenderResult with ok=false when Asciidoctor throws', () => {
-    mockLoad.mockImplementation(() => { throw new Error('parse error'); });
+  it('posts RenderResult with ok=false when Asciidoctor throws', async () => {
+    mockLoad.mockRejectedValue(new Error('parse error'));
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 2, content: 'bad content' });
+    await sendMessage({ requestId: 2, content: 'bad content' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(false);
@@ -175,18 +178,18 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (c) requestId is echoed correctly
-  it('echoes requestId in the response', () => {
+  it('echoes requestId in the response', async () => {
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 42, content: '= Hello' });
+    await sendMessage({ requestId: 42, content: '= Hello' });
 
     expect(postMessageMock.mock.calls[0][0].requestId).toBe(42);
   });
 
   // (d) multiple sequential requests each echo their own requestId
-  it('echoes the correct requestId for each sequential request', () => {
+  it('echoes the correct requestId for each sequential request', async () => {
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 10, content: '= First' });
-    sendMessage({ requestId: 20, content: '= Second' });
+    await sendMessage({ requestId: 10, content: '= First' });
+    await sendMessage({ requestId: 20, content: '= Second' });
 
     expect(postMessageMock).toHaveBeenCalledTimes(2);
     expect(postMessageMock.mock.calls[0][0].requestId).toBe(10);
@@ -196,22 +199,22 @@ describe('asciidoc-render.worker', () => {
   // (e0) imagesDir is NOT forced as the `imagesdir` attribute; it is the endpoint base used to rewrite
   // the project-relative `<img src>` targets Asciidoctor emits — so the preview and the PDF engine
   // resolve `imagesdir` identically and differ only in the URL the resolved path is served from.
-  it('rewrites project-relative <img src> onto the image endpoint without forcing imagesdir', () => {
-    mockConvert.mockReturnValueOnce('<p><span class="image"><img src="logo.png" alt="logo"></span></p>');
+  it('rewrites project-relative <img src> onto the image endpoint without forcing imagesdir', async () => {
+    mockConvert.mockResolvedValueOnce('<p><span class="image"><img src="logo.png" alt="logo"></span></p>');
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 50, content: '= Doc', imagesDir: 'https://api/projects/p1/images' });
+    await sendMessage({ requestId: 50, content: '= Doc', imagesDir: 'https://api/projects/p1/images' });
     const options = mockLoad.mock.calls[0][1] as { attributes: Record<string, string> };
     expect(options.attributes.imagesdir).toBeUndefined();
     const { html } = postMessageMock.mock.calls[0][0];
     expect(html).toContain('src="https://api/projects/p1/images/logo.png"');
   });
 
-  it('honours a project-config imagesdir (soft default) and endpoint-prefixes the resolved src', () => {
-    mockConvert.mockReturnValueOnce('<img src="images/logo.png">');
+  it('honours a project-config imagesdir (soft default) and endpoint-prefixes the resolved src', async () => {
+    mockConvert.mockResolvedValueOnce('<img src="images/logo.png">');
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 53,
       content: '= Doc',
       imagesDir: 'https://api/projects/p1/images',
@@ -230,11 +233,11 @@ describe('asciidoc-render.worker', () => {
   // exposed. What this asserts is the worker's half of the contract: it passes the value straight to
   // the engine, still carrying `@`, and never re-forces one of its own. The `@` is what leaves a
   // document's `:icons: image` / `:icons!:` header in charge.
-  it('passes the app icons default through to the engine as an overridable soft default', () => {
-    mockConvert.mockReturnValueOnce('<p>x</p>');
+  it('passes the app icons default through to the engine as an overridable soft default', async () => {
+    mockConvert.mockResolvedValueOnce('<p>x</p>');
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 57,
       content: 'NOTE: seeded',
       projectAttributes: { ...APP_RENDER_DEFAULT_ATTRIBUTES },
@@ -243,13 +246,13 @@ describe('asciidoc-render.worker', () => {
     expect(options.attributes.icons).toBe(`font${SOFT_DEFAULT_SUFFIX}`);
   });
 
-  it('carries a project image-icons choice instead of the app font default', () => {
-    mockConvert.mockReturnValueOnce('<p>x</p>');
+  it('carries a project image-icons choice instead of the app font default', async () => {
+    mockConvert.mockResolvedValueOnce('<p>x</p>');
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
     // What the composition root produces for a project whose "Admonition icons" setting is Image:
     // the empty (image-admonition) value, soft-defaulted — NOT the app's `font@`.
-    sendMessage({
+    await sendMessage({
       requestId: 58,
       content: 'NOTE: seeded',
       projectAttributes: withAppRenderDefaults({ icons: SOFT_DEFAULT_SUFFIX }),
@@ -258,27 +261,27 @@ describe('asciidoc-render.worker', () => {
     expect(options.attributes.icons).toBe(SOFT_DEFAULT_SUFFIX);
   });
 
-  it('leaves an absolute image URL untouched', () => {
-    mockConvert.mockReturnValueOnce('<img src="https://cdn.example.com/x.png">');
+  it('leaves an absolute image URL untouched', async () => {
+    mockConvert.mockResolvedValueOnce('<img src="https://cdn.example.com/x.png">');
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 54, content: '= Doc', imagesDir: 'https://api/projects/p1/images' });
+    await sendMessage({ requestId: 54, content: '= Doc', imagesDir: 'https://api/projects/p1/images' });
     const { html } = postMessageMock.mock.calls[0][0];
     expect(html).toContain('src="https://cdn.example.com/x.png"');
   });
 
-  it('endpoint-prefixes an interactive-SVG <object data> target', () => {
-    mockConvert.mockReturnValueOnce('<object type="image/svg+xml" data="diagram.svg">SVG</object>');
+  it('endpoint-prefixes an interactive-SVG <object data> target', async () => {
+    mockConvert.mockResolvedValueOnce('<object type="image/svg+xml" data="diagram.svg">SVG</object>');
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 55, content: '= Doc', imagesDir: 'https://api/projects/p1/images' });
+    await sendMessage({ requestId: 55, content: '= Doc', imagesDir: 'https://api/projects/p1/images' });
     const { html } = postMessageMock.mock.calls[0][0];
     expect(html).toContain('data="https://api/projects/p1/images/diagram.svg"');
   });
 
-  it('omits the imagesdir attribute when no imagesDir is provided', () => {
+  it('omits the imagesdir attribute when no imagesDir is provided', async () => {
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 51, content: '= Doc' });
+    await sendMessage({ requestId: 51, content: '= Doc' });
     const options = mockLoad.mock.calls[0][1] as { attributes: Record<string, string> };
     expect(options.attributes.imagesdir).toBeUndefined();
   });
@@ -286,13 +289,13 @@ describe('asciidoc-render.worker', () => {
   // (e1) An `imagesdir` inherited from an ancestor's cross-document scope now flows through to the
   // engine (the host endpoint no longer clobbers it), so the open file resolves images against the same
   // dir the PDF engine would; the endpoint is applied afterwards by the src rewrite, not as an attribute.
-  it('preserves an inherited-scope :imagesdir: instead of overwriting it with the endpoint', () => {
+  it('preserves an inherited-scope :imagesdir: instead of overwriting it with the endpoint', async () => {
     require('@/workers/asciidoc-render.worker');
     const files = {
       'main.adoc': ':imagesdir: media\n\ninclude::child.adoc[]\n',
       'child.adoc': '= Child\n',
     };
-    sendMessage({
+    await sendMessage({
       requestId: 52,
       content: files['child.adoc'],
       imagesDir: 'https://api/projects/p1/images',
@@ -306,16 +309,16 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (e2) checklist unicode glyphs are swapped for stateful <span class="checklist-box">
-  it('replaces checklist glyphs with stateful checkbox spans', () => {
+  it('replaces checklist glyphs with stateful checkbox spans', async () => {
     const checklistHtml =
       '<ul class="checklist">' +
       '<li><p>&#10003; done</p></li>' +
       '<li><p>&#10063; todo</p></li>' +
       '</ul>';
-    mockConvert.mockReturnValueOnce(checklistHtml);
+    mockConvert.mockResolvedValueOnce(checklistHtml);
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 30, content: '* [x] done\n* [ ] todo' });
+    await sendMessage({ requestId: 30, content: '* [x] done\n* [ ] todo' });
 
     const { html } = postMessageMock.mock.calls[0][0];
     expect(html).toContain('<span class="checklist-box checklist-box--checked" aria-hidden="true"></span>done');
@@ -325,13 +328,33 @@ describe('asciidoc-render.worker', () => {
     expect(html).not.toContain('&#10063;');
   });
 
+  // (e3) a table column's width is restored to the CSS form canonical Asciidoctor emits. The engine
+  // writes the presentational `width` attribute HTML5 made obsolete; the render-equivalence gates
+  // compare the preview against canonical Asciidoctor, so the correction belongs in the render.
+  it('states a table column width as a style, not as the obsolete width attribute', async () => {
+    mockConvert.mockResolvedValueOnce(
+      '<table class="tableblock"><colgroup><col width="25%"><col width="12.5%"><col></colgroup></table>',
+    );
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 31, content: '|===\n|a |b |c\n|===' });
+
+    const { html } = postMessageMock.mock.calls[0][0];
+    expect(html).toContain('<col style="width: 25%;">');
+    // A fractional width survives intact rather than being rounded or dropped.
+    expect(html).toContain('<col style="width: 12.5%;">');
+    // An autowidth column carries no width at all, and must not acquire one.
+    expect(html).toContain('<col></colgroup>');
+    expect(html).not.toContain('width="');
+  });
+
   // (e) include:: directives are not resolved when no files/mainPath are supplied (open-file render)
-  it('includes include:: directive as literal text when no assembly inputs are given', () => {
+  it('includes include:: directive as literal text when no assembly inputs are given', async () => {
     const htmlWithInclude = '<p>include::some-file.adoc[]</p>';
-    mockConvert.mockReturnValueOnce(htmlWithInclude);
+    mockConvert.mockResolvedValueOnce(htmlWithInclude);
     mockFindBy.mockReturnValueOnce([]); // no blocks with source lines
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 3, content: 'include::some-file.adoc[]' });
+    await sendMessage({ requestId: 3, content: 'include::some-file.adoc[]' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -341,10 +364,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (e1) when files + mainPath are supplied, includes are assembled (sandbox-confined) before render
-  it('assembles in-sandbox includes from the main file before rendering', () => {
+  it('assembles in-sandbox includes from the main file before rendering', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 60,
       content: 'unused when assembling',
       mainPath: 'main.adoc',
@@ -357,10 +380,10 @@ describe('asciidoc-render.worker', () => {
 
   // (e1a) the assembler is seeded with Asciidoctor's intrinsics, so an include guarded by an
   // attribute Asciidoctor injects (e.g. `backend-html5`) is kept rather than silently dropped (#1).
-  it('keeps an include guarded by an Asciidoctor intrinsic (backend-html5) during assembly', () => {
+  it('keeps an include guarded by an Asciidoctor intrinsic (backend-html5) during assembly', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 62,
       content: 'unused when assembling',
       mainPath: 'main.adoc',
@@ -374,10 +397,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (e1b) a traversal target is never read; Asciidoctor receives an "Unresolved directive" marker
-  it('rejects an out-of-sandbox include target during assembly (Constitution IX)', () => {
+  it('rejects an out-of-sandbox include target during assembly (Constitution IX)', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 61,
       content: '',
       mainPath: 'main.adoc',
@@ -389,23 +412,23 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (f) blocks without an existing ID get a synthetic __src_<context>_<line> ID
-  it('assigns a synthetic ID to blocks that have no existing ID', () => {
+  it('assigns a synthetic ID to blocks that have no existing ID', async () => {
     const block = makeBlock({ lineNumber: 7, id: null, context: 'paragraph' });
-    mockConvert.mockReturnValueOnce('<div id="__src_paragraph_7"><p>text</p></div>');
+    mockConvert.mockResolvedValueOnce('<div id="__src_paragraph_7"><p>text</p></div>');
     mockFindBy.mockReturnValueOnce([block]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 4, content: '= Doc' });
+    await sendMessage({ requestId: 4, content: '= Doc' });
 
     expect(block.setId).toHaveBeenCalledWith('__src_paragraph_7');
   });
 
   // (g) blocks that already have an ID keep it; data-source-line is injected next to it
-  it('preserves existing IDs and still injects data-source-line', () => {
+  it('preserves existing IDs and still injects data-source-line', async () => {
     const block = makeBlock({ lineNumber: 5, id: '_section_title', context: 'section' });
-    mockConvert.mockReturnValueOnce('<h2 id="_section_title">Title</h2>');
+    mockConvert.mockResolvedValueOnce('<h2 id="_section_title">Title</h2>');
     mockFindBy.mockReturnValueOnce([block]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 5, content: '= Doc\n\n== Title' });
+    await sendMessage({ requestId: 5, content: '= Doc\n\n== Title' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -414,39 +437,39 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (h) document-level block is skipped (no wrapping HTML element in output)
-  it('skips document-level blocks', () => {
+  it('skips document-level blocks', async () => {
     const documentBlock = makeBlock({ lineNumber: 1, id: null, context: 'document' });
     const paraBlock = makeBlock({ lineNumber: 3, id: null, context: 'paragraph' });
-    mockConvert.mockReturnValueOnce('<div id="__src_paragraph_3"><p>text</p></div>');
+    mockConvert.mockResolvedValueOnce('<div id="__src_paragraph_3"><p>text</p></div>');
     mockFindBy.mockReturnValueOnce([documentBlock, paraBlock]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 6, content: '= Doc\n\nParagraph.' });
+    await sendMessage({ requestId: 6, content: '= Doc\n\nParagraph.' });
 
     expect(documentBlock.setId).not.toHaveBeenCalled();
     expect(paraBlock.setId).toHaveBeenCalledWith('__src_paragraph_3');
   });
 
   // (i) blocks without source location are skipped
-  it('skips blocks with no source location', () => {
+  it('skips blocks with no source location', async () => {
     const blockNoLoc = makeBlock({ lineNumber: null });
     const blockWithLoc = makeBlock({ lineNumber: 5, id: null, context: 'paragraph' });
-    mockConvert.mockReturnValueOnce('<div id="__src_paragraph_5"><p>text</p></div>');
+    mockConvert.mockResolvedValueOnce('<div id="__src_paragraph_5"><p>text</p></div>');
     mockFindBy.mockReturnValueOnce([blockNoLoc, blockWithLoc]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 7, content: '= Doc' });
+    await sendMessage({ requestId: 7, content: '= Doc' });
 
     expect(blockNoLoc.setId).not.toHaveBeenCalled();
     expect(blockWithLoc.setId).toHaveBeenCalledTimes(1);
   });
 
   // (j) level-0 section skips normal processing and data-source-line is injected into <h1>
-  it('injects data-source-line into the showtitle <h1> from the level-0 section line number', () => {
+  it('injects data-source-line into the showtitle <h1> from the level-0 section line number', async () => {
     const level0Section = makeBlock({ lineNumber: 1, id: null, context: 'section', level: 0 });
     const para = makeBlock({ lineNumber: 3, id: null, context: 'paragraph' });
-    mockConvert.mockReturnValueOnce('<h1>Doc Title</h1><div id="__src_paragraph_3"><p>text</p></div>');
+    mockConvert.mockResolvedValueOnce('<h1>Doc Title</h1><div id="__src_paragraph_3"><p>text</p></div>');
     mockFindBy.mockReturnValueOnce([level0Section, para]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 8, content: '= Doc Title\n\ntext' });
+    await sendMessage({ requestId: 8, content: '= Doc Title\n\ntext' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -455,13 +478,13 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (l) docTitleLineNum is injected even when the converted HTML starts with a leading newline
-  it('injects data-source-line into <h1> when converted HTML has a leading newline before the tag', () => {
+  it('injects data-source-line into <h1> when converted HTML has a leading newline before the tag', async () => {
     const level0Section = makeBlock({ lineNumber: 1, id: null, context: 'section', level: 0 });
     // Asciidoctor sometimes emits a leading newline before the h1 in embedded mode.
-    mockConvert.mockReturnValueOnce('\n<h1>Title With Leading Newline</h1>');
+    mockConvert.mockResolvedValueOnce('\n<h1>Title With Leading Newline</h1>');
     mockFindBy.mockReturnValueOnce([level0Section]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 10, content: '= Title With Leading Newline' });
+    await sendMessage({ requestId: 10, content: '= Title With Leading Newline' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -469,16 +492,16 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (m) source blocks with a known language are syntax-highlighted (highlight.js)
-  it('applies highlight.js token spans to a known-language source block', () => {
+  it('applies highlight.js token spans to a known-language source block', async () => {
     const codeHtml =
       '<div class="listingblock"><div class="content">' +
       '<pre class="highlight"><code class="language-ruby" data-lang="ruby">' +
       "def hello(name = &#39;World&#39;)\n  puts &quot;hi&quot;\nend" +
       '</code></pre></div></div>';
-    mockConvert.mockReturnValueOnce(codeHtml);
+    mockConvert.mockResolvedValueOnce(codeHtml);
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 30, content: '[,ruby]\n----\ndef hello\nend\n----' });
+    await sendMessage({ requestId: 30, content: '[,ruby]\n----\ndef hello\nend\n----' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -491,15 +514,15 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (n) source blocks with an unknown language fall back to auto-detection
-  it('auto-detects highlighting for an unknown language', () => {
+  it('auto-detects highlighting for an unknown language', async () => {
     const codeHtml =
       '<pre class="highlight"><code class="language-totally-unknown" data-lang="totally-unknown">' +
       'const x = 1;' +
       '</code></pre>';
-    mockConvert.mockReturnValueOnce(codeHtml);
+    mockConvert.mockResolvedValueOnce(codeHtml);
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 31, content: 'code' });
+    await sendMessage({ requestId: 31, content: 'code' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -511,15 +534,15 @@ describe('asciidoc-render.worker', () => {
   // replace "&amp;" LAST, so it round-trips back to "&amp;lt;" after highlight.js
   // re-escapes — NOT collapse to "&lt;" (which would mean "&amp;" was decoded
   // first and a real "<" was wrongly produced).
-  it('unescapes code entities in the correct order (ampersand last)', () => {
+  it('unescapes code entities in the correct order (ampersand last)', async () => {
     const codeHtml =
       '<pre class="highlight"><code class="language-ruby" data-lang="ruby">' +
       '# &amp;lt;' + // raw code text the user typed: "# &lt;"
       '</code></pre>';
-    mockConvert.mockReturnValueOnce(codeHtml);
+    mockConvert.mockResolvedValueOnce(codeHtml);
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 33, content: '[,ruby]\n----\n# &lt;\n----' });
+    await sendMessage({ requestId: 33, content: '[,ruby]\n----\n# &lt;\n----' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -528,12 +551,12 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (o) plain literal blocks (no language) are left untouched
-  it('leaves a plain literal block (no language) unmodified', () => {
+  it('leaves a plain literal block (no language) unmodified', async () => {
     const literalHtml = '<div class="literalblock"><div class="content"><pre>just text</pre></div></div>';
-    mockConvert.mockReturnValueOnce(literalHtml);
+    mockConvert.mockResolvedValueOnce(literalHtml);
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 32, content: '----\njust text\n----' });
+    await sendMessage({ requestId: 32, content: '----\njust text\n----' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -542,15 +565,15 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (r) id attributes that are NOT in blockSourceLines are passed through unchanged
-  it('leaves an id unmodified when it has no corresponding source line entry', () => {
+  it('leaves an id unmodified when it has no corresponding source line entry', async () => {
     const block = makeBlock({ lineNumber: 5, id: 'known-para', context: 'paragraph' });
-    mockConvert.mockReturnValueOnce(
+    mockConvert.mockResolvedValueOnce(
       '<div id="known-para">Para</div>' +
       '<div id="extra-anchor">Anchor</div>',
     );
     mockFindBy.mockReturnValueOnce([block]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 50, content: '= Doc' });
+    await sendMessage({ requestId: 50, content: '= Doc' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -561,10 +584,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (s) a non-Error thrown value is converted via String() in the error message
-  it('serialises a non-Error thrown value as the error message', () => {
-    mockLoad.mockImplementationOnce(() => { throw 'string-only-error'; });
+  it('serialises a non-Error thrown value as the error message', async () => {
+    mockLoad.mockRejectedValueOnce('string-only-error');
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 51, content: 'bad' });
+    await sendMessage({ requestId: 51, content: 'bad' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(false);
@@ -572,7 +595,7 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (q) when hljs throws during highlight, the original markup is preserved unchanged
-  it('preserves original source-block markup when hljs.highlight throws', () => {
+  it('preserves original source-block markup when hljs.highlight throws', async () => {
     jest.doMock('highlight.js/lib/common', () => ({
       __esModule: true,
       default: {
@@ -584,10 +607,10 @@ describe('asciidoc-render.worker', () => {
 
     const codeHtml =
       '<pre class="highlight"><code class="language-javascript">const x = 1;</code></pre>';
-    mockConvert.mockReturnValueOnce(codeHtml);
+    mockConvert.mockResolvedValueOnce(codeHtml);
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 99, content: '[,javascript]\n----\nconst x = 1;\n----' });
+    await sendMessage({ requestId: 99, content: '[,javascript]\n----\nconst x = 1;\n----' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -598,12 +621,12 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (k) level-0 section does not add a blockSourceLine entry (no id injection attempt)
-  it('level-0 section is excluded from blockSourceLines so no id-based injection is attempted', () => {
+  it('level-0 section is excluded from blockSourceLines so no id-based injection is attempted', async () => {
     const level0Section = makeBlock({ lineNumber: 1, id: null, context: 'section', level: 0 });
-    mockConvert.mockReturnValueOnce('<h1>Title</h1>');
+    mockConvert.mockResolvedValueOnce('<h1>Title</h1>');
     mockFindBy.mockReturnValueOnce([level0Section]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 9, content: '= Title' });
+    await sendMessage({ requestId: 9, content: '= Title' });
 
     expect(level0Section.setId).not.toHaveBeenCalled();
     const result = postMessageMock.mock.calls[0][0];
@@ -617,10 +640,10 @@ describe('asciidoc-render.worker', () => {
   // soft-defaults (trailing `@`) so an in-document definition can still override per AsciiDoc.
 
   // (t1) a parent-defined attribute is seeded into the open child's render scope as a soft-default
-  it('seeds the resolved inherited scope (parent attribute) as an Asciidoctor soft-default', () => {
+  it('seeds the resolved inherited scope (parent attribute) as an Asciidoctor soft-default', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 70,
       content: 'Product is {productName}.',
       rootFileId: 'main.adoc',
@@ -638,10 +661,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (t2) the root file itself inherits no parent scope, only its own attributes
-  it('does not seed inherited values when the open file IS the root (root scope)', () => {
+  it('does not seed inherited values when the open file IS the root (root scope)', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 71,
       content: ':productName: Acme\n\nProduct is {productName}.',
       rootFileId: 'main.adoc',
@@ -655,10 +678,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (t3) an attribute unset before the include point is NOT in the child's inherited scope
-  it('omits an attribute the parent unset before the include from the seeded scope', () => {
+  it('omits an attribute the parent unset before the include from the seeded scope', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 72,
       content: '{productName}',
       rootFileId: 'main.adoc',
@@ -673,10 +696,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (t4) an inline {set:} in the parent before the include is inherited by the child
-  it('seeds a parent inline {set:} value defined before the include', () => {
+  it('seeds a parent inline {set:} value defined before the include', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 73,
       content: '{flavour}',
       rootFileId: 'main.adoc',
@@ -691,10 +714,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (t5) an inherited :leveloffset: is seeded (kept overridable like other scope values)
-  it('seeds an inherited :leveloffset: from the resolved scope', () => {
+  it('seeds an inherited :leveloffset: from the resolved scope', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 74,
       content: '== Heading',
       rootFileId: 'main.adoc',
@@ -713,10 +736,10 @@ describe('asciidoc-render.worker', () => {
   // end-of-document scope value. Here the parent has `:leveloffset: +1` above the include and the
   // child ends with `:leveloffset: +10`; seeding the end-state +10 as a GLOBAL attribute pushes every
   // `==` section past h6 and erases all headings (the reported bug). The correct seed is `1@`.
-  it('seeds the include-point leveloffset, not the file end-state, for a child with its own :leveloffset:', () => {
+  it('seeds the include-point leveloffset, not the file end-state, for a child with its own :leveloffset:', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 76,
       content: '== A\n\n== B\n\n:leveloffset: +10\n',
       rootFileId: 'main.adoc',
@@ -731,10 +754,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (t6) standalone (rootFileId null) seeds nothing — current behavior preserved
-  it('seeds no cross-document scope when rootFileId is null (standalone)', () => {
+  it('seeds no cross-document scope when rootFileId is null (standalone)', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 75,
       content: '{productName}',
       rootFileId: null,
@@ -755,10 +778,10 @@ describe('asciidoc-render.worker', () => {
 
   // (u1) a child included with leveloffset=+1 is wrapped so its headings shift, and the wrapping is
   // balanced so parent headings after the include are unaffected.
-  it('wraps a leveloffset=+1 include so the child shifts and the parent is restored', () => {
+  it('wraps a leveloffset=+1 include so the child shifts and the parent is restored', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 80,
       content: 'unused when assembling',
       mainPath: 'main.adoc',
@@ -783,10 +806,10 @@ describe('asciidoc-render.worker', () => {
 
   // (u2) an attribute-form :leveloffset: set inside a child persists into the sibling include
   // (AsciiDoc semantics: attribute form is NOT scoped to the include, only the option form is).
-  it('attribute-form :leveloffset: in a child persists into the next sibling include', () => {
+  it('attribute-form :leveloffset: in a child persists into the next sibling include', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 81,
       content: 'unused when assembling',
       mainPath: 'main.adoc',
@@ -811,10 +834,10 @@ describe('asciidoc-render.worker', () => {
   // not clobber it. Ground truth (real Asciidoctor S2): Top=h3, G=h4, Bottom=h3 — so the assembler must
   // emit `:leveloffset: 2` (base 1 + option 1) around G and restore to `:leveloffset: 1` (the base),
   // never `:leveloffset: 0`, while the global seed remains `1@`.
-  it('composes the assembler offset with the seeded include-point base for a non-root open file', () => {
+  it('composes the assembler offset with the seeded include-point base for a non-root open file', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 82,
       content: '== Top\n\ninclude::grand.adoc[leveloffset=+1]\n\n== Bottom\n',
       rootFileId: 'main.adoc',
@@ -846,10 +869,10 @@ describe('asciidoc-render.worker', () => {
   // target sees them. Asciidoctor is mocked, so assert on the assembled source / resolution, not HTML.
 
   // (s1) an inline {set:} before an include defines the attribute used by a later include target.
-  it('resolves an inline {set:} value in a later include target when assembling', () => {
+  it('resolves an inline {set:} value in a later include target when assembling', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 110,
       content: 'unused when assembling',
       mainPath: 'main.adoc',
@@ -866,10 +889,10 @@ describe('asciidoc-render.worker', () => {
 
   // (s2) a `\`-continued (wrapped) attribute value is fully tracked, so a later include target that
   // uses it resolves against the JOINED value (not just the first fragment).
-  it('joins a wrapped (`\\`-continued) attribute value when resolving a later include target', () => {
+  it('joins a wrapped (`\\`-continued) attribute value when resolving a later include target', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 111,
       content: 'unused when assembling',
       mainPath: 'main.adoc',
@@ -892,10 +915,10 @@ describe('asciidoc-render.worker', () => {
   // Asciidoctor ID generation produces e.g. `sect_my-section`; an in-document entry still wins.
 
   // (v1) inherited idprefix/idseparator are seeded as soft-defaults for native ID generation
-  it('seeds inherited idprefix/idseparator from the resolved scope as soft-defaults', () => {
+  it('seeds inherited idprefix/idseparator from the resolved scope as soft-defaults', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 90,
       content: '== My Section\n',
       rootFileId: 'main.adoc',
@@ -913,10 +936,10 @@ describe('asciidoc-render.worker', () => {
   // (v2) a child redefining idprefix in-document overrides the seeded soft-default (precedence:
   // own header wins). The seed still carries the inherited value; Asciidoctor applies the
   // in-document entry over the `@` soft-default for headings after it.
-  it('still seeds the inherited idprefix even when the child redefines it (soft-default lets own def win)', () => {
+  it('still seeds the inherited idprefix even when the child redefines it (soft-default lets own def win)', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 91,
       content: ':idprefix: local_\n\n== My Section\n',
       rootFileId: 'main.adoc',
@@ -937,10 +960,10 @@ describe('asciidoc-render.worker', () => {
   // native xref text matches; default (unset) is left to Asciidoctor.
 
   // (w1) an inherited xrefstyle is seeded as a soft-default
-  it('seeds an inherited xrefstyle from the resolved scope as a soft-default', () => {
+  it('seeds an inherited xrefstyle from the resolved scope as a soft-default', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 95,
       content: '<<_target>>\n',
       rootFileId: 'main.adoc',
@@ -955,10 +978,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (w2) when xrefstyle is set nowhere in the tree, it is not seeded (Asciidoctor default applies)
-  it('does not seed xrefstyle when it is defined nowhere (native default)', () => {
+  it('does not seed xrefstyle when it is defined nowhere (native default)', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 96,
       content: '<<_target>>\n',
       rootFileId: 'main.adoc',
@@ -978,7 +1001,7 @@ describe('asciidoc-render.worker', () => {
   // numbered); an unset attribute is simply absent from the scope.
 
   // (x1) the whole caption/label/signifier family is seeded as soft-defaults
-  it('seeds the full inherited caption/label/signifier family as soft-defaults', () => {
+  it('seeds the full inherited caption/label/signifier family as soft-defaults', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
     const family = {
@@ -995,7 +1018,7 @@ describe('asciidoc-render.worker', () => {
       'last-update-label': 'Atualizado',
     };
     const header = Object.entries(family).map(([k, v]) => `:${k}: ${v}`).join('\n');
-    sendMessage({
+    await sendMessage({
       requestId: 100,
       content: 'body',
       rootFileId: 'main.adoc',
@@ -1015,10 +1038,10 @@ describe('asciidoc-render.worker', () => {
   // suffix this becomes the literal '@', which Asciidoctor treats as an empty caption prefix
   // (blank label, still auto-numbered) — distinct from unset (which removes the label). This
   // proves empty values are NOT filtered out of the seeded scope.
-  it('seeds an empty caption value (not dropped) so an empty label is honored', () => {
+  it('seeds an empty caption value (not dropped) so an empty label is honored', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 101,
       content: 'body',
       rootFileId: 'main.adoc',
@@ -1035,10 +1058,10 @@ describe('asciidoc-render.worker', () => {
 
   // (x3) an UNSET caption (`:table-caption!:` before the include) is absent from the scope and
   // therefore not seeded — matching AsciiDoc unset semantics (label removed, not blank).
-  it('does not seed a caption the parent unset before the include', () => {
+  it('does not seed a caption the parent unset before the include', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 102,
       content: 'body',
       rootFileId: 'main.adoc',
@@ -1060,10 +1083,10 @@ describe('asciidoc-render.worker', () => {
   // so assert on the SEEDED ATTRIBUTES MAP and the ASSEMBLED SOURCE (native HTML proven by e2e).
 
   // (y1) inherited :toc:/:toclevels: are seeded as soft-defaults for native TOC generation
-  it('seeds inherited toc/toclevels from the resolved scope as soft-defaults', () => {
+  it('seeds inherited toc/toclevels from the resolved scope as soft-defaults', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 120,
       content: '== A Section\n',
       rootFileId: 'main.adoc',
@@ -1080,10 +1103,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (y2) inherited :sectnums:/:sectnumlevels: are seeded as soft-defaults for native numbering
-  it('seeds inherited sectnums/sectnumlevels from the resolved scope as soft-defaults', () => {
+  it('seeds inherited sectnums/sectnumlevels from the resolved scope as soft-defaults', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 121,
       content: '== A Section\n',
       rootFileId: 'main.adoc',
@@ -1099,10 +1122,10 @@ describe('asciidoc-render.worker', () => {
   });
 
   // (y3) when numbering/TOC attributes are set nowhere in the tree, none are seeded (native default)
-  it('does not seed sectnums/toc when they are defined nowhere (native default)', () => {
+  it('does not seed sectnums/toc when they are defined nowhere (native default)', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 122,
       content: '== A Section\n',
       rootFileId: 'main.adoc',
@@ -1124,10 +1147,10 @@ describe('asciidoc-render.worker', () => {
   // each chapter's level-0 title is shifted to level 1 by the wrapping `:leveloffset: 1` entries, and
   // the offset is restored (0) between chapters so they sit at the SAME effective depth (sequential
   // numbering 1, 2). The assembled source is what Asciidoctor numbers/TOCs natively.
-  it('assembles two leveloffset=+1 chapters with offset-adjusted headings for native numbering/TOC', () => {
+  it('assembles two leveloffset=+1 chapters with offset-adjusted headings for native numbering/TOC', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    sendMessage({
+    await sendMessage({
       requestId: 123,
       content: 'unused when assembling',
       mainPath: 'main.adoc',
@@ -1166,7 +1189,7 @@ describe('asciidoc-render.worker', () => {
 
   // (z1) a bibliography entry/citation, an index-term anchor + index listing, a counter value, and a
   // page-break div all pass through the worker's post-processing untouched (no raw markup, ids/styles kept).
-  it('passes bibliography/index/counter/page-break native HTML through post-processing unchanged', () => {
+  it('passes bibliography/index/counter/page-break native HTML through post-processing unchanged', async () => {
     const native =
       '<div class="ulist bibliography"><ul class="bibliography">' +
       '<li><p><a id="ref"></a>[ref] Author. Title.</p></li></ul></div>' +
@@ -1174,10 +1197,10 @@ describe('asciidoc-render.worker', () => {
       '<div class="paragraph"><p><a id="_indexterm_1" class="indexterm"></a>Figure 1.</p></div>' +
       '<div id="index"><h3 id="_t">T</h3></div>' +
       '<div style="page-break-after: always"></div>';
-    mockConvert.mockReturnValueOnce(native);
+    mockConvert.mockResolvedValueOnce(native);
     mockFindBy.mockReturnValueOnce([]); // these blocks carry no source-line entry
     require('@/workers/asciidoc-render.worker');
-    sendMessage({ requestId: 130, content: '[bibliography]\n* [[[ref]]] Author. Title.' });
+    await sendMessage({ requestId: 130, content: '[bibliography]\n* [[[ref]]] Author. Title.' });
 
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
@@ -1198,10 +1221,10 @@ describe('asciidoc-render.worker', () => {
 
   // (t7) an unresolved {name} (defined nowhere) is left for Asciidoctor to render literally — the
   // worker must not throw, and the seed map simply lacks the name.
-  it('does not seed or throw for a reference defined nowhere in the tree', () => {
+  it('does not seed or throw for a reference defined nowhere in the tree', async () => {
     mockFindBy.mockReturnValueOnce([]);
     require('@/workers/asciidoc-render.worker');
-    expect(() =>
+    await expect(
       sendMessage({
         requestId: 76,
         content: '{missing}',
@@ -1209,7 +1232,7 @@ describe('asciidoc-render.worker', () => {
         openFileId: 'child.adoc',
         files: { 'main.adoc': 'include::child.adoc[]\n', 'child.adoc': '{missing}' },
       }),
-    ).not.toThrow();
+    ).resolves.not.toThrow();
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
     const options = mockLoad.mock.calls[0][1] as { attributes: Record<string, string> };
@@ -1228,21 +1251,21 @@ describe('asciidoc-render.worker', () => {
     // document can still choose a notation (`:stem: latexmath`) or opt out (`:stem!:`). Verified
     // against the real Asciidoctor attribute model: `{stem:'@'}` resolves to `''` with no header,
     // to `'latexmath'` under `:stem: latexmath`, and to `undefined` under `:stem!:`.
-    it('enables STEM by default as an overridable soft-default (stem:[…] renders with no :stem: header)', () => {
+    it('enables STEM by default as an overridable soft-default (stem:[…] renders with no :stem: header)', async () => {
       mockFindBy.mockReturnValueOnce([]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 84, content: 'The result is stem:[sqrt(4) = 2] today.' });
+      await sendMessage({ requestId: 84, content: 'The result is stem:[sqrt(4) = 2] today.' });
 
       const options = mockLoad.mock.calls[0][1] as { attributes: Record<string, string> };
       expect(options.attributes.stem).toBe('@');
     });
 
-    it('sets mathPresent=true when :stem: is in effect and stem markup is present (asciimath)', () => {
+    it('sets mathPresent=true when :stem: is in effect and stem markup is present (asciimath)', async () => {
       mockGetAttribute.mockReturnValue(''); // bare `:stem:` ⇒ resolved value '' (AsciiMath default)
-      mockConvert.mockReturnValueOnce(String.raw`<div class="stemblock"><div class="content">\$x^2\$</div></div>`);
+      mockConvert.mockResolvedValueOnce(String.raw`<div class="stemblock"><div class="content">\$x^2\$</div></div>`);
       mockFindBy.mockReturnValueOnce([]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 80, content: ':stem:\n\n[stem]\n++++\nx^2\n++++' });
+      await sendMessage({ requestId: 80, content: ':stem:\n\n[stem]\n++++\nx^2\n++++' });
 
       const result = postMessageMock.mock.calls[0][0];
       expect(result.mathPresent).toBe(true);
@@ -1250,25 +1273,25 @@ describe('asciidoc-render.worker', () => {
       expect(result.html).toContain(String.raw`\$x^2\$`);
     });
 
-    it('sets mathPresent=true for inline latexmath delimiters when :stem: is set', () => {
+    it('sets mathPresent=true for inline latexmath delimiters when :stem: is set', async () => {
       mockGetAttribute.mockReturnValue('latexmath');
-      mockConvert.mockReturnValueOnce(String.raw`<div class="paragraph"><p>\(C = \alpha\)</p></div>`);
+      mockConvert.mockResolvedValueOnce(String.raw`<div class="paragraph"><p>\(C = \alpha\)</p></div>`);
       mockFindBy.mockReturnValueOnce([]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 81, content: ':stem: latexmath\n\nlatexmath:[C = \\alpha]' });
+      await sendMessage({ requestId: 81, content: ':stem: latexmath\n\nlatexmath:[C = \\alpha]' });
 
       expect(postMessageMock.mock.calls[0][0].mathPresent).toBe(true);
     });
 
-    it('sets mathPresent=false when the document explicitly opts out (:stem!:), leaving delimiters as text', () => {
+    it('sets mathPresent=false when the document explicitly opts out (:stem!:), leaving delimiters as text', async () => {
       // STEM is enabled by default, so the ONLY way the resolved `:stem:` is unset is an explicit
-      // `:stem!:` in the document — Asciidoctor then resolves the attribute to undefined and the
+      // `:stem!:` in the document — Asciidoctor then resolves the attribute to null and the
       // worker leaves the `\$x^2\$` delimiters as literal text (the author opted out).
-      mockGetAttribute.mockReturnValue(undefined);
-      mockConvert.mockReturnValueOnce(String.raw`<div class="paragraph"><p>\$x^2\$</p></div>`);
+      mockGetAttribute.mockReturnValue(null);
+      mockConvert.mockResolvedValueOnce(String.raw`<div class="paragraph"><p>\$x^2\$</p></div>`);
       mockFindBy.mockReturnValueOnce([]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 82, content: ':stem!:\n\nstem:[x^2]' });
+      await sendMessage({ requestId: 82, content: ':stem!:\n\nstem:[x^2]' });
 
       const result = postMessageMock.mock.calls[0][0];
       expect(result.mathPresent).toBe(false);
@@ -1276,12 +1299,12 @@ describe('asciidoc-render.worker', () => {
       expect(result.html).toContain(String.raw`\$x^2\$`);
     });
 
-    it('sets mathPresent=false when :stem: is in effect but the document has no stem markup', () => {
+    it('sets mathPresent=false when :stem: is in effect but the document has no stem markup', async () => {
       mockGetAttribute.mockReturnValue('');
-      mockConvert.mockReturnValueOnce('<div class="paragraph"><p>No math here.</p></div>');
+      mockConvert.mockResolvedValueOnce('<div class="paragraph"><p>No math here.</p></div>');
       mockFindBy.mockReturnValueOnce([]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 83, content: ':stem:\n\nNo math here.' });
+      await sendMessage({ requestId: 83, content: ':stem:\n\nNo math here.' });
 
       expect(postMessageMock.mock.calls[0][0].mathPresent).toBe(false);
     });
@@ -1292,14 +1315,14 @@ describe('asciidoc-render.worker', () => {
     // math; flagging them would make the client typeset (and corrupt) ordinary code/prose. mathPresent
     // must stay false unless there is REAL stem markup (a `<div class="stemblock">` block or an inline
     // `stem:`/`latexmath:`/`asciimath:` macro in the source).
-    it(String.raw`sets mathPresent=false for incidental \[ \( \$ delimiters with no real stem markup (regex/escaped code)`, () => {
+    it(String.raw`sets mathPresent=false for incidental \[ \( \$ delimiters with no real stem markup (regex/escaped code)`, async () => {
       mockGetAttribute.mockReturnValue(''); // stem enabled by default ⇒ resolved '' (not undefined)
-      mockConvert.mockReturnValueOnce(
+      mockConvert.mockResolvedValueOnce(
         String.raw`<div class="listingblock"><div class="content"><pre class="highlight"><code>const re = /\[0-9\]+/;</code></pre></div></div>`,
       );
       mockFindBy.mockReturnValueOnce([]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 85, content: '[source,js]\n----\nconst re = /\\[0-9\\]+/;\n----' });
+      await sendMessage({ requestId: 85, content: '[source,js]\n----\nconst re = /\\[0-9\\]+/;\n----' });
 
       expect(postMessageMock.mock.calls[0][0].mathPresent).toBe(false);
     });
@@ -1307,12 +1330,12 @@ describe('asciidoc-render.worker', () => {
     // An inline stem macro with no `:stem:` header (the reported bug) IS real markup → flag it so the
     // client typesets it. Detected from the source macro, since inline stem leaves no distinctive
     // wrapper element in the output (only the ambiguous `\$…\$` delimiters).
-    it('sets mathPresent=true for an inline stem: macro even without a :stem: header', () => {
+    it('sets mathPresent=true for an inline stem: macro even without a :stem: header', async () => {
       mockGetAttribute.mockReturnValue(''); // enabled by default
-      mockConvert.mockReturnValueOnce(String.raw`<div class="paragraph"><p>The value \$sqrt(4)\$ here.</p></div>`);
+      mockConvert.mockResolvedValueOnce(String.raw`<div class="paragraph"><p>The value \$sqrt(4)\$ here.</p></div>`);
       mockFindBy.mockReturnValueOnce([]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 86, content: 'The value stem:[sqrt(4)] here.' });
+      await sendMessage({ requestId: 86, content: 'The value stem:[sqrt(4)] here.' });
 
       expect(postMessageMock.mock.calls[0][0].mathPresent).toBe(true);
     });
@@ -1327,17 +1350,17 @@ describe('asciidoc-render.worker', () => {
     // The HTML body DOMPurify operates on must be byte-identical save for the injected
     // `data-source-line` attribute — the injection adds a numeric attribute beside `id="..."` and
     // changes nothing else (no tag/attribute the sanitizer would treat differently is touched).
-    it('only adds data-source-line beside existing ids — no other DOMPurify-relevant change', () => {
+    it('only adds data-source-line beside existing ids — no other DOMPurify-relevant change', async () => {
       const convertedBody =
         '<h2 id="_intro" class="sect1">Intro</h2>' +
         '<div id="__src_paragraph_3" class="paragraph"><p>Body</p></div>';
-      mockConvert.mockReturnValueOnce(convertedBody);
+      mockConvert.mockResolvedValueOnce(convertedBody);
       mockFindBy.mockReturnValueOnce([
         makeBlock({ lineNumber: 1, id: '_intro', context: 'section', level: 1 }),
         makeBlock({ lineNumber: 3, id: '__src_paragraph_3', context: 'paragraph' }),
       ]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 200, content: '== Intro\n\nBody\n' });
+      await sendMessage({ requestId: 200, content: '== Intro\n\nBody\n' });
 
       const html = postMessageMock.mock.calls[0][0].html as string;
       // The result equals the converted body with ONLY `data-source-line` injected next to each id.
@@ -1351,14 +1374,14 @@ describe('asciidoc-render.worker', () => {
 
     // Assembled (includes inlined) content: the assembler runs for real; the worker maps each block's
     // findBy source line (into the ASSEMBLED document) to its id. Retained content keeps correct lines.
-    it('preserves data-source-line mapping for retained content in an assembled document', () => {
+    it('preserves data-source-line mapping for retained content in an assembled document', async () => {
       // child has a tag region; only the `keep` slice is inlined (markers + outside dropped).
       const files = {
         'main.adoc': '= Book\n\ninclude::ch.adoc[tags=keep]\n',
         'ch.adoc': '// tag::keep[]\nKept paragraph.\n// end::keep[]\nDropped paragraph.\n',
       };
       // After assembly the dropped paragraph is gone, so Asciidoctor only reports the kept block.
-      mockConvert.mockReturnValueOnce(
+      mockConvert.mockResolvedValueOnce(
         '<h1 data-placeholder>Book</h1>' +
         '<div id="__src_paragraph_3" class="paragraph"><p>Kept paragraph.</p></div>',
       );
@@ -1367,7 +1390,7 @@ describe('asciidoc-render.worker', () => {
         makeBlock({ lineNumber: 3, id: null, context: 'paragraph' }),
       ]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 201, content: 'ignored when assembling', mainPath: 'main.adoc', files });
+      await sendMessage({ requestId: 201, content: 'ignored when assembling', mainPath: 'main.adoc', files });
 
       // The assembler actually dropped the out-of-tag content from the rendered source.
       const renderedSource = mockLoad.mock.calls[0][0] as string;
@@ -1389,17 +1412,17 @@ describe('asciidoc-render.worker', () => {
     });
 
     // line-range filtered include: same invariant — only the retained slice is rendered + mapped.
-    it('preserves data-source-line mapping for a line-range (lines=) filtered include', () => {
+    it('preserves data-source-line mapping for a line-range (lines=) filtered include', async () => {
       const files = {
         'main.adoc': '= Doc\n\ninclude::part.adoc[lines=2..2]\n',
         'part.adoc': 'first\nsecond\nthird\n',
       };
-      mockConvert.mockReturnValueOnce(
+      mockConvert.mockResolvedValueOnce(
         '<div id="__src_paragraph_3" class="paragraph"><p>second</p></div>',
       );
       mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 3, id: null, context: 'paragraph' })]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 202, content: 'ignored', mainPath: 'main.adoc', files });
+      await sendMessage({ requestId: 202, content: 'ignored', mainPath: 'main.adoc', files });
 
       const renderedSource = mockLoad.mock.calls[0][0] as string;
       expect(renderedSource).toContain('second');
@@ -1416,17 +1439,17 @@ describe('asciidoc-render.worker', () => {
     // Conditional-gated include: an include wrapped by an inactive `ifdef` region is
     // NOT inlined, so its content never reaches Asciidoctor and gets no data-source-line — the mapping
     // for the retained (active) content stays correct and uncorrupted.
-    it('drops a gated-out include and keeps a correct mapping for the retained content', () => {
+    it('drops a gated-out include and keeps a correct mapping for the retained content', async () => {
       const files = {
         'main.adoc': '= Doc\n\nVisible.\n\nifdef::flag[]\ninclude::secret.adoc[]\nendif::[]\n',
         'secret.adoc': 'Gated content.\n',
       };
-      mockConvert.mockReturnValueOnce(
+      mockConvert.mockResolvedValueOnce(
         '<div id="__src_paragraph_3" class="paragraph"><p>Visible.</p></div>',
       );
       mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 3, id: null, context: 'paragraph' })]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 203, content: 'ignored', mainPath: 'main.adoc', files });
+      await sendMessage({ requestId: 203, content: 'ignored', mainPath: 'main.adoc', files });
 
       const renderedSource = mockLoad.mock.calls[0][0] as string;
       // `flag` is unset ⇒ the conditional gates the include out; its content is never inlined.
@@ -1442,12 +1465,12 @@ describe('asciidoc-render.worker', () => {
   // WITHOUT them (`sourceLineHints: false`) rather than stripping them from the finished HTML, so no
   // pass ever has to distinguish a synthetic id from an author's own anchor.
   describe('source-line hints are optional', () => {
-    it('emits no hints and invents no ids when they are switched off', () => {
-      mockConvert.mockReturnValueOnce('<div class="paragraph"><p>text</p></div>');
+    it('emits no hints and invents no ids when they are switched off', async () => {
+      mockConvert.mockResolvedValueOnce('<div class="paragraph"><p>text</p></div>');
       const block = makeBlock({ lineNumber: 3, id: null, context: 'paragraph' });
       mockFindBy.mockReturnValueOnce([block]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 1, content: 'text', sourceLineHints: false });
+      await sendMessage({ requestId: 1, content: 'text', sourceLineHints: false });
 
       const html = postMessageMock.mock.calls[0][0].html as string;
       expect(html).not.toContain('data-source-line');
@@ -1457,31 +1480,31 @@ describe('asciidoc-render.worker', () => {
       expect(block['setId']).not.toHaveBeenCalled();
     });
 
-    it("leaves the author's own ids alone when they are switched off", () => {
+    it("leaves the author's own ids alone when they are switched off", async () => {
       // The reason not to strip: a real anchor is what xrefs and the TOC point at. Turning the hints
       // off must cost the document nothing it actually declared.
-      mockConvert.mockReturnValueOnce('<div id="my-anchor" class="paragraph"><p>text</p></div>');
+      mockConvert.mockResolvedValueOnce('<div id="my-anchor" class="paragraph"><p>text</p></div>');
       mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 5, id: 'my-anchor', context: 'paragraph' })]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 1, content: '[[my-anchor]]\ntext', sourceLineHints: false });
+      await sendMessage({ requestId: 1, content: '[[my-anchor]]\ntext', sourceLineHints: false });
 
       const html = postMessageMock.mock.calls[0][0].html as string;
       expect(html).toContain('id="my-anchor"');
       expect(html).not.toContain('data-source-line');
     });
 
-    it('leaves the document title unannotated when they are switched off', () => {
-      mockConvert.mockReturnValueOnce('<h1>Doc Title</h1>');
+    it('leaves the document title unannotated when they are switched off', async () => {
+      mockConvert.mockResolvedValueOnce('<h1>Doc Title</h1>');
       mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 1, id: null, context: 'section', level: 0 })]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 1, content: '= Doc Title', sourceLineHints: false });
+      await sendMessage({ requestId: 1, content: '= Doc Title', sourceLineHints: false });
 
       expect(postMessageMock.mock.calls[0][0].html).toBe('<h1>Doc Title</h1>');
     });
 
-    it('behaves exactly as the default when they are switched on explicitly', () => {
+    it('behaves exactly as the default when they are switched on explicitly', async () => {
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 1, content: '= Hello\n\nWorld', sourceLineHints: true });
+      await sendMessage({ requestId: 1, content: '= Hello\n\nWorld', sourceLineHints: true });
 
       const html = postMessageMock.mock.calls[0][0].html as string;
       expect(html).toContain('data-source-line="1"');
@@ -1494,17 +1517,17 @@ describe('asciidoc-render.worker', () => {
   // caught it because every previous fixture either had no includes or asserted only that a scroll
   // happened.
   describe('provenance for a block below an include', () => {
-    it("attributes the open file's own block to the open file and ITS line, not the assembled line", () => {
+    it("attributes the open file's own block to the open file and ITS line, not the assembled line", async () => {
       const files = {
         'main.adoc': '= Book\n\ninclude::ch.adoc[]\n\nAfter the include.\n',
         'ch.adoc': 'one\ntwo\nthree\n',
       };
       // `After the include.` is line 5 of main.adoc, but the inlined child pushes it further down in the
       // assembled document — which is the number Asciidoctor reports and the editor cannot use.
-      mockConvert.mockReturnValueOnce('<div id="__src_paragraph_7" class="paragraph"><p>After the include.</p></div>');
+      mockConvert.mockResolvedValueOnce('<div id="__src_paragraph_7" class="paragraph"><p>After the include.</p></div>');
       mockFindBy.mockReturnValueOnce([makeBlock({ lineNumber: 7, id: null, context: 'paragraph' })]);
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 301, content: files['main.adoc'], mainPath: 'main.adoc', openFileId: 'main.adoc', files });
+      await sendMessage({ requestId: 301, content: files['main.adoc'], mainPath: 'main.adoc', openFileId: 'main.adoc', files });
 
       const html = postMessageMock.mock.calls[0][0].html as string;
       expect(html).toContain('data-source-file="main.adoc"');
@@ -1516,11 +1539,11 @@ describe('asciidoc-render.worker', () => {
       expect(html).not.toContain('data-source-line="7"');
     });
 
-    it('states no file when there is nothing to state, so a single-file render is unchanged', () => {
+    it('states no file when there is nothing to state, so a single-file render is unchanged', async () => {
       // Absent beats empty: an empty attribute would assert a provenance the worker does not have, and a
       // consumer matching on it would find nothing.
       require('@/workers/asciidoc-render.worker');
-      sendMessage({ requestId: 302, content: '= Hello\n\nWorld' });
+      await sendMessage({ requestId: 302, content: '= Hello\n\nWorld' });
       expect(postMessageMock.mock.calls[0][0].html).not.toContain('data-source-file');
     });
   });

@@ -30,6 +30,12 @@ import type {
 } from '../protocol';
 import type { RubyPdfVm } from '../vm/ruby-pdf-vm';
 import { SOURCE_PROVENANCE_PATH } from '../vfs/populate';
+import {
+  assessDocumentSize,
+  DOCUMENT_TOO_LARGE_CODE,
+  documentTooLargeMessage,
+  sourceByteLength,
+} from '../pipeline/document-size-limit';
 
 // ---------------------------------------------------------------------------
 // Named paths, keys and literals (no magic strings).
@@ -112,6 +118,12 @@ export const OPTIMIZE_UNAVAILABLE_CODE = 'optimize-unavailable';
 
 const PHASE_CONVERT: RenderErrorPhase = 'convert';
 const PHASE_READ_OUTPUT: RenderErrorPhase = 'read-output';
+/**
+ * The phase a size refusal is reported at. It happens before the engine converts anything, and the
+ * distinction matters to the reader: `convert` means the engine tried and failed, `preprocessing`
+ * means the document never got that far and the reason is the document itself.
+ */
+const PHASE_PREPROCESSING: RenderErrorPhase = 'preprocessing';
 
 /** The subset of enumerated diagnostic codes this module classifies convert warnings into. */
 const CONVERT_DIAGNOSTIC_CODES = {
@@ -349,9 +361,56 @@ export async function invokeConvert(deps: InvokeConvertDeps): Promise<ConvertInv
   const { vm, request } = deps;
   const { snapshot, requestId } = request;
 
+  const sourcePath = join(PROJECT_MOUNT, snapshot.rootPath);
+
+  // 0. Refuse a document past the declared size bound BEFORE asking the engine to convert it. Past
+  // that size the render exhausts the address space it has and fails part-way through with an error
+  // that describes the runtime rather than the document — and leaves a VM with nothing left to give
+  // the next render. Checked here rather than in a pipeline stage because a stage cannot end a render:
+  // the orchestrator folds a stage's diagnostics into an otherwise-successful run, and this outcome is
+  // the whole render failing, with a reason.
+  const sizeAssessment = assessDocumentSize(assembledSourceBytes(vm, sourcePath, snapshot));
+  if (!sizeAssessment.withinLimit) {
+    // Deliberately NOT reported to the VM as a render: nothing was converted, nothing was allocated,
+    // and retiring a healthy instance over a document that never reached it would throw away a boot
+    // for no reason.
+    return failure(
+      requestId,
+      PHASE_PREPROCESSING,
+      DOCUMENT_TOO_LARGE_CODE,
+      documentTooLargeMessage(sizeAssessment),
+    );
+  }
+
+  try {
+    return await convertOnCurrentInstance(deps, sourcePath);
+  } finally {
+    // The instance has now served a render. It reports that unconditionally — including when the
+    // convert failed or threw, because the allocation has happened either way and a retry deserves an
+    // instance that has not already spent its memory on the attempt that failed.
+    vm.renderCompleted();
+  }
+}
+
+/**
+ * The convert itself, run against whichever VM instance the facade is currently holding.
+ *
+ * Separated from {@link invokeConvert} only so the instance's render budget can be reported once, on
+ * every exit path, without threading that concern through each of the convert's own early returns.
+ *
+ * @param deps - The convert dependencies, unchanged from the public entry point.
+ * @param sourcePath - The VFS path of the assembled document to convert.
+ * @returns The rendered PDF, or the structured failure that stopped it.
+ */
+async function convertOnCurrentInstance(
+  deps: InvokeConvertDeps,
+  sourcePath: string,
+): Promise<ConvertInvocationResult> {
+  const { vm, request } = deps;
+  const { snapshot, requestId } = request;
+
   mountThemeAlias(vm, snapshot);
 
-  const sourcePath = join(PROJECT_MOUNT, snapshot.rootPath);
   const outputPath = join(OUTPUT_MOUNT, `${deriveOutputName(snapshot.rootPath)}${PDF_EXTENSION}`);
   const attributes = buildConvertAttributes(snapshot);
 
@@ -1448,6 +1507,28 @@ function failure(
   message: string,
 ): ConvertInvocationFailure {
   return { ok: false, error: { requestId, phase, code, message } };
+}
+
+/**
+ * The size of the document the engine is about to convert, in bytes.
+ *
+ * Measured from the VFS rather than from the snapshot, because the two are not the same document: the
+ * include-resolve stage expands the include tree into the file at `sourcePath` before the convert
+ * runs, so a project written as a hundred small files reaches the engine as one large one, and it is
+ * the assembled result that has to fit in the engine's memory. The snapshot's own root text is the
+ * fallback for the case where the VFS cannot be read at all — a poorer measurement, but a real one,
+ * and better than treating an unreadable path as a size of zero.
+ */
+function assembledSourceBytes(
+  vm: RubyPdfVm,
+  sourcePath: string,
+  snapshot: ProjectSnapshot,
+): number {
+  try {
+    return vm.readFile(sourcePath).byteLength;
+  } catch {
+    return sourceByteLength(snapshot.files[snapshot.rootPath] ?? '');
+  }
 }
 
 function deriveOutputName(rootPath: string): string {

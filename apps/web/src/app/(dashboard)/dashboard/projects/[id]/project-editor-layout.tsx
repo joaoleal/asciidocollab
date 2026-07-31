@@ -987,6 +987,10 @@ export function ProjectEditorLayout({
     isRendering: isPreviewRendering,
     phase: previewPhase,
     diagnostics: previewDiagnostics,
+    // The whole-render failure, as opposed to the per-resource diagnostics beside it. The panel is the
+    // only place an author can learn that the live preview stopped and why — a refusal the engine
+    // explains (a document past the supported size, say) is worth nothing if it is dropped here.
+    error: previewError,
     sourceMap: previewSourceMap,
     stats: previewStats,
   } = usePdfPreview({
@@ -1390,8 +1394,12 @@ export function ProjectEditorLayout({
               </PanelResizeHandle>
               <Panel id="editor-preview" order={2} defaultSize={50} minSize={20} className="overflow-hidden" data-testid="preview-panel">
                 {previewMode === 'html' ? (
+                  // Deliberately NOT keyed on the open file. A key here remounted the whole panel on
+                  // every file switch, which threw away its render engine and reset it to a state that
+                  // reads as "nothing to preview" — so each switch cost an engine start-up and flashed
+                  // "preview not available" at a file that previews perfectly well. The panel tracks
+                  // the open file through its props instead, and keeps its engine across the switch.
                   <AsciiDocPreview
-                    key={selectedFile?.nodeId}
                     content={liveContent}
                     isEnabled={previewOpen}
                     projectId={projectId}
@@ -1423,6 +1431,7 @@ export function ProjectEditorLayout({
                     isRendering={isPreviewRendering}
                     phase={previewPhase}
                     diagnostics={previewDiagnostics}
+                    error={previewError}
                     stats={previewStats}
                     onSelectLocation={handleDiagnosticLocation}
                     onNavigateToSource={handlePdfSourceNavigate}

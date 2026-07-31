@@ -8,11 +8,11 @@
  * "this duration was attributed to the right stage" assertable at all.
  */
 
-let onMessageHandler: ((event: MessageEvent) => void) | null = null;
+let onMessageHandler: ((event: MessageEvent) => Promise<void>) | null = null;
 const postMessageMock = jest.fn();
 
 Object.defineProperty(globalThis, 'onmessage', {
-  set(handler: (event: MessageEvent) => void) {
+  set(handler: (event: MessageEvent) => Promise<void>) {
     onMessageHandler = handler;
   },
   get() {
@@ -31,10 +31,13 @@ const mockFindBy = jest.fn();
 const mockGetAttribute = jest.fn();
 const mockLoad = jest.fn();
 
-jest.mock('asciidoctor', () => {
-  const MockAsciidoctor = jest.fn().mockReturnValue({ load: mockLoad });
-  return MockAsciidoctor;
-});
+// The engine exposes `load` as a module function, not a processor factory, and it resolves a promise.
+jest.mock('asciidoctor', () => ({ __esModule: true, load: mockLoad }));
+
+/** The parsed-document double the engine's `load` resolves to. */
+function mockDocument(): unknown {
+  return { findBy: mockFindBy, convert: mockConvert, getAttribute: mockGetAttribute };
+}
 
 /** The hand-advanced clock backing `performance.now()`, in milliseconds. */
 let clock = 0;
@@ -61,9 +64,13 @@ function spendsOnce<T>(ms: number, result: T): () => T {
   };
 }
 
-function sendMessage(data: { requestId: number; content: string }): void {
+/**
+ * Drive one render, and settle before returning. The handler is asynchronous, so the reply exists only
+ * once the promise it returns has settled; asserting without awaiting would read the previous reply.
+ */
+async function sendMessage(data: { requestId: number; content: string }): Promise<void> {
   if (onMessageHandler) {
-    onMessageHandler({ data } as MessageEvent);
+    await onMessageHandler({ data } as MessageEvent);
   } else {
     throw new Error('onmessage handler not registered');
   }
@@ -95,46 +102,46 @@ describe('asciidoc-render.worker stage timings', () => {
 
     mockFindBy.mockReturnValue([]);
     mockGetAttribute.mockReturnValue(undefined);
-    mockConvert.mockReturnValue('<div class="paragraph"><p>text</p></div>');
-    mockLoad.mockReturnValue({ findBy: mockFindBy, convert: mockConvert, getAttribute: mockGetAttribute });
+    mockConvert.mockResolvedValue('<div class="paragraph"><p>text</p></div>');
+    mockLoad.mockResolvedValue(mockDocument());
   });
 
   afterEach(() => {
     jest.restoreAllMocks();
   });
 
-  it('attributes the cost of parsing and of conversion to their own stages', () => {
+  it('attributes the cost of parsing and of conversion to their own stages', async () => {
     mockLoad.mockImplementation(() => {
       spend(7);
-      return { findBy: mockFindBy, convert: mockConvert, getAttribute: mockGetAttribute };
+      return Promise.resolve(mockDocument());
     });
     mockConvert.mockImplementation(() => {
       spend(11);
-      return '<div class="paragraph"><p>text</p></div>';
+      return Promise.resolve('<div class="paragraph"><p>text</p></div>');
     });
     require('@/workers/asciidoc-render.worker');
 
-    sendMessage({ requestId: 1, content: '= Doc\n\ntext' });
+    await sendMessage({ requestId: 1, content: '= Doc\n\ntext' });
 
     expect(lastResult().timings).toEqual(
       expect.objectContaining({ parseMs: 7, convertMs: 11 }),
     );
   });
 
-  it("attributes the worker's own post-conversion passes to their own stage, inside the reported total", () => {
+  it("attributes the worker's own post-conversion passes to their own stage, inside the reported total", async () => {
     mockLoad.mockImplementation(() => {
       spend(7);
-      return { findBy: mockFindBy, convert: mockConvert, getAttribute: mockGetAttribute };
+      return Promise.resolve(mockDocument());
     });
     mockConvert.mockImplementation(() => {
       spend(11);
-      return '<div class="paragraph"><p>text</p></div>';
+      return Promise.resolve('<div class="paragraph"><p>text</p></div>');
     });
     // Read only once conversion has finished, so its cost lands in the post-conversion window.
     mockGetAttribute.mockImplementation(spendsOnce(5, undefined));
     require('@/workers/asciidoc-render.worker');
 
-    sendMessage({ requestId: 2, content: '= Doc\n\ntext' });
+    await sendMessage({ requestId: 2, content: '= Doc\n\ntext' });
 
     const timings = lastResult().timings!;
     expect(timings.postProcessMs).toBe(5);
@@ -144,13 +151,13 @@ describe('asciidoc-render.worker stage timings', () => {
     expect(timings.totalMs).toBe(23);
   });
 
-  it('reports no timings at all for a render that failed', () => {
+  it('reports no timings at all for a render that failed', async () => {
     mockLoad.mockImplementation(() => {
       throw new Error('parse exploded');
     });
     require('@/workers/asciidoc-render.worker');
 
-    sendMessage({ requestId: 3, content: '= Doc' });
+    await sendMessage({ requestId: 3, content: '= Doc' });
 
     const result = lastResult();
     expect(result.ok).toBe(false);

@@ -3,7 +3,7 @@ import { strFromU8, unzipSync } from 'fflate';
 
 // The real factory reaches for `import.meta.url`, which the CommonJS test runtime cannot parse. Every
 // test injects its own worker anyway, so the factory is never actually called.
-jest.mock('@/lib/create-render-worker', () => ({ createRenderWorker: jest.fn() }));
+jest.mock('@/lib/spawn-render-worker', () => ({ spawnRenderWorker: jest.fn() }));
 
 // The real diagram engines are lazily imported browser bundles (mermaid, graphviz-wasm, vega) that the
 // test runtime cannot load. This stands in for them by producing what they produce — an inline `<svg>`

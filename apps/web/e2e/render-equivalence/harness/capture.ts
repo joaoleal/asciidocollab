@@ -116,8 +116,15 @@ export function captureRequestFor(document: CorpusDocument, requestId: number): 
   };
 }
 
-/** A render driven through the worker module, exactly as the main thread drives it. */
-type PostMessage = (request: RenderRequest) => void;
+/**
+ * A render driven through the worker module, exactly as the main thread drives it.
+ *
+ * The worker's handler is asynchronous, so posting a request only STARTS a render. The promise this
+ * returns is the one the handler itself returns, which settles after the handler has called
+ * `postMessage` — so awaiting it is what makes the reply readable, and reading without awaiting would
+ * see the previous render's reply or none at all.
+ */
+type PostMessage = (request: RenderRequest) => Promise<void>;
 
 let post: PostMessage | null = null;
 let lastResult: RenderResult | null = null;
@@ -134,9 +141,9 @@ let lastResult: RenderResult | null = null;
 function loadWorker(): PostMessage {
   if (post !== null) return post;
 
-  let handler: ((event: { data: RenderRequest }) => void) | null = null;
+  let handler: ((event: { data: RenderRequest }) => Promise<void>) | null = null;
   Object.defineProperty(globalThis, 'onmessage', {
-    set(next: (event: { data: RenderRequest }) => void) {
+    set(next: (event: { data: RenderRequest }) => Promise<void>) {
       handler = next;
     },
     get() {
@@ -153,12 +160,24 @@ function loadWorker(): PostMessage {
   });
 
   createRequire(__filename)('../../../src/workers/asciidoc-render.worker');
-  if (handler === null) {
+  // Read through a call rather than the variable. Both `handler` and `lastResult` are written from
+  // inside a property descriptor the worker triggers, which the compiler cannot see: reading them
+  // directly, it narrows each to the `null` it was last assigned here and rejects every later use.
+  const registered = readHandler();
+  if (registered === null) {
     throw new Error('the render worker registered no message handler');
   }
-  const registered = handler;
   post = (request) => registered({ data: request });
   return post;
+
+  function readHandler(): ((event: { data: RenderRequest }) => Promise<void>) | null {
+    return handler;
+  }
+}
+
+/** The worker's most recent reply, read through a call so the compiler does not narrow it away. */
+function readLastResult(): RenderResult | null {
+  return lastResult;
 }
 
 /**
@@ -166,15 +185,17 @@ function loadWorker(): PostMessage {
  *
  * @param document - The corpus document to render.
  * @param requestId - The request id to tag the render with.
- * @returns The rendered (unsanitised) HTML.
+ * @returns The rendered (unsanitised) HTML, once the render has finished. One document at a time: the
+ *   worker's reply is read from a single slot, so two renders started concurrently would race for it.
+ *   Every gate awaits each document before starting the next.
  * @throws {Error} When the render fails — a corpus document that does not render is a broken corpus, and
  *   capturing a failure as though it were a reference would make the gate assert against nothing.
  */
-export function renderCorpusDocument(document: CorpusDocument, requestId = 1): string {
+export async function renderCorpusDocument(document: CorpusDocument, requestId = 1): Promise<string> {
   const send = loadWorker();
   lastResult = null;
-  send(captureRequestFor(document, requestId));
-  const result = lastResult;
+  await send(captureRequestFor(document, requestId));
+  const result = readLastResult();
   if (result === null) {
     throw new Error(`the render worker returned nothing for ${document.relativePath}`);
   }

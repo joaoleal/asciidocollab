@@ -13,7 +13,14 @@ export default defineConfig({
   testDir: './e2e/pdf-parity',
   // Both the comparison suite and the (hard-gated, PARITY_EMIT-only) reference-input emitter live here;
   // the emitter self-skips unless PARITY_EMIT=1, so a normal run only executes the comparison suite.
-  testMatch: ['**/pdf-parity-render.spec.ts', '**/emit-reference-inputs.spec.ts'],
+  // The internal-link spec verifies a harness measurement against the committed reference PDFs; it
+  // needs neither the engine nor a browser, and is listed here so the same CI job that owns this
+  // directory runs it (a spec no configuration selects would verify nothing).
+  testMatch: [
+    '**/pdf-parity-render.spec.ts',
+    '**/emit-reference-inputs.spec.ts',
+    '**/internal-link-targets.spec.ts',
+  ],
   // The engine cold-start (compile + boot of a ~70 MiB wasm module) plus multiple headless converts and
   // poppler rasterization make these tests inherently slow; give each generous headroom.
   timeout: 240_000,

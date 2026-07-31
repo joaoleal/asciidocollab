@@ -1,0 +1,27 @@
+[
+  {
+    "context": "listing",
+    "style": "mermaid",
+    "source": "graph TD;\n  A[Start] --> B{Decision};\n  B -->|yes| C[Do the thing];\n  B -->|no| D[Stop];"
+  },
+  {
+    "context": "listing",
+    "style": "graphviz",
+    "source": "digraph G {\n  a -> b;\n  b -> c;\n}"
+  },
+  {
+    "context": "listing",
+    "style": "vega-lite",
+    "source": "{\n  \"mark\": \"bar\",\n  \"data\": { \"values\": [ { \"a\": \"A\", \"b\": 28 } ] }\n}"
+  },
+  {
+    "context": "listing",
+    "style": "plantuml",
+    "source": "Alice -> Bob: a diagram engine with no offline renderer"
+  },
+  {
+    "context": "listing",
+    "style": "source",
+    "source": "pattern = /\\[0-9\\]+/"
+  }
+]

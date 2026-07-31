@@ -1,0 +1,52 @@
+<h1>Source Blocks</h1>
+<div class="paragraph">
+<p>A declared language reaches the app&#8217;s highlighting pass; an undeclared one deliberately does not.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="ruby">def greet(name)
+  puts "Hello, #{name}"
+end</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="javascript">export function greet(name) {
+  console.log(`Hello, ${name}`);
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code>this block declares no language, so nothing may tokenise it
+  indentation and &lt;angle brackets&gt; must survive verbatim</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>A plain listing block, with no source style at all.</pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="ruby">require 'json' <i class="conum" data-value="1"></i><b>(1)</b>
+JSON.generate({ 'ok' =&gt; true }) <i class="conum" data-value="2"></i><b>(2)</b></code></pre>
+</div>
+</div>
+<div class="colist arabic">
+<table>
+<tr>
+<td><i class="conum" data-value="1"></i><b>1</b></td>
+<td>Callouts number independently of the lists elsewhere in the document.</td>
+</tr>
+<tr>
+<td><i class="conum" data-value="2"></i><b>2</b></td>
+<td>A second callout, so an off-by-one in numbering is visible.</td>
+</tr>
+</table>
+</div>
+<div class="literalblock">
+<div class="content">
+<pre>A literal block, which is a different element from a listing block.</pre>
+</div>
+</div>

@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import type { RenderDiagnostic } from '@asciidocollab/asciidoc-pdf';
+import type { RenderDiagnostic, RenderError } from '@asciidocollab/asciidoc-pdf';
 import { PdfPreviewPanel } from '@/components/pdf-preview-panel';
 
 // pdf.js paints into a real 2D canvas context, which only exists in a browser. The unit test mocks
@@ -205,6 +205,25 @@ describe('PdfPreviewPanel', () => {
     rerender(<PdfPreviewPanel pdf={null} isRendering={false} outsideMainTree />);
     expect(queryByTestId('outside-main-tree-notice')).toBeInTheDocument();
     expect(queryByTestId('outside-main-tree-notice')).toHaveTextContent(/part of the main document/i);
+  });
+
+  test('replaces the empty-state invitation with the render failure when one is reported', () => {
+    const failure: RenderError = {
+      requestId: '1',
+      phase: 'preprocessing',
+      code: 'document-too-large',
+      message:
+        'This document is 341 kB of AsciiDoc, larger than the 100 kB the page-formatted (PDF) render supports.',
+    };
+    const { queryByTestId, rerender } = render(<PdfPreviewPanel pdf={null} isRendering={false} />);
+    expect(screen.getByText(/will appear here/i)).toBeInTheDocument();
+    expect(queryByTestId('pdf-preview-error')).not.toBeInTheDocument();
+
+    rerender(<PdfPreviewPanel pdf={null} isRendering={false} error={failure} />);
+    expect(screen.getByRole('alert')).toHaveTextContent(failure.message);
+    // A refused render is not a preview on its way, so the invitation must not sit under the notice
+    // saying it is never coming.
+    expect(screen.queryByText(/will appear here/i)).not.toBeInTheDocument();
   });
 
   test('surfaces a phase-keyed rendering status while a render is in flight', () => {

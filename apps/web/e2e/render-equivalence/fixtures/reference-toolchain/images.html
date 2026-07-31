@@ -1,0 +1,35 @@
+<h1>Images</h1>
+<div class="paragraph">
+<p>A relative target is resolved against <code>imagesdir</code> and then rewritten onto the app&#8217;s image endpoint;
+an already-qualified target is left exactly as the author wrote it.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="assets/diagram.png" alt="A relative block image" width="640" height="480">
+</div>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="assets/nested/photo.jpg" alt="A relative block image in a subfolder">
+</div>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="https://example.invalid/remote.png" alt="An absolute block image">
+</div>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="/root-relative.png" alt="A root-relative block image">
+</div>
+</div>
+<div class="paragraph">
+<p>An inline <span class="image"><img src="assets/icon.png" alt="icon" width="16" height="16"></span> in a sentence, and an inline
+<span class="image"><img src="https://example.invalid/remote-icon.png" alt="remote icon" width="16" height="16"></span> beside it.</p>
+</div>
+<div id="figure-anchor" class="imageblock">
+<div class="content">
+<img src="assets/diagram.png" alt="A captioned figure">
+</div>
+<div class="title">Figure 1. A figure with a title, which the engine captions and numbers</div>
+</div>
