@@ -138,9 +138,11 @@ test.describe('web-format render against the canonical reference build', () => {
   });
 
   test('the normalisation undoes what the app adds, and nothing else', async ({ page }) => {
-    // The same block of content as each toolchain emits it: a highlighted source block, an image, a
-    // diagram, and an ordinary paragraph carrying an author's own identifier.
+    // The same block of content as each toolchain emits it: a passthrough `<style>` the HTML parser
+    // hoists out of the body, a highlighted source block, an image, a diagram, and an ordinary
+    // paragraph carrying an author's own identifier.
     const referenceSide =
+      '<style>.note{color:red}</style>' +
       '<div class="listingblock"><div class="content">' +
       '<pre class="rouge highlight"><code data-lang="ruby">a = 1</code></pre></div></div>' +
       '<div class="imageblock"><div class="content"><img src="assets/x.png" alt="x"></div></div>' +
@@ -151,6 +153,7 @@ test.describe('web-format render against the canonical reference build', () => {
     const referenceDiagramBlocks: readonly ReferenceDiagram[] = [{ blockIndex: 1, type: 'mermaid' }];
 
     const appSide =
+      '<style>.note{color:red}</style>' +
       '<div id="__src_listing_3" data-source-line="3" data-source-file="a.adoc" class="listingblock">' +
       '<div class="content"><pre class="highlight hljs"><code class="language-ruby" data-lang="ruby">' +
       '<span class="hljs-variable">a</span> = <span class="hljs-number">1</span></code></pre></div></div>' +
@@ -176,24 +179,38 @@ test.describe('web-format render against the canonical reference build', () => {
 
     // Each of these is a difference that would matter, stated as a mutation of the app's side. If any
     // of them stops being reported, a pass has been widened past what it exists for.
-    const refused = new Map<string, string>([
-      ['a changed character in the code', appSide.replace('= <span class="hljs-number">1', '= <span class="hljs-number">2')],
+    //
+    // A pass may catch a mutation by refusing the input outright instead of reporting a difference —
+    // the image pass does, because it undoes the app's rewrite and so cannot see the rewrite missing.
+    // Such a case names the refusal it expects, because "some error was thrown" is what a normalisation
+    // that had stopped working at all would also produce, and then every case here would pass on it.
+    const refused = new Map<string, { readonly markup: string; readonly refusal?: RegExp }>([
+      ['a changed character in the code', { markup: appSide.replace('= <span class="hljs-number">1', '= <span class="hljs-number">2') }],
       [
         're-indented code',
-        appSide.replace('<code class="language-ruby" data-lang="ruby">', '<code class="language-ruby" data-lang="ruby">  '),
+        { markup: appSide.replace('<code class="language-ruby" data-lang="ruby">', '<code class="language-ruby" data-lang="ruby">  ') },
       ],
-      ['a re-indented diagram source', appSide.replace('  A --&gt; B;', '    A --&gt; B;')],
-      ['a changed code language', appSide.replace('data-lang="ruby"', 'data-lang="python"')],
-      ['a dropped code element', appSide.replace('<code class="language-ruby" data-lang="ruby">', '').replace('</code>', '')],
-      ['an unexpected extra class on a highlighted block', appSide.replace('highlight hljs', 'highlight hljs sneaky')],
-      ['a renamed author identifier', appSide.replace('id="author-anchor"', 'id="renamed-anchor"')],
-      ['a changed image target', appSide.replace('assets/x.png', 'assets/y.png')],
-      ['an image no longer served from the endpoint', appSide.replace(`${CAPTURE_IMAGES_DIR}/assets`, 'assets')],
-      ['a changed diagram type', appSide.replace('data-diagram-engine="mermaid"', 'data-diagram-engine="graphviz"')],
-      ['a changed diagram source', appSide.replace('A --&gt; B;', 'A --&gt; C;')],
-      ['a diagram left as a listing block', appSide.replace('class="adc-diagram"', 'class="listingblock"')],
-      ['changed prose', appSide.replace('Prose.', 'Different prose.')],
-      ['a lost element', appSide.replace('<div class="paragraph"><p id="author-anchor">Prose.</p></div>', '')],
+      ['a re-indented diagram source', { markup: appSide.replace('  A --&gt; B;', '    A --&gt; B;') }],
+      ['a changed code language', { markup: appSide.replace('data-lang="ruby"', 'data-lang="python"') }],
+      ['a dropped code element', { markup: appSide.replace('<code class="language-ruby" data-lang="ruby">', '').replace('</code>', '') }],
+      ['an unexpected extra class on a highlighted block', { markup: appSide.replace('highlight hljs', 'highlight hljs sneaky') }],
+      ['a renamed author identifier', { markup: appSide.replace('id="author-anchor"', 'id="renamed-anchor"') }],
+      ['a changed image target', { markup: appSide.replace('assets/x.png', 'assets/y.png') }],
+      [
+        'an image no longer served from the endpoint',
+        {
+          markup: appSide.replace(`${CAPTURE_IMAGES_DIR}/assets`, 'assets'),
+          refusal: /leaves the project-relative image target "assets\/x\.png" unmapped/,
+        },
+      ],
+      ['a changed diagram type', { markup: appSide.replace('data-diagram-engine="mermaid"', 'data-diagram-engine="graphviz"') }],
+      ['a changed diagram source', { markup: appSide.replace('A --&gt; B;', 'A --&gt; C;') }],
+      ['a diagram left as a listing block', { markup: appSide.replace('class="adc-diagram"', 'class="listingblock"') }],
+      ['changed prose', { markup: appSide.replace('Prose.', 'Different prose.') }],
+      // The parser puts this one in `<head>`, so it is only compared because both sides are read
+      // whole rather than from the body down.
+      ['a changed passthrough style', { markup: appSide.replace('color:red', 'color:blue') }],
+      ['a lost element', { markup: appSide.replace('<div class="paragraph"><p id="author-anchor">Prose.</p></div>', '') }],
     ]);
 
     const reference = await canonicaliseReferenceSide(page, referenceSide, referenceDiagramBlocks);
@@ -201,15 +218,23 @@ test.describe('web-format render against the canonical reference build', () => {
       const app = await canonicaliseAppSide(page, markup);
       expect(describeDifference(what, reference, app), `the comparison should forgive ${what}`).toBeNull();
     }
-    for (const [what, markup] of refused) {
-      // A normalisation pass may report a difference by refusing the input outright — the image pass
-      // does, because it undoes the app's rewrite and so cannot see the rewrite missing. Either way
-      // the mutation has to be caught rather than pass as agreement.
-      const report = await canonicaliseAppSide(page, markup).then(
-        (app) => describeDifference(what, reference, app),
-        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    for (const [what, { markup, refusal }] of refused) {
+      const outcome = await canonicaliseAppSide(page, markup).then(
+        (app) => ({ report: describeDifference(what, reference, app), refusedWith: null }),
+        (error: unknown) => ({
+          report: null,
+          refusedWith: error instanceof Error ? error.message : String(error),
+        }),
       );
-      expect(report, `the comparison must not forgive ${what}`).not.toBeNull();
+      if (refusal === undefined) {
+        expect(
+          outcome.refusedWith,
+          `${what} should be reported as a difference, not thrown as an error`,
+        ).toBeNull();
+        expect(outcome.report, `the comparison must not forgive ${what}`).not.toBeNull();
+      } else {
+        expect(outcome.refusedWith, `the comparison must refuse ${what}, and say why`).toMatch(refusal);
+      }
     }
   });
 

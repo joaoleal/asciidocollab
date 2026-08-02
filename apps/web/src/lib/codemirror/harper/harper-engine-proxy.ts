@@ -213,9 +213,18 @@ export function createHarperEngineProxy(
         await send({ method: 'dispose' });
       } finally {
         // Terminate whatever we were told: `dispose` may have failed, but the worker still has to go.
+        //
+        // Every call still in flight is failed on the way out, exactly as `reset` fails them. Merely
+        // dropped, each one's `await` would never resume: the lint that was running when the editor
+        // unmounted, or when grammar checking was switched off, would leave whatever follows it —
+        // clearing a state flag, releasing a queue — permanently unrun.
+        const abandoned = [...pending.values()];
         pending.clear();
         running.terminate();
         if (worker === running) worker = null;
+        for (const call of abandoned) {
+          call.reject(new Error('The Harper worker was disposed while this call was in flight'));
+        }
       }
     },
   };

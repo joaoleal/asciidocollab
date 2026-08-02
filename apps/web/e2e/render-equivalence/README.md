@@ -201,6 +201,12 @@ Both sides are parsed by a **real browser HTML parser** (the spec hands
 how either side happened to be serialised. Each document is reduced to three sequences — the element
 tree, every `id`, and every source-provenance marker — and compared entry by entry.
 
+A rendered preview is a document *fragment*, and the parser does not put all of a fragment in the
+body: a `<style>`, `<meta>` or `<link>` written by a leading `+++` passthrough is hoisted into
+`<head>`. Both are read, here and in the canonical reference build, so nothing the render emitted
+falls outside the comparison. Their position relative to the body is the parser's decision rather than
+the render's, so they are compared as a group at the front.
+
 | Aspect | Treatment |
 |---|---|
 | Inter-element whitespace and indentation | normalised away |
@@ -303,7 +309,7 @@ Two extraction choices follow from the same reasoning and are worth knowing befo
   rendered changes.
 
 Each way the two media draw the *same* content differently is a named reconciliation, never a
-comparison loosened until the corpus passes. Three rewrite the web side, three the page side:
+comparison loosened until the corpus passes. Four rewrite the web side, four the page side:
 
 | Reconciliation | Side | Exists for | Gives up |
 |---|---|---|---|
@@ -312,7 +318,9 @@ comparison loosened until the corpus passes. Three rewrite the web side, three t
 | **footnote definition labels** | web | the web format labels a definition `1.`, the page format `[1]` | the shape only; the number is kept and compared |
 | **quote attribution** | web | the page format writes an attribution as one line, `— author, citation`; the web format breaks the line | the line break, which is layout. The author and the citation are both kept |
 | **list marker glyphs** | page | a bullet (`•`, `◦`, `▪`) or a checkbox (`☐`, `☑`) drawn in the marker position, where the web format has no text at all | the glyphs, and with them the checkbox *state*: the web preview draws no checkbox (`asciidoc-preview.css` paints admonition icons but not `fa-square-o`), so a checked and an unchecked task are indistinguishable there. Ordered markers are **not** in this rule — the numbering counts something |
-| **icon-font glyphs** | page | an admonition icon lands in the text layer at its private-use slot (a note comes out as U+F05A) | private-use code points only, so an admonition **label** — text on both sides whenever `icons` is unset — is still compared |
+| **admonition type** | both | with `icons=font` — the app's default for every project, so every run of this gate — neither side writes the word NOTE anywhere: the web format draws an empty `<i class="fa icon-note">` from CSS, the page format draws a glyph that lands in the text layer at its icon font's private-use slot | nothing. Both are reduced to `[NOTE]` — from the marker's class on the web side, from the slot on the page side — so a note that became a caution fails. Without it the six admonitions in the corpus are indistinguishable from one another |
+| **other icon-font glyphs** | page | any remaining private-use code point is an icon that names nothing this gate compares | those code points only, so ordinary text — including an admonition's spelled-out label, which is what either side emits when `icons` is unset — is untouched |
+| **running footer** | page | the page number the engine draws in the bottom margin; page breaks are not compared, and the number is a statement about where one fell | the page number, and only that. The rule is narrow on purpose — it drops a line only when it is the last on its page, its text is exactly that page's number, **and** it was drawn in the half-inch margin band where no body content can be, so a table cell or a list item that happens to read `2` on page 2 is kept |
 
 Two corpus documents are deliberately **not** in the shared set, and the reason is recorded in
 `EXCLUDED_FROM_CROSS_FORMAT` so that dropping one is a visible decision:
@@ -326,8 +334,11 @@ Two corpus documents are deliberately **not** in the shared set, and the reason 
 `cross-format-agreement.spec.ts` pins every reconciliation directly, the way the other gates pin
 theirs, in a test that checks each one forgives what it exists for and still refuses changed prose, a
 lost list item, a renumbered or re-styled ordered list, a changed callout number in either position, a
-changed footnote number, a lost citation, a changed attribution, reordered blocks and a lost code
-character. It also checks that the corpus still contains the documents that carry cross-references —
+changed footnote number, a note drawn as a caution, a lost citation, a changed attribution, reordered
+blocks and a lost code character. The pinning goes through **the same function the corpus comparison
+goes through** (`reducePageFormatText`), line assembly and footer rule included — a pinning test with
+its own copy of the reduction pins a second implementation, and the two drift apart at the first
+change to either. It also checks that the corpus still contains the documents that carry cross-references —
 without them the run would report three dimensions while comparing two, which is the specific way this
 gate would decay.
 

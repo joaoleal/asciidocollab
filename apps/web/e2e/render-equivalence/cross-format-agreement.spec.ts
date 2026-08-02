@@ -42,18 +42,24 @@ import {
   extractWebFormatDocument,
   pageFormatEngineAvailable,
   pageFormatSnapshot,
-  reconcilePageFormatText,
+  reducePageFormatText,
   WASM_ENGINE_PATH,
   type CrossFormatDocument,
+  type PageTextLine,
 } from './harness/cross-format';
 
 /** The whole corpus, so the exclusion list can be checked against something real. */
 const corpus = corpusDocuments();
 
-/** The page format's side, reconciled and reduced exactly as the corpus comparison reduces it. */
-function reducePageFormatText(text: string): string {
-  return reconcilePageFormatText(text).replaceAll(/\s+/gu, '');
-}
+/**
+ * A page of the page format's text layer, written as the lines it carries.
+ *
+ * The height each line was drawn at is what tells a running footer from body content, so it is part
+ * of the input rather than something the reduction infers: `body` is a line inside the text area and
+ * `furniture` a line in the margin band the engine draws running content in.
+ */
+const body = (text: string): PageTextLine => ({ text, baseline: 300 });
+const furniture = (text: string): PageTextLine => ({ text, baseline: 14 });
 
 /** The documents both formats are asked to render — the corpus minus the named exclusions. */
 const sharedDocuments = corpus.filter((document) => !EXCLUDED_FROM_CROSS_FORMAT.has(document.name));
@@ -170,20 +176,24 @@ test.describe('cross-format agreement between the two preview formats', () => {
     // The same content as the page format's text layer carries it: bullets and checkboxes drawn as
     // glyphs, ordered markers written out, callouts as circled digits, the note's icon at its
     // private-use slot in the icon font (U+F05A, exactly as the engine emits it), the attribution on
-    // one line, and the footnote definition labelled `[1]`.
-    const pageSide = [
-      '• A bullet',
-      '☐ A task',
-      '1. First step',
-      '2. Second step',
-      'a. Nested step',
-      "require 'json' ①",
-      '① The callout.',
-      '\u{F05A} An admonition.',
-      'Quoted.',
-      '— A. Author, A Source',
-      '[1] The footnote.',
-    ].join('\n');
+    // one line, and the footnote definition labelled `[1]`. It is one page, ending in the running
+    // footer the engine draws in the margin.
+    const pageSide: readonly (readonly PageTextLine[])[] = [
+      [
+        body('• A bullet'),
+        body('☐ A task'),
+        body('1. First step'),
+        body('2. Second step'),
+        body('a. Nested step'),
+        body("require 'json' ①"),
+        body('① The callout.'),
+        body('\u{F05A} An admonition.'),
+        body('Quoted.'),
+        body('— A. Author, A Source'),
+        body('[1] The footnote.'),
+        furniture('1'),
+      ],
+    ];
 
     /** The web format's side, reduced by the real extractor in a real browser. */
     const webDocument = async (html: string): Promise<CrossFormatDocument> =>
@@ -206,6 +216,10 @@ test.describe('cross-format agreement between the two preview formats', () => {
       ['a changed callout number beside the code', webSide.replace('data-value="1"></i><b>(1)</b>', 'data-value="2"></i><b>(2)</b>')],
       ['a changed callout number in the callout list', webSide.replace('data-value="1"></i><b>1</b>', 'data-value="3"></i><b>3</b>')],
       ['a changed footnote number', webSide.replace('<a href="#_footnoteref_1">1</a>', '<a href="#_footnoteref_1">2</a>')],
+      // Neither format writes the word NOTE anywhere while `icons` is in effect, so without the
+      // admonition reconciliation both sides reduce to nothing here and every admonition in the
+      // corpus reads the same as every other.
+      ['a note drawn as a caution', webSide.replace('icon-note', 'icon-caution')],
       ['a lost citation', webSide.replace('<cite>A Source</cite>', '')],
       ['a changed attribution', webSide.replace('A. Author', 'B. Author')],
       ['reordered blocks', webSide.replace('<td>The callout.</td>', '<td>Quoted.</td>').replace('<p>Quoted.</p>', '<p>The callout.</p>')],
@@ -228,6 +242,28 @@ test.describe('cross-format agreement between the two preview formats', () => {
     );
     expect(headingSide.headings).toEqual(['1 A Title', '2 1. A Section', '3 1.1. A Subsection']);
     expect(headingSide.references).toEqual(['gone (unresolved)', 's']);
+  });
+
+  test('the page side drops the running footer and keeps everything a document says', () => {
+    // The reduction of the page side is not only the glyph rules: it assembles lines, trims and
+    // collapses each, drops the empties, and removes the running footer. All of that is applied by
+    // the same function the corpus comparison goes through, so it is pinned here rather than
+    // re-stated — and the footer rule especially, because it is the one rule that deletes a line
+    // outright.
+    expect(reducePageFormatText([[body('  A   paragraph  '), body('   '), furniture('1')]])).toBe(
+      'Aparagraph',
+    );
+
+    // The footer is identified by where it is drawn as well as by what it says. A cell or an item
+    // that reads as its own page's number is body content, sits above the margin band, and stays —
+    // even as the last line on the page, which is where a table's final row lands.
+    expect(reducePageFormatText([[body('total'), body('1')], [body('a'), furniture('2')]])).toBe(
+      'total1a',
+    );
+
+    // …and the rule stays a statement about page numbering: a line in the margin band that says
+    // anything else is not this page's footer and is kept, so a reader would still see it go.
+    expect(reducePageFormatText([[body('a'), furniture('7')]])).toBe('a7');
   });
 
   for (const [index, document] of sharedDocuments.entries()) {

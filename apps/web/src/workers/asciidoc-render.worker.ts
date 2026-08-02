@@ -6,6 +6,7 @@ import { RENDER_INTRINSIC_ATTRIBUTES } from '../lib/asciidoc/render-intrinsics';
 import { resolveSandboxedPath } from '../lib/asciidoc/sandbox-path';
 import { blockStartLine } from '../lib/asciidoc/block-start-line';
 import type { RenderRequest, RenderResult, RenderDocumentDetails, RenderTimings } from './render-protocol';
+import { SYNTHETIC_BLOCK_ID_PREFIX, SYNTHETIC_DIAGRAM_ID_PREFIX } from './render-protocol';
 
 // Asciidoctor convention: a value ending in `@` is an overridable "soft" default — an in-document
 // attribute entry of the same name may still override it. We mark every seeded inherited-scope value
@@ -365,7 +366,9 @@ onmessage = async function (event: MessageEvent<RenderRequest>) {
   // block walk included — the stages below deliberately leave those out, and a total that started
   // later would hide them instead of leaving them visible as the remainder.
   const startedAt = performance.now();
-  const { requestId, content, imagesDir, mainPath, files, rootFileId, openFileId, showIncludes, projectAttributes, sourceLineHints } =
+  // `renderId` is read out and echoed back untouched: it means nothing here, and everything to the
+  // holder that has to say which consumer this reply belongs to. See its declaration.
+  const { requestId, renderId, content, imagesDir, mainPath, files, rootFileId, openFileId, showIncludes, projectAttributes, sourceLineHints } =
     event.data;
   // Absent means on: the preview is the dominant caller and navigates by these, so a request that says
   // nothing gets the behaviour it has always had. An export opts out explicitly.
@@ -515,7 +518,7 @@ onmessage = async function (event: MessageEvent<RenderRequest>) {
         const rawDiagramId: unknown = block.getId();
         let diagramId: string = typeof rawDiagramId === 'string' && rawDiagramId ? rawDiagramId : '';
         if (!diagramId) {
-          diagramId = `__adc_diagram_${diagramBlocks.length}`;
+          diagramId = `${SYNTHETIC_DIAGRAM_ID_PREFIX}${diagramBlocks.length}`;
           block.setId(diagramId);
         }
         // `getSource` is a Block (listing/literal) method, not on the AbstractBlock the walk is typed as.
@@ -537,7 +540,7 @@ onmessage = async function (event: MessageEvent<RenderRequest>) {
       const rawId: unknown = block.getId();
       let id: string = typeof rawId === 'string' ? rawId : '';
       if (!id) {
-        id = `__src_${context}_${lineNumber}`;
+        id = `${SYNTHETIC_BLOCK_ID_PREFIX}${context}_${lineNumber}`;
         block.setId(id);
       }
       blockSourceLines.push({ id, origin: originOf(startLine) });
@@ -630,6 +633,7 @@ onmessage = async function (event: MessageEvent<RenderRequest>) {
 
     postMessage({
       requestId,
+      renderId,
       ok: true,
       html,
       error: null,
@@ -640,6 +644,6 @@ onmessage = async function (event: MessageEvent<RenderRequest>) {
     } satisfies RenderResult);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    postMessage({ requestId, ok: false, html: null, error: message } satisfies RenderResult);
+    postMessage({ requestId, renderId, ok: false, html: null, error: message } satisfies RenderResult);
   }
 };

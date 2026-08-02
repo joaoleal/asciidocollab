@@ -190,4 +190,19 @@ describe('createHarperEngineProxy', () => {
     await expect(disposed).resolves.toBeUndefined();
     expect(running.terminate).toHaveBeenCalledTimes(1);
   });
+
+  it('fails the calls still in flight when it disposes, rather than abandoning them', async () => {
+    const { engine, worker } = makeProxy();
+
+    // An editor unmounting, or grammar checking being switched off, disposes the engine with a lint
+    // still running. Dropped rather than failed, that lint's `await` never resumes: whatever the
+    // caller does after it — clearing a flag, releasing a queue — never runs, for the rest of the
+    // session.
+    const abandoned = engine.lint('teh cat');
+    const disposed = engine.dispose();
+    worker().answer(2, { method: 'dispose', result: null });
+
+    await expect(disposed).resolves.toBeUndefined();
+    await expect(abandoned).rejects.toThrow(/disposed/);
+  });
 });

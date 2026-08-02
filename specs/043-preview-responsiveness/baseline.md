@@ -557,3 +557,33 @@ bytes against the vendor's 746,873 — 2.4% *larger* — so it is, if anything, 
 minifier. Judged against the recorded baseline of 746,873 the new engine is 57.9% smaller; judged
 against the stricter same-tool figure of 764,788 it is 58.8% smaller. The target was a third smaller,
 and both readings clear it by a wide margin.
+
+---
+
+## 9. Success criteria, verified against the recorded figures
+
+Checked at the end of the work, against the figures in this file and the suites named — not against
+recollection. Every "met" below points at the evidence that says so.
+
+| Criterion | Evidence | Verdict |
+|---|---|---|
+| SC-001 — refreshes at least once per staleness interval during continuous typing, on both formats | `e2e/preview-refresh-guarantee.spec.ts`, tests 1 and 2: a burst with no pause longer than the trailing delay produces ≥2 refreshes strictly between the first and last keystroke, each showing text typed after the previous one, on the web and the page format | **met** |
+| SC-001a — at most one refresh in progress on a slow document, and refreshes continue | same spec, test 3, on a document measured to render slower than the interval; the advancing marker sequence is the observable | **met**, with a stated boundary: the gate is on the forced refresh during continuous activity. The trailing timer, which fires only once typing has stopped, deliberately does not consult it — see `max-wait-debounce.ts` |
+| SC-002 — zero error messages and zero blank panels across repeated file switching | `e2e/preview-file-switch.spec.ts`, test 1: six switches, sampled per animation frame for the unavailable message, the error state, the failure notice, and a missing or empty output | **met** |
+| SC-003 — file-switch time-to-content at least halved | §3: 665 ms → **158 ms** (127 ms on a second run); target ≤ 332 ms | **met** |
+| SC-004 — engine start-up once per session, not once per switch | `e2e/preview-file-switch.spec.ts`: exactly one engine construction across web→page→web and across a panel close/reopen | **met** |
+| SC-004a — automatic recovery from a termination, bounded | same spec: preview updating again with no reload; after the bound, a persistent notice and a working retry, unchanged after 3 s idle | **met** |
+| SC-005 — ≤200 ms at ~100 lines; no later than baseline at ~15,000 | §8: **149 ms** (target ≤ 200) and **815 ms** (baseline 1,059) | **met** |
+| SC-006 — zero diagram redraws and zero equation re-typesets across an editing session | `e2e/preview-morph-preservation.spec.ts`, test 1: 3/3 diagrams and 6/6 equations are the same DOM nodes after six prose edits, two of which renumber every block below | **met** |
+| SC-006a — main-thread work no greater than the baseline | §4 and §8: task time 5,413 → **5,058 ms**; long tasks 18/990 ms → **7/366 ms** | **met** |
+| SC-007 — scroll position unchanged across a refresh, in image-bearing documents | `e2e/preview-morph-preservation.spec.ts`, test 2: 1,571 px before and after, in a document of decoded images with real intrinsic heights | **met** |
+| SC-007a — keyboard focus survives a refresh where the element still exists | same spec, test 3: focus moved onto a preview link mid-refresh still holds the same element afterwards | **met** |
+| SC-008 — per-render stage timings in development builds, absent from production | the overlay renders both formats' figures and returns nothing when the build is production; `tests/components/preview/render-stats-overlay.test.tsx` | **met** |
+| SC-008a — page-format per-stage breakdown accounting for the total, every counter observed | §5: nine stages; the instrumented ones account for 687 of 1,224 ms at 100 lines, the remainder being engine load and setup inside the VM, stated as such. The raster-fallback counter reports the stage's own count rather than the constant `0` it used to | **met** |
+| SC-009 — conversion at least 2× faster, conversion code at least a third smaller | §8: 421 → **83 ms** (5.0×) and 746,873 → **314,708 bytes** minified (57.9% smaller) | **met** |
+| SC-010 / SC-010a — upgraded engine equivalent to the previous one across the corpus, identifiers and provenance exact | `e2e/render-equivalence/web-format-equivalence.spec.ts` against fixtures captured before the upgrade; ids and `data-source-*` compared exactly, never normalised | **met**, with one enumerated correction: 4.0.6 emits an obsolete `<col width>` where every other Asciidoctor emits a style, and the worker restores the canonical form (see `upstream-asciidoctor-col-width.md`) |
+| SC-010b / SC-010e — the two formats agree on block text, heading hierarchy and numbering, and cross-reference targets | `e2e/render-equivalence/cross-format-agreement.spec.ts` over seven corpus documents, all three dimensions, the third using the link-destination extraction added for it | **met** |
+| SC-010c — the page-format parity suite passes unchanged throughout | run after the engine upgrade **and** again after the render-VM change (§7): 31 passed, 3 skipped, the skips being two emit-only tools and one fixture with no committed reference | **met** |
+| SC-010d — web-format output matches the canonical toolchain, zero unexplained differences | `e2e/render-equivalence/web-format-reference.spec.ts` against a digest-pinned container with a locked gem closure; after the enumerated normalisations the two sides are byte-identical for every corpus document | **met** |
+| SC-011 — a document twice the observed failure threshold renders, or names its limit | `e2e/pdf-preview-large-document.spec.ts`: 3,400 lines render to 65 pages; a document past the bound is refused with a message naming its size, the limit and what to do, and the preview stays usable | **met** |
+| SC-012 — the reused-engine question closed by measurement on an idle machine, and the figures it invalidates re-measured | §7: confirmed and worse than reported (dead by the fourth render); reuse retired, and §5 re-measured because VM boot is one of the stages it breaks out | **met** |

@@ -167,6 +167,49 @@ const PAGE_PADDING = 16;
 const WIDTH_EPSILON = 2;
 
 /**
+ * Vertical gap, in CSS pixels, between stacked pages (mirrors the container's `gap-4` class). Used to
+ * predict where each page will land before the stack is in the document, so the pages a reader can
+ * actually see are painted before the swap rather than after it.
+ */
+const PAGE_GAP = 16;
+
+/**
+ * How far beyond the visible viewport, in CSS pixels, a page is still painted eagerly.
+ *
+ * Rasterizing a page is the most expensive thing this component does — a canvas at the device pixel
+ * ratio is several megabytes of pixels, and a preview refresh used to redraw every page of the
+ * document whether or not anyone could see it. On a long document that is most of the cost of a
+ * refresh spent on pages nobody is looking at. Pages outside this band are laid out at their true
+ * size (so the scrollbar, the scroll sync and the page indicator are all exactly as they were) and
+ * painted when the reader approaches them.
+ *
+ * The band is generous on purpose: roughly two screens either way, so scrolling at a normal speed
+ * always meets a page that is already drawn, and a document short enough to fit inside it is painted
+ * in full exactly as before. It doubles as the observer's margin, which is what starts a page
+ * painting before it comes into view rather than as it arrives.
+ */
+const EAGER_PAINT_MARGIN_PX = 2000;
+
+/**
+ * How far beyond the visible viewport, in CSS pixels, a page that HAS been drawn keeps its drawing.
+ *
+ * A drawing is not free to hold on to. Each one is a canvas at the device pixel ratio — several
+ * megabytes of pixels for a single page, more on a HiDPI screen — and a document drawn page by page as
+ * the reader scrolls accumulates every one of them, because nothing here ever asks a second time for a
+ * page it has already drawn. Far enough down a long document the browser stops backing new canvases,
+ * and from that point every page the reader scrolls to is blank with nothing on screen to say why.
+ *
+ * Released pages keep their measured size, so the stack's geometry never changes: the scrollbar, the
+ * page indicator and the scroll sync read the same numbers whether or not a page currently carries a
+ * drawing, and approaching it again draws it back.
+ *
+ * Deliberately WIDER than the paint margin. Drawing and releasing at one boundary would redraw a page
+ * every time the reader crossed it; with the release boundary further out, scrolling back and forth
+ * around a page meets it already drawn.
+ */
+const RETAINED_PAINT_MARGIN_PX = EAGER_PAINT_MARGIN_PX * 2;
+
+/**
  * Quiet period, in milliseconds, the crisp pdf.js re-paint waits for after the last zoom or resize
  * change. A burst of zoom clicks or a resize drag collapses into one re-render at the settled scale;
  * in the meantime the already-painted pages are scaled with a CSS transform for instant feedback.
@@ -252,6 +295,49 @@ function clamp(value: number, low: number, high: number): number {
 }
 
 /**
+ * Whether two byte sequences are the same document.
+ *
+ * Every completed render hands the panel a fresh `Blob`, so object identity says nothing about
+ * whether the document changed — and an edit very often leaves the rendered PDF byte-for-byte
+ * identical (a change inside a comment, a re-render forced by an unrelated setting, an edit undone
+ * before the render fired). Redrawing the page stack for one of those costs a full rasterization of
+ * everything on screen and produces pixels indistinguishable from the ones already there.
+ *
+ * @param left - The bytes just produced, or `null` when nothing has been painted yet.
+ * @param right - The bytes the pages currently on screen were painted from.
+ * @returns True when the two are the same length and the same content.
+ */
+function sameBytes(left: Uint8Array | null, right: Uint8Array | null): boolean {
+  if (left === null || right === null) return false;
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+/** One page of the loaded document: its element and where that element will sit in the stack. */
+interface PageSlot {
+  /** 1-based page number, mirrored onto the element's `data-page`. */
+  readonly number: number;
+  /** The loaded pdf.js page, kept so the layers can be painted later, on approach. */
+  readonly page: Awaited<ReturnType<PDFDocumentProxy['getPage']>>;
+  /** The viewport the page is painted through, at the committed scale. */
+  readonly viewport: ReturnType<Awaited<ReturnType<PDFDocumentProxy['getPage']>>['getViewport']>;
+  /** The positioned container holding this page's three layers. */
+  readonly element: HTMLDivElement;
+  /** Predicted distance, in CSS pixels, from the top of the stack to this page's top edge. */
+  readonly top: number;
+  /** The page's laid-out height in CSS pixels. */
+  readonly height: number;
+}
+
+/** The pdf.js work behind one page's drawing, held so that releasing the page can let go of it. */
+interface PageWork {
+  /** The canvas render, once started. Cancelling it is also what lets go of the canvas it drew into. */
+  task?: RenderTask;
+  /** The selectable-text overlay, once started. */
+  layer?: TextLayer;
+}
+
+/**
  * Find the entry in a line-sorted source map that governs `targetLine`: the last entry whose `line` is
  * `≤ targetLine` (binary search). When every entry starts after the target, the first entry is returned
  * so a line above the first mapped block still scrolls to the document's top.
@@ -289,8 +375,13 @@ function findSourceMapEntry(
 }
 
 /**
- * The page-formatted render's figures as overlay rows: the whole-render counters first, then each
- * stage that was actually measured.
+ * The page-formatted render's figures as overlay rows, ordered and nested the way they contain one
+ * another: the render total, the four main-thread stages inside it, the in-VM stages inside the
+ * convert, and the counters — which measure no time at all — last.
+ *
+ * The containment is stated rather than left to the reader because these figures overlap almost
+ * entirely. `convert` is nearly all of `render`, and the in-VM stages are nearly all of `convert`, so
+ * a flat column of them appears to account for two or three times the time the render actually took.
  *
  * A stage the render could not measure is left out entirely rather than shown as `0 ms`. The in-VM
  * stages are optional precisely because "not measured" and "took no time" are different facts, and
@@ -301,13 +392,13 @@ function pageRenderStatRows(stats: RenderStats | undefined): readonly RenderStat
   const { stages } = stats;
   const rows: RenderStatRow[] = [
     { label: "render", value: stats.renderMs, unit: "ms" },
-    { label: "cache hits", value: stats.cacheHits },
-    { label: "raster fallbacks", value: stats.rasterFallbacks },
-    { label: "vm boot", value: stages.vmBootMs, unit: "ms" },
-    { label: "populate", value: stages.populateMs, unit: "ms" },
-    { label: "pipeline", value: stages.pipelineMs, unit: "ms" },
-    { label: "convert", value: stages.convertMs, unit: "ms" },
+    { label: "vm boot", value: stages.vmBootMs, unit: "ms", depth: 1 },
+    { label: "populate", value: stages.populateMs, unit: "ms", depth: 1 },
+    { label: "pipeline", value: stages.pipelineMs, unit: "ms", depth: 1 },
+    { label: "convert", value: stages.convertMs, unit: "ms", depth: 1 },
   ];
+  // Inside the convert, and siblings of one another: each is SELF time, so the walk already excludes
+  // the dry runs, font work and serialisation that happen during it.
   const inVm: readonly (readonly [string, number | undefined])[] = [
     ["parse", stages.parseMs],
     ["converter walk", stages.converterWalkMs],
@@ -316,8 +407,14 @@ function pageRenderStatRows(stats: RenderStats | undefined): readonly RenderStat
     ["serialize", stages.serializeMs],
   ];
   for (const [label, value] of inVm) {
-    if (value !== undefined) rows.push({ label, value, unit: "ms" });
+    if (value !== undefined) rows.push({ label, value, unit: "ms", depth: 2 });
   }
+  // Counts, not durations: nothing contains them and they contain nothing, so they read last rather
+  // than in among figures that add up.
+  rows.push(
+    { label: "cache hits", value: stats.cacheHits },
+    { label: "raster fallbacks", value: stats.rasterFallbacks },
+  );
   return rows;
 }
 
@@ -462,6 +559,18 @@ export function PdfPreviewPanel({
   // Tracks which rendered page is most in view; re-created after every re-paint since the paint swaps
   // in fresh page elements. Held in a ref so the paint effect's cleanup can disconnect it.
   const pageObserverReference = useRef<IntersectionObserver | null>(null);
+  // Draws pages as the reader approaches them — the ones outside the eagerly-painted band. Held in a
+  // ref for the same reason, and separate from the tracking observer above because it watches an
+  // inflated root: a margin that starts a page painting early would make every page look "in view" to
+  // the indicator.
+  const paintObserverReference = useRef<IntersectionObserver | null>(null);
+  // Takes a page's drawing back once the reader is well past it, so the panel does not accumulate
+  // every canvas it has ever drawn. A third observer rather than a branch inside the painting one:
+  // they watch differently-sized roots on purpose, and the gap between the two is the hysteresis that
+  // stops a page being redrawn each time the reader crosses one boundary.
+  const releaseObserverReference = useRef<IntersectionObserver | null>(null);
+  // The bytes the page stack is showing, or is being painted from. `null` until the first PDF arrives.
+  const documentBytesReference = useRef<Uint8Array | null>(null);
 
   // The space (in CSS pixels) a page may occupy inside the scroll viewport, measured by a
   // ResizeObserver; `0` until the first measurement, which falls back to the fixed scale.
@@ -479,6 +588,11 @@ export function PdfPreviewPanel({
   const [currentPage, setCurrentPage] = useState(1);
   // The pending text in the jump-to-page field; empty unless the user is typing a destination.
   const [jumpValue, setJumpValue] = useState("");
+  // Bumped only when a PDF arrives whose bytes differ from the ones the stack already holds. The paint
+  // effect keys off this rather than off `pdf` directly, so a refresh that produced an identical
+  // document does not re-run it at all — see the effect below for why "does not re-run" has to mean
+  // exactly that.
+  const [documentRevision, setDocumentRevision] = useState(0);
 
   // The scale the user is currently asking for (fit-to-width or an explicit factor), known
   // synchronously so the header readout and the CSS transform can respond without a render round-trip.
@@ -538,9 +652,41 @@ export function PdfPreviewPanel({
     };
   }, []);
 
+  // Decide whether a newly-arrived PDF is a new document at all, WITHOUT disturbing the paint below.
+  //
+  // Every completed render hands the panel a fresh `Blob`, so object identity says nothing about
+  // whether the document changed — and an edit very often leaves the rendered PDF byte-for-byte
+  // identical (a change inside a comment, an edit undone before the render fired, a re-render forced
+  // by an unrelated setting). Repainting for one of those rasterizes everything on screen to arrive at
+  // the pixels already there.
+  //
+  // The comparison has to live in an effect of its own, ahead of the paint. React runs an effect's
+  // cleanup before every re-run, so a paint effect keyed on `pdf` has ALREADY torn its document and
+  // both its observers down by the time it could notice there was nothing to do — leaving a panel
+  // that no longer tracks the current page and no longer paints pages the reader scrolls to. Deciding
+  // out here means an unchanged document never re-runs the paint, so nothing is torn down to begin
+  // with.
+  useEffect(() => {
+    if (pdf === null) return;
+    let cancelled = false;
+    void pdf
+      .arrayBuffer()
+      .then((buffer) => {
+        const bytes = new Uint8Array(buffer);
+        if (cancelled || sameBytes(bytes, documentBytesReference.current)) return;
+        documentBytesReference.current = bytes;
+        setDocumentRevision((previous) => previous + 1);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [pdf]);
+
   useEffect(() => {
     const pagesContainer = pagesReference.current;
-    if (pdf === null || pagesContainer === null) return;
+    const data = documentBytesReference.current;
+    if (data === null || pagesContainer === null) return;
 
     ensurePdfWorkerConfigured();
 
@@ -550,18 +696,38 @@ export function PdfPreviewPanel({
 
     let cancelled = false;
     let loadingTask: PDFDocumentLoadingTask | undefined;
-    const renderTasks: RenderTask[] = [];
-    const textLayers: TextLayer[] = [];
+    /**
+     * The drawing work for each page that currently carries a drawing, by page number.
+     *
+     * Keyed, and emptied as pages are released, because pdf.js's render task keeps a reference to the
+     * canvas it drew into (`InternalRenderTask._canvas`). Merely appending every task to a list kept
+     * for the cleanup — which is what this was — held every canvas the run had ever drawn alive no
+     * matter how many pages were released, so the memory releasing them exists to bound grew anyway,
+     * and far enough down a long document the blank pages it prevents arrived on schedule.
+     *
+     * Effect-scoped rather than paint-scoped so the cleanup can reach it however far the paint got.
+     */
+    const pageWork = new Map<number, PageWork>();
     // Freshly painted pages are built off-DOM and swapped in atomically at the end, so the currently
     // visible (transformed) pages are never detached mid-render — the panel never flashes empty.
     const buffer: HTMLDivElement[] = [];
     let firstPageWidth = 0;
 
     const paint = async (): Promise<void> => {
-      const data = new Uint8Array(await pdf.arrayBuffer());
-      if (cancelled) return;
-
-      loadingTask = getDocument({ data });
+      // A COPY, because pdf.js takes ownership of what it is given: the array's buffer is transferred
+      // to its worker and left detached here. Handed the panel's own bytes, the first paint emptied
+      // them — and every paint after that got a zero-length document.
+      //
+      // That is not a slow degradation, it is the panel silently ceasing to work, and it happened on
+      // the FIRST document every time. The initial paint runs at the fallback scale, measures the page
+      // and publishes its width; fit-to-width then resolves to a different scale, which re-runs this
+      // effect — whose cleanup has already disconnected both observers, and which now cannot load the
+      // document at all. Nothing re-attaches them, so from that moment no page is ever painted again:
+      // the reader is left with the handful of pages the first pass drew and blank paper below them.
+      //
+      // It also quietly retired the unchanged-document check: `sameBytes` compared every new render
+      // against an emptied array, never matched, and repainted the whole stack each time.
+      loadingTask = getDocument({ data: new Uint8Array(data) });
       const pdfDocument = await loadingTask.promise;
       if (cancelled) return;
       setPageCount(pdfDocument.numPages);
@@ -576,6 +742,11 @@ export function PdfPreviewPanel({
         scrollContainer: scrollContainer ?? pagesContainer,
       });
 
+      // Pass one: lay every page out at its true size without drawing anything into it. The stack ends
+      // up exactly as tall as the finished document, so the scrollbar, the scroll sync's offsetTop
+      // maths and the page indicator behave identically whether or not a page has been drawn yet.
+      const slots: PageSlot[] = [];
+      let nextTop = 0;
       for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
         const page = await pdfDocument.getPage(pageNumber);
         if (cancelled) return;
@@ -583,21 +754,8 @@ export function PdfPreviewPanel({
         // Record the first page's intrinsic point size so fit-to-width can derive its scale factor.
         if (pageNumber === 1) firstPageWidth = page.getViewport({ scale: 1 }).width;
         const viewport = page.getViewport({ scale });
-        // Paint at the device pixel ratio so the canvas stays sharp on HiDPI screens, then downscale it
-        // to the viewport's CSS size so the three layers line up in the same coordinate space.
-        const outputScale = window.devicePixelRatio || 1;
         const cssWidth = Math.floor(viewport.width);
         const cssHeight = Math.floor(viewport.height);
-
-        const canvas = document.createElement("canvas");
-        canvas.setAttribute("aria-label", `Rendered PDF page ${pageNumber}`);
-        canvas.className = "block rounded-sm";
-        canvas.width = Math.ceil(viewport.width * outputScale);
-        canvas.height = Math.ceil(viewport.height * outputScale);
-        canvas.style.width = `${cssWidth}px`;
-        canvas.style.height = `${cssHeight}px`;
-        const context = canvas.getContext("2d");
-        if (context === null) return;
 
         // The positioned container holds the three layers in one CSS coordinate space; `--scale-factor`
         // (inherited by both overlays) tells pdf.js how to size the text runs and link annotations.
@@ -609,23 +767,82 @@ export function PdfPreviewPanel({
         pageContainer.style.height = `${cssHeight}px`;
         pageContainer.style.setProperty("--scale-factor", String(viewport.scale));
 
+        slots.push({
+          number: pageNumber,
+          page,
+          viewport,
+          element: pageContainer,
+          top: nextTop,
+          height: cssHeight,
+        });
+        nextTop += cssHeight + PAGE_GAP;
+        buffer.push(pageContainer);
+      }
+
+      // The pages currently carrying a drawing, and whatever is still drawing them.
+      const painted = new Set<number>();
+
+      /**
+       * Take a page's drawing away again: stop whatever is still drawing it, strip its three layers,
+       * and mark it undrawn so approaching it once more draws it afresh.
+       *
+       * The container keeps the width and height measured for it, so this changes nothing about the
+       * stack's geometry — only whether there are pixels in it.
+       */
+      const releasePage = (slot: PageSlot): void => {
+        if (!painted.delete(slot.number)) return;
+        const work = pageWork.get(slot.number);
+        // Both halves, and then the entry itself: the canvas is only actually let go of once nothing
+        // holds the render task that drew it, and this map is the last thing that does.
+        work?.task?.cancel();
+        work?.layer?.cancel();
+        pageWork.delete(slot.number);
+        slot.element.replaceChildren();
+      };
+
+      // Draw one page's three layers into its already-positioned container. Idempotent while the
+      // drawing stands: the first call marks the page drawn, so an observer firing for it repeatedly
+      // costs nothing.
+      const drawPage = async (slot: PageSlot): Promise<void> => {
+        const { page, viewport, element } = slot;
+
+        // Paint at the device pixel ratio so the canvas stays sharp on HiDPI screens, then downscale it
+        // to the viewport's CSS size so the three layers line up in the same coordinate space.
+        const outputScale = window.devicePixelRatio || 1;
+        const canvas = document.createElement("canvas");
+        canvas.setAttribute("aria-label", `Rendered PDF page ${slot.number}`);
+        canvas.className = "block rounded-sm";
+        canvas.width = Math.ceil(viewport.width * outputScale);
+        canvas.height = Math.ceil(viewport.height * outputScale);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        const context = canvas.getContext("2d");
+        // Without a 2D context this page cannot be drawn at all. Reported as a failure so its caller
+        // hands the page back undrawn rather than filing it as done: a browser that would not back
+        // this canvas may well back the next one, and one undrawable page must not cost the reader
+        // every page after it.
+        if (context === null) {
+          throw new Error(`PDF page ${slot.number}: no 2D canvas context`);
+        }
+
         // Middle layer: selectable text. Top layer: clickable link annotations. Both overlay the canvas
         // exactly (the stylesheet pins them with `inset: 0`), so selection and clicks map to the glyphs.
         const textDiv = document.createElement("div");
         textDiv.className = "textLayer";
         const annotationDiv = document.createElement("div");
         annotationDiv.className = "annotationLayer";
+        element.append(canvas, textDiv, annotationDiv);
 
-        pageContainer.append(canvas, textDiv, annotationDiv);
-        if (cancelled) return;
-        buffer.push(pageContainer);
+        // Registered before the work starts, so that a release arriving mid-drawing finds it.
+        const work: PageWork = {};
+        pageWork.set(slot.number, work);
 
         const renderTask = page.render({
           canvasContext: context,
           viewport,
           transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
         });
-        renderTasks.push(renderTask);
+        work.task = renderTask;
         await renderTask.promise;
         if (cancelled) return;
 
@@ -635,7 +852,7 @@ export function PdfPreviewPanel({
           container: textDiv,
           viewport,
         });
-        textLayers.push(textLayer);
+        work.layer = textLayer;
         await textLayer.render();
         if (cancelled) return;
 
@@ -659,11 +876,81 @@ export function PdfPreviewPanel({
           linkService,
           renderForms: false,
         });
+      };
+
+      /**
+       * Draw a page if it is not already drawn, and hand it back undrawn if the drawing fails.
+       *
+       * The second half is what stops a failure being permanent. A page is marked drawn BEFORE the work
+       * starts, so that an observer firing for it a dozen times during a scroll costs one drawing rather
+       * than a dozen — but that same mark means nothing ever asks for the page again. A drawing that
+       * then failed left the reader a blank page with no way back to it for as long as the document
+       * stayed open, and no sign anywhere that anything had gone wrong. Unmarked, the next approach
+       * simply tries again.
+       *
+       * Cancellation is not a failure of that kind: the whole run is being torn down and its stack
+       * replaced wholesale, so there is nothing to hand back and nothing to retry.
+       */
+      const paintPage = async (slot: PageSlot): Promise<void> => {
+        if (cancelled || painted.has(slot.number)) return;
+        painted.add(slot.number);
+        try {
+          await drawPage(slot);
+        } catch (error) {
+          if (!cancelled) releasePage(slot);
+          throw error;
+        }
+      };
+
+      // Pass two: draw what the reader can see, plus the band either side of it, BEFORE the swap — so
+      // the stack replacing the current one is already painted where it matters and the panel does not
+      // flash. The predicted offsets from pass one are what make this possible while still off-DOM.
+      const viewportTop = (scrollContainer?.scrollTop ?? 0) - PAGE_PADDING;
+      const bandTop = viewportTop - EAGER_PAINT_MARGIN_PX;
+      const bandBottom = viewportTop + (scrollContainer?.clientHeight ?? 0) + EAGER_PAINT_MARGIN_PX;
+      for (const slot of slots) {
+        if (slot.top < bandBottom && slot.top + slot.height > bandTop) await paintPage(slot);
         if (cancelled) return;
       }
 
       // Swap the completed pages in atomically, replacing the previous (transformed) stack in one step.
       pagesContainer.replaceChildren(...buffer);
+
+      // Everything below the band is painted on approach. The observer's margin starts a page drawing
+      // while it is still off screen, so scrolling at a normal speed meets pages already drawn.
+      paintObserverReference.current?.disconnect();
+      const paintObserver = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const slot = slots.find((candidate) => candidate.element === entry.target);
+            // pdf.js rejects a superseded page render with a cancellation error, as on the eager path.
+            if (slot !== undefined) void paintPage(slot).catch(() => undefined);
+          }
+        },
+        { root: scrollReference.current, rootMargin: `${EAGER_PAINT_MARGIN_PX}px 0px` }
+      );
+      for (const slot of slots) paintObserver.observe(slot.element);
+      paintObserverReference.current = paintObserver;
+
+      // And everything well behind the reader gives its drawing back. Without this the panel holds
+      // every page it has ever drawn — several megabytes of canvas each — until the document changes,
+      // and far enough down a long document the browser stops backing new ones: from there on, every
+      // page scrolled to is blank, with nothing on screen to say why. See RETAINED_PAINT_MARGIN_PX for
+      // why the boundary is further out than the one that draws them.
+      releaseObserverReference.current?.disconnect();
+      const releaseObserver = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) continue;
+            const slot = slots.find((candidate) => candidate.element === entry.target);
+            if (slot !== undefined) releasePage(slot);
+          }
+        },
+        { root: scrollReference.current, rootMargin: `${RETAINED_PAINT_MARGIN_PX}px 0px` }
+      );
+      for (const slot of slots) releaseObserver.observe(slot.element);
+      releaseObserverReference.current = releaseObserver;
 
       // (Re-)attach the page-tracking observer to the fresh page elements: the swap discarded the ones
       // the previous observer watched. The most-intersecting page within the viewport is the current
@@ -702,17 +989,32 @@ export function PdfPreviewPanel({
       pagesContainer.style.transform = ratio === 1 ? "" : `scale(${ratio})`;
     };
 
-    // pdf.js rejects a superseded render with a cancellation error; that is expected, not a failure.
-    void paint().catch(() => undefined);
+    // pdf.js rejects a superseded render with a cancellation error; that is expected, not a failure —
+    // the run is being torn down and its stack replaced wholesale.
+    //
+    // Anything else is reported. A paint that does not finish never reaches the lines that attach the
+    // two observers, and its cleanup has already disconnected the previous run's, so the panel is left
+    // showing an earlier stack that will never paint another page however far the reader scrolls.
+    // Swallowed, that looks exactly like a preview quietly deciding to stop working.
+    void paint().catch((error: unknown) => {
+      if (cancelled) return;
+      // eslint-disable-next-line no-console -- a paint that never happened must not fail silently.
+      console.error('PDF preview: the page stack could not be painted.', error);
+    });
 
     return () => {
       cancelled = true;
-      for (const task of renderTasks) task.cancel();
-      for (const layer of textLayers) layer.cancel();
+      for (const work of pageWork.values()) {
+        work.task?.cancel();
+        work.layer?.cancel();
+      }
+      pageWork.clear();
       loadingTask?.destroy();
       pageObserverReference.current?.disconnect();
+      paintObserverReference.current?.disconnect();
+      releaseObserverReference.current?.disconnect();
     };
-  }, [pdf, committedScale]);
+  }, [documentRevision, committedScale]);
 
   // Scroll-sync: react only to a genuinely new request (a fresh object from the editor) so an unrelated
   // re-render never fights the user's manual scroll. When the engine emitted a source map AND the layout

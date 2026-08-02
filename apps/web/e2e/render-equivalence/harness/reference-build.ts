@@ -29,7 +29,7 @@ import { pathToFileURL } from 'node:url';
 import { assembleIncludes } from '../../../src/workers/assemble-includes';
 import { RENDER_INTRINSIC_ATTRIBUTES } from '../../../src/lib/asciidoc/render-intrinsics';
 import { APP_RENDER_DEFAULT_ATTRIBUTES } from '../../../src/lib/asciidoc/render-app-defaults';
-import { captureRequestFor, corpusFiles, type CorpusDocument } from './capture';
+import { captureRequestFor, type CorpusDocument } from './capture';
 
 /** Where the reference toolchain's output is kept, so the oracle's answer is readable and reviewable. */
 export const REFERENCE_TOOLCHAIN_DIR = path.join(__dirname, '..', 'fixtures', 'reference-toolchain');
@@ -131,7 +131,7 @@ const SOFT_DEFAULT_SUFFIX = '@';
  * Mirrors `asciidoc-render.worker.ts`'s own attribute layering for the requests `capture.ts` builds:
  * the app's render defaults at the base, then the STEM soft-default, then `showtitle`. The worker's
  * inherited-scope seeding contributes nothing here — it is keyed on a project root, and the capture
- * requests deliberately carry none — which {@link assertNoInheritedScope} checks rather than assumes.
+ * requests deliberately carry none — which {@link assembledSourceFor} checks rather than assumes.
  */
 export function appRenderAttributes(): Record<string, string> {
   return {
@@ -155,38 +155,33 @@ function assemblerSeed(attributes: Record<string, string>): Map<string, string> 
 }
 
 /**
- * Fail unless a corpus render really does seed no inherited attribute scope.
- *
- * The worker layers a THIRD group of attributes between the app defaults and `showtitle`: the scope a
- * file inherits at its include point under a project main file. It is keyed on a project root, and the
- * capture requests deliberately carry none, so it contributes nothing — but "contributes nothing" is
- * an assumption about another module, and if a request ever grows a root the reference would silently
- * be converting with fewer attributes than the app.
- *
- * @param document - The corpus document about to be assembled.
- * @throws {Error} When the app's request for this document names a project root.
- */
-function assertNoInheritedScope(document: CorpusDocument): void {
-  const { rootFileId } = captureRequestFor(document, 0);
-  if (rootFileId !== undefined && rootFileId !== null) {
-    throw new Error(
-      `the app's request for ${document.relativePath} names the project root "${rootFileId}", so its ` +
-        'render seeds an inherited attribute scope that this harness does not reproduce. The reference ' +
-        'would be converted with different attributes than the app.',
-    );
-  }
-}
-
-/**
  * The source the app actually converts: the corpus document with its include tree inlined.
  *
  * Not a divergence to normalise but an input to reproduce. The reference converts this same text, so
  * the assembler's output — inlined bodies, and the absolute `:leveloffset:` set/restore entries it
  * writes around them — is compared rather than excused.
+ *
+ * The files it assembles from are the ones off the app's OWN request, not a second reading of the
+ * corpus, and the same request answers a question this harness would otherwise have to assume: the
+ * worker layers a THIRD group of attributes between the app defaults and `showtitle` — the scope a
+ * file inherits at its include point under a project main file — keyed on a project root. The capture
+ * requests carry none, so it contributes nothing; a request that ever grew one would make the
+ * reference convert with fewer attributes than the app, and that fails here instead.
+ *
+ * @param document - The corpus document to assemble.
+ * @returns The assembled source.
+ * @throws {Error} When the app's request for this document names a project root.
  */
 export function assembledSourceFor(document: CorpusDocument): string {
-  assertNoInheritedScope(document);
-  const files = corpusFiles();
+  const request = captureRequestFor(document, 0);
+  if (request.rootFileId !== undefined && request.rootFileId !== null) {
+    throw new Error(
+      `the app's request for ${document.relativePath} names the project root "${request.rootFileId}", ` +
+        'so its render seeds an inherited attribute scope that this harness does not reproduce. The ' +
+        'reference would be converted with different attributes than the app.',
+    );
+  }
+  const files = request.files ?? {};
   const readFile = (filePath: string): string | null =>
     filePath === document.relativePath ? document.source : (files[filePath] ?? null);
   return assembleIncludes(document.relativePath, readFile, {
@@ -417,6 +412,13 @@ export interface ReferenceNormalisationInput {
 export function normaliseForReferenceComparison(input: ReferenceNormalisationInput): string {
   const parsed = new DOMParser().parseFromString(input.html, 'text/html');
   const body = parsed.body;
+
+  // Both toolchains emit a document FRAGMENT, and the HTML parser hoists some of a fragment's leading
+  // content — a `<style>`, `<meta>` or `<link>` written by a passthrough block — into `<head>` instead
+  // of the body. Moved back to the front of the body so the passes below see it and the comparison
+  // includes it; returning the body alone would drop it, and a passthrough that changed on one side
+  // only would read as agreement.
+  body.prepend(...parsed.head.childNodes);
 
   // Identifiers the app mints for blocks the author did not identify, so it has somewhere to record
   // where the block came from. Their prefixes are reserved, which is what makes stripping them safe.

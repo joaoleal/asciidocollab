@@ -25,6 +25,27 @@ describe('useKeyBindingSettings', () => {
     });
   });
 
+  it('gives the editor its own section beside the file tree', async () => {
+    // What the settings page shows is whatever the endpoint returns, grouped by the namespace in each
+    // action id. The editor's shortcuts only become configurable by arriving here — so this pins the
+    // path from the server's answer to a section the reader can actually see.
+    (globalThis.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([
+        { action: 'file-tree:rename', label: 'Rename', keyCombo: 'F2', isDefault: true },
+        { action: 'editor:bold', label: 'Bold', keyCombo: 'Mod+B', isDefault: true },
+        { action: 'editor:italic', label: 'Italic', keyCombo: 'Mod+I', isDefault: true },
+      ]),
+    });
+
+    const { result } = renderHook(() => useKeyBindingSettings());
+
+    await waitFor(() => expect(result.current.groups).toHaveLength(2));
+    const editor = result.current.groups.find((group) => group.namespace === 'editor');
+    expect(editor?.label).toBe('Editor');
+    expect(editor?.bindings.map((binding) => binding.action)).toEqual(['editor:bold', 'editor:italic']);
+  });
+
   it('fetches from correct base URL including http://localhost:4000', async () => {
     renderHook(() => useKeyBindingSettings());
     await waitFor(() => {

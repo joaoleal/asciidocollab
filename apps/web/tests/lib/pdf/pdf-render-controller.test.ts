@@ -18,6 +18,7 @@ import type {
   RenderResult,
   ShimRegistry,
   StageContext,
+  WarmupOutcome,
 } from '@asciidocollab/asciidoc-pdf';
 
 // ---------------------------------------------------------------------------
@@ -115,17 +116,26 @@ interface Harness {
   readonly warmupCalls: () => number;
 }
 
-function makeHarness(overrides: Partial<PdfRenderControllerDeps> = {}, coldStarts: boolean[] = [true]): Harness {
+/** The engine starting up: the session's one announced boot. */
+const ENGINE_START: WarmupOutcome = { booted: true, firstBoot: true };
+/** The replacement instance a render gets once the engine is already running. */
+const REPLACEMENT_BOOT: WarmupOutcome = { booted: true, firstBoot: false };
+/** A warmup that handed back an instance someone else had already booted. */
+const NO_BOOT: WarmupOutcome = { booted: false, firstBoot: false };
+
+function makeHarness(
+  overrides: Partial<PdfRenderControllerDeps> = {},
+  warmupOutcomes: WarmupOutcome[] = [ENGINE_START],
+): Harness {
   const messages: FromWorker[] = [];
   let warmups = 0;
-  const queue = [...coldStarts];
+  const queue = [...warmupOutcomes];
 
   const deps: PdfRenderControllerDeps = {
     vm: {
       warmup: () => {
         warmups += 1;
-        const coldStart = queue.length > 0 ? (queue.shift() ?? false) : false;
-        return Promise.resolve({ coldStart });
+        return Promise.resolve(queue.shift() ?? NO_BOOT);
       },
     },
     populate: () => ({ written: [], rejected: [], rootPresent: true }),
@@ -159,7 +169,7 @@ const results = (messages: readonly FromWorker[]): RenderResult[] =>
 
 describe('PdfRenderController', () => {
   it('warms the VM once and emits vm-init progress only on the real cold start', async () => {
-    const { controller, messages, warmupCalls } = makeHarness({}, [true, false]);
+    const { controller, messages, warmupCalls } = makeHarness({}, [ENGINE_START, NO_BOOT]);
 
     await controller.handleMessage({ type: 'warmup' });
     await controller.handleMessage({ type: 'warmup' });
@@ -272,7 +282,7 @@ describe('PdfRenderController', () => {
                 diagnostics: [],
               }),
       },
-      [false, false],
+      [NO_BOOT, NO_BOOT],
     );
 
     const pA = controller.handleMessage({
@@ -319,14 +329,14 @@ describe('PdfRenderController', () => {
   });
 
   it('discards a render superseded during VM warmup before it ever populates the vfs', async () => {
-    const firstWarmup = deferred<{ coldStart: boolean }>();
+    const firstWarmup = deferred<WarmupOutcome>();
     let warmupCall = 0;
     let populateCalls = 0;
     const { controller, messages } = makeHarness({
       vm: {
         warmup: () => {
           warmupCall += 1;
-          return warmupCall === 1 ? firstWarmup.promise : Promise.resolve({ coldStart: false });
+          return warmupCall === 1 ? firstWarmup.promise : Promise.resolve(NO_BOOT);
         },
       },
       populate: () => {
@@ -349,7 +359,7 @@ describe('PdfRenderController', () => {
     await flush();
 
     // Release A's warmup; A must notice B superseded it and stop before populating.
-    firstWarmup.resolve({ coldStart: false });
+    firstWarmup.resolve(NO_BOOT);
     await pA;
     await pB;
 
@@ -420,7 +430,7 @@ describe('PdfRenderController', () => {
       vm: {
         warmup: () => {
           spend(900);
-          return Promise.resolve({ coldStart: true });
+          return Promise.resolve(ENGINE_START);
         },
       },
       populate: () => {
@@ -492,11 +502,11 @@ describe('PdfRenderController', () => {
         vm: {
           warmup: () => {
             clock += 900;
-            return Promise.resolve({ coldStart: false });
+            return Promise.resolve(NO_BOOT);
           },
         },
       },
-      [false],
+      [NO_BOOT],
     );
 
     await controller.handleMessage({ type: 'render', request: makeRequest() });
@@ -506,6 +516,52 @@ describe('PdfRenderController', () => {
     const { stats } = results(messages)[0]!;
     expect(stats.stages.vmBootMs).toBe(0);
     expect(stats.coldStartMs).toBeUndefined();
+  });
+
+  it('announces the engine starting once, not on every render that boots its own instance', async () => {
+    // A session as it really runs: the mount-time pre-warm starts the engine, the first render reuses
+    // that instance, and every render after it gets a replacement because an instance serves one render.
+    const { controller, messages } = makeHarness({}, [
+      ENGINE_START,
+      NO_BOOT,
+      REPLACEMENT_BOOT,
+      REPLACEMENT_BOOT,
+    ]);
+
+    await controller.handleMessage({ type: 'warmup' });
+    for (const requestId of ['r1', 'r2', 'r3']) {
+      await controller.handleMessage({ type: 'render', request: makeRequest({ requestId }) });
+    }
+
+    const announcements = messages.filter((m) => m.type === 'progress' && m.phase === 'vm-init');
+    expect(announcements).toHaveLength(1);
+    // And it belongs to the pre-warm, not to any of the three renders the author sat through.
+    expect(announcements[0]).toEqual({ type: 'progress', requestId: 'warmup', phase: 'vm-init' });
+  });
+
+  it('still measures the boot a render pays for its own instance, while calling it no cold start', async () => {
+    let clock = 0;
+    const { controller, messages } = makeHarness(
+      {
+        now: () => clock,
+        vm: {
+          warmup: () => {
+            clock += 120;
+            return Promise.resolve(REPLACEMENT_BOOT);
+          },
+        },
+      },
+      [REPLACEMENT_BOOT],
+    );
+
+    await controller.handleMessage({ type: 'render', request: makeRequest() });
+
+    const { stats } = results(messages)[0]!;
+    // The instantiation this render paid for is a real per-render cost and stays in the breakdown...
+    expect(stats.stages.vmBootMs).toBe(120);
+    // ...but the engine was already running, so nothing here was a cold start.
+    expect(stats.coldStartMs).toBeUndefined();
+    expect(progressPhases(messages)).not.toContain('vm-init');
   });
 
   it('reports the raster fallbacks the pipeline counted, not a fixed zero', async () => {

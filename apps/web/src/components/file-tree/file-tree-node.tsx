@@ -7,7 +7,7 @@ import { DragDropZone } from './drag-drop-zone';
 import { FileTreeActions } from './file-tree-actions';
 import { OpenByOthersMarker } from './open-by-others-marker';
 import type { ParticipantPresence } from '@/hooks/use-collab-presence';
-import type { FileTreeNode as FileTreeNodeType } from './types';
+import type { FileTreeNode as FileTreeNodeType, NodeActionRequest } from './types';
 import { API_BASE_URL } from '@/lib/api/base-url';
 
 /**
@@ -37,10 +37,15 @@ interface Properties {
   onFolderDrop?: (targetFolderId: string, sourceNodeId: string) => void;
   /** Feature 024: other users currently editing each file, keyed by file node id. */
   presenceByFile?: ReadonlyMap<string, ParticipantPresence[]>;
+  /**
+   * The tree's pending keyboard-shortcut request, passed to every node and honoured only by the one
+   * it names. Nodes forward it to their children so a request reaches a node at any depth.
+   */
+  actionRequest?: NodeActionRequest | null;
 }
 
 /** Renders a single file or folder node in the file tree, with expand/collapse and drag-drop support. */
-export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, onSelect, onContextMenu, onUpdate, onError, isExpanded = false, onToggle, expandedState, isProjectRoot = false, onFolderDrop, presenceByFile }: Properties) {
+export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, onSelect, onContextMenu, onUpdate, onError, isExpanded = false, onToggle, expandedState, isProjectRoot = false, onFolderDrop, presenceByFile, actionRequest }: Properties) {
   const [zipDownloading, setZipDownloading] = useState(false);
   const handleClick = () => {
     if (node.type === 'folder') {
@@ -152,6 +157,7 @@ export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, 
             canCreate={node.type === 'folder'}
             onUpdate={onUpdate}
             onError={onError}
+            actionRequest={actionRequest?.nodeId === node.id ? actionRequest : undefined}
           />
         </span>
       )}
@@ -179,6 +185,7 @@ export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, 
             expandedState={expandedState}
             onFolderDrop={onFolderDrop}
             presenceByFile={presenceByFile}
+            actionRequest={actionRequest}
           />
         ))}
       </DragDropZone>

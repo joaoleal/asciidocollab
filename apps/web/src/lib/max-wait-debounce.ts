@@ -43,8 +43,12 @@ export interface MaxWaitDebounce {
    * Run the pending callback now, bypassing both timers, and start a fresh burst window. A no-op
    * when nothing is pending. Used when waiting is pointless because the reason to wait is gone — a
    * file switch, for instance, where the debounce exists to absorb typing that has just ended.
+   *
+   * @returns Whether there was a pending callback, and so whether anything ran. A caller holding a
+   *   fallback of its own needs this: what is pending here is always the more recent of the two, so
+   *   "nothing was pending" is what tells it to fall back rather than drop the fallback silently.
    */
-  flush: () => void;
+  flush: () => boolean;
   /**
    * Report whether the work a previous run started is still running.
    *
@@ -125,8 +129,10 @@ export function createMaxWaitDebounce(delayMs: number, maxWaitMs: number): MaxWa
     if (maxWaitTimer === null) maxWaitTimer = setTimeout(onMaxWaitElapsed, maxWaitMs);
   };
 
-  const flush = (): void => {
-    if (pendingRun !== null) fire();
+  const flush = (): boolean => {
+    if (pendingRun === null) return false;
+    fire();
+    return true;
   };
 
   const setInProgress = (busy: boolean): void => {

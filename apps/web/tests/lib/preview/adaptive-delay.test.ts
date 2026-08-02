@@ -35,7 +35,10 @@ describe('adaptiveDelayMs', () => {
 
   it('never shortens the wait as the last render gets more expensive', () => {
     const samples = [0, 30, 59, 60, 61, 100, 175, 249, 250, 251, 600];
-    const delays = samples.map(adaptiveDelayMs);
+    // Called one argument at a time on purpose: passed as the mapper directly, each sample would
+    // arrive with its array index as the bounds, and the delays being compared would be the ones no
+    // caller ever asks for.
+    const delays = samples.map((sample) => adaptiveDelayMs(sample));
     for (let index = 1; index < delays.length; index += 1) {
       expect(delays[index]).toBeGreaterThanOrEqual(delays[index - 1]);
     }
@@ -48,5 +51,20 @@ describe('adaptiveDelayMs', () => {
 
   it('treats a nonsensical negative measurement as the floor rather than a negative wait', () => {
     expect(adaptiveDelayMs(-1)).toBe(PREVIEW_ADAPTIVE_MIN_MS);
+  });
+
+  it('answers a crossed pair of bounds with the floor, whatever the measurement was', () => {
+    // Bounds where the floor sits above the ceiling are a misconfiguration — an operator can produce
+    // them by setting one surface's ceiling below the shared floor. There is no delay that honours
+    // both, so what matters is that the same mistake gives the same answer every time: a rule that
+    // picked whichever bound the measurement happened to fall outside would return a wait below the
+    // floor for one document and above the ceiling for the next, from one configuration. The floor is
+    // the bound that is held, because it is the one protecting the machine from re-rendering on every
+    // keystroke; overshooting the ceiling only makes the preview lazier than intended.
+    const crossed = { minMs: 800, maxMs: 300 };
+
+    expect(adaptiveDelayMs(50, crossed)).toBe(800);
+    expect(adaptiveDelayMs(200, crossed)).toBe(800);
+    expect(adaptiveDelayMs(5000, crossed)).toBe(800);
   });
 });

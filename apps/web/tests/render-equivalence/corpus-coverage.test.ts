@@ -32,7 +32,15 @@ function corpusText(): string {
  * losing it is not.
  */
 const REQUIRED_COVERAGE: readonly (readonly [string, RegExp])[] = [
-  ['headings at every level', /^====== |^===== |^==== |^=== |^== /m],
+  // One row per heading level, not one alternation over all of them: an alternation is satisfied by
+  // whichever level survives, so dropping the deep headings — the ones a major engine version is most
+  // likely to disturb — would leave the check green.
+  ['level-0 headings (the document title)', /^= /m],
+  ['level-1 headings', /^== /m],
+  ['level-2 headings', /^=== /m],
+  ['level-3 headings', /^==== /m],
+  ['level-4 headings', /^===== /m],
+  ['level-5 headings', /^====== /m],
   ['section numbering', /^:sectnums:/m],
   ['explicit anchors', /^\[\[[\w-]+\]\]/m],
   ['internal cross-references', /xref:[\w-]+\[|<<[\w-]+[,>]/],

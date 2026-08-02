@@ -1,6 +1,7 @@
 import {
   clearOutput,
   OUT_ROOT,
+  POPULATION_MARKER_PATH,
   PROJECT_ROOT,
   populateProject,
   readOutput,
@@ -138,8 +139,9 @@ describe('populateProject', () => {
     expect(reasonFor(result, 'bad\u0000name.png')).toBe('nul');
     expect(result.rejected).toHaveLength(5);
 
-    // Nothing malicious landed; only the clean file was written.
-    expect([...vfs.files.keys()]).toEqual([`${PROJECT_ROOT}/main.adoc`]);
+    // Nothing malicious landed; only the clean file was written, beside the mark the population
+    // leaves to say it happened.
+    expect([...vfs.files.keys()]).toEqual([`${PROJECT_ROOT}/main.adoc`, POPULATION_MARKER_PATH]);
   });
 
   it('rejects an empty snapshot key as "empty" without writing it', () => {
@@ -152,7 +154,7 @@ describe('populateProject', () => {
     const result = populateProject(vfs, snapshot);
 
     expect(reasonFor(result, '')).toBe('empty');
-    expect([...vfs.files.keys()]).toEqual([`${PROJECT_ROOT}/main.adoc`]);
+    expect([...vfs.files.keys()]).toEqual([`${PROJECT_ROOT}/main.adoc`, POPULATION_MARKER_PATH]);
   });
 
   it('reports an invalid root path as a rejected "root" entry', () => {
@@ -180,7 +182,7 @@ describe('populateProject', () => {
     expect(result.rootPresent).toBe(false);
   });
 
-  it('in delta mode rewrites only the changed paths and leaves the rest untouched', () => {
+  it('in delta mode rewrites the changed paths and leaves the unchanged ones untouched', () => {
     const vfs = new FakeVfs();
     const first = makeSnapshot({
       files: {
@@ -195,18 +197,70 @@ describe('populateProject', () => {
       files: {
         'main.adoc': '= V2\n',
         'chapters/intro.adoc': '== Intro V2\n',
+        'unchanged.adoc': '== Same\n',
       },
       rootPath: 'main.adoc',
     });
     const result = populateProject(vfs, second, { changedPaths: ['chapters/intro.adoc'] });
 
-    // main was NOT in changedPaths → old content retained.
-    expect(decoder.decode(vfs.readFile(`${PROJECT_ROOT}/main.adoc`))).toBe('= V1\n');
     // intro WAS in changedPaths → rewritten.
     expect(decoder.decode(vfs.readFile(`${PROJECT_ROOT}/chapters/intro.adoc`))).toBe('== Intro V2\n');
-    expect(result.written).toEqual([`${PROJECT_ROOT}/chapters/intro.adoc`]);
+    // A file nobody changed and no stage rewrites is left exactly where it was — the whole point of a
+    // delta. (It was never written at all here, which is why reading it throws.)
+    expect(() => vfs.readFile(`${PROJECT_ROOT}/unchanged.adoc`)).toThrow();
+    // The ROOT is rewritten whether or not it changed, because a render does not leave it alone: the
+    // include-resolve stage replaces it with the assembled document. Trusting the delta over it would
+    // hand the next render an already-assembled document to assemble again.
+    expect(decoder.decode(vfs.readFile(`${PROJECT_ROOT}/main.adoc`))).toBe('= V2\n');
+    expect(result.written).toEqual([
+      `${PROJECT_ROOT}/main.adoc`,
+      `${PROJECT_ROOT}/chapters/intro.adoc`,
+    ]);
     // Root already present from the cold populate.
     expect(result.rootPresent).toBe(true);
+  });
+
+  it('ignores the delta when the VFS holds a different project’s population', () => {
+    const vfs = new FakeVfs();
+    populateProject(vfs, makeSnapshot({ files: { 'book.adoc': '= Book\n' }, rootPath: 'book.adoc' }));
+
+    // Another project, rendered through the same warm VM. Its files are simply not there, so honouring
+    // the delta would render a document whose includes and images are the previous project's or absent.
+    const result = populateProject(
+      vfs,
+      makeSnapshot({
+        files: { 'main.adoc': '= V1\n', 'chapters/intro.adoc': '== Intro\n' },
+        rootPath: 'main.adoc',
+      }),
+      { changedPaths: ['chapters/intro.adoc'] },
+    );
+
+    expect(result.written).toEqual([
+      `${PROJECT_ROOT}/main.adoc`,
+      `${PROJECT_ROOT}/chapters/intro.adoc`,
+    ]);
+  });
+
+  it('ignores the delta when only the assembled document a previous render left behind is there', () => {
+    const vfs = new FakeVfs();
+    const snapshot = makeSnapshot({
+      files: { 'main.adoc': '= V1\n', 'chapters/intro.adoc': '== Intro\n' },
+      rootPath: 'main.adoc',
+    });
+
+    // Exactly what a rendered-then-discarded VM leaves: the root path holds the ASSEMBLED document the
+    // include-resolve stage wrote there, and nothing else of the project is present. Read as "the
+    // project is still populated" — which is what looking for the root used to conclude — the delta
+    // would be honoured and the render would go ahead over a document with holes in it.
+    vfs.writeFile(`${PROJECT_ROOT}/main.adoc`, encoder.encode('= V1\n\n== Intro\n'));
+
+    const result = populateProject(vfs, snapshot, { changedPaths: ['chapters/intro.adoc'] });
+
+    expect(result.written).toEqual([
+      `${PROJECT_ROOT}/main.adoc`,
+      `${PROJECT_ROOT}/chapters/intro.adoc`,
+    ]);
+    expect(decoder.decode(vfs.readFile(`${PROJECT_ROOT}/main.adoc`))).toBe('= V1\n');
   });
 
   it('writes everything when the VFS no longer holds the project, ignoring the delta', () => {

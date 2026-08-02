@@ -1,4 +1,4 @@
-import { keymap, EditorView, ViewPlugin, type Command, type ViewUpdate } from '@codemirror/view';
+import { EditorView, ViewPlugin, type Command, type ViewUpdate } from '@codemirror/view';
 import { foldAll, unfoldAll, foldEffect, foldedRanges } from '@codemirror/language';
 import type { Extension } from '@codemirror/state';
 import { computeHeadingLevels, type HeadingLevelInfo } from './asciidoc-heading-levels';
@@ -73,13 +73,16 @@ export function foldToLevel(level: number): Command {
   };
 }
 
-/** Keymap for the whole-document fold controls. */
-export const foldControlsKeymap = keymap.of([
-  { key: 'Mod-Alt-[', run: foldAll },
-  { key: 'Mod-Alt-]', run: unfoldAll },
-  { key: 'Mod-Alt-1', run: foldToLevel(1) },
-  { key: 'Mod-Alt-2', run: foldToLevel(2) },
-]);
+/**
+ * The whole-document fold commands, by the action id the key bindings registry knows each one by.
+ * See {@link formatCommands} for why these are commands rather than a keymap.
+ */
+export const foldCommands: Readonly<Record<string, Command>> = {
+  'editor:fold-all': foldAll,
+  'editor:unfold-all': unfoldAll,
+  'editor:fold-level-1': foldToLevel(1),
+  'editor:fold-level-2': foldToLevel(2),
+};
 
 /** Read the currently folded ranges from editor state. */
 export function serializeFolds(view: EditorView): SerializedFold[] {

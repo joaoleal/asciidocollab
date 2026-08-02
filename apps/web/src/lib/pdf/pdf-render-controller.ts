@@ -153,10 +153,12 @@ export interface PdfRenderControllerDeps {
   /** The warm-VM facade; the controller only warms it (convert/populate close over it themselves). */
   readonly vm: Pick<RubyPdfVm, 'warmup'>;
   /**
-   * Map the snapshot into the in-memory `/project` VFS (delta-aware via `changedPaths`).
+   * Map the snapshot into the in-memory `/project` VFS.
    *
    * @param snapshot - The project snapshot to write into the virtual filesystem.
-   * @param changedPaths - The paths that changed since the last populate, for a delta-only write.
+   * @param changedPaths - The paths that changed since the last populate. A delta-only write is
+   *   possible only against a VFS that still holds the project; the render VM the pipeline uses hands
+   *   each render an empty filesystem, so the population upgrades a delta to a full write.
    */
   readonly populate: (snapshot: ProjectSnapshot, changedPaths?: readonly string[]) => PopulateResult;
   /**
@@ -281,10 +283,10 @@ export class PdfRenderController {
     }
   }
 
-  /** Instantiate the VM ahead of the first render; emit `vm-init` only on the genuine cold start. */
+  /** Instantiate the VM ahead of the first render; announce `vm-init` for the engine's own start-up. */
   private async handleWarmup(): Promise<void> {
-    const { coldStart } = await this.deps.vm.warmup();
-    if (coldStart) {
+    const { firstBoot } = await this.deps.vm.warmup();
+    if (firstBoot) {
       this.emitProgress(WARMUP_REQUEST_ID, PHASE.VM_INIT);
     }
   }
@@ -295,14 +297,22 @@ export class PdfRenderController {
     this.latestByMode.set(mode, requestId);
     const startedAt = this.now();
 
-    // Warm the VM (cold start reported exactly once).
+    // Warm the VM. A VM instance serves one render, so all but the first render of a session get a
+    // freshly instantiated one here — booting is the normal case, and the two figures below say
+    // different things about it.
     const warmupStartedAt = this.now();
-    const { coldStart } = await this.deps.vm.warmup();
-    // Boot time, which is `0` for an already-warm VM. Distinct from `coldStartMs`: that one is only
-    // ever the session's first render, while this is a per-render figure the breakdown always carries.
-    const vmBootMs = coldStart ? this.now() - warmupStartedAt : 0;
-    const coldStartMs = coldStart ? vmBootMs : undefined;
-    if (coldStart) {
+    const { booted, firstBoot } = await this.deps.vm.warmup();
+    // What THIS render paid to have a VM. `0` when it reused an instance a pre-warm had already booted;
+    // otherwise the real instantiation cost, which the breakdown carries on every render that pays it.
+    const vmBootMs = booted ? this.now() - warmupStartedAt : 0;
+    // What starting the engine cost, reported once per session. Every other boot is a replacement for a
+    // spent instance, which is `vmBootMs` — calling it a cold start would claim the engine keeps
+    // restarting.
+    const coldStartMs = firstBoot ? vmBootMs : undefined;
+    // Announced only for the engine's own start-up. The author waits for that one; the per-render
+    // replacement is machinery they never asked about, and a "starting the engine" notice on every edit
+    // describes a session that is perpetually booting.
+    if (firstBoot) {
       this.emitProgress(requestId, PHASE.VM_INIT);
     }
     if (this.isSuperseded(request)) {

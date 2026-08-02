@@ -4,12 +4,14 @@ import {
   REVIEW_ITEM_KINDS as DOMAIN_REVIEW_ITEM_KINDS,
   REVIEW_ITEM_STATUSES as DOMAIN_REVIEW_ITEM_STATUSES,
   ANCHOR_STATES as DOMAIN_ANCHOR_STATES,
+  DEFAULT_KEY_BINDINGS,
 } from '@asciidocollab/domain';
 import {
   REVIEW_BODY_MAX_LEN as SHARED_REVIEW_BODY_MAX_LEN,
   REVIEW_ITEM_KINDS as SHARED_REVIEW_ITEM_KINDS,
   REVIEW_ITEM_STATUSES as SHARED_REVIEW_ITEM_STATUSES,
   ANCHOR_STATES as SHARED_ANCHOR_STATES,
+  DEFAULT_EDITOR_KEY_COMBOS,
 } from '@asciidocollab/shared';
 
 /**
@@ -33,6 +35,19 @@ describe('cross-layer mirror parity', () => {
     expect([...SHARED_REVIEW_ITEM_KINDS]).toEqual([...DOMAIN_REVIEW_ITEM_KINDS]);
     expect([...SHARED_REVIEW_ITEM_STATUSES]).toEqual([...DOMAIN_REVIEW_ITEM_STATUSES]);
     expect([...SHARED_ANCHOR_STATES]).toEqual([...DOMAIN_ANCHOR_STATES]);
+  });
+
+  test('the editor shortcut defaults agree between shared and domain', () => {
+    // The browser binds these before the server answers, and the server merges the author's own combos
+    // over the domain's copy. A drift would give the author a shortcut that worked until the fetch
+    // landed and then silently changed under them — or one the settings page could never reset,
+    // because "default" would mean two different keys on the two sides.
+    const domainEditorCombos = Object.fromEntries(
+      Object.entries(DEFAULT_KEY_BINDINGS)
+        .filter(([, definition]) => definition.namespace === 'editor')
+        .map(([action, definition]) => [action, definition.defaultCombo]),
+    );
+    expect({ ...DEFAULT_EDITOR_KEY_COMBOS }).toEqual(domainEditorCombos);
   });
 
   test('asciidoc-core stays the zero-dependency leaf the layering assumes', () => {

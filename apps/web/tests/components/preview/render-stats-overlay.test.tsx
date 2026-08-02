@@ -1,26 +1,43 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { RenderStatsOverlay, type RenderStatRow } from '@/components/preview/render-stats-overlay';
 
-/** The web-formatted preview's shape: four stage figures and nothing else. */
+/** The web-formatted preview's shape: a total with its three stages inside it. */
 const WEB_ROWS: readonly RenderStatRow[] = [
-  { label: 'parse', value: 4, unit: 'ms' },
-  { label: 'convert', value: 18, unit: 'ms' },
-  { label: 'post', value: 3, unit: 'ms' },
   { label: 'total', value: 27, unit: 'ms' },
+  { label: 'parse', value: 4, unit: 'ms', depth: 1 },
+  { label: 'convert', value: 18, unit: 'ms', depth: 1 },
+  { label: 'post', value: 3, unit: 'ms', depth: 1 },
 ];
 
-/** The page-formatted preview's shape: counters alongside a longer stage list. */
+/** The page-formatted preview's shape: two levels of nesting, plus counters that measure no time. */
 const PAGE_ROWS: readonly RenderStatRow[] = [
   { label: 'render', value: 3200, unit: 'ms' },
+  { label: 'vm boot', value: 900, unit: 'ms', depth: 1 },
+  { label: 'convert', value: 2300, unit: 'ms', depth: 1 },
+  { label: 'dry runs', value: 1200, unit: 'ms', depth: 2 },
   { label: 'cache hits', value: 4 },
   { label: 'raster fallbacks', value: 1 },
-  { label: 'vm boot', value: 900, unit: 'ms' },
-  { label: 'dry runs', value: 1200, unit: 'ms' },
 ];
 
+/** Open the overlay the way a reader does, and return its now-visible content. */
+function open(title = 'Web preview'): void {
+  fireEvent.click(screen.getByRole('button', { name: `Show ${title} render cost` }));
+}
+
 describe('RenderStatsOverlay', () => {
-  it('shows every stage it is given, with its figure', () => {
+  it('shows only a button until someone asks for the figures', () => {
     render(<RenderStatsOverlay title="Web preview" rows={WEB_ROWS} />);
+
+    // This sits on top of the document being previewed. A panel of figures nobody asked to see covers
+    // the corner of the page they are reading, at every refresh, for the whole session.
+    expect(screen.queryByText('parse')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show Web preview render cost' })).toBeInTheDocument();
+  });
+
+  it('shows every stage it is given, with its figure, once opened', () => {
+    render(<RenderStatsOverlay title="Web preview" rows={WEB_ROWS} />);
+
+    open();
 
     expect(screen.getByText('parse')).toBeInTheDocument();
     expect(screen.getByText('4 ms')).toBeInTheDocument();
@@ -28,10 +45,22 @@ describe('RenderStatsOverlay', () => {
     expect(screen.getByText('27 ms')).toBeInTheDocument();
   });
 
+  it('puts the figures away again', () => {
+    render(<RenderStatsOverlay title="Web preview" rows={WEB_ROWS} />);
+    open();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Web preview render cost' }));
+
+    expect(screen.queryByText('parse')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show Web preview render cost' })).toBeInTheDocument();
+  });
+
   it('shows a differently shaped set of figures just as readily', () => {
     // The two preview formats report structurally different things — four durations on one side,
     // counters plus nine stages on the other. The overlay is told what to show rather than knowing.
     render(<RenderStatsOverlay title="Page preview" rows={PAGE_ROWS} />);
+
+    open('Page preview');
 
     expect(screen.getByText('dry runs')).toBeInTheDocument();
     expect(screen.getByText('1200 ms')).toBeInTheDocument();
@@ -40,8 +69,22 @@ describe('RenderStatsOverlay', () => {
     expect(screen.queryByText('4 ms')).not.toBeInTheDocument();
   });
 
+  it('sets a figure in from the one that contains it, by how deep it sits', () => {
+    render(<RenderStatsOverlay title="Page preview" rows={PAGE_ROWS} />);
+
+    open('Page preview');
+
+    // These figures overlap almost entirely — the convert is most of the render, the dry runs are
+    // most of the convert — so shown flat they read as a render costing several times what it did.
+    expect(screen.getByText('render').className).toBe('');
+    expect(screen.getByText('convert').className).toBe('pl-3');
+    expect(screen.getByText('dry runs').className).toBe('pl-6');
+  });
+
   it('rounds a fractional measurement to whole milliseconds', () => {
     render(<RenderStatsOverlay title="Web preview" rows={[{ label: 'parse', value: 3.34, unit: 'ms' }]} />);
+
+    open();
 
     expect(screen.getByText('3 ms')).toBeInTheDocument();
   });

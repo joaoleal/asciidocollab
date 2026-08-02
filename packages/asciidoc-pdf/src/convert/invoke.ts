@@ -371,9 +371,12 @@ export async function invokeConvert(deps: InvokeConvertDeps): Promise<ConvertInv
   // the whole render failing, with a reason.
   const sizeAssessment = assessDocumentSize(assembledSourceBytes(vm, sourcePath, snapshot));
   if (!sizeAssessment.withinLimit) {
-    // Deliberately NOT reported to the VM as a render: nothing was converted, nothing was allocated,
-    // and retiring a healthy instance over a document that never reached it would throw away a boot
-    // for no reason.
+    // Deliberately NOT reported to the VM as a render. The instance is not spent: the earlier stages
+    // have written the assembled document and its generated assets into its VFS, but that is bounded by
+    // the snapshot and is exactly what the next population overwrites — nothing has been CONVERTED, and
+    // the conversion is the step whose allocation climbs until the instance can serve nothing more.
+    // Retiring a healthy instance over a document that never reached the engine would spend a boot for
+    // no reason.
     return failure(
       requestId,
       PHASE_PREPROCESSING,

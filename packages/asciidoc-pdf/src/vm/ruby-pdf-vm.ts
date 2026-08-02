@@ -73,11 +73,24 @@ export class RubyPdfVmError extends Error {
 /** The outcome of a {@link RubyPdfVm.warmup} call. */
 export interface WarmupOutcome {
   /**
-   * `true` only when this call actually instantiated a VM — either the first one, or a replacement for
-   * an instance that had spent its render budget; `false` when it reused the existing instance.
-   * Callers use this to emit the boot (`vm-init`) progress signal for the boot that really happened.
+   * `true` when this call actually instantiated a VM — the session's first, or a replacement for an
+   * instance that had spent its render budget; `false` when it reused the existing instance.
+   *
+   * This is the flag a boot COST is attributed to. Because an instance serves
+   * {@link RENDERS_PER_VM_INSTANCE} render, booting is the normal case rather than the exception, and
+   * the ~120 ms it takes is a per-render cost that has to stay visible in the timing breakdown.
    */
-  readonly coldStart: boolean;
+  readonly booted: boolean;
+  /**
+   * `true` only on the boot that started the engine for this session: the first successful
+   * instantiation, and the first one after an explicit {@link RubyPdfVm.dispose} tore the engine down.
+   *
+   * Reported separately from {@link WarmupOutcome.booted} because the two answer different questions.
+   * "Did this call boot an instance?" is a measurement. "Is the engine starting up?" is something an
+   * author is TOLD, and the replacement instance each render gets is not that: announcing it would put
+   * a start-up notice on screen on every edit, describing something the author experienced once.
+   */
+  readonly firstBoot: boolean;
 }
 
 /** Low-level dependency: how to construct a fresh {@link WasiBridge} for a cold start. */
@@ -102,12 +115,13 @@ export interface RubyPdfVm {
    * Instantiate the VM if there is no usable instance, and reuse the existing one otherwise.
    * Idempotent for pre-warming: repeated calls (and concurrent ones) against an instance that has not
    * yet served its render budget resolve to that same instance, and only a genuine boot reports
-   * `coldStart: true`.
+   * `booted: true`.
    *
    * An instance that has spent its {@link RENDERS_PER_VM_INSTANCE} budget is NOT reused: this call
-   * disposes it and boots a replacement, reporting `coldStart: true` for the boot that really happened.
+   * disposes it and boots a replacement, reporting `booted: true` — but `firstBoot: false`, because the
+   * engine has been running all along.
    *
-   * @returns The warmup outcome, flagging whether this call performed a cold start.
+   * @returns The warmup outcome: whether this call booted, and whether that boot started the engine.
    */
   warmup(): Promise<WarmupOutcome>;
   /**
@@ -187,6 +201,13 @@ class RubyPdfVmImpl implements RubyPdfVm {
   private warmupInFlight: Promise<void> | null = null;
   /** Renders the CURRENT instance has served; reset every time a fresh instance is booted. */
   private rendersServed = 0;
+  /**
+   * Whether an instance has EVER booted since this facade was last torn down. Survives the retirement
+   * of a spent instance — retiring one and booting its replacement is this facade doing its job, not
+   * the engine starting up — and is cleared only by {@link RubyPdfVmImpl.dispose}, after which nothing
+   * is holding an engine and the next boot genuinely starts one again.
+   */
+  private engineStarted = false;
 
   constructor(private readonly deps: RubyPdfVmDeps) {}
 
@@ -201,11 +222,12 @@ class RubyPdfVmImpl implements RubyPdfVm {
       this.disposeBridge();
     }
     if (this.ready) {
-      return { coldStart: false };
+      return { booted: false, firstBoot: false };
     }
     if (this.warmupInFlight !== null) {
+      // Someone else's boot is what will serve this caller; only the call that performed it reports it.
       await this.warmupInFlight;
-      return { coldStart: false };
+      return { booted: false, firstBoot: false };
     }
 
     const bridge = this.deps.createBridge();
@@ -222,7 +244,11 @@ class RubyPdfVmImpl implements RubyPdfVm {
       this.warmupInFlight = null;
     }
     this.rendersServed = 0;
-    return { coldStart: true };
+    // Recorded only after a SUCCESSFUL instantiation: a boot that threw left no engine running, so the
+    // retry after it is still the one that starts the session's engine.
+    const firstBoot = !this.engineStarted;
+    this.engineStarted = true;
+    return { booted: true, firstBoot };
   }
 
   renderCompleted(): void {
@@ -263,6 +289,7 @@ class RubyPdfVmImpl implements RubyPdfVm {
   dispose(): void {
     this.disposeBridge();
     this.warmupInFlight = null;
+    this.engineStarted = false;
   }
 
   /** Tear the current instance down and forget what it served, leaving the facade not-ready. */

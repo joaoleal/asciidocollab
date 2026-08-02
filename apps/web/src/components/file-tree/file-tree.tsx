@@ -12,7 +12,7 @@ import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import { useKeyBindings } from '@/hooks/use-key-bindings';
 import { useFileTreeKeyHandler } from '@/hooks/use-file-tree-key-handler';
 import { useFileTreeUIState } from '@/hooks/use-file-tree-ui-state';
-import type { FileTreeNode as FileTreeNodeType } from './types';
+import type { FileTreeNode as FileTreeNodeType, NodeActionKind, NodeActionRequest } from './types';
 import type { ParticipantPresence } from '@/hooks/use-collab-presence';
 import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { API_BASE_URL } from '@/lib/api/base-url';
@@ -315,13 +315,37 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
     }
   }, [openPathRequest, tree, onSelectFile, revealSelected]);
 
-  const keyCallbacks = useMemo(() => ({
-    'file-tree:rename': selectedNodeId ? () => {} : undefined,
-    'file-tree:delete': selectedNodeId ? () => {} : undefined,
-    'file-tree:new-file': selectedNodeId ? () => {} : undefined,
-    'file-tree:new-folder': selectedNodeId ? () => {} : undefined,
-    'file-tree:find': openFind,
-  }), [selectedNodeId, openFind]);
+  // The tree's shortcuts open the dialogs the selected node's actions menu already owns, by raising a
+  // request that node picks up (see `NodeActionRequest`). Each is offered only when there is a node to
+  // act on AND this user may modify the file tree: a viewer has no actions menu to answer a request,
+  // so leaving the callback undefined lets the key through untouched rather than swallowing it into an
+  // action that could never happen.
+  const [actionRequest, setActionRequest] = useState<NodeActionRequest | null>(null);
+  const requestNodeAction = useCallback((action: NodeActionKind) => {
+    if (!tree || !selectedNodeId) return;
+    const selected = findNodeInTree(tree, selectedNodeId);
+    if (!selected) return;
+    // Creating happens IN a folder, and only a file is ever selected here — clicking a folder expands
+    // it rather than selecting it. So a create shortcut targets the folder holding the selection,
+    // which is where the reader is looking and where the same menu item on that folder would create.
+    // A file directly under the project root resolves to the root's own menu, which carries the same
+    // two items. Renaming and deleting act on the selection itself.
+    const creating = action === 'create-file' || action === 'create-folder';
+    const targetId = creating ? (selected.type === 'folder' ? selected.id : (selected.parentId ?? tree.id)) : selected.id;
+    setActionRequest((previous) => ({ nodeId: targetId, action, nonce: (previous?.nonce ?? 0) + 1 }));
+  }, [tree, selectedNodeId]);
+
+  const keyCallbacks = useMemo(() => {
+    const forAction = (action: NodeActionKind) =>
+      selectedNodeId && canEdit ? () => requestNodeAction(action) : undefined;
+    return {
+      'file-tree:rename': forAction('rename'),
+      'file-tree:delete': forAction('delete'),
+      'file-tree:new-file': forAction('create-file'),
+      'file-tree:new-folder': forAction('create-folder'),
+      'file-tree:find': openFind,
+    };
+  }, [selectedNodeId, canEdit, requestNodeAction, openFind]);
 
   useFileTreeKeyHandler(containerReference, bindings, keyCallbacks);
 
@@ -466,6 +490,7 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
                 onExpandAll={expandAll}
                 onRevealInTree={handleRevealFile}
                 hasSelection={!!selectedNodeId}
+                actionRequest={actionRequest?.nodeId === tree.id ? actionRequest : undefined}
               />
             </span>
           )}
@@ -538,6 +563,7 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
                   expandedState={expandedState}
                   onFolderDrop={handleFolderDrop}
                   presenceByFile={presenceByFile}
+                  actionRequest={actionRequest}
                 />
               ))
             )}

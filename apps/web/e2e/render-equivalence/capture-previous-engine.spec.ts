@@ -37,9 +37,9 @@ test.describe('previous-engine capture', () => {
       }
       const html = await renderCorpusDocument(document, index + 1);
 
-      // The capture must carry the app's own post-conversion passes, not raw conversion: those passes
-      // are part of what the gate compares, and a reference taken without them describes a render the
-      // product never performs.
+      // A document that rendered to nothing would be written out as a fixture the regression gate
+      // could never fail against. What the render CARRIES — the app's own post-conversion passes,
+      // which are part of what the gate compares — is the next test's subject, not this one's.
       expect(html.length).toBeGreaterThan(0);
 
       written.push(writeFixture(document.name, html));

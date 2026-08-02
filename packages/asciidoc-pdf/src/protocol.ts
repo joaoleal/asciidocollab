@@ -82,7 +82,15 @@ export interface RenderRequest {
   readonly mode: RenderMode;
   /** The immutable project state to render; the pipeline reads it and never mutates it. */
   readonly snapshot: ProjectSnapshot;
-  /** For warm re-renders: only these project files are rewritten. */
+  /**
+   * A re-render delta: the project files that changed since the last population.
+   *
+   * Honored only against a VM whose VFS still holds the previous population. A render VM instance
+   * serves one render and is replaced before the next, so the filesystem a render sees is empty and
+   * this delta is upgraded to a full population every time (see `populateProject`). Kept on the
+   * protocol because it costs nothing and is the correct request to make of a VFS that HAS the
+   * project; a caller that sets it is not wrong, it just does not currently save anything.
+   */
   readonly changedPaths?: readonly string[];
   /** Run the PDF optimize pass (export sets this; preview may skip it). */
   readonly optimize: boolean;
@@ -256,7 +264,14 @@ export interface PdfVmStages {
  * inherited ones are measured inside the render VM and sit inside `convertMs`.
  */
 export interface PdfRenderStages extends PdfVmStages {
-  /** Booting the render VM. `0` when it was already warm — a measurement, not a gap. */
+  /**
+   * Booting the render VM instance this render ran on.
+   *
+   * A per-render cost, not a first-render one: a VM instance serves a single render and is replaced
+   * before the next, so all but the first render of a session pay an instantiation here. `0` means no
+   * boot happened — the render reused an instance a pre-warm had already booted — which is a
+   * measurement, not a gap.
+   */
   readonly vmBootMs: number;
   /** Writing the project snapshot into the VFS. */
   readonly populateMs: number;
@@ -268,7 +283,14 @@ export interface PdfRenderStages extends PdfVmStages {
 
 /** Logical timings and counters for budget tracking and observability. */
 export interface RenderStats {
-  /** Cold-start (VM instantiation) time, present only on the first render. */
+  /**
+   * What it cost to START THE ENGINE for this session, present only on the render that did so.
+   *
+   * Narrower than {@link PdfRenderStages.vmBootMs}, which every render carries: most renders boot an
+   * instance of their own (each serves one render), and none of those is a cold start — the engine was
+   * already running. Absent on every render when a mount-time pre-warm started the engine before any
+   * render asked for it, which is the normal case for the live preview.
+   */
   readonly coldStartMs?: number;
   /** Wall-independent elapsed render time, in milliseconds, used for budget tracking. */
   readonly renderMs: number;

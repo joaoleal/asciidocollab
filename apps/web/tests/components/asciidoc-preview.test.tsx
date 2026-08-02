@@ -656,6 +656,12 @@ describe('AsciiDocPreview render-cost overlay', () => {
       <AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />,
     );
 
+    // Put away until asked for: it sits over the document being previewed, and the reader did not
+    // ask to have the corner of their page covered by it.
+    expect(screen.queryByText('27 ms')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Web preview render cost' }));
+
     expect(screen.getByText('27 ms')).toBeInTheDocument();
     // Document-rendering styles are scoped to `.asciidoc-preview-content`; app chrome inside it would
     // be styled as though it were part of the author's document.

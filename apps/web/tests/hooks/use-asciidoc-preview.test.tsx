@@ -30,9 +30,26 @@ class MockWorker {
     if (type === 'error') this.errorListeners.push(listener as WorkerErrorListener);
   }
 
+  /**
+   * Reply to a render, the way the real worker replies to one.
+   *
+   * A test names the render it is answering by the hook's own `requestId`, which is what the hook
+   * itself reads. The wire also carries the holder's routing token — the hook's numbering restarts at
+   * 1 per mount and cannot say whose reply is whose on a shared worker — and the real worker echoes
+   * it back untouched. Doing that here, by looking up the request that went out under this id, is what
+   * keeps the token an implementation detail of the holder rather than something every test recites.
+   */
   emit(data: unknown) {
+    const answering = data as { requestId?: number; renderId?: number };
+    const posted = this.postMessage.mock.calls
+      .map(([request]) => request as { requestId: number; renderId?: number })
+      .findLast((request) => request.requestId === answering.requestId);
+    const echoed =
+      answering.renderId === undefined && posted?.renderId !== undefined
+        ? { ...answering, renderId: posted.renderId }
+        : answering;
     for (const listener of this.messageListeners) {
-      listener({ data } as MessageEvent);
+      listener({ data: echoed } as MessageEvent);
     }
   }
 
@@ -85,8 +102,19 @@ function mockSanitizeToFragment(html: string): DocumentFragment {
   return parsed.content;
 }
 
+/**
+ * Both shapes the real sanitizer answers in, chosen by the same flag the real one reads.
+ *
+ * The hook asks for nodes to commit and — only if someone reads the render's markup — for markup. A
+ * double that answered with nodes whichever was asked for would let a test pass while the hook was
+ * handed something it could not use.
+ */
+function mockSanitizeInShape(html: string, config?: { RETURN_DOM_FRAGMENT?: boolean }): DocumentFragment | string {
+  return config?.RETURN_DOM_FRAGMENT === true ? mockSanitizeToFragment(html) : mockStripScriptTags(html);
+}
+
 jest.mock('dompurify', () => ({
-  sanitize: jest.fn((html: string) => mockSanitizeToFragment(html)),
+  sanitize: jest.fn((html: string, config?: { RETURN_DOM_FRAGMENT?: boolean }) => mockSanitizeInShape(html, config)),
 }));
 
 // ── editor-config mock — fixed debounce so tests don't depend on env ─────────
@@ -139,7 +167,9 @@ beforeEach(() => {
   jest.useFakeTimers();
   MockWorker.instances = [];
   mockSanitize.mockClear();
-  mockSanitize.mockImplementation((html: string) => mockSanitizeToFragment(html));
+  mockSanitize.mockImplementation((html: string, config?: { RETURN_DOM_FRAGMENT?: boolean }) =>
+    mockSanitizeInShape(html, config),
+  );
   mockSpawnRenderWorker.mockClear();
   mockSpawnRenderWorker.mockImplementation(() => new MockWorker());
 });
@@ -1592,7 +1622,70 @@ describe('useAsciidocPreview — engine failure', () => {
     expect(lastWorker().postMessage.mock.calls[0][0].content).toBe('= Doc');
   });
 
-  it('refreshes again after a retry, with the max-wait cap no longer waiting on a dead render', () => {
+  it('stops claiming a render is under way once the engine has given up', () => {
+    const { result } = renderHook(() =>
+      useAsciidocPreview({ content: '= Doc', isEnabled: true, scrollToLine: null }),
+    );
+    act(() => jest.advanceTimersByTime(200));
+    expect(result.current.state).toBe('rendering');
+
+    for (let death = 0; death <= MAX_ENGINE_REBUILDS; death += 1) {
+      act(() => lastWorker().die());
+    }
+
+    // The render in flight died with the engine and nothing will ever answer it. Left saying
+    // "rendering", the sync indicator pulses for the rest of the session behind the failure notice —
+    // telling the reader the preview is catching up when nothing is coming.
+    expect(result.current.state).toBe('error');
+
+    // The engine is shared module state that outlives this test, and an engine left given up on stays
+    // given up on — unmounting is not evidence it would start this time. Hand the next test a working
+    // one, exactly as the tests below that kill it do.
+    act(() => result.current.retryEngine());
+  });
+
+  it('does not claim a render is under way for one posted while the engine is down', () => {
+    const { result, rerender } = renderHook(
+      ({ content }: { content: string }) =>
+        useAsciidocPreview({ content, isEnabled: true, scrollToLine: null }),
+      { initialProps: { content: '= Doc' } },
+    );
+    act(() => jest.advanceTimersByTime(200));
+    for (let death = 0; death <= MAX_ENGINE_REBUILDS; death += 1) {
+      act(() => lastWorker().die());
+    }
+
+    // Editing while the engine is down still schedules a refresh, and the holder still records it as
+    // the render to replay on retry — but there is no engine to run it, so saying it is under way
+    // would restart the same false pulse the failure above ended.
+    act(() => rerender({ content: '= Doc edited' }));
+    act(() => jest.advanceTimersByTime(200));
+
+    expect(result.current.state).toBe('error');
+
+    // See above: the shared engine has to be given back in working order.
+    act(() => result.current.retryEngine());
+  });
+
+  it('says a render is under way again once the author asks for another engine', () => {
+    const { result } = renderHook(() =>
+      useAsciidocPreview({ content: '= Doc', isEnabled: true, scrollToLine: null }),
+    );
+    act(() => jest.advanceTimersByTime(200));
+    for (let death = 0; death <= MAX_ENGINE_REBUILDS; death += 1) {
+      act(() => lastWorker().die());
+    }
+
+    act(() => result.current.retryEngine());
+
+    // The retry replays the outstanding render on the new engine, so one genuinely is under way.
+    expect(result.current.state).toBe('rendering');
+
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Doc</h1>', error: null }));
+    expect(result.current.state).toBe('up-to-date');
+  });
+
+  it('serialises the refresh after a retry behind the render the retry put back in flight', () => {
     const { result, rerender } = renderHook(
       ({ content }: { content: string }) =>
         useAsciidocPreview({ content, isEnabled: true, scrollToLine: null }),
@@ -1612,8 +1705,79 @@ describe('useAsciidocPreview — engine failure', () => {
       rerender({ content: documentText }),
     );
 
-    // One replay from the retry, plus the refresh the cap forced during the burst.
+    // The replay is a render genuinely under way on a live engine, so the cap holds its forced
+    // refresh back rather than stacking a second render on it — the same treatment it gives a render
+    // the schedule posted. Left unreported, the cap would fire into the replay and the author would
+    // pay for two renders of a document only one of them describes.
+    expect(revived.postMessage).toHaveBeenCalledTimes(1);
+
+    // Held, though, not lost — which is the difference between pacing the refresh and retiring it.
+    // The replay reporting back releases it at once, without waiting out another burst window.
+    act(() => revived.emit({ requestId: 1, ok: true, html: '<h1>Doc</h1>', error: null }));
     expect(revived.postMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves the cap running when a retry had nothing of ours to replay', () => {
+    const { result, rerender } = renderHook(
+      ({ content }: { content: string }) =>
+        useAsciidocPreview({ content, isEnabled: true, scrollToLine: null }),
+      { initialProps: { content: '' } },
+    );
+    // The engine dies before this panel has posted anything at all, so the retry starts an engine but
+    // replays nothing. What is pinned here is that the announcement stays CONDITIONAL: told a render
+    // is under way when none is, the cap would wait on a completion nothing is ever going to report
+    // and suppress every refresh after it — so the burst below would go out unrendered.
+    for (let death = 0; death <= MAX_ENGINE_REBUILDS; death += 1) {
+      act(() => lastWorker().die());
+    }
+    act(() => result.current.retryEngine());
+    const revived = lastWorker();
+
+    typeWithoutPausing(PREVIEW_MAX_WAIT_MS + KEYSTROKE_INTERVAL_MS, (documentText) =>
+      rerender({ content: documentText }),
+    );
+
+    expect(revived.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the error state when a retry brings the engine back with nothing to replay', () => {
+    const { result } = renderHook(() =>
+      useAsciidocPreview({ content: '', isEnabled: true, scrollToLine: null }),
+    );
+    // An empty file: nothing is worth rendering, so nothing was ever posted. The engine dies anyway —
+    // it starts up for the panel, not for a document — and the author presses the retry.
+    for (let death = 0; death <= MAX_ENGINE_REBUILDS; death += 1) {
+      act(() => lastWorker().die());
+    }
+    expect(result.current.state).toBe('error');
+
+    act(() => result.current.retryEngine());
+
+    // The engine IS back, and the notice offering the retry is gone with it. Left in `error` the panel
+    // would keep saying "Preview error" with no message under it and nothing to press, until the
+    // author happened to type.
+    expect(result.current.engineFailed).toBe(false);
+    expect(result.current.state).toBe('idle');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('leaves the failure notice up for a retry that did nothing', () => {
+    const { result } = renderHook(() =>
+      useAsciidocPreview({ content: '= Doc', isEnabled: true, scrollToLine: null }),
+    );
+    act(() => jest.advanceTimersByTime(200));
+    for (let death = 0; death <= MAX_ENGINE_REBUILDS; death += 1) {
+      act(() => lastWorker().die());
+    }
+    act(() => result.current.retryEngine());
+    expect(result.current.engineFailed).toBe(false);
+
+    // A second press — on a notice already acted on, which is an ordinary double-click. The holder
+    // refuses it because the engine is healthy, so nothing was rebuilt and nothing must be claimed.
+    act(() => result.current.retryEngine());
+
+    expect(result.current.state).toBe('rendering');
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1785,5 +1949,212 @@ describe('useAsciidocPreview — putting the render on screen', () => {
 
     expect(result.current.state).toBe('up-to-date');
     expect(result.current.renderNonce).toBe(0);
+  });
+});
+
+// ── useAsciidocPreview — a document with nothing in it ───────────────────────
+
+/**
+ * Mount the preview on a file that has content, with an output element attached, and commit its
+ * first render — the state every test below starts from, because the defect they cover is about what
+ * happens to a document that is ALREADY on screen.
+ *
+ * @param content - The first file's source.
+ * @returns The harness, plus the element the render was committed into.
+ */
+function showingFirstFile(content = '= First') {
+  const harness = renderHook(
+    ({ text, openFileId }: { text: string; openFileId: string }) =>
+      useAsciidocPreview({
+        content: text,
+        isEnabled: true,
+        scrollToLine: null,
+        openFileId,
+        // Present so each render states which file it is FOR: the hook forwards the open file's id
+        // only when that file is in the snapshot, and the point of the tests below is which file's
+        // document ends up on screen.
+        getFiles: () => ({ 'first.adoc': content, 'second.adoc': '' }),
+      }),
+    { initialProps: { text: content, openFileId: 'first.adoc' } },
+  );
+  const output = attachOutputElement(harness.result.current.outputRef);
+  act(() => jest.advanceTimersByTime(200));
+  act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>First</h1>', error: null }));
+  return { ...harness, output };
+}
+
+describe('useAsciidocPreview — a document with nothing in it', () => {
+  it('empties the preview when the newly opened file has no content', () => {
+    const { rerender, result, output } = showingFirstFile();
+    expect(output.innerHTML).toBe('<h1>First</h1>');
+
+    // Every new file is created empty, so this is the ordinary route to it: open the preview, add a
+    // file, click it. The panel is not remounted per file, so nothing else takes the previous
+    // document off screen — skipping the render leaves the file the reader just left on display
+    // while the indicator reports the preview is up to date.
+    act(() => rerender({ text: '', openFileId: 'second.adoc' }));
+    act(() => jest.advanceTimersByTime(PREVIEW_DEBOUNCE_MS));
+
+    const posted = lastWorker().postMessage.mock.calls.at(-1)?.[0];
+    expect(posted.content).toBe('');
+    expect(posted.openFileId).toBe('second.adoc');
+
+    act(() => lastWorker().emit({ requestId: 2, ok: true, html: '', error: null }));
+    expect(output.innerHTML).toBe('');
+    expect(result.current.state).toBe('up-to-date');
+  });
+
+  it('empties the preview when the author deletes everything in the open file', () => {
+    const { rerender, output } = showingFirstFile();
+
+    // The same defect without a file switch: an empty buffer is a document that renders to nothing,
+    // not an absence of one to render.
+    act(() => rerender({ text: '', openFileId: 'first.adoc' }));
+    act(() => jest.advanceTimersByTime(PREVIEW_DEBOUNCE_MS));
+    act(() => lastWorker().emit({ requestId: 2, ok: true, html: '', error: null }));
+
+    expect(output.innerHTML).toBe('');
+  });
+
+  it('renders once when the buffer is momentarily empty between two edits', () => {
+    const { rerender } = showingFirstFile();
+    const before = lastWorker().postMessage.mock.calls.length;
+
+    // Select-all-and-retype empties the buffer for a keystroke. Rendering that emptiness would cost a
+    // conversion and a blank frame for a state the author never meant to be in; the trailing delay
+    // absorbs it exactly as it absorbs any other keystroke.
+    act(() => rerender({ text: '', openFileId: 'first.adoc' }));
+    act(() => jest.advanceTimersByTime(PREVIEW_DEBOUNCE_MS / 2));
+    act(() => rerender({ text: '= First, rewritten', openFileId: 'first.adoc' }));
+    act(() => jest.advanceTimersByTime(PREVIEW_DEBOUNCE_MS));
+
+    expect(lastWorker().postMessage.mock.calls).toHaveLength(before + 1);
+    expect(lastWorker().postMessage.mock.calls.at(-1)?.[0].content).toBe('= First, rewritten');
+  });
+
+  it('leaves the previous document up while the newly opened file is still loading', () => {
+    const { rerender, output } = showingFirstFile();
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(1);
+
+    // The open file changes the instant it is clicked, while its content is still being fetched, so an
+    // empty buffer here means "not arrived yet" as often as it means "an empty file" — and the two are
+    // indistinguishable. So the switch schedules the empty render but does not force it: content that
+    // arrives within the delay replaces it, and the reader never sees a blank in between.
+    act(() => rerender({ text: '', openFileId: 'second.adoc' }));
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(1);
+    expect(output.innerHTML).toBe('<h1>First</h1>');
+
+    // The content arrives: forced through at once, as a file switch always is.
+    act(() => rerender({ text: '= Second', openFileId: 'second.adoc' }));
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(2);
+    expect(lastWorker().postMessage.mock.calls[1][0].content).toBe('= Second');
+
+    act(() => lastWorker().emit({ requestId: 2, ok: true, html: '<h1>Second</h1>', error: null }));
+    expect(output.innerHTML).toBe('<h1>Second</h1>');
+  });
+
+  it('renders nothing for an empty buffer before anything has ever been shown', () => {
+    // The one case an empty document is not worth rendering: the output element is already empty, so
+    // the render would change nothing on screen — and a file that has only just been opened is
+    // routinely still loading. This is what keeps a mount from posting a wasted render of nothing.
+    renderHook(() => useAsciidocPreview({ content: '', isEnabled: true, scrollToLine: null }));
+
+    act(() => jest.advanceTimersByTime(PREVIEW_MAX_WAIT_MS * 2));
+
+    expect(lastWorker().postMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ── useAsciidocPreview — the markup nobody reads ─────────────────────────────
+
+/**
+ * Count every read of `innerHTML` in the document while `body` runs.
+ *
+ * Serializing a whole rendered document is precisely what reading `innerHTML` off it does, so this
+ * states the cost the commit path is not allowed to pay in the terms it is actually paid in. The
+ * descriptor is put back whatever happens, because leaving a counting getter on `Element.prototype`
+ * would follow every later test in the file.
+ *
+ * @param body - The work to measure.
+ * @returns How many times `innerHTML` was read during it.
+ */
+function countInnerHtmlReads(body: () => void): number {
+  const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+  const read = descriptor?.get;
+  if (descriptor === undefined || read === undefined) throw new Error('innerHTML has no getter to count');
+  let reads = 0;
+  Object.defineProperty(Element.prototype, 'innerHTML', {
+    ...descriptor,
+    get(this: Element) {
+      reads += 1;
+      return read.call(this);
+    },
+  });
+  try {
+    body();
+  } finally {
+    Object.defineProperty(Element.prototype, 'innerHTML', descriptor);
+  }
+  return reads;
+}
+
+describe('useAsciidocPreview — the markup nobody reads', () => {
+  it('serializes nothing while committing a render', () => {
+    const { result } = previewingInto('= Doc');
+    act(() => jest.advanceTimersByTime(200));
+
+    // Nothing on screen depends on the render's markup — the panel commits by patching the DOM and
+    // never destructures it — so producing it would be a whole-document serialization per refresh, on
+    // the main thread this feature exists to unburden.
+    const reads = countInnerHtmlReads(() => {
+      act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Doc</h1>', error: null }));
+    });
+
+    expect(reads).toBe(0);
+    expect(result.current.state).toBe('up-to-date');
+  });
+
+  it('produces the render identity on demand, and once however often it is read', () => {
+    const { result } = previewingInto('= Doc');
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Doc</h1>', error: null }));
+    mockSanitize.mockClear();
+
+    expect(result.current.html).toBe('<h1>Doc</h1>');
+    expect(result.current.html).toBe('<h1>Doc</h1>');
+
+    // Deferred, not discarded — and remembered, so a reader that asks twice does not pay twice.
+    expect(mockSanitize).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the markup of the latest render, not of the one before it', () => {
+    const { result, rerender } = previewingInto('= Doc');
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>Doc</h1>', error: null }));
+    expect(result.current.html).toBe('<h1>Doc</h1>');
+
+    act(() => rerender({ text: '= Doc edited' }));
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 2, ok: true, html: '<h1>Doc edited</h1>', error: null }));
+
+    expect(result.current.html).toBe('<h1>Doc edited</h1>');
+  });
+
+  it('sanitizes the markup it hands out, exactly as it sanitizes what it commits', () => {
+    const { result } = previewingInto('= Doc');
+    act(() => jest.advanceTimersByTime(200));
+    act(() =>
+      lastWorker().emit({
+        requestId: 1,
+        ok: true,
+        html: '<h1>Doc</h1><script>alert(1)</script>',
+        error: null,
+      }),
+    );
+
+    // Deferring the work must not defer the verdict: the markup is the render's identity and is read
+    // by the export path, so an unsanitized string here would be a second, unguarded route out of the
+    // worker's output.
+    expect(result.current.html).toBe('<h1>Doc</h1>');
   });
 });

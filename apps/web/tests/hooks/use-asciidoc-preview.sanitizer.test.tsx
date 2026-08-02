@@ -1,11 +1,12 @@
 // The preview's sanitization boundary, proved equivalent across the two shapes it can return.
 //
 // The preview used to publish its markup as a STRING and let the browser parse it. It now asks the
-// same sanitizer for NODES instead, so nothing re-parses markup on the way to the screen. That is a
-// change of return type at the security boundary of the whole preview, and a change at a security
-// boundary is only safe if it is provably not a change of VERDICT: every payload the string form
-// rejected must be rejected identically by the fragment form, and everything the preview legitimately
-// renders must survive both forms identically.
+// same sanitizer for NODES for everything that reaches the screen, so nothing re-parses markup on the
+// way there, and asks for the string form only for the render's markup, only when a caller reads it.
+// That is a change of return type at the security boundary of the whole preview, and a change at a
+// security boundary is only safe if it is provably not a change of VERDICT: every payload the string
+// form rejected must be rejected identically by the fragment form, and everything the preview
+// legitimately renders must survive both forms identically.
 //
 // These tests deliberately use the REAL DOMPurify. The hook's own suite substitutes a test double for
 // it — a double proves nothing about what an attacker's payload does, only about what the double was
@@ -22,9 +23,16 @@ function sanitizeToMarkup(dirty: string): string {
 }
 
 /**
- * Sanitize to nodes — the shape the preview uses now — read back as markup so the two verdicts can be
- * compared as like for like. The read-back is the test's own doing: the preview never serializes the
- * fragment on this path, it commits the nodes directly.
+ * Sanitize to nodes — the shape the preview commits — read back as markup so the two verdicts can be
+ * compared as like for like. The read-back is the test's own doing: the preview commits these nodes
+ * directly and serializes nothing on that path.
+ *
+ * Which makes the equivalence below load-bearing rather than merely reassuring. The preview commits
+ * nodes, but still owes a caller the render's markup, and it no longer produces that markup by
+ * serializing the committed fragment — it asks this same sanitizer, in the string shape, for the same
+ * worker output, and only if somebody actually reads it. Both shapes are therefore live in
+ * production, and "the same verdict either way" is the property that keeps the deferred one from
+ * being a second, weaker sanitization.
  */
 function sanitizeToNodesThenRead(dirty: string): string {
   const fragment = DOMPurify.sanitize(dirty, { ...PREVIEW_PROFILE, RETURN_DOM_FRAGMENT: true });

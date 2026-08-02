@@ -71,15 +71,27 @@ const MAX_BURST_MS = 30_000;
 /**
  * Fraction of a measured render cost that consecutive refreshes must still be apart.
  *
- * Renders of the same document vary by a few percent and the cost overlay reports only the most
- * recent one, so an exact floor would be asserting on that noise. The margin is wide enough to
- * absorb it and far too narrow to admit two renders running at once, which would roughly halve the
- * interval between refreshes.
+ * Renders of the same document vary by a few percent, so an exact floor would be asserting on that
+ * noise. The margin is wide enough to absorb it and far too narrow to admit two renders running at
+ * once, which would roughly halve the interval between refreshes.
  */
 const SERIAL_REFRESH_MARGIN = 0.8;
 
 /** Where the recorder parks its observations on the page's global object. */
 const RECORDER_KEY = 'previewRefreshObservations';
+
+/** Where the single-refresh timer parks its two instants on the page's global object. */
+const REFRESH_TIMER_KEY = 'previewRefreshCostTiming';
+
+/**
+ * Words typed to time one refresh.
+ *
+ * Deliberately nothing like a marker: they are left in the document when the burst starts, and a
+ * word matching {@link MARKER_PATTERN} would be counted as one and wreck the marker sequence the
+ * burst is judged on.
+ */
+const FIRST_PROBE_WORD = 'refreshprobealpha';
+const SECOND_PROBE_WORD = 'refreshprobebeta';
 
 /**
  * Size of the deliberately slow document, as a number of source blocks written in a language the
@@ -121,6 +133,8 @@ const FIRST_PAGE_RENDER_TIMEOUT_MS = 120_000;
 const PAGE_RENDER_SETTLE_TIMEOUT_MS = 60_000;
 /** Budget for the first render of the slow document, which is large on purpose. */
 const SLOW_FIRST_RENDER_TIMEOUT_MS = 90_000;
+/** Budget for one timed refresh of an ordinary document; a refresh that never lands is a real fault. */
+const REFRESH_MEASUREMENT_TIMEOUT_MS = 60_000;
 
 const SEED_DOCUMENT = [
   '= Continuous Typing',
@@ -258,24 +272,107 @@ async function readRecording(page: Page): Promise<Recording> {
 }
 
 /**
- * What the last successful render cost, as the development-only cost overlay reports it.
+ * Time one whole refresh of the open document — from the keystroke that asked for it to the changed
+ * text being on screen — and report what the RENDER part of that wait cost.
  *
- * @param page - The Playwright page.
- * @param title - The overlay's title, which names the preview format it describes.
- * @param label - The row holding the whole-render figure.
- * @returns The figure in milliseconds, or -1 when the overlay has not reported one yet.
+ * This is measured rather than read off the application because the only figure the application
+ * publishes is the development-only cost overlay, which is deliberately absent from a production
+ * build; a check that depends on it means one thing in a development build and nothing in the build
+ * the gate runs. What is measured here is instead the same thing in both: a refresh an author would
+ * have watched happen.
+ *
+ * The preview must be idle when this is called, so the wait measured is one scheduled delay plus one
+ * render and nothing else. Both instants are taken inside the page — the start is the keydown the
+ * browser dispatched, not whenever the driver's `type` call returned — and the end is sampled per
+ * animation frame, so what is timed is when the text was actually painted.
+ *
+ * What comes back is a LOWER BOUND on the render, and deliberately so. The whole wait is the
+ * trailing delay the schedule chose plus the render, and the delay it chose is at most
+ * {@link PREVIEW_DEBOUNCE_MS} — that is the ceiling of the adaptive delay, and a document slow
+ * enough to matter here is clamped to exactly it. Subtracting the ceiling can therefore only ever
+ * understate the render, never flatter it, which is the direction a guard that must not be talked
+ * out of firing needs to err in.
+ *
+ * @param page - The Playwright page, with the document open and its preview settled.
+ * @param containerSelector - The element whose text is the rendered preview.
+ * @param probe - A word to type that does not already appear in the preview.
+ * @param timeoutMs - How long to wait for the refresh; a refresh that never lands is a different fault.
+ * @returns Milliseconds, floored at zero: at least what one render of this document costs.
  */
-async function reportedRenderCostMs(page: Page, title: string, label: string): Promise<number> {
-  return page.evaluate((options): number => {
-    const overlay = document.querySelector(`aside[aria-label="${options.title} render cost"]`);
-    if (overlay === null) return -1;
-    for (const term of overlay.querySelectorAll('dt')) {
-      if (term.textContent !== options.label) continue;
-      const figure = Number.parseInt(term.nextElementSibling?.textContent ?? '', 10);
-      return Number.isFinite(figure) ? figure : -1;
-    }
-    return -1;
-  }, { title, label });
+async function measuredRenderCostMs(
+  page: Page,
+  containerSelector: string,
+  probe: string,
+  timeoutMs: number,
+): Promise<number> {
+  await editorContent(page).click();
+  await page.keyboard.press('Control+End');
+  await page.evaluate(
+    (options: { key: string; selector: string; probe: string }) => {
+      const container = document.querySelector(options.selector);
+      if (container === null) {
+        throw new Error(`nothing matches ${options.selector} to observe`);
+      }
+      if ((container.textContent ?? '').includes(options.probe)) {
+        throw new Error(`the preview already shows "${options.probe}", so its arrival cannot be timed`);
+      }
+      const timing = { lastKeystrokeAt: Number.NaN, shownAt: Number.NaN };
+      Reflect.set(globalThis, options.key, timing);
+
+      // Overwritten by every keystroke, so what remains when the text lands is the last one before
+      // the refresh — the keystroke the trailing delay was actually counted from.
+      const onKeyDown = (): void => {
+        timing.lastKeystrokeAt = performance.now();
+      };
+      document.addEventListener('keydown', onKeyDown, true);
+
+      // Re-queried each frame rather than held: a preview surface that is replaced on re-render
+      // would leave a captured node detached, watching an element nothing writes to any more.
+      const watch = (): void => {
+        const surface = document.querySelector(options.selector);
+        if ((surface?.textContent ?? '').includes(options.probe)) {
+          timing.shownAt = performance.now();
+          document.removeEventListener('keydown', onKeyDown, true);
+          return;
+        }
+        requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
+    },
+    { key: REFRESH_TIMER_KEY, selector: containerSelector, probe },
+  );
+
+  await page.keyboard.type(probe);
+  await page.waitForFunction(
+    (key: string) => {
+      const timing: unknown = Reflect.get(globalThis, key);
+      if (typeof timing !== 'object' || timing === null) return false;
+      return Number.isFinite(Reflect.get(timing, 'shownAt'));
+    },
+    REFRESH_TIMER_KEY,
+    { timeout: timeoutMs },
+  );
+  const measured: unknown = await page.evaluate((key: string) => {
+    const timing: unknown = Reflect.get(globalThis, key);
+    if (typeof timing !== 'object' || timing === null) return Number.NaN;
+    return Number(Reflect.get(timing, 'shownAt')) - Number(Reflect.get(timing, 'lastKeystrokeAt'));
+  }, REFRESH_TIMER_KEY);
+  const wholeWaitMs = Number(measured);
+  expect(
+    Number.isFinite(wholeWaitMs),
+    'the refresh landed but no keystroke was recorded before it',
+  ).toBe(true);
+  return Math.max(0, wholeWaitMs - PREVIEW_DEBOUNCE_MS);
+}
+
+/**
+ * Print a measurement, so a run reports what this document cost rather than only that it passed —
+ * the figure to re-calibrate against when the guard below it finally fires.
+ *
+ * @param line - The line to write, without its newline.
+ */
+function report(line: string): void {
+  process.stdout.write(`\n  ${line}\n`);
 }
 
 /**
@@ -403,11 +500,17 @@ test.describe('preview refresh during sustained typing', () => {
     // Settle first, so nothing left over from opening the panel is mistaken for a mid-burst refresh.
     await expect(page.locator('[aria-label="up to date"]')).toBeVisible({ timeout: 30_000 });
 
-    await editorContent(page).click();
-    await page.keyboard.press('Control+End');
+    // Size the burst against one timed refresh of this document, so it spans several of them however
+    // fast or slow the machine running it is.
+    const renderCostMs = await measuredRenderCostMs(
+      page,
+      '[data-testid="asciidoc-output"]',
+      FIRST_PROBE_WORD,
+      REFRESH_MEASUREMENT_TIMEOUT_MS,
+    );
 
     await startRecording(page, '[data-testid="preview-scroll-container"]');
-    const typed = burstText(burstDurationMs(await reportedRenderCostMs(page, 'Web preview', 'total')));
+    const typed = burstText(burstDurationMs(renderCostMs));
     await page.keyboard.type(typed, { delay: KEYSTROKE_INTERVAL_MS });
 
     const recording = await readRecording(page);
@@ -435,11 +538,15 @@ test.describe('preview refresh during sustained typing', () => {
       timeout: PAGE_RENDER_SETTLE_TIMEOUT_MS,
     });
 
-    await editorContent(page).click();
-    await page.keyboard.press('Control+End');
+    const renderCostMs = await measuredRenderCostMs(
+      page,
+      '[aria-label="Rendered PDF pages"]',
+      FIRST_PROBE_WORD,
+      PAGE_RENDER_SETTLE_TIMEOUT_MS,
+    );
 
     await startRecording(page, '[aria-label="Rendered PDF pages"]');
-    const typed = burstText(burstDurationMs(await reportedRenderCostMs(page, 'Page preview', 'render')));
+    const typed = burstText(burstDurationMs(renderCostMs));
     await page.keyboard.type(typed, { delay: KEYSTROKE_INTERVAL_MS });
 
     const recording = await readRecording(page);
@@ -462,20 +569,41 @@ test.describe('preview refresh during sustained typing', () => {
 
     // This check is only meaningful on a document that takes longer to render than the cap interval:
     // that is the case where a refresh released on every cap expiry would overlap the render still
-    // running, and where holding it back instead is visible from outside.
-    const renderCostMs = await reportedRenderCostMs(page, 'Web preview', 'total');
-    expect(
-      renderCostMs,
-      'the cost overlay must report what a render of this document costs',
-    ).toBeGreaterThan(0);
-    expect(
-      renderCostMs,
-      `one render of this document takes ${renderCostMs} ms, which is under the ${PREVIEW_MAX_WAIT_MS} ms ` +
-        'cap interval — enlarge the document so renders genuinely outlast the cap',
-    ).toBeGreaterThan(PREVIEW_MAX_WAIT_MS);
+    // running, and where holding it back instead is visible from outside. So the document is timed
+    // first, twice — the cheaper of two timings of the same document is what everything below is
+    // stated against, because the first render off a settled panel reads high and a floor built on a
+    // high reading would fail on renders that were perfectly well serialised.
+    const outputSelector = '[data-testid="asciidoc-output"]';
+    const firstTimingMs = await measuredRenderCostMs(
+      page,
+      outputSelector,
+      FIRST_PROBE_WORD,
+      SLOW_FIRST_RENDER_TIMEOUT_MS,
+    );
+    await expect(page.locator('[aria-label="up to date"]')).toBeVisible({ timeout: SLOW_FIRST_RENDER_TIMEOUT_MS });
+    const secondTimingMs = await measuredRenderCostMs(
+      page,
+      outputSelector,
+      SECOND_PROBE_WORD,
+      SLOW_FIRST_RENDER_TIMEOUT_MS,
+    );
+    await expect(page.locator('[aria-label="up to date"]')).toBeVisible({ timeout: SLOW_FIRST_RENDER_TIMEOUT_MS });
+    const renderCostMs = Math.round(Math.min(firstTimingMs, secondTimingMs));
+    report(
+      `one render of the ${SLOW_DOCUMENT_BLOCKS}-block document: at least ` +
+        `${Math.round(firstTimingMs)} / ${Math.round(secondTimingMs)} ms → ${renderCostMs} ms taken, ` +
+        `against the ${PREVIEW_MAX_WAIT_MS} ms cap it must outlast`,
+    );
 
-    await editorContent(page).click();
-    await page.keyboard.press('Control+End');
+    // The figure is a lower bound on the render (the scheduled delay was subtracted at its ceiling),
+    // so clearing the cap here means the real render clears it by at least as much — and a document
+    // that has quietly become cheap enough to render inside the cap cannot slip past by reading as
+    // one that has not. See the note on the document's size for what to do when this fires.
+    expect(
+      renderCostMs,
+      `one render of this document takes at least ${renderCostMs} ms, which is under the ` +
+        `${PREVIEW_MAX_WAIT_MS} ms cap interval — enlarge the document so renders genuinely outlast the cap`,
+    ).toBeGreaterThan(PREVIEW_MAX_WAIT_MS);
 
     await startRecording(page, '[data-testid="preview-scroll-container"]');
     const typed = burstText(burstDurationMs(renderCostMs));
@@ -502,15 +630,14 @@ test.describe('preview refresh during sustained typing', () => {
 
     // No two refreshes landed closer together than a single render of this document takes, which is
     // what serialised renders look like from outside: each one had to finish before the next began.
-    // The floor is the cheaper of the two measurements of the same document — the first render is
-    // taken cold and reads high — with a margin for the few percent the engine's own figures move
-    // between runs. Two renders overlapping would halve the interval, nowhere near that margin.
-    const warmRenderCostMs = Math.min(renderCostMs, await reportedRenderCostMs(page, 'Web preview', 'total'));
+    // The floor is the cheaper of the two timings taken above, with a margin for the few percent one
+    // render of the same document moves from the next. Two renders overlapping would halve the
+    // interval, nowhere near that margin.
     for (let index = 1; index < during.length; index += 1) {
       expect(
         during[index].at - during[index - 1].at,
         'two refreshes landed closer together than one render of this document takes',
-      ).toBeGreaterThanOrEqual(warmRenderCostMs * SERIAL_REFRESH_MARGIN);
+      ).toBeGreaterThanOrEqual(renderCostMs * SERIAL_REFRESH_MARGIN);
     }
   });
 });

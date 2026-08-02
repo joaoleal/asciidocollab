@@ -31,13 +31,17 @@ test.describe('web-format render equivalence with the previous engine', () => {
     // its own right rather than something the per-document checks quietly skip.
     expect(documents.length, 'the corpus is empty, so the gate would compare nothing').toBeGreaterThan(0);
 
+    // An EMPTY fixture file counts as no fixture: it exists, so `readFixture` returns a string rather
+    // than null, and the per-document comparison would reduce both sides of a truncated fixture to
+    // nothing and report agreement.
     const uncaptured = documents
-      .filter((document) => readFixture(document.name) === null)
+      .filter((document) => (readFixture(document.name) ?? '').trim().length === 0)
       .map((document) => fixturePath(document.name));
     expect(
       uncaptured,
-      'these corpus documents have no captured fixture. They can only be captured from the engine as ' +
-        'it was BEFORE this feature changed it — see capture-previous-engine.spec.ts.',
+      'these corpus documents have no captured fixture, or their fixture file is empty. They can only ' +
+        'be captured from the engine as it was BEFORE this feature changed it — see ' +
+        'capture-previous-engine.spec.ts.',
     ).toEqual([]);
   });
 
@@ -87,6 +91,35 @@ test.describe('web-format render equivalence with the previous engine', () => {
         `the comparison must not forgive ${what}`,
       ).not.toBeNull();
     }
+
+    // A leading passthrough `<style>` or `<meta>` is content the render emitted, but the HTML parser
+    // hoists it out of a fragment's body and into `<head>`. Compared like everything else, so a
+    // changed one fails rather than falling outside the comparison.
+    const hoisted = '<style>.admonitionblock{color:red}</style><p>Body.</p>';
+    const canonicalHoisted = await page.evaluate(canonicaliseRenderedHtml, hoisted);
+    const canonicalHoistedChanged = await page.evaluate(
+      canonicaliseRenderedHtml,
+      hoisted.replace('red', 'blue'),
+    );
+    expect(
+      canonicalHoisted.lines.some((line) => line.includes('style')),
+      'markup the parser hoists into <head> is part of the comparison',
+    ).toBe(true);
+    expect(
+      describeRenderDifference('a changed hoisted style', canonicalHoisted, canonicalHoistedChanged),
+      'the comparison must not forgive a change to markup the parser hoists into <head>',
+    ).not.toBeNull();
+
+    // "No difference" is not on its own evidence that anything was compared: two empty documents
+    // agree, and so would two sides a broken canonicalisation had emptied. The per-document
+    // comparison below therefore asserts that each side reduced to something, and this is the case
+    // that would otherwise sail through it.
+    const canonicalEmpty = await page.evaluate(canonicaliseRenderedHtml, '');
+    expect(canonicalEmpty.lines).toEqual([]);
+    expect(
+      describeRenderDifference('two empty documents', canonicalEmpty, canonicalEmpty),
+      'an empty document agrees with an empty document, which is why emptiness is checked separately',
+    ).toBeNull();
   });
 
   for (const [index, document] of documents.entries()) {
@@ -103,6 +136,18 @@ test.describe('web-format render equivalence with the previous engine', () => {
       // what the markup MEANS rather than about how either side was serialised.
       const canonicalFixture = await page.evaluate(canonicaliseRenderedHtml, fixture);
       const canonicalCurrent = await page.evaluate(canonicaliseRenderedHtml, current);
+
+      // Agreement between two empty sequences is agreement about nothing: a truncated fixture, or a
+      // canonicalisation that emptied both sides symmetrically, would otherwise report that the
+      // render is unchanged while comparing no markup at all.
+      expect(
+        canonicalFixture.lines.length,
+        `the captured fixture for "${document.name}" reduced to nothing`,
+      ).toBeGreaterThan(0);
+      expect(
+        canonicalCurrent.lines.length,
+        `today's render of "${document.name}" reduced to nothing`,
+      ).toBeGreaterThan(0);
 
       // The report goes in the assertion's message rather than its value: a failing `toBeNull` would
       // echo the whole report back as an escaped one-line string, and the point of the report is that

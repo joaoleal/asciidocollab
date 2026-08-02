@@ -16,7 +16,7 @@ import {
   MAX_PAGE_FORMAT_SOURCE_BYTES,
 } from '../../src/pipeline/document-size-limit';
 import type { ProjectSnapshot, RenderRequest } from '../../src/protocol';
-import type { RubyPdfVm } from '../../src/vm/ruby-pdf-vm';
+import type { RubyPdfVm, WarmupOutcome } from '../../src/vm/ruby-pdf-vm';
 import type { RubyValue } from '../../src/vm/wasi-bridge';
 
 // ---------------------------------------------------------------------------
@@ -89,8 +89,8 @@ class FakeVm implements RubyPdfVm {
   /** How many times the convert path reported that this instance had served a render. */
   rendersReported = 0;
 
-  async warmup(): Promise<{ coldStart: boolean }> {
-    return { coldStart: false };
+  async warmup(): Promise<WarmupOutcome> {
+    return { booted: false, firstBoot: false };
   }
 
   renderCompleted(): void {

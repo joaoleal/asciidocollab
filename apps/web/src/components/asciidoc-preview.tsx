@@ -35,11 +35,13 @@ export { isAsciiDocumentFile as isAsciiDocFile } from '@/lib/asciidoc/file-name'
  */
 function webPreviewStatRows(timings: RenderTimings | null | undefined): readonly RenderStatRow[] {
   if (timings === null || timings === undefined) return [];
+  // The total leads and the three stages sit under it. They are parts of it, not figures beside it —
+  // read as a flat column the four appear to describe a render costing roughly twice what it did.
   return [
-    { label: 'parse', value: timings.parseMs, unit: 'ms' },
-    { label: 'convert', value: timings.convertMs, unit: 'ms' },
-    { label: 'post-process', value: timings.postProcessMs, unit: 'ms' },
     { label: 'total', value: timings.totalMs, unit: 'ms' },
+    { label: 'parse', value: timings.parseMs, unit: 'ms', depth: 1 },
+    { label: 'convert', value: timings.convertMs, unit: 'ms', depth: 1 },
+    { label: 'post-process', value: timings.postProcessMs, unit: 'ms', depth: 1 },
   ];
 }
 

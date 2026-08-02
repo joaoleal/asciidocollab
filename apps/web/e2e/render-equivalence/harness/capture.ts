@@ -184,7 +184,9 @@ function readLastResult(): RenderResult | null {
  * Render one corpus document through the app's render path.
  *
  * @param document - The corpus document to render.
- * @param requestId - The request id to tag the render with.
+ * @param requestId - The request id to tag the render with. The worker echoes it, and the echo is
+ *   checked: it is what says this reply answers this request rather than being the previous render's,
+ *   which is the single-slot race the callers are ordered to avoid.
  * @returns The rendered (unsanitised) HTML, once the render has finished. One document at a time: the
  *   worker's reply is read from a single slot, so two renders started concurrently would race for it.
  *   Every gate awaits each document before starting the next.
@@ -198,6 +200,12 @@ export async function renderCorpusDocument(document: CorpusDocument, requestId =
   const result = readLastResult();
   if (result === null) {
     throw new Error(`the render worker returned nothing for ${document.relativePath}`);
+  }
+  if (result.requestId !== requestId) {
+    throw new Error(
+      `the render worker answered request ${requestId} for ${document.relativePath} with a reply ` +
+        `tagged ${result.requestId}, so this is not that render's output.`,
+    );
   }
   if (!result.ok || result.html === null) {
     throw new Error(`${document.relativePath} failed to render: ${result.error ?? 'no reason given'}`);

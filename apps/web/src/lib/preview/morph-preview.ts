@@ -17,12 +17,11 @@
 import morphdom from 'morphdom';
 
 import { FAILED_ATTRIBUTE, OUTPUT_CLASS, PLACEHOLDER_CLASS, SOURCE_CLASS } from '@/components/diagrams/render-diagrams';
+// The ids the render worker mints from a block's position, declared beside the wire they arrive on so
+// that a prefix added there cannot go unrecognised here. See POSITIONAL_ID_PREFIXES.
+import { POSITIONAL_ID_PREFIXES } from '@/workers/render-protocol';
 
-/**
- * Prefix of the ids the render worker invents for blocks the author gave no id. The line number is
- * baked into the identifier itself, so these change under any edit above them.
- */
-const SYNTHETIC_ID_PREFIX = '__src_';
+
 
 /**
  * Attribute each typeset expression carries, holding the delimited source it was produced from
@@ -30,8 +29,23 @@ const SYNTHETIC_ID_PREFIX = '__src_';
  */
 const MATH_SOURCE_ATTRIBUTE = 'data-stem-source';
 
+/**
+ * Attribute naming which renderer a diagram placeholder is to be drawn by (written by the render
+ * worker, which owns the name; read here and by the diagram renderer).
+ */
+const DIAGRAM_ENGINE_ATTRIBUTE = 'data-diagram-engine';
+
 /** `overflow-y` values that make an element the one that actually scrolls. */
 const SCROLLING_OVERFLOW = new Set(['auto', 'scroll', 'overlay']);
+
+/**
+ * The attributes stating WHERE a rendered block came from — the pair every jump between the editor
+ * and the preview is looked up by, in both directions.
+ *
+ * Unlike the contents of a block, these are positional: a single inserted line renumbers them, and a
+ * change of main file can move a block into a different source file entirely.
+ */
+const PROVENANCE_ATTRIBUTES: readonly string[] = ['data-source-line', 'data-source-file'];
 
 /** What one commit of a new render into the live preview changed, and what it deliberately did not. */
 export interface MorphOutcome {
@@ -76,7 +90,7 @@ export interface MorphOutcome {
 function morphKeyOf(node: Node): string | undefined {
   if (!(node instanceof Element)) return undefined;
   const id = node.id;
-  if (id === '' || id.startsWith(SYNTHETIC_ID_PREFIX)) return undefined;
+  if (id === '' || POSITIONAL_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return undefined;
   return id;
 }
 
@@ -104,20 +118,31 @@ function drawnDiagramSourceOf(element: Element): string | null {
 }
 
 /**
- * Whether a drawn diagram may be left exactly as it is. Compares the source it was drawn from against
- * the source of the incoming placeholder, and nothing else — a diagram whose line number moved but
- * whose source did not is the same diagram, and redrawing it would be pure waste.
+ * Whether a drawn diagram may be left exactly as it is. Compares what the drawing was made of — the
+ * source it was drawn from and the engine that drew it — against what the incoming placeholder asks
+ * for, and nothing else: a diagram whose line number moved but whose source and engine did not is the
+ * same diagram, and redrawing it would be pure waste.
+ *
+ * The engine has to be part of that, because it is not derivable from the source. The same text put
+ * through mermaid and through Graphviz gives two different pictures — or, more often, a drawing and a
+ * failure the author asked to see. Judged on source alone, changing a block's engine would leave the
+ * previous engine's drawing on screen for as long as the source went untouched.
  */
 function diagramIsUnchanged(fromElement: Element, toElement: Element): boolean {
   const drawnFrom = drawnDiagramSourceOf(fromElement);
   if (drawnFrom === null) return false;
   if (!toElement.classList.contains(PLACEHOLDER_CLASS)) return false;
+  if (
+    fromElement.getAttribute(DIAGRAM_ENGINE_ATTRIBUTE) !== toElement.getAttribute(DIAGRAM_ENGINE_ATTRIBUTE)
+  ) {
+    return false;
+  }
   // Both sides hold the source verbatim; trimming only guards a stray newline from serialization.
   return drawnFrom.trim() === textOf(toElement).trim();
 }
 
-/** Collapse runs of whitespace so two spellings of the same text compare equal. */
-function normalizeText(text: string): string {
+/** Collapse runs of whitespace so two spellings of the same text or markup compare equal. */
+function normalizeWhitespace(text: string): string {
   return text.replaceAll(/\s+/g, ' ').trim();
 }
 
@@ -127,19 +152,28 @@ function typesetChildrenOf(element: Element): Element[] {
 }
 
 /**
- * The text of an element as it would read if its typeset expressions had never been typeset: each one
- * put back as the delimited source it came from, everything else as written. This is what makes the
- * comparison content-addressed — the incoming render carries expressions as plain delimited text,
- * because typesetting happens in the browser after the markup arrives, so the two are only comparable
- * once the rendered side is expressed in the same terms.
+ * The MARKUP of an element as it would read if its typeset expressions had never been typeset: each
+ * one put back as the delimited source it came from, everything else exactly as it stands. This is
+ * what makes the comparison content-addressed — the incoming render carries expressions as plain
+ * delimited text, because typesetting happens in the browser after the markup arrives, so the two are
+ * only comparable once the rendered side is expressed in the same terms.
+ *
+ * Markup rather than text, because text is not enough to tell two renders apart. Emphasis, a link's
+ * target, a cross-reference, a footnote — all of them can change while every word stays where it was,
+ * and a comparison that only reads the words would report the block unchanged and leave the author's
+ * edit off the screen for as long as they left the expression alone.
+ *
+ * The string is produced by the DOM's own serializer on both sides, never assembled by hand, so
+ * escaping cannot differ between them: an expression containing `<` reaches this side as an attribute
+ * value and the other side as text, and only serializing both makes them the same string.
  */
-function sourceFormOf(element: Element): string {
-  let text = '';
+function sourceFormMarkupOf(element: Element): string {
+  const rebuilt = element.ownerDocument.createElement(element.tagName);
   for (const child of element.childNodes) {
     const typesetFrom = child instanceof Element ? child.getAttribute(MATH_SOURCE_ATTRIBUTE) : null;
-    text += typesetFrom ?? textOf(child);
+    rebuilt.append(typesetFrom ?? child.cloneNode(true));
   }
-  return text;
+  return rebuilt.innerHTML;
 }
 
 /**
@@ -155,8 +189,36 @@ function sourceFormOf(element: Element): string {
 function preservableMathCount(fromElement: Element, toElement: Element): number {
   const typeset = typesetChildrenOf(fromElement);
   if (typeset.length === 0) return 0;
-  const unchanged = normalizeText(sourceFormOf(fromElement)) === normalizeText(textOf(toElement));
+  const unchanged =
+    normalizeWhitespace(sourceFormMarkupOf(fromElement)) === normalizeWhitespace(toElement.innerHTML);
   return unchanged ? typeset.length : 0;
+}
+
+/**
+ * Move a kept element's provenance to what the incoming render says it is.
+ *
+ * Refusing an update leaves the element's ATTRIBUTES alone as well as its subtree, and for a diagram
+ * the element being kept is the very block that carries the provenance — the placeholder is both the
+ * drawing's home and the block's. So a diagram whose source nobody touched would keep the line it was
+ * first rendered at for as long as it stays untouched, however far insertions above it have moved it:
+ * a click in the preview would jump to a line the diagram has moved off, and a lookup from the editor
+ * could match the diagram for a line that now belongs to a different block.
+ *
+ * Only the provenance is carried across. Everything else about the element is exactly what the skip
+ * exists to preserve — the drawn diagram, the typeset expression, and the reader's place among them.
+ *
+ * @param fromElement - The element on screen, which is being kept.
+ * @param toElement - Its counterpart in the incoming render, which is being discarded.
+ */
+function carryProvenance(fromElement: Element, toElement: Element): void {
+  for (const name of PROVENANCE_ATTRIBUTES) {
+    const value = toElement.getAttribute(name);
+    // Absent in the new render means absent here too: a single-file render states only the line, and a
+    // file attribute left over from an assembled one would scope the block to a file this render does
+    // not have — matching nothing, where before it matched the wrong thing.
+    if (value === null) fromElement.removeAttribute(name);
+    else fromElement.setAttribute(name, value);
+  }
 }
 
 /**
@@ -191,11 +253,37 @@ function restoreFocus(container: HTMLElement, focused: HTMLElement): boolean {
   if (focused.isConnected && container.contains(focused)) {
     focused.focus();
   } else {
-    if (!container.hasAttribute('tabindex')) container.setAttribute('tabindex', '-1');
-    container.focus();
+    focusPreviewItself(container);
   }
   const active = container.ownerDocument.activeElement;
   return active !== null && container.contains(active);
+}
+
+/**
+ * Focus the preview element itself, making it programmatically focusable for exactly as long as it
+ * holds the focus.
+ *
+ * The attribute is borrowed, not kept. This element belongs to React, which does not know about a
+ * `tabindex` written behind its back and so will never take it off again — and left on, it outlives
+ * by an entire session the one keyboard user, at one refresh, whose focused block did not survive a
+ * render. So it is given back the moment focus leaves, and given back at once if focus never landed,
+ * which is the only case where no blur is coming to do it.
+ *
+ * An element that already declares its own `tabindex` is left entirely alone: that one is somebody
+ * else's, and handing it back would be taking away something we never lent.
+ */
+function focusPreviewItself(container: HTMLElement): void {
+  if (container.hasAttribute('tabindex')) {
+    container.focus();
+    return;
+  }
+  container.setAttribute('tabindex', '-1');
+  container.focus();
+  if (container.ownerDocument.activeElement !== container) {
+    container.removeAttribute('tabindex');
+    return;
+  }
+  container.addEventListener('blur', () => container.removeAttribute('tabindex'), { once: true });
 }
 
 /**
@@ -240,14 +328,20 @@ export function morphPreview(container: HTMLElement, incoming: DocumentFragment)
   morphdom(container, incomingRootOf(container, incoming), {
     childrenOnly: true,
     getNodeKey: morphKeyOf,
-    // Returning false leaves this element AND its whole subtree exactly as it is.
+    // Returning false leaves this element AND its whole subtree exactly as it is — its attributes
+    // included, which is why each skip hands the provenance over by hand before taking it.
     onBeforeElUpdated: (fromElement, toElement) => {
       if (diagramIsUnchanged(fromElement, toElement)) {
+        carryProvenance(fromElement, toElement);
         diagramsSkipped += 1;
         return false;
       }
       const preservedMath = preservableMathCount(fromElement, toElement);
       if (preservedMath > 0) {
+        // Normally a no-op: the decision is taken on the element that HOLDS the expressions, which is
+        // one below the block carrying the provenance, and that block is patched as usual. Stated
+        // anyway, so the correctness of the skip does not quietly depend on that staying true.
+        carryProvenance(fromElement, toElement);
         mathSkipped += preservedMath;
         return false;
       }

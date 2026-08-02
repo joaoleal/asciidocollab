@@ -33,9 +33,17 @@
  *
  * The declared bound is set below that, at a round 100 kB, for two reasons the measurement itself
  * cannot cover. The sweep documents are text only, and embedded diagrams and images allocate far more
- * per byte of source than prose does. And a render at 99% of the address space leaves nothing behind
- * for the next one in a VM that is reused across renders — the space is never returned. Headroom here
- * buys the difference between "this document is too big" and "this session is now broken".
+ * per byte of source than prose does. And the engine's ceiling is a cliff rather than a slope: the
+ * largest document observed to render did so with 2 MiB of the 4,096 to spare, so a bound placed at
+ * the last size that worked would be a promise about the two shapes that were measured rather than
+ * about the documents authors actually write. Headroom here buys the difference between "this document
+ * is too big" and "this session is now broken".
+ *
+ * The bound belongs to the PAGE FORMAT, not to the preview, and holds for an export exactly as it does
+ * for a refresh. That is the stricter reading of the measurement, not a carelessly wide one: the sweep
+ * was run in export mode to begin with, and a real export does MORE inside that same address space
+ * than the sweep did, because the optimize pass runs after the convert in the same instance and the
+ * preview skips it altogether. Of the two, the export is the one with less room to spare.
  */
 export const MAX_PAGE_FORMAT_SOURCE_BYTES = 100_000;
 

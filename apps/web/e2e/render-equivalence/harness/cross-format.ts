@@ -110,8 +110,9 @@ export interface CrossFormatDocument {
  * references to module scope: a real HTML parser is the only honest way to decide what the markup
  * means, and hand-rolling one would make the verdict a property of the parser rather than the render.
  *
- * Four of the reconciliations live here, because each is something the web format renders in a shape
- * the page format does not — or, in the first case, does not put in the markup as text at all:
+ * Five of the reconciliations live here, because each is something the web format renders in a shape
+ * the page format does not — or, in the first and last cases, does not put in the markup as text at
+ * all:
  *
  *   - **ordered-list markers.** The page format writes `1.` / `a.` into its text layer; the web
  *     format has the browser draw them from CSS counters, so there is no text to compare. The marker
@@ -126,6 +127,13 @@ export interface CrossFormatDocument {
  *   - **quote attribution.** The page format writes an attribution as one line, `— author, citation`;
  *     the web format breaks the line instead. Line breaking is layout, so the web side's attribution
  *     is emitted in the page format's single-line form.
+ *   - **admonition type.** With `icons=font` — which the app's render defaults set for every project,
+ *     so every run of this gate — neither side writes the word NOTE or CAUTION anywhere. The web
+ *     format draws an empty `<i class="fa icon-note">` from CSS; the page format draws a glyph from an
+ *     icon font, which lands in the text layer at that font's private-use slot. Both sides are reduced
+ *     to the same `[NOTE]` label, from the marker's own class here and from the slot on the page side,
+ *     so a note that became a caution fails. Without it the six admonitions in the corpus would be
+ *     indistinguishable from one another.
  *
  * @param html - The rendered preview HTML.
  * @returns The document reduced to its text, headings and cross-reference targets.
@@ -211,6 +219,17 @@ export function extractWebFormatDocument(html: string): CrossFormatDocument {
       pieces.push(` (${node.dataset.value ?? ''}) `);
       return;
     }
+    if (tag === 'i') {
+      // An admonition's marker: `<i class="fa icon-note">`, empty because the browser draws the icon
+      // from CSS. The type is in the class and nowhere else, and the page format states the same type
+      // as an icon-font slot, so both sides are reduced to `[NOTE]`. Only `icon-` classes: the inline
+      // `icon:name[]` macro emits `fa-name` in the same element and names no admonition.
+      const iconClass = [...node.classList].find((name) => name.startsWith('icon-'));
+      if (iconClass !== undefined) {
+        pieces.push(` [${iconClass.slice('icon-'.length).toUpperCase()}] `);
+        return;
+      }
+    }
     if (/^h[1-6]$/u.test(tag)) {
       headings.push(`${tag.slice(1)} ${(node.textContent ?? '').replaceAll(/\s+/gu, ' ').trim()}`);
     }
@@ -286,9 +305,32 @@ const PAGE_FORMAT_CALLOUT_NUMBERS = /[①-⑳]/gu;
 const PRIVATE_USE_GLYPHS = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu;
 
 /**
+ * The private-use slot the page format's icon font draws each admonition icon at, by type.
+ *
+ * These are the icon font's own numbering, not Unicode: nothing outside that font can say what the
+ * code point means, which is why the type has to be stated here for the comparison to see it. They
+ * are the slots the engine actually emits — read back out of a rendered corpus document, not
+ * guessed — and a changed slot fails this gate rather than passing silently, because the label it
+ * produces is compared against the type the web format's marker declares.
+ */
+const PAGE_FORMAT_ADMONITION_ICONS: ReadonlyMap<string, string> = new Map([
+  ['\u{F05A}', 'NOTE'],
+  ['\u{F0EB}', 'TIP'],
+  ['\u{F071}', 'WARNING'],
+  ['\u{F06D}', 'CAUTION'],
+  ['\u{F06A}', 'IMPORTANT'],
+]);
+
+/** Those same slots as one character class, so the map stays the single statement of them. */
+const PAGE_FORMAT_ADMONITION_GLYPHS = new RegExp(
+  `[${[...PAGE_FORMAT_ADMONITION_ICONS.keys()].join('')}]`,
+  'gu',
+);
+
+/**
  * Reconcile the page format's text layer with what the web format puts in its markup.
  *
- * Three named rules, all of which rewrite the PAGE side:
+ * Four named rules, all of which rewrite the PAGE side:
  *
  *   - **list marker glyphs.** A bullet (`•`, `◦`, `▪`) or a checkbox (`☐`, `☑`) is drawn in the
  *     marker position; the web format has no text there at all, because the browser draws its
@@ -296,16 +338,24 @@ const PRIVATE_USE_GLYPHS = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}\u{100000}-\u{1
  *     reconstructs it, because the numbering counts something.
  *   - **callout numbers.** A circled digit becomes `(1)`, the form the web format writes beside the
  *     code, so a changed or misnumbered callout still fails on either side.
- *   - **icon-font glyphs.** A private-use code point is an icon the page format drew, which the web
- *     format draws from CSS on an empty element. Only the private-use areas go, so an admonition's
- *     LABEL — text, on either side, whenever `icons` is unset — is still compared.
+ *   - **admonition icons.** The icon-font slot an admonition's own icon lands at becomes `[NOTE]`,
+ *     the form the web side's marker class is reduced to. The type is the only thing either format
+ *     says about an admonition once `icons` is in effect, so it is translated rather than dropped.
+ *   - **other icon-font glyphs.** Any remaining private-use code point is an icon the page format
+ *     drew that names nothing this gate compares. Only the private-use areas go, so ordinary text —
+ *     including an admonition's spelled-out label, which is what either side emits when `icons` is
+ *     unset — is untouched.
  *
  * @param text - The page format's extracted text.
- * @returns The text with all three rules applied.
+ * @returns The text with all four rules applied.
  */
-export function reconcilePageFormatText(text: string): string {
+function reconcilePageFormatText(text: string): string {
   return text
     .replaceAll(PAGE_FORMAT_LIST_MARKERS, ' ')
+    .replaceAll(PAGE_FORMAT_ADMONITION_GLYPHS, (glyph) => {
+      const type = PAGE_FORMAT_ADMONITION_ICONS.get(glyph);
+      return type === undefined ? ' ' : ` [${type}] `;
+    })
     .replaceAll(PRIVATE_USE_GLYPHS, ' ')
     .replaceAll(PAGE_FORMAT_CALLOUT_NUMBERS, (glyph) => {
       // ① is U+2460, so the glyph's offset from the one before it is the number it stands for.
@@ -328,42 +378,98 @@ function flattenOutline(nodes: readonly unknown[], depth: number, into: Array<{ 
   }
 }
 
+/** One line of a page's text layer, with where on the page it was drawn. */
+export interface PageTextLine {
+  /** The line's text, as the text layer carries it. */
+  readonly text: string;
+  /** The baseline's height above the foot of the page, in points. */
+  readonly baseline: number;
+}
+
 /**
- * The page format's text layer, page by page, with its running furniture removed.
+ * The height of the band at the foot of the page in which running content is drawn.
+ *
+ * Half an inch: the page format's default page margin. Body content is laid out INSIDE the margins,
+ * so nothing the document says can be drawn in this band — it holds running content and nothing else.
+ * That is what makes the footer rule below safe to apply: it is the property that tells a running
+ * footer apart from a table cell or a list item whose text happens to be the page number.
+ */
+const PAGE_FURNITURE_BAND = 36;
+
+/**
+ * The page format's text layer, page by page, as lines with the height each was drawn at.
  *
  * Read in content-stream order rather than in visual columns. The page-format parity suite reads the
  * layout-preserving form, which is right for its own job (a PDF against another PDF, where padded
  * columns line up), and wrong for this one: a paragraph flowed beside a second table cell, or a
  * footnote marker raised above its line, comes back interleaved, and the reading order a cross-medium
- * comparison rests on is gone. Lines are then normalised exactly as that suite normalises them —
- * trimmed, internal whitespace collapsed, empties dropped.
+ * comparison rests on is gone.
+ *
+ * A line's height is the baseline of the first item that starts it, measured from the foot of the
+ * page, which is the only thing about the layout {@link reducePageFormatText} looks at.
  */
-async function pageFormatText(pdf: PDFDocumentProxy): Promise<string> {
-  const lines: string[] = [];
+async function pageFormatLines(pdf: PDFDocumentProxy): Promise<readonly (readonly PageTextLine[])[]> {
+  const pages: PageTextLine[][] = [];
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const content = await page.getTextContent();
-    const pageLines: string[] = [];
-    let line = '';
+    // The media box's own lower edge, so the baseline is a height above the page rather than a
+    // coordinate in whatever space the box happens to start at.
+    const pageBottom = page.view[1] ?? 0;
+    const pageLines: PageTextLine[] = [];
+    let text = '';
+    let baseline: number | null = null;
     for (const item of content.items) {
       if (!('str' in item)) continue;
-      line += item.str;
+      baseline ??= (item.transform[5] ?? 0) - pageBottom;
+      text += item.str;
       if (item.hasEOL) {
-        pageLines.push(line);
-        line = '';
+        pageLines.push({ text, baseline: baseline ?? 0 });
+        text = '';
+        baseline = null;
       }
     }
-    if (line !== '') pageLines.push(line);
+    if (text !== '') pageLines.push({ text, baseline: baseline ?? 0 });
+    pages.push(pageLines);
+  }
+  return pages;
+}
 
+/**
+ * Reduce the page format's text layer to the string the two formats are compared on.
+ *
+ * This is the whole of the page side's reduction, and the corpus comparison and the spec's pinning
+ * test both go through it — a pinning test that re-implemented the reduction would pin a second
+ * implementation, and the two would drift apart at the first change to either.
+ *
+ * In order: lines are normalised exactly as the page-format parity suite normalises them (trimmed,
+ * internal whitespace collapsed, empties dropped); the running footer is dropped; the named
+ * reconciliations are applied; and whitespace goes, because spacing and line breaking are layout.
+ *
+ * The footer rule is the one reconciliation that could delete real content, so it is narrow: a line
+ * is dropped only when it is the LAST line on its page, its text is exactly that page's number, and
+ * it was drawn in the {@link PAGE_FURNITURE_BAND} where no body content can be. A table cell or a
+ * list item that reads `2` on page 2 is above the band and stays.
+ *
+ * @param pages - Each page's lines, in content-stream order, page 1 first.
+ * @returns The page format's whitespace-free rendered text.
+ */
+export function reducePageFormatText(pages: readonly (readonly PageTextLine[])[]): string {
+  const lines: string[] = [];
+  for (const [index, pageLines] of pages.entries()) {
+    const pageNumber = index + 1;
     const normalised = pageLines
-      .map((entry) => entry.trim().replaceAll(/\s+/gu, ' '))
-      .filter((entry) => entry !== '');
+      .map((line) => ({ ...line, text: line.text.trim().replaceAll(/\s+/gu, ' ') }))
+      .filter((line) => line.text !== '');
     // Page furniture: the running footer's page number. Page breaks are not compared, and the number
     // in the footer is a statement about where the break fell.
-    if (normalised.at(-1) === String(pageNumber)) normalised.pop();
-    lines.push(...normalised);
+    const last = normalised.at(-1);
+    if (last !== undefined && last.text === String(pageNumber) && last.baseline < PAGE_FURNITURE_BAND) {
+      normalised.pop();
+    }
+    lines.push(...normalised.map((line) => line.text));
   }
-  return lines.join('\n');
+  return reconcilePageFormatText(lines.join('\n')).replaceAll(/\s+/gu, '');
 }
 
 /**
@@ -386,7 +492,7 @@ export async function extractPageFormatDocument(bytes: Uint8Array): Promise<Cros
     verbosity: 0, // Errors only: font/standard-data notices would drown the run's output.
   }).promise;
   try {
-    const text = reconcilePageFormatText(await pageFormatText(pdf)).replaceAll(/\s+/gu, '');
+    const text = reducePageFormatText(await pageFormatLines(pdf));
 
     const outlineRaw: unknown = await pdf.getOutline();
     const entries: Array<{ depth: number; title: string }> = [];

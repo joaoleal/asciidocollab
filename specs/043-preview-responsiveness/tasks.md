@@ -504,15 +504,32 @@ parity after the change.
       gates proves, which principle each discharges, why the page-format parity suite cannot serve as
       the web-format gate, and why the HTML oracle carries its own pinned definition set rather than
       sharing the PDF one — so those distinctions survive the next person to touch it
-- [ ] T046 Run the full quality-gate sweep: `pnpm gate` with capped workers
+- [X] T046 Run the full quality-gate sweep: `pnpm gate` with capped workers
       (`pnpm --filter @asciidocollab/web test -- --maxWorkers=4`), `pnpm typecheck` on all packages,
       lint, and the complete e2e suite including the new render-equivalence specs. **Job 6 must run,
       not skip** — provision poppler-utils and a built wasm engine, or invoke
       `scripts/ci/pdf-parity.sh` directly; a SKIPPED Job 6 is a failed sweep for this feature because
       SC-010c depends on it (Constitution §End-of-Feature Verification)
-- [ ] T047 Run `/code-review` in a loop until zero findings, then verify every success criterion
+
+      **Result**: all eight jobs ran. Job 6 RAN rather than skipping — poppler-utils and a built wasm
+      engine are both present on this machine — and compared 31 cases against the committed reference
+      build. The first sweep failed on exactly one test, and it was one of this feature's own: the
+      slow-document refresh check sized its corpus by reading the development-only cost overlay, which
+      a production build correctly eliminates, so it passed against the dev stack and failed in the
+      gate. It now measures a whole refresh end to end instead, which means the same thing in both
+      builds; verified twice against each.
+- [X] T047 Run `/code-review` in a loop until zero findings, then verify every success criterion
       SC-001…SC-012 against the recorded figures in `specs/043-preview-responsiveness/baseline.md` —
       not against recollection
+
+      **How it was run**: `/code-review` is user-triggered and could not be invoked from inside the
+      implementation session; with the author's agreement the review was carried out instead by an
+      independent read-only reviewer over the whole branch diff, covering both the preview/engine work
+      and the render-equivalence gates. It produced thirteen findings. Each was re-confirmed (or
+      refuted) before being acted on — one was refuted, and one was deliberately left as a
+      documentation correction rather than a behaviour change, with the reasoning recorded in the
+      code. Every other finding was fixed with a test that fails without the fix. The verification of
+      the success criteria against the recorded figures is in `baseline.md` §9.
 
 ---
 

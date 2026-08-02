@@ -301,10 +301,26 @@ test.describe('preview baseline', () => {
     await ensureTestUser();
   });
 
-  test.afterAll(async () => {
+  // Report the figures the way a Playwright run reports anything: as an attachment on the test that
+  // produced them, which every reporter surfaces and which survives into the HTML report. Printing
+  // them instead only works for someone watching the terminal, and is the console this suite has no
+  // business writing to.
+  //
+  // An afterEach rather than the afterAll that writes the file, because attachments belong to a test:
+  // `test.info()` is test-scoped, and the run is serial, so each test attaches everything measured so
+  // far and the last one carries the complete set.
+  test.afterEach(async () => {
+    test.info().annotations.push({ type: 'baseline-measurements', description: OUT_PATH });
+    await test.info().attach('baseline-measurements.json', {
+      body: JSON.stringify(measurements, null, 2),
+      contentType: 'application/json',
+    });
+  });
+
+  test.afterAll(() => {
+    // Written as well as attached: the artifact the feature is measured against is this file, and it
+    // has to outlive the report — including for a `--grep`'d re-measurement of a single figure.
     writeFileSync(OUT_PATH, `${JSON.stringify(measurements, null, 2)}\n`, 'utf8');
-    // eslint-disable-next-line no-console
-    console.log(`\nbaseline measurements → ${OUT_PATH}\n${JSON.stringify(measurements, null, 2)}`);
   });
 
   test('measures conversion cost across the document size range', async ({ page }) => {

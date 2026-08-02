@@ -36,7 +36,9 @@ import { DEFAULT_GRAMMAR_DIALECT, type GrammarDialect } from '@/lib/codemirror/h
 import { grammarDiagnosticsListener, type PositionedGrammarDiagnostic } from '@/lib/codemirror/harper/grammar-diagnostics';
 import type { LintScope } from '@/lib/codemirror/harper/harper-linter-source';
 import { reviewDecorations } from '@/lib/codemirror/review-decorations';
-import { reviewMarkerClickHandler, reviewMarkerHoverHandler, reviewCommentKeymap } from '@/lib/codemirror/review-interaction';
+import { reviewMarkerClickHandler, reviewMarkerHoverHandler } from '@/lib/codemirror/review-interaction';
+import { editorShortcutCommands, editorShortcutsKeymap } from '@/lib/codemirror/editor-shortcuts';
+import { useKeyBindings } from '@/hooks/use-key-bindings';
 import {
   createLineClickHandler,
   createFileDropHandler,
@@ -321,6 +323,10 @@ export function useEditorMount({
   const spellcheckCompartment = useRef(new Compartment());
   const grammarCompartment = useRef(new Compartment());
   const minimapCompartment = useRef(new Compartment());
+  const shortcutsCompartment = useRef(new Compartment());
+  // The author's own key combos for the editor's commands, empty until the server answers — at which
+  // point the effect below rebinds. Until then the registry's defaults apply, so nothing is dead.
+  const shortcutBindings = useKeyBindings('editor');
   // The Harper worker client is created lazily the first time grammar checking activates, then reused.
   const harperClientReference = useRef<HarperWorkerClient | null>(null);
   const onGrammarDiagnosticsReference = useRef(onGrammarDiagnostics);
@@ -487,6 +493,7 @@ export function useEditorMount({
           spellcheck: spellcheckCompartment.current,
           grammar: grammarCompartment.current,
           minimap: minimapCompartment.current,
+          shortcuts: shortcutsCompartment.current,
         },
         canEdit,
         softWrap,
@@ -545,7 +552,6 @@ export function useEditorMount({
           ),
           reviewMarkerClickHandler(() => onReviewMarkerClickReference.current),
           reviewMarkerHoverHandler(() => onReviewMarkerHoverReference.current),
-          reviewCommentKeymap(() => onCommentFromSelectionReference.current),
           // Surface grammar issues to the panel + status bar. Inert (fires with an empty set) until the
           // grammar lint source produces diagnostics, so it is safe to register on every editor instance.
           grammarDiagnosticsListener((diagnostics) => onGrammarDiagnosticsReference.current?.(diagnostics)),
@@ -717,6 +723,25 @@ export function useEditorMount({
     // a scroll). Dispatch one empty transaction to drive that first paint immediately.
     if (minimapEnabled) view.dispatch({});
   }, [minimapEnabled]);
+
+  // Bind the author's configurable shortcuts, and rebind them when they change.
+  //
+  // Runs unconditionally rather than only once the server's bindings arrive: `editorShortcutsKeymap`
+  // falls back to the registry's defaults for every action the author has not remapped, so this binds
+  // a complete keymap on the first pass and simply rebinds it if their own choices differ. Waiting
+  // for the fetch would leave the first `Mod+B` of every session doing nothing.
+  useEffect(() => {
+    const view = viewReference.current;
+    if (!view) return;
+    view.dispatch({
+      effects: shortcutsCompartment.current.reconfigure(
+        editorShortcutsKeymap(
+          editorShortcutCommands(() => onCommentFromSelectionReference.current),
+          shortcutBindings,
+        ),
+      ),
+    });
+  }, [shortcutBindings]);
 
   // Sync the spell-check language / enabled preference live via its Compartment — a fresh lint source
   // bound to the new language+enabled, so changes apply without a remount. While grammar checking is

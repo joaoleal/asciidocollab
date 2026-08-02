@@ -191,6 +191,20 @@ describe('createMaxWaitDebounce', () => {
     expect(second).toHaveBeenCalledTimes(1);
   });
 
+  it('flush() reports whether it had anything to run', () => {
+    const run = jest.fn();
+    const debounce = createMaxWaitDebounce(500, 2000);
+
+    expect(debounce.flush()).toBe(false);
+
+    debounce.schedule(run);
+    // A caller holding a fallback of its own reads this: what is pending here is always the more
+    // recent of the two, so "nothing was pending" is what tells it to fall back rather than drop its
+    // own state silently.
+    expect(debounce.flush()).toBe(true);
+    expect(debounce.flush()).toBe(false);
+  });
+
   it('flush() starts a fresh burst window', () => {
     const run = jest.fn();
     const debounce = createMaxWaitDebounce(500, 2000);

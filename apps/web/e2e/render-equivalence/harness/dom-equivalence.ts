@@ -18,6 +18,10 @@
  * whitespace is content — indentation in a code block and line structure in a diagram source are things
  * the reader sees — so text there is compared byte for byte apart from line endings.
  *
+ * A rendered preview is a document fragment, and the HTML parser puts some of a fragment's leading
+ * content — a `<style>` or `<meta>` written by a passthrough block — in `<head>` rather than in the
+ * body. Both are walked, so nothing the render emitted falls outside the comparison.
+ *
  * {@link canonicaliseRenderedHtml} runs inside a real browser page (it is handed to `page.evaluate`),
  * which is why it is written self-contained, with no reference to anything outside its own body: a real
  * HTML parser is the only honest way to decide what markup means, and hand-rolling one would make the
@@ -123,7 +127,13 @@ export function canonicaliseRenderedHtml(html: string): CanonicalDocument {
   };
 
   const parsed = new DOMParser().parseFromString(html, 'text/html');
-  for (const child of parsed.body.childNodes) {
+  // The head is walked as well as the body, and first. Rendered previews are document FRAGMENTS, and
+  // the HTML parser hoists a few things it meets before any body content — a `<style>`, `<meta>` or
+  // `<link>` from a passthrough block at the top of a document — into `<head>` instead. A walk of the
+  // body alone would drop them from the comparison entirely, so a passthrough that changed or
+  // disappeared would read as agreement. Their position relative to the body is the parser's, not the
+  // render's, which is why they are compared as a group at the front rather than in place.
+  for (const child of [...parsed.head.childNodes, ...parsed.body.childNodes]) {
     walk(child, 0, false);
   }
   return { lines, identifiers, provenance };

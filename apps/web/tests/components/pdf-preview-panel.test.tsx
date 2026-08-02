@@ -9,10 +9,12 @@ import { PdfPreviewPanel } from '@/components/pdf-preview-panel';
 const mockRenderCancel = jest.fn();
 const mockTextLayerCancel = jest.fn();
 const mockDocumentDestroy = jest.fn();
-const mockPageRender = jest.fn(() => ({
+/** A page render that succeeds, sharing one cancel spy so the count of cancellations is aggregate. */
+const defaultPageRender = () => ({
   promise: Promise.resolve(),
   cancel: mockRenderCancel,
-}));
+});
+const mockPageRender = jest.fn(defaultPageRender);
 const mockStreamTextContent = jest.fn(() => ({} as ReadableStream));
 const mockGetAnnotations = jest.fn(() => Promise.resolve([]));
 // The component asks for the page's intrinsic size (scale 1) to fit-to-width, then for the scaled
@@ -41,15 +43,36 @@ const zeroHeightPage = () =>
     getAnnotations: mockGetAnnotations,
     cleanup: jest.fn(),
   });
-const mockGetDocument = jest.fn(() => ({
-  promise: Promise.resolve({
-    numPages: 1,
-    getPage: mockGetPage,
-    cleanup: jest.fn(),
-    destroy: mockDocumentDestroy,
-  }),
-  destroy: mockDocumentDestroy,
-}));
+/**
+ * Load a document the way pdf.js does: by TAKING OWNERSHIP of the bytes.
+ *
+ * The real one transfers the array's buffer to its worker thread and leaves it detached here, which
+ * the library documents as taking ownership. Modelling that is the whole point of this double. A
+ * panel that hands over the copy it keeps loads its first document perfectly and can never load one
+ * again — and a double that ignores its argument reports that panel as working.
+ *
+ * @param loaded - What the load resolves to when the bytes are still there.
+ * @returns A loading task, rejecting exactly as pdf.js does when handed an emptied array.
+ */
+function loadTakingOwnership(loaded: object) {
+  return ({ data }: { data: Uint8Array }) => {
+    if (data.byteLength === 0) {
+      return {
+        promise: Promise.reject(new Error('Invalid PDF structure.')),
+        destroy: mockDocumentDestroy,
+      };
+    }
+    data.buffer.transfer();
+    return { promise: Promise.resolve(loaded), destroy: mockDocumentDestroy };
+  };
+}
+
+/** A loaded document of `pageCount` pages, backed by the shared page double. */
+function loadedDocument(pageCount: number) {
+  return { numPages: pageCount, getPage: mockGetPage, cleanup: jest.fn(), destroy: mockDocumentDestroy };
+}
+
+const mockGetDocument = jest.fn(loadTakingOwnership(loadedDocument(1)));
 
 // The text and annotation layers are pdf.js DOM overlays; jsdom cannot lay out real glyphs, so each is
 // stubbed to record that the component constructed and rendered one per page. The TextLayer stub also
@@ -90,8 +113,27 @@ jest.mock('pdfjs-dist', () => ({
   },
 }));
 
-function makePdf(): Blob {
-  return new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'application/pdf' });
+/**
+ * A rendered PDF. The panel decides whether to repaint by comparing bytes, so a test that means "a
+ * different document arrived" has to supply different ones — `makePdf()` twice is the same document
+ * delivered twice, which is a case of its own.
+ *
+ * jsdom implements no `Blob.prototype.arrayBuffer`, so each blob carries its own: resolved from the
+ * bytes it was built with, and resolved as a microtask so it does not depend on timers a test may
+ * have faked. A stub returning an empty buffer would make every document look identical to the panel
+ * and quietly turn the repaint tests below into assertions about nothing.
+ *
+ * @param marker - Distinguishing byte; omit for the default document.
+ * @returns A blob standing in for a rendered PDF.
+ */
+function makePdf(marker = 4): Blob {
+  const bytes = new Uint8Array([1, 2, 3, marker]);
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  Object.defineProperty(blob, 'arrayBuffer', {
+    configurable: true,
+    value: () => Promise.resolve(Uint8Array.from(bytes).buffer),
+  });
+  return blob;
 }
 
 // jsdom implements neither ResizeObserver nor a synchronous rAF. Capture the observer callback so a
@@ -114,32 +156,98 @@ function resizeViewport(width: number): void {
   resizeCallback?.([], {} as ResizeObserver);
 }
 
-// jsdom lacks IntersectionObserver; capture the latest callback so a test can simulate scrolling a
-// given page into view.
-let intersectionCallback: IntersectionObserverCallback | null = null;
+// jsdom lacks IntersectionObserver. The panel builds two: one that tracks which page is most in view
+// (no root margin) and one that paints pages as the reader approaches them (an inflated root). They
+// are told apart by that difference so a test can drive either.
+//
+// `disconnect()` is HONOURED rather than merely recorded: a disconnected observer stops delivering,
+// exactly as the real one does. A mock that keeps delivering after disconnect cannot tell a panel
+// whose observers are still live from one whose are not — which is the difference between a page
+// that paints as the reader reaches it and one that stays blank forever.
+interface FakeObserver {
+  /** The vertical root margin in pixels, or null when the observer was given none. */
+  readonly rootMarginPx: number | null;
+  readonly callback: IntersectionObserverCallback;
+  readonly elements: Element[];
+  connected: boolean;
+}
+let observers: FakeObserver[] = [];
 class MockIntersectionObserver {
-  constructor(callback: IntersectionObserverCallback) {
-    intersectionCallback = callback;
+  private readonly state: FakeObserver;
+  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+    const margin = options?.rootMargin === undefined ? null : Number.parseInt(options.rootMargin, 10);
+    this.state = {
+      rootMarginPx: margin === null || Number.isNaN(margin) ? null : margin,
+      callback,
+      elements: [],
+      connected: true,
+    };
+    observers.push(this.state);
   }
-  observe = jest.fn();
+  observe = jest.fn((element: Element) => {
+    this.state.elements.push(element);
+  });
   unobserve = jest.fn();
-  disconnect = jest.fn();
+  disconnect = jest.fn(() => {
+    this.state.connected = false;
+  });
 }
 
-/** Simulate the given page becoming the most in-view page by driving the IntersectionObserver. */
-function setInViewPage(pageNumber: number): void {
-  const stack = screen.getByLabelText('Rendered PDF pages');
-  const entries = [...stack.children].map((element) => ({
-    target: element,
-    intersectionRatio: Number((element as HTMLElement).dataset.page) === pageNumber ? 1 : 0,
-    isIntersecting: Number((element as HTMLElement).dataset.page) === pageNumber,
-  }));
-  act(() => {
-    intersectionCallback?.(
-      entries as unknown as IntersectionObserverEntry[],
-      {} as IntersectionObserver
-    );
+/** Which of the panel's three observers a test wants to drive. */
+type ObserverKind = 'tracking' | 'painting' | 'releasing';
+
+/**
+ * The live observer of the given kind, or undefined when the panel currently has none.
+ *
+ * The two margin observers are told apart by the SIZE of their margins, which is a real property
+ * rather than a convenience: the release boundary has to sit further out than the paint one, or a page
+ * would be redrawn every time the reader crossed a single boundary.
+ */
+function liveObserver(kind: ObserverKind): FakeObserver | undefined {
+  const live = observers.filter((observer) => observer.connected);
+  if (kind === 'tracking') return live.find((observer) => observer.rootMarginPx === null);
+  const byMargin = live
+    .filter((observer): observer is FakeObserver & { rootMarginPx: number } => observer.rootMarginPx !== null)
+    .toSorted((left, right) => left.rootMarginPx - right.rootMarginPx);
+  return kind === 'painting' ? byMargin[0] : byMargin.at(-1);
+}
+
+/** Deliver intersection entries for the named pages to the live observer of the given kind. */
+async function deliverIntersections(
+  kind: ObserverKind,
+  pageNumbers: readonly number[],
+  ratioOf: (pageNumber: number) => number
+): Promise<void> {
+  const observer = liveObserver(kind);
+  if (observer === undefined) return;
+  const entries = observer.elements
+    .filter((element) => pageNumbers.includes(Number((element as HTMLElement).dataset.page)))
+    .map((element) => {
+      const ratio = ratioOf(Number((element as HTMLElement).dataset.page));
+      return { target: element, isIntersecting: ratio > 0, intersectionRatio: ratio };
+    });
+  await act(async () => {
+    observer.callback(entries as unknown as IntersectionObserverEntry[], {} as IntersectionObserver);
   });
+}
+
+/** Simulate the given pages approaching the viewport, which is what triggers their paint. */
+async function approachPages(...pageNumbers: readonly number[]): Promise<void> {
+  await deliverIntersections('painting', pageNumbers, () => 1);
+  await settle();
+}
+
+/** Simulate the reader leaving the given pages far enough behind that their drawing is given back. */
+async function leavePages(...pageNumbers: readonly number[]): Promise<void> {
+  await deliverIntersections('releasing', pageNumbers, () => 0);
+  await settle();
+}
+
+/** Simulate the given page becoming the most in-view page by driving the tracking observer. */
+async function setInViewPage(pageNumber: number): Promise<void> {
+  const stack = screen.getByLabelText('Rendered PDF pages');
+  const all = [...stack.children].map((element) => Number((element as HTMLElement).dataset.page));
+  await deliverIntersections('tracking', all, (candidate) => (candidate === pageNumber ? 1 : 0));
 }
 
 /** Records go-to-page scrolls; jsdom does not implement Element.scrollIntoView. */
@@ -187,6 +295,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  observers = [];
 });
 
 describe('PdfPreviewPanel', () => {
@@ -367,11 +476,211 @@ describe('PdfPreviewPanel', () => {
     );
     await waitFor(() => expect(mockPageRender).toHaveBeenCalledTimes(1));
 
-    rerender(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+    rerender(<PdfPreviewPanel pdf={makePdf(9)} isRendering={false} />);
 
     await waitFor(() => expect(mockRenderCancel).toHaveBeenCalled());
     expect(mockDocumentDestroy).toHaveBeenCalled();
     await waitFor(() => expect(mockGetDocument).toHaveBeenCalledTimes(2));
+  });
+
+  test('does not repaint when a refresh produced the identical document', async () => {
+    const { rerender } = render(
+      <PdfPreviewPanel pdf={makePdf()} isRendering={false} />
+    );
+    await waitFor(() => expect(mockPageRender).toHaveBeenCalledTimes(1));
+    await settle();
+
+    // A refresh landed, but the engine produced the same bytes — an edit inside a comment, say. The
+    // pages on screen are already exactly what this render would draw.
+    rerender(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+    await settle();
+
+    expect(mockPageRender).toHaveBeenCalledTimes(1);
+    expect(mockGetDocument).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Rendered PDF page 1')).toBeInTheDocument();
+
+    // A genuinely different document still repaints.
+    rerender(<PdfPreviewPanel pdf={makePdf(7)} isRendering={false} />);
+    await waitFor(() => expect(mockPageRender).toHaveBeenCalledTimes(2));
+  });
+
+  test('keeps painting and tracking pages after a refresh produced the identical document', async () => {
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(40)));
+
+    const { rerender } = render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+    await waitFor(() => expect(mockGetPage).toHaveBeenCalledTimes(40));
+    await settle();
+    const paintedEagerly = mockPageRender.mock.calls.length;
+
+    // A refresh landed that produced the identical document, so nothing is repainted.
+    rerender(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+    await settle();
+    expect(mockPageRender).toHaveBeenCalledTimes(paintedEagerly);
+
+    // The panel must still be WATCHING. Skipping the repaint is an optimisation about pixels; it must
+    // not cost the reader the page that paints when they scroll to it, nor the indicator that says
+    // where they are — both of which are driven by observers a repaint would have re-attached.
+    // A page the reader scrolls to must still paint.
+    await approachPages(40);
+    expect(screen.queryByLabelText('Rendered PDF page 40')).toBeInTheDocument();
+
+    // And the indicator must still follow the scrolling.
+    await setInViewPage(3);
+    expect(screen.getByTestId('pdf-page-current')).toHaveTextContent('3');
+  });
+
+  test('lays out every page but paints only those the reader can reach', async () => {
+    // Each mock page is 450px tall at the fallback scale, so a 40-page document runs far past the
+    // band the panel paints eagerly.
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(40)));
+
+    render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+    await waitFor(() => expect(mockGetPage).toHaveBeenCalledTimes(40));
+    await settle();
+
+    // The whole document is laid out — the scrollbar, the page indicator and the scroll sync all
+    // depend on the stack being its true height — but far fewer pages were rasterized.
+    expect(screen.getByLabelText('Rendered PDF pages').children).toHaveLength(40);
+    expect(screen.getByTestId('pdf-page-total')).toHaveTextContent('40');
+    const paintedEagerly = mockPageRender.mock.calls.length;
+    expect(paintedEagerly).toBeGreaterThan(0);
+    expect(paintedEagerly).toBeLessThan(40);
+    expect(screen.queryByLabelText('Rendered PDF page 40')).not.toBeInTheDocument();
+
+    // Scrolling towards the end of the document paints the page that is approaching, and only it.
+    await approachPages(40);
+    expect(screen.getByLabelText('Rendered PDF page 40')).toBeInTheDocument();
+    expect(mockPageRender).toHaveBeenCalledTimes(paintedEagerly + 1);
+
+    // A page already painted is not painted again when it is reported a second time.
+    await approachPages(40);
+    expect(mockPageRender).toHaveBeenCalledTimes(paintedEagerly + 1);
+  });
+
+  test('still paints the pages a reader scrolls to after a re-paint at a new scale', async () => {
+    jest.useFakeTimers({ doNotFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
+    try {
+      mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(40)));
+      mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(40)));
+
+      render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+      await waitFor(() => expect(mockGetPage).toHaveBeenCalledTimes(40));
+      await settle();
+
+      // A re-paint at a different scale is not an edge case, it is what EVERY first render does: the
+      // opening pass runs at the fallback scale, publishes the page width it measured, and fit-to-width
+      // then resolves to a different scale and repaints. A resize is that same event, reached on purpose.
+      await act(async () => {
+        resizeViewport(432);
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(RENDER_DEBOUNCE);
+      });
+      await settle();
+
+      // The document has to load a second time — and it cannot, if the first load was handed the bytes
+      // the panel keeps rather than a copy of them. pdf.js takes ownership of what it is given.
+      expect(mockGetDocument).toHaveBeenCalledTimes(2);
+
+      // Which is what the reader actually sees: the re-paint tears both observers down, and only a
+      // paint that completes puts them back. Failing silently, it leaves the pages the first pass drew
+      // on screen and blank paper below them for as long as the document is open, however far they
+      // scroll.
+      await approachPages(40);
+      expect(screen.getByLabelText('Rendered PDF page 40')).toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('gives a drawing back once the reader is well past it, and draws it again on return', async () => {
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(40)));
+
+    render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+    await waitFor(() => expect(mockGetPage).toHaveBeenCalledTimes(40));
+    await settle();
+
+    await approachPages(40);
+    expect(screen.getByLabelText('Rendered PDF page 40')).toBeInTheDocument();
+    const drawnSoFar = mockPageRender.mock.calls.length;
+
+    // Every drawing is a canvas at the device pixel ratio — megabytes of pixels each. Held for every
+    // page the reader has ever scrolled past, a long document eventually exhausts what the browser
+    // will back, and from that point on the pages scrolled to come up blank with nothing to say why.
+    await leavePages(40);
+    expect(screen.queryByLabelText('Rendered PDF page 40')).not.toBeInTheDocument();
+    // The page itself stays, at its measured size: releasing a drawing must not move the scrollbar,
+    // the page indicator or anything the scroll sync measures.
+    expect(screen.getByLabelText('Rendered PDF pages').children).toHaveLength(40);
+
+    // And coming back to it draws it again, rather than leaving a hole where a page used to be.
+    await approachPages(40);
+    expect(screen.getByLabelText('Rendered PDF page 40')).toBeInTheDocument();
+    expect(mockPageRender).toHaveBeenCalledTimes(drawnSoFar + 1);
+  });
+
+  test('lets go of a released page’s drawing, instead of holding it until the document changes', async () => {
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(40)));
+
+    // One cancel spy per drawing, because the question here is about an individual page's work rather
+    // than how much work there was.
+    const cancels: jest.Mock[] = [];
+    mockPageRender.mockImplementation(() => {
+      const cancel = jest.fn();
+      cancels.push(cancel);
+      return { promise: Promise.resolve(), cancel };
+    });
+
+    try {
+      const { unmount } = render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+      await waitFor(() => expect(mockGetPage).toHaveBeenCalledTimes(40));
+      await settle();
+
+      await approachPages(38, 39, 40);
+      await leavePages(38, 39, 40);
+      expect(cancels.some((cancel) => cancel.mock.calls.length > 0)).toBe(true);
+
+      unmount();
+
+      // Cancelled twice means the panel was STILL HOLDING a page it had released — which is the thing
+      // that matters, because pdf.js's render task keeps a reference to the canvas it drew into. Kept
+      // in a list that only ever grew, every canvas the run had ever drawn stayed alive however many
+      // pages were given back, and the reader met the blank pages releasing them exists to prevent.
+      //
+      // Retention itself cannot be observed from a test — there is no reachability to assert against —
+      // so this stands in for it: the panel cannot cancel what it no longer holds.
+      const cancelledTwice = cancels.filter((cancel) => cancel.mock.calls.length > 1);
+      expect(cancelledTwice).toHaveLength(0);
+      // And the ones it did still hold were torn down, so this is not passing by cancelling nothing.
+      expect(cancels.filter((cancel) => cancel.mock.calls.length === 1).length).toBe(cancels.length);
+    } finally {
+      mockPageRender.mockImplementation(defaultPageRender);
+    }
+  });
+
+  test('draws a page again after a drawing that failed, rather than leaving it blank for good', async () => {
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(40)));
+
+    render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
+    await waitFor(() => expect(mockGetPage).toHaveBeenCalledTimes(40));
+    await settle();
+    const drawnEagerly = mockPageRender.mock.calls.length;
+
+    // The next drawing fails — the browser refusing to back one more canvas is the way this happens in
+    // practice, and it happens exactly when a reader is scrolling through a long document.
+    mockPageRender.mockImplementationOnce(() => ({
+      promise: Promise.reject(new Error('canvas unavailable')),
+      cancel: jest.fn(),
+    }));
+
+    await approachPages(40);
+    expect(screen.queryByLabelText('Rendered PDF page 40')).not.toBeInTheDocument();
+
+    // Filed as drawn, that page would stay blank for as long as the document was open: nothing ever
+    // asks a second time for a page it believes it has already drawn. Approaching it again must try.
+    await approachPages(40);
+    expect(mockPageRender).toHaveBeenCalledTimes(drawnEagerly + 2);
+    expect(screen.getByLabelText('Rendered PDF page 40')).toBeInTheDocument();
   });
 
   test('cleans up the render task and document on unmount (no leak)', async () => {
@@ -389,15 +698,7 @@ describe('PdfPreviewPanel', () => {
   });
 
   test('paints one canvas per page for a multi-page document', async () => {
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
-        numPages: 3,
-        getPage: mockGetPage,
-        cleanup: jest.fn(),
-        destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
-    }));
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(3)));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
 
@@ -502,15 +803,7 @@ describe('PdfPreviewPanel', () => {
   });
 
   test('reflects the in-view page and jumps to a requested page', async () => {
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
-        numPages: 5,
-        getPage: mockGetPage,
-        cleanup: jest.fn(),
-        destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
-    }));
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership(loadedDocument(5)));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
     await waitFor(() => expect(screen.getByTestId('pdf-page-total')).toHaveTextContent('5'));
@@ -519,7 +812,7 @@ describe('PdfPreviewPanel', () => {
     expect(screen.getByTestId('pdf-page-current')).toHaveTextContent('1');
 
     // Scrolling the third page into view updates the indicator.
-    setInViewPage(3);
+    await setInViewPage(3);
     expect(screen.getByTestId('pdf-page-current')).toHaveTextContent('3');
 
     // Entering a page and pressing Enter scrolls it into view and moves the indicator.
@@ -801,16 +1094,13 @@ describe('PdfPreviewPanel', () => {
   test('follows an internal link destination to its resolved page', async () => {
     const mockGetDestination = jest.fn(() => Promise.resolve([{ num: 7, gen: 0 }, { name: 'Fit' }]));
     const mockGetPageIndex = jest.fn(() => Promise.resolve(1));
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership({
         numPages: 2,
         getPage: mockGetPage,
         getDestination: mockGetDestination,
         getPageIndex: mockGetPageIndex,
         cleanup: jest.fn(),
         destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
     }));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
@@ -835,16 +1125,13 @@ describe('PdfPreviewPanel', () => {
   test('offsets within the page when an internal destination carries a y-coordinate', async () => {
     const explicitDestination = [{ num: 3, gen: 0 }, { name: 'XYZ' }, 0, 600, null];
     const mockGetPageIndex = jest.fn(() => Promise.resolve(0));
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership({
         numPages: 1,
         getPage: mockGetPage, // intrinsic height = 200 * 1.5 = 300 points at scale 1
         getDestination: jest.fn(),
         getPageIndex: mockGetPageIndex,
         cleanup: jest.fn(),
         destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
     }));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
@@ -868,16 +1155,13 @@ describe('PdfPreviewPanel', () => {
 
   test('ignores an invalid internal destination without throwing', async () => {
     const mockGetDestination = jest.fn(() => Promise.resolve(null));
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership({
         numPages: 1,
         getPage: mockGetPage,
         getDestination: mockGetDestination,
         getPageIndex: jest.fn(),
         cleanup: jest.fn(),
         destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
     }));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
@@ -892,16 +1176,13 @@ describe('PdfPreviewPanel', () => {
   });
 
   test('treats a zero-height destination page as the page top when offsetting', async () => {
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership({
         numPages: 1,
         getPage: zeroHeightPage,
         getDestination: jest.fn(),
         getPageIndex: jest.fn(() => Promise.resolve(0)),
         cleanup: jest.fn(),
         destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
     }));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
@@ -923,16 +1204,13 @@ describe('PdfPreviewPanel', () => {
   });
 
   test('ignores an internal destination that resolves to an out-of-range page index', async () => {
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership({
         numPages: 1,
         getPage: mockGetPage,
         getDestination: jest.fn(),
         getPageIndex: jest.fn(() => Promise.resolve(-1)),
         cleanup: jest.fn(),
         destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
     }));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
@@ -983,16 +1261,13 @@ describe('PdfPreviewPanel', () => {
   });
 
   test('ignores an internal destination whose page is beyond the rendered stack', async () => {
-    mockGetDocument.mockImplementationOnce(() => ({
-      promise: Promise.resolve({
+    mockGetDocument.mockImplementationOnce(loadTakingOwnership({
         numPages: 1,
         getPage: mockGetPage,
         getDestination: jest.fn(),
         getPageIndex: jest.fn(() => Promise.resolve(5)), // valid index, but only 1 page is rendered
         cleanup: jest.fn(),
         destroy: mockDocumentDestroy,
-      }),
-      destroy: mockDocumentDestroy,
     }));
 
     render(<PdfPreviewPanel pdf={makePdf()} isRendering={false} />);
@@ -1192,6 +1467,11 @@ describe('PdfPreviewPanel', () => {
       />
     );
 
+    // Nothing over the page until it is asked for.
+    expect(screen.queryByText('3200 ms')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Page preview render cost' }));
+
     expect(screen.getByText('render')).toBeInTheDocument();
     expect(screen.getByText('3200 ms')).toBeInTheDocument();
     // The dry runs are the figure the page-format instrumentation exists to expose.
@@ -1200,6 +1480,10 @@ describe('PdfPreviewPanel', () => {
     // Counters are counts, not durations.
     expect(screen.getByText('raster fallbacks')).toBeInTheDocument();
     expect(screen.getByText('1')).toBeInTheDocument();
+    // And each figure is set in from the one it is part of: the convert is inside the render, and the
+    // dry runs are inside the convert. Read flat, the column accounts for far more than 3200 ms.
+    expect(screen.getByText('convert').className).toBe('pl-3');
+    expect(screen.getByText('dry runs').className).toBe('pl-6');
   });
 
   test('omits a stage the render could not measure rather than showing it as free', () => {
@@ -1215,6 +1499,8 @@ describe('PdfPreviewPanel', () => {
         }}
       />
     );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Page preview render cost' }));
 
     expect(screen.getByText('convert')).toBeInTheDocument();
     expect(screen.queryByText('dry runs')).not.toBeInTheDocument();
