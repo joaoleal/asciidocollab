@@ -1,0 +1,15 @@
+= An Include Tree
+:idprefix:
+:idseparator: -
+:sectnums:
+
+The assembled document is what gets converted, so an offset that composes wrongly moves every heading
+below it — and section numbering follows the assembled structure, not the file boundaries.
+
+include::includes/chapter-one.adoc[leveloffset=+1]
+
+include::includes/chapter-two.adoc[leveloffset=+1]
+
+== A Section Back In The Root
+
+Written at the root's own level, after two chapters that were shifted down one.

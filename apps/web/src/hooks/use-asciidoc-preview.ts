@@ -1,39 +1,15 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import DOMPurify from 'dompurify';
 import { PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS } from '@/lib/editor-config';
-import { createRenderWorker } from '@/lib/create-render-worker';
+import { acquireRenderWorker, type RenderWorkerHandle } from '@/lib/create-render-worker';
 import { createMaxWaitDebounce, type MaxWaitDebounce } from '@/lib/max-wait-debounce';
+import { adaptiveDelayMs } from '@/lib/preview/adaptive-delay';
+import { morphPreview } from '@/lib/preview/morph-preview';
+import type { RenderRequest, RenderResult, RenderTimings } from '@/workers/render-protocol';
 
 /** Lifecycle state of the preview panel. */
 export type PreviewState = 'idle' | 'pending' | 'rendering' | 'up-to-date' | 'error';
-
-interface RenderRequest {
-  requestId: number;
-  content: string;
-  imagesDir?: string;
-  mainPath?: string;
-  files?: Record<string, string>;
-  rootFileId?: string | null;
-  openFileId?: string;
-  /** When false (default), the assembler hides included bodies and emits placeholders. */
-  showIncludes?: boolean;
-  /** Project-level render-config attributes (soft-defaulted), seeded beneath the document's own. */
-  projectAttributes?: Record<string, string>;
-  /** When false, the render omits the `data-source-line` hints this panel navigates by. */
-  sourceLineHints?: boolean;
-}
-
-interface RenderResult {
-  requestId: number;
-  ok: boolean;
-  html: string | null;
-  error: string | null;
-  /** True when the worker detected in-effect STEM math (resolved `:stem:` + stem markup). */
-  mathPresent?: boolean;
-  /** True when the worker emitted ≥1 `adc-diagram` placeholder (a diagram block is present). */
-  diagramsPresent?: boolean;
-}
 
 /**
  * A scroll request object. Each click in the editor produces a new instance so
@@ -89,9 +65,25 @@ export interface UseAsciidocPreviewOptions {
   projectAttributes?: Record<string, string>;
 }
 
+/** The sanitizer configuration this hook applies, in both of the shapes it asks for an answer in. */
+const SANITIZE_PROFILE = { USE_PROFILES: { html: true } };
+
 /** Return value of the `useAsciidocPreview` hook. */
 export interface UseAsciidocPreviewResult {
-  /** Latest successfully rendered HTML, or null before the first successful render. */
+  /**
+   * Sanitized markup of the latest successful render, or null before the first one.
+   *
+   * NOT the commit path — the hook commits by patching {@link UseAsciidocPreviewResult.outputRef}
+   * itself. This is the render's identity: what was rendered, as opposed to what is currently on
+   * screen (which also carries drawn diagrams and typeset expressions the client added afterwards).
+   *
+   * Produced ON READ, and remembered per render. Nothing on screen depends on it — the panel does not
+   * read it at all — so producing it eagerly meant serializing a whole rendered document on the main
+   * thread at every refresh, for a string that was usually thrown away unlooked at. Read, it is
+   * derived from the same worker output the commit was, through the same sanitizer with the same
+   * profile; the two shapes that sanitizer answers in are proved to agree in
+   * `use-asciidoc-preview.sanitizer.test.tsx`, which is what makes the deferred one honest.
+   */
   html: string | null;
   /** Current lifecycle state. */
   state: PreviewState;
@@ -99,6 +91,12 @@ export interface UseAsciidocPreviewResult {
   error: string | null;
   /** Ref to attach to the preview scroll container. */
   previewRef: React.RefObject<HTMLDivElement | null>;
+  /**
+   * Ref to attach to the rendered-output element — the element this hook patches each render into.
+   * It must be attached before the first render lands, and its contents belong to this hook: a
+   * consumer that also writes children into it would have them patched away.
+   */
+  outputRef: React.RefObject<HTMLDivElement | null>;
   /**
    * True when the latest rendered HTML contains in-effect STEM math. The preview uses this to
    * lazy-load MathJax and typeset the container only when there is math to render.
@@ -109,6 +107,37 @@ export interface UseAsciidocPreviewResult {
    * lazy-load the heavy diagram engines (mermaid/vega/graphviz) only when a diagram is present.
    */
   diagramsPresent: boolean;
+  /**
+   * What the most recent SUCCESSFUL render cost, by stage, or null before the first one completes.
+   *
+   * A failed render leaves this at the last successful figures rather than clearing them: it carries
+   * no breakdown of its own, and both consumers — the development overlay and the delay derived from
+   * measured cost — are better served by the last real measurement of this document than by nothing.
+   */
+  timings: RenderTimings | null;
+  /**
+   * True when the render engine died more times in a row than supervision is willing to rebuild
+   * automatically. Nothing further will be attempted until {@link UseAsciidocPreviewResult.retryEngine}
+   * is called, so a consumer that ignores this shows a preview that silently never updates again.
+   */
+  engineFailed: boolean;
+  /**
+   * Ask for another engine after {@link UseAsciidocPreviewResult.engineFailed}, restoring the
+   * automatic-rebuild budget and replaying the render that was outstanding. A no-op otherwise.
+   */
+  retryEngine: () => void;
+  /**
+   * Bumped once per render actually committed to the output element, and the signal anything that has
+   * to run AFTER a commit — typesetting math, drawing diagrams — must depend on.
+   *
+   * {@link UseAsciidocPreviewResult.html} cannot serve as that signal now that the hook commits by
+   * patching the DOM: the same markup can be committed into a different element (open a file, come
+   * back to it), and a patch can change the element without producing markup that differs. A pass
+   * keyed on the markup would then skip a commit that genuinely needed it, leaving raw delimiters or
+   * undrawn placeholders on screen with nothing to trigger a retry. This states the event itself
+   * rather than inferring it from a value that merely tends to change alongside it.
+   */
+  renderNonce: number;
 }
 
 /**
@@ -129,10 +158,20 @@ export function useAsciidocPreview({
   projectAttributes,
 }: UseAsciidocPreviewOptions): UseAsciidocPreviewResult {
   const [state, setState] = useState<PreviewState>('idle');
-  const [html, setHtml] = useState<string | null>(null);
+  /**
+   * The worker's own markup for the latest successful render — what
+   * {@link UseAsciidocPreviewResult.html} is derived from when somebody asks for it.
+   *
+   * State rather than a ref because a consumer reading the markup has to re-read it when a new render
+   * lands, and only state makes that happen.
+   */
+  const [renderedSource, setRenderedSource] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mathPresent, setMathPresent] = useState(false);
   const [diagramsPresent, setDiagramsPresent] = useState(false);
+  const [timings, setTimings] = useState<RenderTimings | null>(null);
+  const [engineFailed, setEngineFailed] = useState(false);
+  const [renderNonce, setRenderNonce] = useState(0);
 
   // Held in a ref so the debounced render always posts the current base path without
   // re-running the debounce effects when it changes (it is stable per editor session).
@@ -154,52 +193,214 @@ export function useAsciidocPreview({
   const projectAttributesReference = useRef(projectAttributes);
   projectAttributesReference.current = projectAttributes;
 
-  const workerReference = useRef<Worker | null>(null);
+  const handleReference = useRef<RenderWorkerHandle | null>(null);
+  // Mirrors `engineFailed` for code that runs outside a render (the debounced render below), which
+  // would otherwise read the value captured when its closure was created.
+  const engineFailedReference = useRef(false);
   const requestIdReference = useRef(0);
   const debounceReference = useRef<MaxWaitDebounce | null>(null);
   if (debounceReference.current === null) {
     debounceReference.current = createMaxWaitDebounce(PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS);
   }
+  /**
+   * What the most recent SUCCESSFUL render of this document cost, and the only input the trailing
+   * delay is derived from.
+   *
+   * A ref rather than state on purpose. This value changes on every render that completes, and the
+   * only thing that reads it is the schedule — nothing on screen depends on it, so making it state
+   * would re-run the debounce effects and re-render the panel for a number no reader can see. Held
+   * here, each scheduled render reads whatever the latest measurement is at the moment it is
+   * scheduled, which is exactly the moment the delay has to be chosen.
+   *
+   * Seeded `null` for the genuine gap before the first render completes: nothing has been measured,
+   * which is not the same as a measurement of zero, and {@link adaptiveDelayMs} answers it with the
+   * fixed delay. A FAILED render leaves it untouched for the same reason — it carries no figures, and
+   * clearing it would make a document the author has just broken feel slower to preview until they
+   * happened to fix it, on the strength of no measurement at all.
+   */
+  const lastSuccessfulRenderMsReference = useRef<number | null>(null);
   const previewReference = useRef<HTMLDivElement | null>(null);
+  const outputReference = useRef<HTMLDivElement | null>(null);
+  /**
+   * Whether any render has landed yet — whether, that is, there is a rendered document for a later
+   * render to correct. Read by {@link isWorthRendering}, where what turns on it is explained.
+   */
+  const hasRenderedReference = useRef(false);
+  /** The markup handed out for {@link renderedSource}, kept so a second reader does not pay again. */
+  const markupOfRenderReference = useRef<{ source: string; markup: string } | null>(null);
 
-  // Mount Worker; teardown on unmount.
+  /**
+   * The sanitized markup of one render, produced on first ask and remembered.
+   *
+   * @param source - The worker's markup for that render.
+   * @returns The same markup the commit was made from, sanitized.
+   */
+  const sanitizedMarkupOf = (source: string): string => {
+    const remembered = markupOfRenderReference.current;
+    if (remembered !== null && remembered.source === source) return remembered.markup;
+    const markup = DOMPurify.sanitize(source, SANITIZE_PROFILE);
+    markupOfRenderReference.current = { source, markup };
+    return markup;
+  };
+
+  /**
+   * Whether `text` is worth scheduling a render of.
+   *
+   * An empty document is a document. Opening a file that has nothing in it — every file starts that
+   * way — or deleting a file's last line must EMPTY the preview, not leave the previous render
+   * standing: the panel is no longer torn down and rebuilt per file, so nothing else takes that
+   * document off screen, and the reader is left looking at another file's work while the indicator
+   * reports the preview is up to date.
+   *
+   * The single exception is an empty buffer before any render has landed. The output element is empty
+   * already, so such a render would change nothing on screen, and a file that has only just been
+   * opened is routinely still loading — this is what stops a mount spending a conversion on nothing.
+   *
+   * @param text - The document that would be rendered.
+   * @returns True when the render would have something to say.
+   */
+  const isWorthRendering = (text: string): boolean => text !== '' || hasRenderedReference.current;
+
+  // Take a share of the shared render engine for as long as this hook is mounted.
+  //
+  // The engine is NOT this hook's to destroy: it is started once for the app and deliberately outlives
+  // the panel, so that opening another file, switching preview formats or closing and reopening the
+  // panel costs nothing rather than paying the engine's start-up again each time. Releasing the share
+  // is the whole of the cleanup — the holder decides when, or whether, the worker itself goes away.
   useEffect(() => {
-    const worker = createRenderWorker();
-    workerReference.current = worker;
+    const handle = acquireRenderWorker({
+      onMessage: (event: MessageEvent<RenderResult>) => {
+        const result = event.data;
+        // Every reply that reaches here is one this hook asked for — the holder answers whoever
+        // posted, which is what keeps a numbering that restarts at 1 per mount from letting another
+        // panel's render in. What is left for this guard is the question only this hook can answer:
+        // whether the render it is being told about is still the one it wants, or one it superseded
+        // by typing again while the engine was busy.
+        if (result.requestId !== requestIdReference.current) return; // stale
 
-    worker.addEventListener('message', (event: MessageEvent<RenderResult>) => {
-      const result = event.data;
-      if (result.requestId !== requestIdReference.current) return; // stale
+        if (result.ok && result.html !== null) {
+          // The one and only crossing from worker output to the screen. Same sanitizer, same profile,
+          // same allow-list as before — it is asked for nodes rather than markup so that nothing
+          // downstream ever parses this HTML again, and the nodes go straight into the document: no
+          // serialization of the rendered tree happens on this path at all, because nothing on screen
+          // is waiting on the string it would produce.
+          const sanitized = DOMPurify.sanitize(result.html, {
+            ...SANITIZE_PROFILE,
+            RETURN_DOM_FRAGMENT: true,
+          });
+          const output = outputReference.current;
+          if (output !== null) {
+            // Patch what is on screen into the shape of this render instead of replacing it, so the
+            // work the client already did on the unchanged parts — diagrams drawn, expressions
+            // typeset — and the reader's own position and focus all survive the refresh.
+            // Its outcome is deliberately not read here: what it counts — diagrams left undrawn,
+            // expressions left untypeset — is how the preservation is ASSERTED, in the morph tests
+            // and the end-to-end one, rather than anything the panel acts on. The panel's own
+            // evidence that preservation worked is that the nodes on screen kept their identity.
+            morphPreview(output, sanitized);
+            // Only after a commit that actually happened. With no element attached there is nothing on
+            // screen to have changed, and announcing one would send the passes that follow a commit
+            // over a document that is not there.
+            setRenderNonce((previous) => previous + 1);
+          }
+          // A render has landed, so from here on an empty document is worth rendering: there is
+          // something on screen that only a render can take down. See `isWorthRendering`.
+          hasRenderedReference.current = true;
+          setRenderedSource(result.html);
+          // The worker gates this on the resolved `:stem:`; MathJax delimiters (`\(`, `\[`, `\$`) are
+          // plain text and survive DOMPurify, so the sanitized HTML still carries the math to typeset.
+          setMathPresent(result.mathPresent === true);
+          // The `adc-diagram` placeholders survive DOMPurify (a plain div with data-* attributes), so
+          // the sanitized HTML still carries the blocks the lazily-loaded engine will hydrate.
+          setDiagramsPresent(result.diagramsPresent === true);
+          // Only ever replaced by another successful render's figures — see `timings` on the result type.
+          if (result.timings !== undefined) {
+            setTimings(result.timings);
+            // The same figures also decide how long the next refresh waits, so the schedule paces
+            // itself by what this document actually costs instead of by one delay sized for the
+            // worst document the editor might ever be given.
+            lastSuccessfulRenderMsReference.current = result.timings.totalMs;
+          }
+          setError(null);
+          setState('up-to-date');
+        } else {
+          setError(result.error);
+          setState('error');
+        }
 
-      if (result.ok && result.html !== null) {
-        const sanitized = DOMPurify.sanitize(result.html, { USE_PROFILES: { html: true } });
-        setHtml(sanitized);
-        // The worker gates this on the resolved `:stem:`; MathJax delimiters (`\(`, `\[`, `\$`) are
-        // plain text and survive DOMPurify, so the sanitized HTML still carries the math to typeset.
-        setMathPresent(result.mathPresent === true);
-        // The `adc-diagram` placeholders survive DOMPurify (a plain div with data-* attributes), so
-        // the sanitized HTML still carries the blocks the lazily-loaded engine will hydrate.
-        setDiagramsPresent(result.diagramsPresent === true);
+        // The render this result belongs to has finished — a failure just as much as a success, since
+        // both free the worker. Reporting it releases a refresh the max-wait cap held back rather than
+        // starting a second render alongside this one; never reporting it would suppress that refresh
+        // for the rest of the session. Reported LAST so the released refresh's own state transition is
+        // applied after this result's, and only for a result that passed the staleness guard above: a
+        // superseded result says nothing about the render that is actually in flight.
+        debounceReference.current?.setInProgress(false);
+      },
+      onEngineFailed: () => {
+        engineFailedReference.current = true;
+        setEngineFailed(true);
+        // Whatever render was in flight died with the engine, so nothing is left to report that it
+        // finished. Saying so here is what stops the max-wait cap waiting forever on a render that no
+        // longer exists — which would suppress every refresh even after the engine came back.
+        debounceReference.current?.setInProgress(false);
+        // That render is not merely unfinished, it is never going to finish. Left in `rendering` the
+        // panel pulses "catching up" for the rest of the session behind a notice saying the engine is
+        // down. No message is set with it: the dedicated failure notice carries the explanation and
+        // the retry, and a previous render's error was about the DOCUMENT — repeated here it would
+        // read as the reason the engine died.
         setError(null);
-        setState('up-to-date');
-      } else {
-        setError(result.error);
         setState('error');
-      }
+      },
     });
+    handleReference.current = handle;
 
     return () => {
-      worker.terminate();
-      workerReference.current = null;
+      handle.release();
+      handleReference.current = null;
     };
   }, []);
 
+  /** Ask supervision for another engine after it gave up, and start listening for renders again. */
+  const retryEngine = useCallback(() => {
+    // The holder replays the render that was outstanding, so the preview catches up on its own rather
+    // than waiting for the author to type something before it shows anything again.
+    const outcome = handleReference.current?.retry();
+    // Nothing happened — the engine was not down, or this share is gone. The notice stays exactly as
+    // it was: taking it down here would tell the author the engine is back when it is not, and leave
+    // them nothing to press.
+    if (outcome?.rebuilt !== true) return;
+
+    engineFailedReference.current = false;
+    setEngineFailed(false);
+
+    if (outcome.replayed) {
+      // A render actually under way, announced here because nothing else can: it does not go through
+      // the schedule below. Only when the holder says one of OURS was replayed — otherwise no reply is
+      // coming to this hook, and the announcement would be about a render that does not exist: the
+      // panel pulsing at a reader for a reply that is not on its way, and the cap holding every later
+      // refresh back waiting on a completion nothing will ever report.
+      setState('rendering');
+      // Paired with the post exactly as the schedule pairs them, and for the same reason: this is the
+      // one render that reaches the engine without going through it.
+      debounceReference.current?.setInProgress(true);
+      return;
+    }
+
+    // The engine is back with nothing to catch up on — the ordinary case for a document that had not
+    // been rendered when the engine died, an empty file being the everyday one. Left in `error` the
+    // panel would go on showing "Preview error" with no message under it, and no way back: the notice
+    // that offered the retry is gone, and only typing would clear it.
+    setError(null);
+    setState(hasRenderedReference.current ? 'up-to-date' : 'idle');
+  }, []);
+
   // Shared debounce helper — captured in effects via closure over current content. Trailing debounce
-  // (PREVIEW_DEBOUNCE_MS) with a PREVIEW_MAX_WAIT_MS cap so a sustained edit still refreshes the preview.
+  // derived from what this document's last render cost, with a PREVIEW_MAX_WAIT_MS cap so a sustained
+  // edit still refreshes the preview. Only the trailing delay follows the measurement: the cap is a
+  // promise about the burst as a whole and stays where it was set.
   const scheduleRender = (currentContent: string) => {
     debounceReference.current?.schedule(() => {
       requestIdReference.current += 1;
-      setState('rendering');
       // When a main file is configured, assemble its include tree; the worker confines
       // every target via resolveSandboxedPath and renders the assembled document. Only assemble once
       // the root file's content is actually available — otherwise fall back to rendering `content`
@@ -218,7 +419,16 @@ export function useAsciidocPreview({
       // still revalidates and falls back to standalone if these inputs are incomplete.
       const canResolveScope =
         rootId != null && openId !== undefined && openId !== rootId && files !== undefined && files[rootId] !== undefined;
-      workerReference.current?.postMessage({
+      const handle = handleReference.current;
+      // Whether a result is actually coming. An engine supervision has given up on will never answer,
+      // and a hook that has not been given its share of one yet cannot have asked — in both cases
+      // announcing a render leaves the panel pulsing at a reader for a reply that is not on its way.
+      // The request is still handed over, because the holder remembers it as the one to replay when
+      // the author asks for another engine: without that, the retry would replay whatever was
+      // outstanding when the engine died rather than the document as it now stands.
+      const engineWillAnswer = handle !== null && !engineFailedReference.current;
+      setState(engineWillAnswer ? 'rendering' : 'error');
+      handle?.post({
         requestId: requestIdReference.current,
         content: currentContent,
         imagesDir: imagesDirectoryReference.current,
@@ -231,7 +441,12 @@ export function useAsciidocPreview({
         ...(canAssemble ? { files, openFileId: openId } : {}),
         ...(canResolveScope ? { rootFileId: rootId, openFileId: openId, files } : {}),
       } satisfies RenderRequest);
-    });
+      // A render is now in flight, so the cap holds its next run back instead of stacking a second
+      // render on this one. Only when an engine actually took the request: with none — before the
+      // share is acquired, or after supervision gave up — nothing would ever report completion, and
+      // the flag would suppress every later refresh permanently.
+      if (engineWillAnswer) debounceReference.current?.setInProgress(true);
+    }, adaptiveDelayMs(lastSuccessfulRenderMsReference.current));
   };
 
   // Handle isEnabled changes.
@@ -241,22 +456,87 @@ export function useAsciidocPreview({
       setState('idle');
       return;
     }
-    if (!content) return;
+    if (!isWorthRendering(content)) return;
     // Re-enabled with current content — start fresh render.
     setState('pending');
     scheduleRender(content);
   }, [isEnabled]);
 
+  // Set when a file switch found the newly opened file's content not yet loaded, and cleared by the
+  // content effect below when it arrives. See the file-switch effect for why that is the normal case.
+  const openedFileAwaitingContentReference = useRef(false);
+
   // Debounce content changes.
+  //
+  // Deliberately WITHOUT a cleanup. React runs an effect's cleanup before every re-run, so cancelling
+  // here would cancel on every keystroke — which clears the max-wait cap along with the trailing timer
+  // and re-arms it from zero, so the cap could never elapse and the preview never refreshed during
+  // sustained typing. It also bought nothing: schedule() already replaces the pending run and restarts
+  // the trailing timer, which is all per-edit cancellation was ever achieving. Cancellation belongs to
+  // unmount alone, below.
   useEffect(() => {
-    if (!isEnabled || !content) return;
+    if (!isEnabled || !isWorthRendering(content)) return;
     setState('pending');
     scheduleRender(content);
-
-    return () => {
-      debounceReference.current?.cancel();
-    };
+    // This is the content of a file the reader has just opened, arriving after the switch that asked
+    // for it. Nothing is being typed, so the trailing delay has nothing to absorb and would only make
+    // the previous file's document sit on screen for half a second longer.
+    //
+    // An EMPTY buffer is not that content: it is what a file switch starts with, whether the file is
+    // empty or its content is still on its way. Forcing it through would publish exactly the blank
+    // the wait exists to avoid, so it is left to the trailing delay — which the real content, if
+    // there is any, arrives inside and replaces.
+    if (openedFileAwaitingContentReference.current && content !== '') {
+      openedFileAwaitingContentReference.current = false;
+      debounceReference.current?.flush();
+    }
   }, [content]);
+
+  // The previewed file at the last switch, so the effect below can tell an actual change of file from
+  // its own first run. Starting it at the current value is what makes the mount pass a no-op: the file
+  // that was open when the panel appeared is already being rendered by the effects above.
+  const previewedFileReference = useRef(openFileId);
+
+  // Opening a different file.
+  //
+  // Declared AFTER the content effect because a file switch changes `content` too, so both run in the
+  // same commit and this one has to have the last word.
+  useEffect(() => {
+    if (previewedFileReference.current === openFileId) return;
+    previewedFileReference.current = openFileId;
+
+    // A document the reader has not seen starts at the top. Carrying the previous file's offset over
+    // drops them at an arbitrary point in a different document.
+    if (previewReference.current !== null) previewReference.current.scrollTop = 0;
+
+    if (!isEnabled) return;
+    if (!content) {
+      // The usual case, not an edge one: the open file changes as soon as it is clicked, while its
+      // content is still being fetched, so this effect almost always runs with nothing to render. That
+      // is why the immediate render below is not enough on its own — without handing the switch on to
+      // the content effect, the file the reader just opened would appear only after the full trailing
+      // delay, which is exactly the wait this effect exists to avoid.
+      openedFileAwaitingContentReference.current = true;
+      // An empty buffer here is a file still loading and a file that genuinely has nothing in it, and
+      // nothing distinguishes the two. So the empty render is scheduled but deliberately NOT forced:
+      // content arriving inside the trailing delay replaces it (and is forced through, above), while
+      // a file that really is empty empties the preview one delay later. Skipping it altogether is
+      // what left the file the reader had just LEFT on screen, apparently up to date.
+      if (isWorthRendering(content)) scheduleRender(content);
+      return;
+    }
+    // Render at once instead of waiting out the trailing delay. That delay exists to absorb typing,
+    // and opening a file is not typing: there is nothing still arriving to wait for, and waiting would
+    // leave the previous file's document on screen for the whole delay with nothing explaining why.
+    //
+    // The previous file's rendering stays visible meanwhile, marked as rendering, rather than the panel
+    // blanking — and the request-id guard discards whatever the previous file's render still owes us.
+    scheduleRender(content);
+    debounceReference.current?.flush();
+  }, [openFileId]);
+
+  // Drop any pending render when the hook goes away, so nothing fires into a torn-down component.
+  useEffect(() => () => debounceReference.current?.cancel(), []);
 
   // Re-render when the assembled-main view is toggled on/off (the open file became, or stopped
   // being, the configured main file) so the preview switches between assembled and open-file modes,
@@ -266,7 +546,7 @@ export function useAsciidocPreview({
   // reachable INCLUDED file changed (collaborator edit/save) with no open-file edit, so the assembled
   // preview picks up the fresh snapshot — the counterpart to the outline recomputing on that signal.
   useEffect(() => {
-    if (!isEnabled || !content) return;
+    if (!isEnabled || !isWorthRendering(content)) return;
     scheduleRender(content);
   }, [mainPath, rootFileId, showIncludes, filesVersion, projectAttributes]);
 
@@ -308,5 +588,21 @@ export function useAsciidocPreview({
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [scrollToLine]);
 
-  return { html, state, error, previewRef: previewReference, mathPresent, diagramsPresent };
+  return {
+    // A property that computes itself, rather than a value computed for everyone whether or not
+    // anyone wants it: see the field's own documentation for why the difference matters here.
+    get html(): string | null {
+      return renderedSource === null ? null : sanitizedMarkupOf(renderedSource);
+    },
+    state,
+    error,
+    previewRef: previewReference,
+    outputRef: outputReference,
+    mathPresent,
+    diagramsPresent,
+    timings,
+    engineFailed,
+    retryEngine,
+    renderNonce,
+  };
 }

@@ -66,6 +66,19 @@ export const OUT_ROOT = '/out';
  */
 export const SOURCE_PROVENANCE_PATH = `${PROJECT_ROOT}/.asciidocollab-source-provenance.json`;
 
+/**
+ * VFS path where a full population records that it happened, and for which project.
+ *
+ * A delta has to know whether the previous population is still there, and the ROOT DOCUMENT cannot
+ * answer that: the pipeline rewrites `/project/<rootPath>` in place — the include-resolve stage
+ * replaces it with the assembled document, and the citations and diagram stages rewrite that again —
+ * so once anything has rendered here, its presence says "a render happened", not "the project is
+ * populated", and what stands there is not the root file at all. A marker no stage touches is the
+ * honest question to ask, and recording the root path in it keeps a delta from being laid over a
+ * DIFFERENT project's population.
+ */
+export const POPULATION_MARKER_PATH = `${PROJECT_ROOT}/.asciidocollab-population`;
+
 const PATH_SEPARATOR = '/';
 const TRAVERSAL_SEGMENT = '..';
 const NUL_CHARACTER = '\u0000';
@@ -104,8 +117,14 @@ export interface PopulateResult {
 /** Options controlling how a snapshot is mapped into `/project`. */
 export interface PopulateOptions {
   /**
-   * Warm re-render delta: when present, only these keys are rewritten under `/project`; every other
-   * file already in the VFS is left in place. Keys absent from the snapshot are ignored.
+   * Re-render delta: when present, only these keys are rewritten under `/project` and every other file
+   * ALREADY IN THE VFS is left in place. Keys absent from the snapshot are ignored.
+   *
+   * Applies only when this VFS still holds a previous population OF THE SAME PROJECT; a render VM
+   * instance serves one render and is replaced before the next, so in the current pipeline the
+   * filesystem is always empty and the delta is upgraded to a full population — see
+   * {@link populateProject}. The files a render rewrites in place are restored either way, so a delta
+   * never renders an already-assembled document (see {@link POPULATION_MARKER_PATH}).
    */
   readonly changedPaths?: readonly string[];
 }
@@ -140,20 +159,70 @@ function projectPath(relativePath: string): string {
 }
 
 const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+/**
+ * The project this VFS was last fully populated from, or null when it holds no population.
+ *
+ * @param port - The VFS to ask.
+ * @returns The root path recorded by that population, or null.
+ */
+function populatedProjectRoot(port: VfsWritePort): string | null {
+  if (!port.exists(POPULATION_MARKER_PATH)) {
+    return null;
+  }
+  try {
+    return textDecoder.decode(port.readFile(POPULATION_MARKER_PATH));
+  } catch {
+    // A marker that cannot be read is no evidence of anything; populate everything.
+    return null;
+  }
+}
+
+/**
+ * The project files a render REWRITES IN PLACE, which a delta must therefore restore whether or not
+ * the author changed them.
+ *
+ * Every one of these is a file the pipeline overwrites inside `/project` while rendering: the root
+ * document (the assembled include tree, then the citation and diagram rewrites of it) and the theme
+ * (its font catalogue repointed from `.woff2` to the `.ttf` actually embedded). Left as the previous
+ * render made them, the next render would assemble an already-assembled document and repoint an
+ * already-repointed catalogue.
+ *
+ * @param snapshot - The snapshot being populated.
+ * @returns The project-relative keys to rewrite unconditionally.
+ */
+function pathsRewrittenByRender(snapshot: ProjectSnapshot): string[] {
+  return snapshot.themePath === undefined ? [snapshot.rootPath] : [snapshot.rootPath, snapshot.themePath];
+}
 
 /**
  * Map a {@link ProjectSnapshot} (text `files` + `binaryAssets` bytes) into the `/project` VFS tree.
  *
  * In cold mode every snapshot key is written; in delta mode (`options.changedPaths`) only the listed
- * keys are rewritten and untouched files stay in place. Each key is re-validated as defense in depth:
- * traversal/absolute/remote/NUL keys are rejected and reported rather than written or thrown.
+ * keys are rewritten and untouched files stay in place. A delta requested against a VFS that does not
+ * already hold the project is upgraded to a full population — see the check in the body, which is the
+ * branch every render currently takes, because each render runs in a VM instance of its own. Each key is
+ * re-validated as defense in depth: traversal/absolute/remote/NUL keys are rejected and reported
+ * rather than written or thrown.
  */
 export function populateProject(
   port: VfsWritePort,
   snapshot: ProjectSnapshot,
   options: PopulateOptions = {},
 ): PopulateResult {
-  const changed = options.changedPaths ? new Set(options.changedPaths) : null;
+  // A delta is only meaningful against a VFS that still holds a population OF THIS PROJECT. It does
+  // not when the render is running in a VM instance that was booted for it — the instance carries a
+  // fresh, empty filesystem, so writing only the changed files would leave the document's includes,
+  // images and fonts missing, and the render would either fail on a root that is not there or
+  // silently produce a document with holes in it. See POPULATION_MARKER_PATH for why the root
+  // document cannot be the thing asked.
+  const vfsRetainsProject =
+    rejectionReason(snapshot.rootPath) === null && populatedProjectRoot(port) === snapshot.rootPath;
+  const changed =
+    options.changedPaths && vfsRetainsProject
+      ? new Set([...options.changedPaths, ...pathsRewrittenByRender(snapshot)])
+      : null;
   const written: string[] = [];
   const rejected: RejectedPath[] = [];
 
@@ -183,6 +252,14 @@ export function populateProject(
     rejected.push({ path: snapshot.rootPath, reason: rootReason, kind: 'root' });
   }
   const rootPresent = rootReason === null && port.exists(projectPath(snapshot.rootPath));
+
+  // Recorded only for a population that actually put the project there — after a delta the mark is
+  // already standing and says the same thing. Deliberately not counted among `written`: it is this
+  // module's own bookkeeping, not a file of the project's, and callers read `written` as what the
+  // snapshot contributed.
+  if (rootPresent) {
+    port.writeFile(POPULATION_MARKER_PATH, textEncoder.encode(snapshot.rootPath));
+  }
 
   return { written, rejected, rootPresent };
 }

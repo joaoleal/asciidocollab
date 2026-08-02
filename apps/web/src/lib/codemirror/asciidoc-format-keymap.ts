@@ -1,4 +1,4 @@
-import { EditorView, type KeyBinding, type Command } from '@codemirror/view';
+import { EditorView, type Command } from '@codemirror/view';
 import { toggleComment } from '@codemirror/commands';
 
 /**
@@ -33,13 +33,19 @@ function wrapCommand(mark: string, placeholder: string): Command {
   };
 }
 
-/** Formatting key bindings (registered without overriding save/find/undo). */
-export const formatKeymap: readonly KeyBinding[] = [
-  { key: 'Mod-b', run: wrapCommand('*', 'bold'), preventDefault: true },
-  { key: 'Mod-i', run: wrapCommand('_', 'italic'), preventDefault: true },
-  { key: 'Mod-`', run: wrapCommand('`', 'code'), preventDefault: true },
-  { key: 'Mod-/', run: toggleComment, preventDefault: true },
-];
+/**
+ * The formatting commands, by the action id the key bindings registry knows each one by.
+ *
+ * Commands rather than a ready-made keymap: which key runs which command is the author's to change,
+ * and the registry is where that is decided. Binding them here as well would give the same shortcut
+ * two owners, and the hard-coded one would quietly win.
+ */
+export const formatCommands: Readonly<Record<string, Command>> = {
+  'editor:bold': wrapCommand('*', 'bold'),
+  'editor:italic': wrapCommand('_', 'italic'),
+  'editor:code': wrapCommand('`', 'code'),
+  'editor:toggle-comment': toggleComment,
+};
 
 /**
  * Input handler that wraps a non-empty selection when an emphasis mark is typed

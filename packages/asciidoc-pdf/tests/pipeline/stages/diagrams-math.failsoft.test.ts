@@ -230,4 +230,25 @@ describe('createDiagramsMathStage fail-soft across mixed block failures', () => 
     expect(gen.some((path) => path.endsWith('.svg'))).toBe(true);
     expect(gen.some((path) => path.endsWith('.png'))).toBe(true);
   });
+
+  it('reports how many renders fell back to a raster, separately from the diagnostics', async () => {
+    const { shim } = mixedOutcomeShim();
+    const { ctx } = makeContext(mixedFailureDocument(), [shim]);
+
+    const result = await createDiagramsMathStage().run(ctx);
+
+    // One of the four blocks rasterized. Counting the `unsupported-image` diagnostics instead would
+    // be wrong: the image-guard stage reports an unsupported or oversized image under that same code,
+    // and neither of those is a render that fell back.
+    expect(result.rasterFallbacks).toBe(1);
+  });
+
+  it('reports no raster fallbacks for a document whose renders all stayed vector', async () => {
+    const { shim } = mixedOutcomeShim();
+    const { ctx } = makeContext(['[mermaid]', '----', VALID_SOURCE, '----'].join('\n'), [shim]);
+
+    const result = await createDiagramsMathStage().run(ctx);
+
+    expect(result.rasterFallbacks).toBe(0);
+  });
 });

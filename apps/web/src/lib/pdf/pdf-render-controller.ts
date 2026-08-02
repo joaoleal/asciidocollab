@@ -31,7 +31,9 @@ import type {
   FromWorker,
   GeneratedAsset,
   IncludeAssembler,
+  PdfRenderStages,
   PdfSourceMap,
+  PdfVmStages,
   PipelineStage,
   PipelineStageKind,
   PopulateResult,
@@ -117,6 +119,8 @@ export type ConvertOutcome =
       readonly diagnostics: readonly ConvertDiagnosticInput[];
       /** The engine-emitted block source map for scroll sync, when the convert produced one. */
       readonly sourceMap?: PdfSourceMap;
+      /** What the stages inside the render VM cost, when the convert was able to measure them. */
+      readonly vmStages?: PdfVmStages;
     }
   | { readonly ok: false; readonly error: RenderError };
 
@@ -149,10 +153,12 @@ export interface PdfRenderControllerDeps {
   /** The warm-VM facade; the controller only warms it (convert/populate close over it themselves). */
   readonly vm: Pick<RubyPdfVm, 'warmup'>;
   /**
-   * Map the snapshot into the in-memory `/project` VFS (delta-aware via `changedPaths`).
+   * Map the snapshot into the in-memory `/project` VFS.
    *
    * @param snapshot - The project snapshot to write into the virtual filesystem.
-   * @param changedPaths - The paths that changed since the last populate, for a delta-only write.
+   * @param changedPaths - The paths that changed since the last populate. A delta-only write is
+   *   possible only against a VFS that still holds the project; the render VM the pipeline uses hands
+   *   each render an empty filesystem, so the population upgrades a delta to a full write.
    */
   readonly populate: (snapshot: ProjectSnapshot, changedPaths?: readonly string[]) => PopulateResult;
   /**
@@ -277,10 +283,10 @@ export class PdfRenderController {
     }
   }
 
-  /** Instantiate the VM ahead of the first render; emit `vm-init` only on the genuine cold start. */
+  /** Instantiate the VM ahead of the first render; announce `vm-init` for the engine's own start-up. */
   private async handleWarmup(): Promise<void> {
-    const { coldStart } = await this.deps.vm.warmup();
-    if (coldStart) {
+    const { firstBoot } = await this.deps.vm.warmup();
+    if (firstBoot) {
       this.emitProgress(WARMUP_REQUEST_ID, PHASE.VM_INIT);
     }
   }
@@ -291,11 +297,22 @@ export class PdfRenderController {
     this.latestByMode.set(mode, requestId);
     const startedAt = this.now();
 
-    // Warm the VM (cold start reported exactly once).
+    // Warm the VM. A VM instance serves one render, so all but the first render of a session get a
+    // freshly instantiated one here — booting is the normal case, and the two figures below say
+    // different things about it.
     const warmupStartedAt = this.now();
-    const { coldStart } = await this.deps.vm.warmup();
-    const coldStartMs = coldStart ? this.now() - warmupStartedAt : undefined;
-    if (coldStart) {
+    const { booted, firstBoot } = await this.deps.vm.warmup();
+    // What THIS render paid to have a VM. `0` when it reused an instance a pre-warm had already booted;
+    // otherwise the real instantiation cost, which the breakdown carries on every render that pays it.
+    const vmBootMs = booted ? this.now() - warmupStartedAt : 0;
+    // What starting the engine cost, reported once per session. Every other boot is a replacement for a
+    // spent instance, which is `vmBootMs` — calling it a cold start would claim the engine keeps
+    // restarting.
+    const coldStartMs = firstBoot ? vmBootMs : undefined;
+    // Announced only for the engine's own start-up. The author waits for that one; the per-render
+    // replacement is machinery they never asked about, and a "starting the engine" notice on every edit
+    // describes a session that is perpetually booting.
+    if (firstBoot) {
       this.emitProgress(requestId, PHASE.VM_INIT);
     }
     if (this.isSuperseded(request)) {
@@ -303,7 +320,9 @@ export class PdfRenderController {
     }
 
     // Map the snapshot into the VFS; a missing root is a fatal, structured failure.
+    const populateStartedAt = this.now();
     const populated = this.deps.populate(snapshot, changedPaths);
+    const populateMs = this.now() - populateStartedAt;
     if (!populated.rootPresent) {
       this.postError({
         requestId,
@@ -327,7 +346,9 @@ export class PdfRenderController {
       includeAssembler: this.deps.buildIncludeAssembler(),
       resolveSandboxedPath: this.deps.resolveSandboxedPath,
     });
+    const pipelineStartedAt = this.now();
     const pipelineOutcome = await runPipeline(pipeline.stages, pipeline.context);
+    const pipelineMs = this.now() - pipelineStartedAt;
     if (this.isSuperseded(request) || pipelineOutcome.cancelled) {
       return;
     }
@@ -342,7 +363,9 @@ export class PdfRenderController {
 
     // Convert.
     this.emitProgress(requestId, PHASE.CONVERTING);
+    const convertStartedAt = this.now();
     const converted = await this.deps.runConvert(request);
+    const convertMs = this.now() - convertStartedAt;
     if (this.isSuperseded(request)) {
       return;
     }
@@ -359,10 +382,24 @@ export class PdfRenderController {
       normalizeConvertDiagnostic(diagnostic, snapshot.rootPath),
     );
     const allDiagnostics: readonly RenderDiagnostic[] = [...pipelineOutcome.diagnostics, ...normalized];
+    // The in-VM figures sit INSIDE `convertMs` — they subdivide it rather than adding to it, which is
+    // why they are spread into the same breakdown instead of being reported beside it. A convert that
+    // measured none simply contributes no keys.
+    const stages: PdfRenderStages = {
+      vmBootMs,
+      populateMs,
+      pipelineMs,
+      convertMs,
+      ...converted.vmStages,
+    };
     const stats: RenderStats = {
       renderMs: this.now() - startedAt,
+      stages,
       cacheHits: countingCache.hits(),
-      rasterFallbacks: 0,
+      // Counted by the stage that does the rendering. It was reported as a flat `0` for as long as
+      // the field existed, which reads as "nothing rasterized" — a claim about the render rather
+      // than the absence of one.
+      rasterFallbacks: pipelineOutcome.rasterFallbacks,
       ...(coldStartMs === undefined ? {} : { coldStartMs }),
     };
 

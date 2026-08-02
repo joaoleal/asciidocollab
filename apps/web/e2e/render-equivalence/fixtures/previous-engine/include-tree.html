@@ -1,0 +1,64 @@
+<h1 data-source-line="1" data-source-file="include-tree.adoc">An Include Tree</h1>
+<div id="preamble">
+<div class="sectionbody">
+<div id="__src_paragraph_6" data-source-line="6" data-source-file="include-tree.adoc" class="paragraph">
+<p>The assembled document is what gets converted, so an offset that composes wrongly moves every heading
+below it — and section numbering follows the assembled structure, not the file boundaries.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="chapter-one" data-source-line="1" data-source-file="includes/chapter-one.adoc">1. Chapter One</h2>
+<div class="sectionbody">
+<div id="__src_paragraph_13" data-source-line="4" data-source-file="includes/chapter-one.adoc" class="paragraph">
+<p>Written as a level-0 document and included at an offset, so it renders one level down.</p>
+</div>
+<div class="sect2">
+<h3 id="a-section-of-chapter-one" data-source-line="6" data-source-file="includes/chapter-one.adoc">1.1. A Section Of Chapter One</h3>
+<div id="__src_paragraph_17" data-source-line="8" data-source-file="includes/chapter-one.adoc" class="paragraph">
+<p>The attribute defined in this file&#8217;s header reads: defined in chapter one.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="a-nested-include" data-source-line="1" data-source-file="includes/nested-section.adoc">1.2. A Nested Include</h3>
+<div id="__src_paragraph_22" data-source-line="3" data-source-file="includes/nested-section.adoc" class="paragraph">
+<p>Included from a file that was itself included at an offset, so the offsets accumulate rather than
+replace one another.</p>
+</div>
+<div class="sect3">
+<h4 id="inside-the-nested-include" data-source-line="6" data-source-file="includes/nested-section.adoc">1.2.1. Inside The Nested Include</h4>
+<div id="__src_paragraph_27" data-source-line="8" data-source-file="includes/nested-section.adoc" class="paragraph">
+<p>Prose.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="chapter-two" data-source-line="1" data-source-file="includes/chapter-two.adoc">2. Chapter Two</h2>
+<div class="sectionbody">
+<div id="__src_paragraph_36" data-source-line="3" data-source-file="includes/chapter-two.adoc" class="paragraph">
+<p>A second included chapter, so offset composition has to hold across more than one include.</p>
+</div>
+<div class="sect2">
+<h3 id="a-section-of-chapter-two" data-source-line="5" data-source-file="includes/chapter-two.adoc">2.1. A Section Of Chapter Two</h3>
+<div id="__src_paragraph_40" data-source-line="7" data-source-file="includes/chapter-two.adoc" class="paragraph">
+<p>Prose.</p>
+</div>
+<div class="sect3">
+<h4 id="a-subsection-of-chapter-two" data-source-line="9" data-source-file="includes/chapter-two.adoc">2.1.1. A Subsection Of Chapter Two</h4>
+<div id="__src_paragraph_44" data-source-line="11" data-source-file="includes/chapter-two.adoc" class="paragraph">
+<p>Prose, two levels below this file&#8217;s own title and three below the assembled root.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="a-section-back-in-the-root" data-source-line="13" data-source-file="include-tree.adoc">3. A Section Back In The Root</h2>
+<div class="sectionbody">
+<div id="__src_paragraph_50" data-source-line="15" data-source-file="include-tree.adoc" class="paragraph">
+<p>Written at the root&#8217;s own level, after two chapters that were shifted down one.</p>
+</div>
+</div>
+</div>

@@ -15,6 +15,9 @@ import {
   type ProjectSnapshot,
 } from '../src/protocol';
 
+/** A stage breakdown of zeros: this fixture's render cost is not what the tests below are about. */
+const NO_STAGE_COST = { vmBootMs: 0, populateMs: 0, pipelineMs: 0, convertMs: 0 };
+
 describe('render phase constants', () => {
   it('enumerates the worker→main phases in stage order', () => {
     expect([...RENDER_PHASES]).toEqual([
@@ -74,7 +77,7 @@ describe('FromWorker discriminant guards', () => {
       mode: 'export',
       pdf: {} as unknown as Blob,
       diagnostics: [],
-      stats: { renderMs: 1, cacheHits: 0, rasterFallbacks: 0 },
+      stats: { renderMs: 1, cacheHits: 0, rasterFallbacks: 0, stages: NO_STAGE_COST },
     } satisfies RenderResult,
   };
   const error: FromWorker = {

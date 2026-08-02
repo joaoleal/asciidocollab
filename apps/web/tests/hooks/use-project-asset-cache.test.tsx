@@ -63,6 +63,74 @@ describe('useProjectAssetCache', () => {
     expect(records).toEqual([{ path: 'ok.png', kind: 'binary', bytes: ok }]);
   });
 
+  it('reports an asset as unsettled until its bytes arrive', async () => {
+    let resolveFetch!: (bytes: Uint8Array) => void;
+    mockFetch.mockReturnValue(
+      new Promise<Uint8Array>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    const { result } = renderHook(() => useProjectAssetCache('p1'));
+
+    act(() => result.current.ensureAssets(['images/workflow.svg']));
+    // A render started here would report the picture as one it could not find — a warning about a file
+    // that is present and on its way — and every second of it would be spent again once it lands.
+    expect(result.current.assetsSettled(['images/workflow.svg'])).toBe(false);
+
+    await act(async () => {
+      resolveFetch(new Uint8Array([1]));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.assetsSettled(['images/workflow.svg'])).toBe(true);
+  });
+
+  it('settles an asset that came back empty, and stops asking for it', async () => {
+    mockFetch.mockResolvedValue(null);
+    const { result } = renderHook(() => useProjectAssetCache('p1'));
+    const versionBefore = result.current.assetVersion;
+
+    act(() => result.current.ensureAssets(['gone.png']));
+    await flush();
+
+    // The image really is unavailable, so the warning about it is a true one and the render must go
+    // ahead. Held for a retry that has already failed, the preview would never render at all.
+    expect(result.current.assetsSettled(['gone.png'])).toBe(true);
+    // And the settlement has to be announced, or nothing would bring the waiting render back.
+    expect(result.current.assetVersion).toBeGreaterThan(versionBefore);
+
+    // Asked for again, it is not re-fetched: it would be in flight once more the instant anyone asked
+    // whether it had settled, and the preview would wait on it afresh at every render.
+    act(() => result.current.ensureAssets(['gone.png']));
+    await flush();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(result.current.assetsSettled(['gone.png'])).toBe(true);
+  });
+
+  it('treats a document that references nothing as settled', () => {
+    const { result } = renderHook(() => useProjectAssetCache('p1'));
+
+    expect(result.current.assetsSettled([])).toBe(true);
+  });
+
+  it('asks again for an asset that was missing under a different project', async () => {
+    mockFetch.mockResolvedValue(null);
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useProjectAssetCache(id), {
+      initialProps: { id: 'p1' },
+    });
+
+    act(() => result.current.ensureAssets(['shared.png']));
+    await flush();
+
+    rerender({ id: 'p2' });
+    await flush();
+
+    // Paths are project-relative: this one names a different file now, and whether p1 had it says
+    // nothing about whether p2 does.
+    expect(result.current.assetsSettled(['shared.png'])).toBe(false);
+  });
+
   it('drops the cache when the project changes', async () => {
     mockFetch.mockResolvedValue(new Uint8Array([1]));
     const { result, rerender } = renderHook(({ id }: { id: string }) => useProjectAssetCache(id), {

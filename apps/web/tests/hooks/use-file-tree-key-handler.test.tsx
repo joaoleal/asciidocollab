@@ -8,7 +8,14 @@ function TestComponent({ bindings, callbacks }: {
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useFileTreeKeyHandler(ref, bindings, callbacks);
-  return <div ref={ref} tabIndex={0} data-testid="container" />;
+  return (
+    <div ref={ref} tabIndex={0} data-testid="container">
+      {/* The tree really does contain a text field — the find panel's — so a keystroke arriving from
+          one is an ordinary event here, not a contrived one. */}
+      <input data-testid="text-field" />
+      <div data-testid="editable" contentEditable suppressContentEditableWarning />
+    </div>
+  );
 }
 
 const defaultBindings = new Map([
@@ -119,6 +126,58 @@ describe('useFileTreeKeyHandler', () => {
     );
     fireEvent.keyDown(getByTestId('container'), { key: 'a', altKey: true });
     expect(onAlt).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a keystroke alone when it was typed into a text field', () => {
+    const onDelete = jest.fn();
+    const onNewFile = jest.fn();
+    const { getByTestId } = render(
+      <TestComponent
+        bindings={defaultBindings}
+        callbacks={{ 'file-tree:rename': jest.fn(), 'file-tree:delete': onDelete, 'file-tree:new-file': onNewFile, 'file-tree:new-folder': jest.fn() }}
+      />,
+    );
+
+    // The listener sits on the whole tree, so it hears the find panel's input too. Acting on these
+    // would be worse than useless: `Delete` while correcting a typo would delete the SELECTED FILE,
+    // and — because the shortcut calls preventDefault — would not even remove the character.
+    fireEvent.keyDown(getByTestId('text-field'), { key: 'Delete' });
+    fireEvent.keyDown(getByTestId('text-field'), { key: 'n', ctrlKey: true });
+
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(onNewFile).not.toHaveBeenCalled();
+  });
+
+  it('leaves a keystroke alone when it was typed into rich text', () => {
+    const onDelete = jest.fn();
+    const { getByTestId } = render(
+      <TestComponent
+        bindings={defaultBindings}
+        callbacks={{ 'file-tree:rename': jest.fn(), 'file-tree:delete': onDelete, 'file-tree:new-file': jest.fn(), 'file-tree:new-folder': jest.fn() }}
+      />,
+    );
+
+    fireEvent.keyDown(getByTestId('editable'), { key: 'Delete' });
+
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it('leaves a keystroke alone when the focus is outside the tree', () => {
+    const onRename = jest.fn();
+    const onDelete = jest.fn();
+    render(
+      <TestComponent bindings={defaultBindings} callbacks={{ 'file-tree:rename': onRename, 'file-tree:delete': onDelete, 'file-tree:new-file': jest.fn(), 'file-tree:new-folder': jest.fn() }} />,
+    );
+
+    // These shortcuts belong to the tree and act only while the reader is working in it. Once the
+    // focus has moved on — to the editor, most of the time — the same keys mean what that surface
+    // says they mean: `Delete` deletes the character in front of the cursor, and taking it to mean
+    // the FILE because a file happens to be selected would destroy something never pointed at.
+    fireEvent.keyDown(document.body, { key: 'F2' });
+    fireEvent.keyDown(document.body, { key: 'Delete' });
+
+    expect(onRename).not.toHaveBeenCalled();
+    expect(onDelete).not.toHaveBeenCalled();
   });
 
   it('does nothing when the container ref is null', () => {

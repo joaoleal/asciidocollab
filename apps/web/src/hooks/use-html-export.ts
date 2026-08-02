@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import type { HtmlExportPackaging, HtmlExportStyle, HtmlExportTheme } from '@asciidocollab/shared';
-import { createRenderWorker } from '@/lib/create-render-worker';
+import { spawnRenderWorker } from '@/lib/spawn-render-worker';
 import { projectAssetUrl } from '@/lib/pdf/fetch-project-asset';
 import { collectAppFontFaceCss } from '@/lib/html-export/app-fonts';
 import {
@@ -298,7 +298,7 @@ export function useHtmlExport(options: UseHtmlExportOptions): UseHtmlExportResul
     const run = runReference.current;
     // Supersede any export still in flight; its worker is abandoned mid-render.
     workerReference.current?.terminate();
-    const worker = (createWorker ?? createRenderWorker)();
+    const worker = (createWorker ?? spawnRenderWorker)();
     workerReference.current = worker;
 
     setIsExporting(true);

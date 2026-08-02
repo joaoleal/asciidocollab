@@ -517,6 +517,8 @@ async function main() {
     throw new Error(`Warm re-convert failed: ${second.error.phase}/${second.error.code}: ${second.error.message}`);
   }
   log(`Warm re-convert: ${warmReconvertMs.toFixed(0)}ms, ${second.bytes.length} normalized bytes.`);
+  log(`In-VM stages (first convert): ${JSON.stringify(first.vmStages ?? null)}`);
+  log(`In-VM stages (warm re-convert): ${JSON.stringify(second.vmStages ?? null)}`);
 
   // Determinism: the two normalized outputs must be byte-identical; normalize must be idempotent.
   const byteIdentical = bytesEqual(first.bytes, second.bytes);
@@ -684,6 +686,11 @@ async function main() {
       firstConvertMs: Math.round(firstConvertMs),
       warmReconvertMs: Math.round(warmReconvertMs),
     },
+    // What the convert cost INSIDE the VM, measured by the engine itself. The figures above bound the
+    // whole call and cannot separate the dry runs from the rest; only these can, and only a run
+    // against the real engine produces them — a fake VM never executes Ruby, so it can prove the
+    // program asks for them and nothing about what they are.
+    vmStages: { first: first.vmStages ?? null, warm: second.vmStages ?? null },
     sizes: { rawPdfBytes, brotliBytes, normalizedPdfBytes: first.bytes.length },
     highlighting: {
       convertOk: first.ok && probeOk,

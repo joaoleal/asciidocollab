@@ -6,6 +6,6 @@
     "module": "esnext",
     "moduleResolution": "bundler"
   },
-  "include": ["src", "tests", "e2e", "next-env.d.ts", "tailwind.config.ts", "playwright.config.ts", "playwright.pdf-parity.config.ts"],
+  "include": ["src", "tests", "e2e", "next-env.d.ts", "tailwind.config.ts", "playwright.config.ts", "playwright.pdf-parity.config.ts", "playwright.render-equivalence.config.ts"],
   "exclude": ["node_modules"]
 }

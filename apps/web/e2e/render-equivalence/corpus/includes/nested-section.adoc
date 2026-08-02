@@ -1,0 +1,8 @@
+= A Nested Include
+
+Included from a file that was itself included at an offset, so the offsets accumulate rather than
+replace one another.
+
+== Inside The Nested Include
+
+Prose.

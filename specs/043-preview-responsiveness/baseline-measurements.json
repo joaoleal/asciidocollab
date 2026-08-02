@@ -1,0 +1,121 @@
+{
+  "takenAt": "2026-07-30T22:45:24.742Z",
+  "conversionBySize": {
+    "size-100": {
+      "lines": 100,
+      "shownMs": 0,
+      "overlay": {
+        "parse": 10,
+        "convert": 1,
+        "post-process": 8,
+        "total": 45
+      }
+    },
+    "size-1500": {
+      "lines": 1500,
+      "shownMs": 759,
+      "overlay": {
+        "parse": 51,
+        "convert": 6,
+        "post-process": 16,
+        "total": 107
+      }
+    },
+    "size-15000": {
+      "lines": 15000,
+      "shownMs": 1759,
+      "overlay": {
+        "parse": 238,
+        "convert": 30,
+        "post-process": 81,
+        "total": 421
+      }
+    }
+  },
+  "engineSource": {
+    "file": "../../node_modules/.pnpm/@asciidoctor+core@3.0.4/node_modules/@asciidoctor/core/dist/browser/asciidoctor.js",
+    "bytes": 1737178,
+    "minifiedBytes": 746873,
+    "version": "3.0.4"
+  },
+  "renderWorkerDownload": {
+    "resources": 3,
+    "encodedBytes": 2283
+  },
+  "keystrokeToRefreshMs": {
+    "size-100": [
+      485,
+      509,
+      520
+    ],
+    "size-1500": [
+      637,
+      561,
+      561
+    ],
+    "size-15000": [
+      1059,
+      1075,
+      1031
+    ]
+  },
+  "fileSwitchToContentMs": [
+    761,
+    618,
+    704,
+    625
+  ],
+  "sustainedTyping": {
+    "documentLines": 102,
+    "sessionMs": 15000,
+    "wordsTyped": 26,
+    "deltaMs": {
+      "task": 5413,
+      "script": 4688,
+      "layout": 53,
+      "recalcStyle": 41
+    },
+    "longTasks": {
+      "count": 18,
+      "totalMs": 990
+    }
+  },
+  "pageFormatBySize": {
+    "size-100": {
+      "lines": 100,
+      "rendered": true,
+      "overlay": {
+        "render": 1360,
+        "cache hits": 0,
+        "raster fallbacks": 0,
+        "vm boot": 0,
+        "populate": 0,
+        "pipeline": 1,
+        "convert": 1224,
+        "parse": 270,
+        "converter walk": 225,
+        "dry runs": 139,
+        "fonts": 29,
+        "serialize": 24
+      }
+    },
+    "size-1500": {
+      "lines": 1500,
+      "rendered": true,
+      "overlay": {
+        "render": 3375,
+        "cache hits": 0,
+        "raster fallbacks": 0,
+        "vm boot": 0,
+        "populate": 0,
+        "pipeline": 2,
+        "convert": 3242,
+        "parse": 296,
+        "converter walk": 1657,
+        "dry runs": 607,
+        "fonts": 13,
+        "serialize": 98
+      }
+    }
+  }
+}

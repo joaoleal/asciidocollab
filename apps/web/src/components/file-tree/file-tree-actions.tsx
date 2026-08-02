@@ -35,6 +35,7 @@ import { isThemeFilePath } from '@asciidocollab/shared';
 import { saveDocumentContent } from '@/lib/api/file-content';
 import { themeSeedContent } from '@/lib/pdf/theme-seed';
 import { API_BASE_URL } from '@/lib/api/base-url';
+import type { NodeActionKind } from './types';
 
 type DialogKind =
   | { type: 'rename'; currentName: string }
@@ -68,13 +69,45 @@ interface Properties {
   onRevealInTree?: () => void;
   /** Controls whether "Reveal in Tree" is enabled (requires a selected file). */
   hasSelection?: boolean;
+  /**
+   * Opens one of this node's dialogs whenever the request's nonce changes, for callers that trigger
+   * an action from outside the menu (the tree's keyboard shortcuts). Pass `undefined` on every node
+   * the request is not aimed at. The nonce CHANGING — not merely being present — is what opens the
+   * dialog, so a node that becomes the target while carrying an older value stays closed until the
+   * user actually presses the key again.
+   */
+  actionRequest?: { action: NodeActionKind; nonce: number };
+}
+
+/**
+ * The value a dialog's text input starts with.
+ *
+ * Shared by the menu items and the keyboard shortcuts so the two cannot drift: a shortcut that
+ * pre-filled a different default from its menu item would be a second, subtly different action
+ * wearing the same name.
+ */
+function initialInputValue(kind: NonNullable<DialogKind>): string {
+  switch (kind.type) {
+    case 'rename': {
+      return kind.currentName;
+    }
+    case 'create-file': {
+      return 'new-document.adoc';
+    }
+    case 'create-folder': {
+      return 'New Folder';
+    }
+    case 'delete': {
+      return '';
+    }
+  }
 }
 
 /** Renders the context-menu action buttons (create, rename, delete, tree navigation) for a file tree node. */
 export function FileTreeActions({
   projectId, fileNodeId, nodeType, nodeName, nodePath, hasChildren,
   onUpdate, onError, isRoot = false, canCreate = false,
-  onFind, onCollapseAll, onExpandAll, onRevealInTree, hasSelection = false,
+  onFind, onCollapseAll, onExpandAll, onRevealInTree, hasSelection = false, actionRequest,
 }: Properties) {
   // Path copied/used in macros is project-root-relative (no leading slash), matching include::/image:: targets.
   const relativePath = (nodePath ?? '').replace(/^\//, '');
@@ -126,13 +159,37 @@ export function FileTreeActions({
   };
 
   const openDialog = (kind: NonNullable<DialogKind>) => {
-    if (kind.type === 'rename') setInputValue(kind.currentName);
-    if (kind.type === 'create-file') setInputValue('new-document.adoc');
-    if (kind.type === 'create-folder') setInputValue('New Folder');
+    setInputValue(initialInputValue(kind));
     setDialog(kind);
   };
 
   const closeDialog = () => setDialog(null);
+
+  // Open a dialog when an outside caller (one of the tree's keyboard shortcuts) asks this node for an
+  // action. It opens the SAME dialog the corresponding menu item opens, so a shortcut and its menu
+  // item are one action: same validation, same handling of a name already taken, same refresh.
+  //
+  // Tracking the last-seen nonce in a ref makes this fire once per request: the dialog opens when the
+  // nonce CHANGES, never merely because one is present, so re-renders — and a node handed a stale
+  // value — leave it closed. The setters are inlined rather than calling `openDialog` because that
+  // helper is re-created every render; depending on it would reopen the dialog in a loop the moment
+  // its own state update re-rendered the component.
+  //
+  // The two guards mirror the menu exactly. Whatever a shortcut can reach, the menu offers on the
+  // same node under the same conditions — a shortcut that opened a dialog the menu withholds would be
+  // a way around a restriction the menu is there to express, and the API would refuse it anyway.
+  const lastActionRequestReference = useRef(actionRequest?.nonce);
+  useEffect(() => {
+    if (actionRequest === undefined) return;
+    if (lastActionRequestReference.current === actionRequest.nonce) return;
+    lastActionRequestReference.current = actionRequest.nonce;
+    const { action } = actionRequest;
+    if (isRoot && (action === 'rename' || action === 'delete')) return;
+    if ((action === 'create-file' || action === 'create-folder') && !(canCreate && nodeType === 'folder')) return;
+    const kind: NonNullable<DialogKind> = action === 'rename' ? { type: 'rename', currentName: nodeName } : { type: action };
+    setInputValue(initialInputValue(kind));
+    setDialog(kind);
+  }, [actionRequest, nodeName, isRoot, canCreate, nodeType]);
 
   const handleConfirm = async () => {
     if (!dialog) return;

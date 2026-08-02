@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
-Active feature plan: specs/042-grammar-spell-check/plan.md
+Active feature plan: specs/043-preview-responsiveness/plan.md
 <!-- SPECKIT END -->
 
 ## Hard Constraints (MUST NOT)

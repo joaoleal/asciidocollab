@@ -304,9 +304,29 @@ function getInstance(): Promise<WorkerInstance> {
 /** Machine code for a render that never started because the wasm engine could not be initialized. */
 const ENGINE_INIT_FAILED_CODE = 'engine-init-failed';
 
+/**
+ * Tail of the chain every inbound message is appended to, so messages are served STRICTLY one at a
+ * time.
+ *
+ * Handling a message is asynchronous, so without this each arrival would start its own handler and two
+ * renders could be in progress at once. They would not merely compete for the CPU: the second one's
+ * `warmup()` runs before the first has reported its render, sees an instance that has not spent its
+ * budget, and reuses it — so both renders execute in the SAME VM. That is exactly the reuse
+ * `RENDERS_PER_VM_INSTANCE` (packages/asciidoc-pdf/src/vm/ruby-pdf-vm.ts) exists to prevent, where
+ * the second render measured 21.9 s against the first's 6.7 s and the fourth could not complete at
+ * all. The second one's VFS population would also land underneath the first one's convert.
+ *
+ * The main thread holds a refresh back rather than posting it into a render already running, so this
+ * should not normally have anything to serialise. It is here because the consequence of being wrong
+ * about that is a wedged engine rather than a slow frame, and one worker cannot see what a caller
+ * intends — only what it sends.
+ */
+let messageChain: Promise<void> = Promise.resolve();
+
 onmessage = function (event: MessageEvent<ToWorker>): void {
   const message = event.data;
-  void getInstance()
+  messageChain = messageChain
+    .then(() => getInstance())
     .then((instance) => instance.controller.handleMessage(message))
     .catch((error: unknown) => {
       // `getInstance()` rejects when the wasm engine fails to compile after every retry. Surface it as

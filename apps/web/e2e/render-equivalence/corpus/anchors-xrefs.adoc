@@ -1,0 +1,30 @@
+= Anchors And Cross References
+:idprefix:
+:idseparator: -
+
+An identifier is behaviour, not presentation: change one and every reference to it silently stops
+resolving while the visible text stays identical.
+
+[[author-anchor]]
+== Section With An Author Anchor
+
+Referenced below by both cross-reference forms.
+
+[#hash-anchor]
+== Section With A Shorthand Anchor
+
+Also referenced below.
+
+== Auto Identified Section
+
+This heading has no anchor of its own, so the engine derives one from its text.
+
+== References
+
+* Angle-bracket form: <<author-anchor>>
+* Angle-bracket form with text: <<hash-anchor,the shorthand anchor>>
+* Macro form: xref:author-anchor[the author anchor]
+* To an auto-generated identifier: <<auto-identified-section,the auto-identified section>>
+
+[[block-anchor]]
+A paragraph carrying its own anchor, referenced as <<block-anchor,this paragraph>>.

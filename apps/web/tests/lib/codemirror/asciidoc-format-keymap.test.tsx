@@ -7,9 +7,11 @@ import { LRLanguage, LanguageSupport } from '@codemirror/language';
 import {
   AUTO_WRAP_MARKS,
   autoWrapInputHandler,
-  formatKeymap,
+  formatCommands,
   wrapWith,
 } from '@/lib/codemirror/asciidoc-format-keymap';
+import { DEFAULT_EDITOR_KEY_COMBOS } from '@asciidocollab/shared';
+import { codemirrorKey } from '@/lib/codemirror/editor-shortcuts';
 import { createTestBlockTokenizer, createTestBlockContext } from '../../helpers/asciidoc-test-tokenizer';
 
 /**
@@ -61,11 +63,18 @@ function runCommand(view: EditorView, command: Command): { handled: boolean; doc
   return { handled, doc: view.state.doc.toString(), from, to };
 }
 
-/** Finds a binding's `run` command in `formatKeymap` by key. */
+/**
+ * The command the given CodeMirror key runs, found the way the editor finds it: through the action the
+ * default combo names. Keys are the author's to change, so the tests reach the commands by the same
+ * route the keymap builder does rather than by a hard-coded key string.
+ */
 function bindingFor(key: string): Command {
-  const binding = formatKeymap.find((entry) => entry.key === key);
-  if (binding?.run === undefined) throw new Error(`no binding for ${key}`);
-  return binding.run;
+  const action = Object.keys(formatCommands).find(
+    (candidate) => codemirrorKey(DEFAULT_EDITOR_KEY_COMBOS[candidate] ?? '') === key,
+  );
+  const command = action === undefined ? undefined : formatCommands[action];
+  if (command === undefined) throw new Error(`no binding for ${key}`);
+  return command;
 }
 
 /** Invokes the registered auto-wrap input handler the way CodeMirror's input pipeline would. */
@@ -102,10 +111,22 @@ describe('wrapWith (pure helper)', () => {
   });
 });
 
-describe('formatKeymap — binding metadata', () => {
-  test('registers Mod-b/i/`// in order, all with preventDefault', () => {
-    expect(formatKeymap.map((entry) => entry.key)).toEqual(['Mod-b', 'Mod-i', 'Mod-`', 'Mod-/']);
-    for (const binding of formatKeymap) expect(binding.preventDefault).toBe(true);
+describe('formatCommands — registry coverage', () => {
+  test('offers exactly the formatting actions the shortcut defaults declare', () => {
+    // Both directions. A command with no default is unreachable — nothing would ever bind it — and a
+    // default naming a command that does not exist is a shortcut the settings page offers to remap
+    // while the editor has nothing to run.
+    const declared = Object.keys(DEFAULT_EDITOR_KEY_COMBOS).filter((action) =>
+      ['editor:bold', 'editor:italic', 'editor:code', 'editor:toggle-comment'].includes(action),
+    );
+    expect(Object.keys(formatCommands).toSorted()).toEqual(declared.toSorted());
+  });
+
+  test('each formatting default still spells the key CodeMirror expects', () => {
+    expect(codemirrorKey(DEFAULT_EDITOR_KEY_COMBOS['editor:bold']!)).toBe('Mod-b');
+    expect(codemirrorKey(DEFAULT_EDITOR_KEY_COMBOS['editor:italic']!)).toBe('Mod-i');
+    expect(codemirrorKey(DEFAULT_EDITOR_KEY_COMBOS['editor:code']!)).toBe('Mod-`');
+    expect(codemirrorKey(DEFAULT_EDITOR_KEY_COMBOS['editor:toggle-comment']!)).toBe('Mod-/');
   });
 });
 

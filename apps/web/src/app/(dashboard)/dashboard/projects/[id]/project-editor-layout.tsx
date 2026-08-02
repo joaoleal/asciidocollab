@@ -94,9 +94,6 @@ type DiagnosticLocation = NonNullable<RenderDiagnostic['location']>;
 /** Stable empty attribute seed used when no render root is resolved yet (keeps identity stable). */
 const NO_EXPORT_ATTRIBUTES: ReadonlyMap<string, string> = new Map();
 
-/** Stable empty asset-path list used while the PDF preview is inactive (keeps memo identity stable). */
-const NO_ASSET_PATHS: readonly string[] = [];
-
 /** How long the export waits for a transiently-absent render root to (re)load before giving up. */
 const EXPORT_ROOT_WAIT_TIMEOUT_MS = 10_000;
 /** Poll cadence while waiting for the render root's content to arrive. */
@@ -806,7 +803,7 @@ export function ProjectEditorLayout({
   // editor's text cache. The cache fetches them once each and feeds them into the render snapshot as
   // `kind: 'binary'` files so the engine embeds the picture instead of its not-found placeholder.
   const assetCache = useProjectAssetCache(projectId);
-  const { getAssets, ensureAssets, loadAssets, assetVersion } = assetCache;
+  const { getAssets, ensureAssets, loadAssets, assetsSettled, assetVersion } = assetCache;
 
   // The theme and `.bib` contents, which the include-graph cache above can never reach. Without this
   // the snapshot has no theme content, and theme DISCOVERY — which filters the snapshot's own text
@@ -961,35 +958,61 @@ export function ProjectEditorLayout({
   const openFilePreviewable = selectedFile !== null && isAsciiDocFile(selectedFile.nodeName);
 
   const pdfPreviewActive = previewOpen && previewMode === 'pdf' && openFilePreviewable;
-  // The binary assets the live PDF preview references. Enumerated only while the preview is active
-  // (a cheap macro scan), and recomputed on the same content signals as the snapshot so a
-  // newly-referenced image is discovered as soon as it is typed.
-  const previewAssetPaths = useMemo<readonly string[]>(
-    () => (pdfPreviewActive ? collectReferencedAssetPaths({ files: getProjectFiles(), attributes: previewAttributes }) : NO_ASSET_PATHS),
-    [pdfPreviewActive, getProjectFiles, previewAttributes, liveOverlayContent, reachableDocVersion],
-  );
-  // Warm the cache for the referenced assets off the render path; each arriving image bumps
-  // assetVersion, which rebuilds the snapshot below so the picture appears on the next render.
-  useEffect(() => {
-    if (pdfPreviewActive) ensureAssets(previewAssetPaths);
-  }, [pdfPreviewActive, previewAssetPaths, ensureAssets]);
-  const previewSnapshot = useMemo<ProjectSnapshot | null>(
-    // The preview roots at previewSnapshotMainPath (the main document, or the open file when it is outside
-    // the main tree) with the matching attribute scope — distinct from the export's always-main root.
-    () => (pdfPreviewActive ? buildSnapshot(getAssets(), previewSnapshotMainPath, previewAttributes) : null),
+  // Capture the project for a page-formatted render — deliberately as a FUNCTION the preview hook
+  // calls when a render is actually due, not as a value computed here.
+  //
+  // The identity of this callback still changes on every edit signal, which is what schedules the
+  // render; what it no longer does is DO the work on every edit signal. Capturing the snapshot copies
+  // every project file and re-runs the sandbox guard over every path, and enumerating the referenced
+  // assets scans all of them for image macros — both proportional to the size of the project, both
+  // synchronous, and both previously recomputed on each keystroke to feed a render that happens at
+  // most once a second. Behind the debounce they run once per render instead.
+  //
+  // The asset enumeration lives here rather than in its own effect for the same reason and for one
+  // more: warming the cache from the state that is being captured keeps the two describing the same
+  // document. Each arriving image bumps `assetVersion`, which re-schedules a render that then includes
+  // the picture. The preview roots at previewSnapshotMainPath (the main document, or the open file
+  // when it is outside the main tree) with the matching attribute scope — distinct from the export's
+  // always-main root.
+  const capturePreviewSnapshot = useCallback((): ProjectSnapshot | null => {
+    const referencedAssets = collectReferencedAssetPaths({
+      files: getProjectFiles(),
+      attributes: previewAttributes,
+    });
+    ensureAssets(referencedAssets);
+    // Nothing is rendered until the pictures this document asks for have been answered. Rendered
+    // without them, the engine reports each one as "image to embed not found or not readable" — an
+    // alarming warning about a file that is present and already on its way — and the whole
+    // page-formatted render, seconds of it, is then done again the moment the bytes land. The fetch is
+    // the cheaper of the two waits by a wide margin.
+    //
+    // This holds only the renders that reference an asset nobody has fetched yet, which in practice
+    // means the first one after the panel opens. A cached asset settles instantly, so typing is
+    // untouched. Every settlement — bytes or an empty answer — bumps `assetVersion`, which is what
+    // brings the held render back.
+    if (!assetsSettled(referencedAssets)) return null;
+    return buildSnapshot(getAssets(), previewSnapshotMainPath, previewAttributes);
     // liveOverlayContent + reachableDocVersion are edit/content signals, and assetVersion is the
-    // binary-arrival signal, that must refresh the snapshot identity even though buildSnapshot/getAssets
-    // are referentially stable across them (see the outline memo for the same repopulate pattern).
-    [pdfPreviewActive, buildSnapshot, getAssets, previewSnapshotMainPath, previewAttributes, liveOverlayContent, reachableDocVersion, assetVersion],
-  );
+    // binary-arrival signal, that must refresh this callback's identity even though the functions it
+    // calls are referentially stable across them (see the outline memo for the same repopulate
+    // pattern) — the identity change is what schedules the next render.
+  }, [buildSnapshot, getAssets, ensureAssets, assetsSettled, getProjectFiles, previewSnapshotMainPath, previewAttributes, liveOverlayContent, reachableDocVersion, assetVersion]);
   const {
     pdf: previewPdf,
     isRendering: isPreviewRendering,
     phase: previewPhase,
     diagnostics: previewDiagnostics,
+    // The whole-render failure, as opposed to the per-resource diagnostics beside it. The panel is the
+    // only place an author can learn that the live preview stopped and why — a refusal the engine
+    // explains (a document past the supported size, say) is worth nothing if it is dropped here.
+    error: previewError,
     sourceMap: previewSourceMap,
+    stats: previewStats,
+    // The snapshot the PDF on screen was rendered from. Everything derived from that render is keyed
+    // to it rather than to the live buffer, which has moved on — see the scroll-sync memo below.
+    renderedSnapshot: previewRenderedSnapshot,
   } = usePdfPreview({
-    snapshot: previewSnapshot,
+    snapshot: pdfPreviewActive ? capturePreviewSnapshot : null,
     isEnabled: pdfPreviewActive,
     extensions: projectExtensionBundle,
   });
@@ -1003,12 +1026,17 @@ export function ProjectEditorLayout({
   // document the worker converts, but the editor's cursor line is in the OPEN file. Build the same
   // provenance map the include-resolve stage would (via the shared helper), gated on the PDF preview
   // being active with scroll-sync on and a source map present so no assembly cost is paid otherwise.
-  // Recomputes on the snapshot identity that drives the render, so it tracks the current source map.
+  //
+  // Built from the snapshot the preview was RENDERED from, which is the only document the source map
+  // beside it describes — and which changes once per completed render rather than once per keystroke.
+  // Assembling the live buffer instead lined a fresh assembly up against an older render's
+  // coordinates, and did the whole include expansion, plus a split of the assembled text into one
+  // string per line, on every character typed.
   const assembledScrollContext = useMemo(() => {
-    if (!pdfPreviewActive || !scrollSyncEnabled || previewSnapshot === null) return null;
+    if (!pdfPreviewActive || !scrollSyncEnabled || previewRenderedSnapshot === undefined) return null;
     if (previewSourceMap === undefined || previewSourceMap.length === 0) return null;
-    return buildAssembledScrollContext(previewSnapshot);
-  }, [pdfPreviewActive, scrollSyncEnabled, previewSnapshot, previewSourceMap]);
+    return buildAssembledScrollContext(previewRenderedSnapshot);
+  }, [pdfPreviewActive, scrollSyncEnabled, previewRenderedSnapshot, previewSourceMap]);
   const assembledLineToSource = assembledScrollContext?.lineToSource ?? null;
 
   // Lift the engine source map to block visual-start lines (title/attribute lines above each delimiter),
@@ -1066,15 +1094,16 @@ export function ProjectEditorLayout({
 
   // Reveal the editor source of a block clicked in the PDF preview. The click resolves (best-effort) to a
   // line in the MAIN-rooted assembled document; reverse-map it through the same provenance map the PDF
-  // scroll-sync uses to a source {file, line}. Built lazily here since clicks are rare.
+  // scroll-sync uses to a source {file, line}. Built lazily here since clicks are rare, and from the
+  // snapshot the page on screen was rendered from — the coordinate space the click is expressed in.
   const handlePdfSourceNavigate = useCallback(
     (assembledLine: number) => {
-      if (previewSnapshot === null) return;
-      const map = buildAssembledLineToSource(previewSnapshot);
+      if (previewRenderedSnapshot === undefined) return;
+      const map = buildAssembledLineToSource(previewRenderedSnapshot);
       const entry = map?.[assembledLine - 1];
       if (entry) handleDiagnosticLocation({ path: entry.path, line: entry.sourceLine });
     },
-    [previewSnapshot, handleDiagnosticLocation],
+    [previewRenderedSnapshot, handleDiagnosticLocation],
   );
 
   // Exact PDF click-to-source: the block carried its render-time origin, so jump straight to it — no
@@ -1389,8 +1418,12 @@ export function ProjectEditorLayout({
               </PanelResizeHandle>
               <Panel id="editor-preview" order={2} defaultSize={50} minSize={20} className="overflow-hidden" data-testid="preview-panel">
                 {previewMode === 'html' ? (
+                  // Deliberately NOT keyed on the open file. A key here remounted the whole panel on
+                  // every file switch, which threw away its render engine and reset it to a state that
+                  // reads as "nothing to preview" — so each switch cost an engine start-up and flashed
+                  // "preview not available" at a file that previews perfectly well. The panel tracks
+                  // the open file through its props instead, and keeps its engine across the switch.
                   <AsciiDocPreview
-                    key={selectedFile?.nodeId}
                     content={liveContent}
                     isEnabled={previewOpen}
                     projectId={projectId}
@@ -1422,6 +1455,8 @@ export function ProjectEditorLayout({
                     isRendering={isPreviewRendering}
                     phase={previewPhase}
                     diagnostics={previewDiagnostics}
+                    error={previewError}
+                    stats={previewStats}
                     onSelectLocation={handleDiagnosticLocation}
                     onNavigateToSource={handlePdfSourceNavigate}
                     onNavigateToExactSource={handlePdfExactSourceNavigate}

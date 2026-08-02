@@ -1,53 +1,12 @@
-import Asciidoctor from 'asciidoctor';
+import { load as loadAsciidoc } from 'asciidoctor';
 import hljs from 'highlight.js/lib/common';
 import { assembleIncludes } from './assemble-includes';
 import { resolveAttributeScope, effectiveLevelOffset } from '@asciidocollab/asciidoc-core';
 import { RENDER_INTRINSIC_ATTRIBUTES } from '../lib/asciidoc/render-intrinsics';
 import { resolveSandboxedPath } from '../lib/asciidoc/sandbox-path';
 import { blockStartLine } from '../lib/asciidoc/block-start-line';
-
-interface RenderRequest {
-  requestId: number;
-  content: string;
-  /** Base path Asciidoctor prepends to relative image targets (the project's image endpoint). */
-  imagesDir?: string;
-  /**
-   * When set together with {@link RenderRequest.files}, the worker assembles the include tree rooted
-   * at this project-relative main-file path (sandbox-confined via `resolveSandboxedPath`) and
-   * renders the assembled document instead of `content`. Absent ⇒ render `content` as-is.
-   */
-  mainPath?: string;
-  /** Project-relative path → content map supplying the include assembly. */
-  files?: Record<string, string>;
-  /**
-   * Project main-file path (root) for cross-document attribute resolution. The open
-   * file's `{name}` references resolve to the value in effect at its first include-point under this
-   * root. `null`/absent ⇒ standalone resolution (the file's own attributes only).
-   */
-  rootFileId?: string | null;
-  /** The previewed open file's path — the scope whose inherited attributes are seeded. */
-  openFileId?: string;
-  /** When false (default), the assembler hides included bodies and emits placeholders. */
-  showIncludes?: boolean;
-  /**
-   * Project-level render-config attributes (already soft-defaulted with a trailing `@`). Seeded FIRST
-   * so the document's inherited scope and its own header both override them, and so the host render
-   * controls (`imagesdir`) still win.
-   */
-  projectAttributes?: Record<string, string>;
-  /**
-   * Whether to emit the editor's scroll-sync hints: `data-source-line` beside every block's id, and a
-   * synthetic `__src_<context>_<line>` id on the blocks that have none so there is an id to sit beside.
-   *
-   * On (the default) for the preview, which navigates by them. Off for an export, whose output is read
-   * by people and other tools rather than by this app: the hints are dead weight there, and the
-   * synthetic ids put app-internal names into the published id namespace beside the author's own
-   * anchors. Turning them off is a choice not to generate them, not a pass that strips them afterwards
-   * — nothing has to distinguish a synthetic id from a real one after the fact, and the export skips
-   * both whole-document rewrites instead of paying for a third.
-   */
-  sourceLineHints?: boolean;
-}
+import type { RenderRequest, RenderResult, RenderDocumentDetails, RenderTimings } from './render-protocol';
+import { SYNTHETIC_BLOCK_ID_PREFIX, SYNTHETIC_DIAGRAM_ID_PREFIX } from './render-protocol';
 
 // Asciidoctor convention: a value ending in `@` is an overridable "soft" default — an in-document
 // attribute entry of the same name may still override it. We mark every seeded inherited-scope value
@@ -296,6 +255,39 @@ function rewriteImageSources(html: string, endpointBase: string): string {
     .replaceAll(OBJECT_TAG_RE, (tag) => prefixTargetAttribute(tag, OBJECT_DATA_ATTRIBUTE_RE, endpointBase));
 }
 
+// A table's column widths, as a percentage, on the `<col>` elements Asciidoctor writes into the
+// `<colgroup>`. Bounded to that one element and that one attribute: the width is the whole attribute
+// list the engine emits there, so there is nothing else inside the tag for the pattern to reach past,
+// and a `<col>` with no width (an autowidth column) does not match at all.
+const COLUMN_WIDTH_ATTRIBUTE_RE = /<col width="(\d+(?:\.\d+)?)%">/g;
+
+/**
+ * Restore the canonical CSS form of a table column's width.
+ *
+ * Asciidoctor states a column width as a style — `<col style="width: 25%;">` — and that is what both
+ * the previous JS engine and the reference Ruby toolchain produce. The JS engine at 4.0.6 writes the
+ * presentational `width` attribute instead (`@asciidoctor/core`, `src/converter/html5.js`: the
+ * `<col width="…%">` branch of the table converter, and the matching branch for a horizontal
+ * description list's `labelwidth`/`itemwidth`). That attribute was made obsolete in HTML5, so it is a
+ * porting slip rather than a deliberate change of output, and it is corrected HERE rather than
+ * absorbed by the render-equivalence gates: the point of those gates is that the preview agrees with
+ * canonical Asciidoctor, and teaching them to accept either spelling would retire their ability to
+ * see a column-width change at all.
+ *
+ * Written so it costs nothing once the engine is fixed: the canonical form does not match the
+ * pattern, so this becomes a no-op the day the emitted markup is correct, and the gates go on
+ * checking that it is.
+ *
+ * @param html - The converted HTML.
+ * @returns The HTML with every `<col>` width expressed as a style.
+ */
+function restoreColumnWidthStyles(html: string): string {
+  return html.replaceAll(
+    COLUMN_WIDTH_ATTRIBUTE_RE,
+    (_, width: string) => `<col style="width: ${width}%;">`,
+  );
+}
+
 // Asciidoctor renders checklist items as a leading unicode glyph in the paragraph text
 // (&#10003; "✓" when checked, &#10063; "❏" otherwise) — emitted only as these numeric
 // entities, so matching them is precise and never touches ordinary prose. We swap each for
@@ -333,49 +325,6 @@ function highlightCodeBlocks(html: string): string {
   });
 }
 
-interface RenderResult {
-  requestId: number;
-  ok: boolean;
-  html: string | null;
-  error: string | null;
-  /**
-   * True when the rendered document contains STEM (math) output that is in effect, meaning the
-   * resolved `:stem:` attribute is set AND Asciidoctor emitted stem markup carrying its delimiters.
-   * The worker never renders math itself (client-side); this flag lets the
-   * preview lazy-load MathJax only when there is math to typeset. Absent/`false` means no MathJax
-   * load, so stem delimiters written where `:stem:` is not in effect stay as literal text.
-   */
-  mathPresent?: boolean;
-  /**
-   * True when the rendered document carries at least one native-diagram placeholder
-   * (`<div class="adc-diagram">`). The worker never renders diagrams itself; this flag gates the main
-   * thread's lazy import of the on-screen diagram engines. Absent/`false` ⇒ no engine import.
-   */
-  diagramsPresent?: boolean;
-  /**
-   * The document header as Asciidoctor resolved it, for consumers that render OUTSIDE the app's own
-   * chrome. Embedded output carries the title (via `showtitle`) but never the author/revision line,
-   * because on screen the app already says whose document this is — a file saved to disk does not.
-   * Reported here rather than re-derived on the main thread: authors, revision lines and `lang` follow
-   * AsciiDoc's own header grammar, and the document that just parsed them is the authority on them.
-   */
-  details?: RenderDocumentDetails;
-}
-
-/** The resolved document-header values a standalone render needs; every part is optional. */
-interface RenderDocumentDetails {
-  /** The document title (`doctitle`). */
-  title?: string;
-  /** The author line (`author`, or the joined `authors` when there are several). */
-  author?: string;
-  /** The revision number (`revnumber`). */
-  revnumber?: string;
-  /** The revision date (`revdate`). */
-  revdate?: string;
-  /** The resolved document language (`lang`). */
-  lang?: string;
-}
-
 // A STEM BLOCK renders as `<div class="stemblock">` — a precise, stem-only signal in the output.
 const STEM_BLOCK_OUTPUT_RE = /class="stemblock"/;
 // An INLINE stem is authored with one of these macros. Inline stem leaves NO distinctive wrapper in
@@ -404,22 +353,27 @@ function detectMathPresent(stemAttribute: unknown, source: string, html: string)
   return STEM_BLOCK_OUTPUT_RE.test(html) || STEM_INLINE_MACRO_RE.test(source);
 }
 
-let processor: ReturnType<typeof Asciidoctor> | null = null;
-
-function getProcessor(): ReturnType<typeof Asciidoctor> {
-  if (processor) return processor;
-  processor = Asciidoctor();
-  return processor;
-}
-
-onmessage = function (event: MessageEvent<RenderRequest>) {
-  const { requestId, content, imagesDir, mainPath, files, rootFileId, openFileId, showIncludes, projectAttributes, sourceLineHints } =
+// The engine exposes `load` and `convert` as module functions and both are asynchronous, so the
+// handler is asynchronous too. Two consequences worth stating, because neither is obvious from the
+// diff: there is no processor object to build or keep — the module IS the processor, so the render
+// path holds no engine state between requests; and a second request can now arrive while the first is
+// still awaiting, so replies are no longer guaranteed to come back in the order they were asked for.
+// Nothing here is shared across invocations (every value below is a local), and the caller keeps only
+// the reply whose `requestId` matches the request it is still waiting for, so an overtaking reply is
+// discarded on arrival exactly as a stale one always was.
+onmessage = async function (event: MessageEvent<RenderRequest>) {
+  // Taken before anything else so the reported total covers the whole handler, include assembly and
+  // block walk included — the stages below deliberately leave those out, and a total that started
+  // later would hide them instead of leaving them visible as the remainder.
+  const startedAt = performance.now();
+  // `renderId` is read out and echoed back untouched: it means nothing here, and everything to the
+  // holder that has to say which consumer this reply belongs to. See its declaration.
+  const { requestId, renderId, content, imagesDir, mainPath, files, rootFileId, openFileId, showIncludes, projectAttributes, sourceLineHints } =
     event.data;
   // Absent means on: the preview is the dominant caller and navigates by these, so a request that says
   // nothing gets the behaviour it has always had. An export opts out explicitly.
   const wantSourceLineHints = sourceLineHints !== false;
   try {
-    const proc = getProcessor();
     // `showtitle` renders the document title in embedded output. `imagesdir` is the base path
     // prepended to relative image targets so `image::diagram.png[]` resolves to the project's
     // asset endpoint; absolute-URL targets are left untouched by Asciidoctor.
@@ -509,11 +463,13 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         ? { path: openFilePath ?? '', line: assembledLine }
         : { path: entry.path, line: entry.sourceLine };
     };
-    const asciidocDocument = proc.load(source, {
+    const parseStartedAt = performance.now();
+    const asciidocDocument = await loadAsciidoc(source, {
       safe: 'safe',
       sourcemap: true,
       attributes,
     });
+    const parseMs = performance.now() - parseStartedAt;
 
     // Collect source locations BEFORE conversion. Blocks that have no ID get a
     // synthetic one so we can inject data-source-line via a post-processing pass
@@ -532,9 +488,14 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
 
     const blocks = asciidocDocument.findBy({});
     for (const block of blocks) {
-      const loc = block.getSourceLocation();
-      if (!loc) continue;
-      const lineNumber = Number(loc.getLineNumber());
+      // Read the line from the block rather than from its source-location cursor. Both are engine
+      // accessors for the same value, but only this one is answered consistently by every node the
+      // walk returns: a table cell's cursor is stored as a plain copy of the object, so it carries the
+      // position but none of the cursor's methods, and asking it for its line number throws. That
+      // would abort the whole render — and with it the diagram placeholders and the provenance for
+      // every block — for any document containing a table. Nothing here needs the rest of the cursor.
+      const lineNumber = block.getLineNumber();
+      if (lineNumber === undefined) continue;
       const startLine = blockStartLine(sourceLines, lineNumber);
       const context = String(block.getContext());
       // The document-level block has no wrapping HTML element.
@@ -557,7 +518,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
         const rawDiagramId: unknown = block.getId();
         let diagramId: string = typeof rawDiagramId === 'string' && rawDiagramId ? rawDiagramId : '';
         if (!diagramId) {
-          diagramId = `__adc_diagram_${diagramBlocks.length}`;
+          diagramId = `${SYNTHETIC_DIAGRAM_ID_PREFIX}${diagramBlocks.length}`;
           block.setId(diagramId);
         }
         // `getSource` is a Block (listing/literal) method, not on the AbstractBlock the walk is typed as.
@@ -579,13 +540,18 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       const rawId: unknown = block.getId();
       let id: string = typeof rawId === 'string' ? rawId : '';
       if (!id) {
-        id = `__src_${context}_${lineNumber}`;
+        id = `${SYNTHETIC_BLOCK_ID_PREFIX}${context}_${lineNumber}`;
         block.setId(id);
       }
       blockSourceLines.push({ id, origin: originOf(startLine) });
     }
 
-    let html = String(asciidocDocument.convert());
+    const convertStartedAt = performance.now();
+    let html = String(await asciidocDocument.convert());
+    // Also the start of the post-conversion window: everything from here to the reply is the worker's
+    // own work on the converted HTML.
+    const convertedAt = performance.now();
+    const convertMs = convertedAt - convertStartedAt;
 
     // Gate client-side math on the RESOLVED `:stem:` value (cross-document scope already seeded
     // above), not on the raw delimiters Asciidoctor always emits for stem macros.
@@ -632,6 +598,7 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
     // only rewrites the <code> bodies and never touches id="..." attributes.
     html = highlightCodeBlocks(html);
     html = styleChecklistMarkers(html);
+    html = restoreColumnWidthStyles(html);
 
     // Inject data-source-line next to each id="..." attribute in a single pass
     // so the preview hook can use querySelector('[data-source-line="N"]').
@@ -656,17 +623,27 @@ onmessage = function (event: MessageEvent<RenderRequest>) {
       );
     }
 
+    const finishedAt = performance.now();
+    const timings: RenderTimings = {
+      parseMs,
+      convertMs,
+      postProcessMs: finishedAt - convertedAt,
+      totalMs: finishedAt - startedAt,
+    };
+
     postMessage({
       requestId,
+      renderId,
       ok: true,
       html,
       error: null,
       mathPresent,
       diagramsPresent,
       details,
+      timings,
     } satisfies RenderResult);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    postMessage({ requestId, ok: false, html: null, error: message } satisfies RenderResult);
+    postMessage({ requestId, renderId, ok: false, html: null, error: message } satisfies RenderResult);
   }
 };

@@ -993,13 +993,15 @@ describe('FileTree misc branch coverage', () => {
     }
   });
 
-  it('wires no-op rename/delete/new-file/new-folder key callbacks when a node is selected', async () => {
+  it('wires the mutation key callbacks when a node is selected', async () => {
     render(<FileTree projectId={projectId} canEdit onSelectFile={jest.fn()} selectedNodeId="file-1" />);
     await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
 
     const callbacks = (globalThis as unknown as Record<string, Record<string, (() => void) | undefined>>).__lastKeyCallbacks;
-    // With a selection the four mutation shortcuts resolve to (currently no-op) handlers; invoking
-    // them must not throw. (They become real actions once wired to the menu.)
+    // With a selection the four mutation shortcuts resolve to handlers; invoking them must not throw.
+    // Rename opens the selected node's rename dialog (covered end-to-end, against the real node and
+    // actions menu, in file-tree-rename-shortcut.test.tsx — this file mocks the node away). The other
+    // three are still placeholders awaiting the same treatment.
     expect(typeof callbacks['file-tree:rename']).toBe('function');
     expect(() => {
       callbacks['file-tree:rename']?.();
@@ -1007,6 +1009,16 @@ describe('FileTree misc branch coverage', () => {
       callbacks['file-tree:new-file']?.();
       callbacks['file-tree:new-folder']?.();
     }).not.toThrow();
+  });
+
+  // A viewer has no actions menu, so there is no rename dialog for the shortcut to open. Leaving the
+  // callback undefined lets the key event through untouched rather than swallowing it.
+  it('leaves the rename key callback undefined for a viewer who cannot modify the file tree', async () => {
+    render(<FileTree projectId={projectId} canEdit={false} onSelectFile={jest.fn()} selectedNodeId="file-1" />);
+    await waitFor(() => expect(screen.getByTestId('node-doc.adoc')).toBeInTheDocument());
+
+    const callbacks = (globalThis as unknown as Record<string, Record<string, (() => void) | undefined>>).__lastKeyCallbacks;
+    expect(callbacks['file-tree:rename']).toBeUndefined();
   });
 
   it('leaves mutation key callbacks undefined when nothing is selected', async () => {

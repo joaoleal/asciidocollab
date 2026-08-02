@@ -102,26 +102,27 @@ function setup(configureBridge?: (bridge: FakeBridge, index: number) => void): {
 
 describe('createRubyPdfVm', () => {
   describe('warmup', () => {
-    it('lazily instantiates the bridge on first warmup and reports a cold start', async () => {
+    it('lazily instantiates the bridge on first warmup and reports the boot that started the engine', async () => {
       const { vm, bridges, factoryCalls } = setup();
 
       expect(vm.ready).toBe(false);
       const outcome = await vm.warmup();
 
-      expect(outcome.coldStart).toBe(true);
+      expect(outcome).toEqual({ booted: true, firstBoot: true });
       expect(vm.ready).toBe(true);
       expect(factoryCalls()).toBe(1);
       expect(bridges[0]?.instantiateCount).toBe(1);
     });
 
-    it('reuses the single warm VM across repeated warmups (idempotent), cold start only once', async () => {
+    it('reuses the single warm VM across repeated warmups (idempotent), booting only once', async () => {
       const { vm, bridges, factoryCalls } = setup();
 
       const first = await vm.warmup();
       const second = await vm.warmup();
       const third = await vm.warmup();
 
-      expect([first.coldStart, second.coldStart, third.coldStart]).toEqual([true, false, false]);
+      expect([first.booted, second.booted, third.booted]).toEqual([true, false, false]);
+      expect([first.firstBoot, second.firstBoot, third.firstBoot]).toEqual([true, false, false]);
       expect(factoryCalls()).toBe(1);
       expect(bridges).toHaveLength(1);
       expect(bridges[0]?.instantiateCount).toBe(1);
@@ -150,7 +151,8 @@ describe('createRubyPdfVm', () => {
 
       expect(factoryCalls()).toBe(1);
       expect(bridges[0]?.instantiateCount).toBe(1);
-      expect(outcomes.filter((o) => o.coldStart)).toHaveLength(1);
+      expect(outcomes.filter((o) => o.booted)).toHaveLength(1);
+      expect(outcomes.filter((o) => o.firstBoot)).toHaveLength(1);
     });
 
     it('leaves the VM not-ready if instantiation fails and allows a retry', async () => {
@@ -167,7 +169,9 @@ describe('createRubyPdfVm', () => {
       expect(vm.ready).toBe(false);
 
       const retry = await vm.warmup();
-      expect(retry.coldStart).toBe(true);
+      // The failed attempt never produced a running engine, so the retry is still the boot that
+      // starts it for this session.
+      expect(retry).toEqual({ booted: true, firstBoot: true });
       expect(vm.ready).toBe(true);
       expect(factoryCalls()).toBe(2);
     });
@@ -260,7 +264,9 @@ describe('createRubyPdfVm', () => {
       vm.dispose();
 
       const outcome = await vm.warmup();
-      expect(outcome.coldStart).toBe(true);
+      // A teardown ends the session: nothing is holding an engine any more, so the next boot really is
+      // the engine starting up again and is reported as such.
+      expect(outcome).toEqual({ booted: true, firstBoot: true });
       expect(vm.ready).toBe(true);
       expect(factoryCalls()).toBe(2);
       expect(bridges).toHaveLength(2);
@@ -272,6 +278,99 @@ describe('createRubyPdfVm', () => {
       expect(() => vm.dispose()).not.toThrow();
       expect(vm.ready).toBe(false);
       expect(factoryCalls()).toBe(0);
+    });
+  });
+
+  describe('render budget', () => {
+    it('never lets a second render run on the instance that served the first', async () => {
+      const { vm, bridges, factoryCalls } = setup();
+
+      await vm.warmup();
+      vm.renderCompleted();
+      const second = await vm.warmup();
+
+      expect(second.booted).toBe(true);
+      expect(factoryCalls()).toBe(2);
+      expect(bridges[0]?.disposeCount).toBe(1);
+      expect(bridges[1]?.instantiateCount).toBe(1);
+    });
+
+    it('disposes the spent instance BEFORE instantiating its replacement, so the two never coexist', async () => {
+      const liveAtInstantiate: boolean[] = [];
+      const { vm, bridges } = setup((bridge, index) => {
+        bridge.instantiateImpl = async () => {
+          liveAtInstantiate.push(bridges.slice(0, index).some((earlier) => earlier.ready));
+        };
+      });
+
+      await vm.warmup();
+      vm.renderCompleted();
+      await vm.warmup();
+
+      expect(liveAtInstantiate).toEqual([false, false]);
+    });
+
+    it('keeps a pre-warmed instance that has not rendered — pre-warming is not wasted', async () => {
+      const { vm, bridges, factoryCalls } = setup();
+
+      await vm.warmup();
+      await vm.warmup();
+      await vm.warmup();
+
+      expect(factoryCalls()).toBe(1);
+      expect(bridges[0]?.disposeCount).toBe(0);
+    });
+
+    it('serves the render that follows a boot, then retires that instance in turn', async () => {
+      const { vm, factoryCalls } = setup();
+
+      await vm.warmup();
+      vm.renderCompleted();
+      await vm.warmup();
+      vm.renderCompleted();
+      await vm.warmup();
+
+      expect(factoryCalls()).toBe(3);
+    });
+
+    it('marks only the engine-starting boot as the first, never the replacements the budget forces', async () => {
+      const { vm } = setup();
+
+      const outcomes = [await vm.warmup()];
+      for (let render = 0; render < 3; render += 1) {
+        vm.renderCompleted();
+        outcomes.push(await vm.warmup());
+      }
+
+      // Every one of these is a real instantiation and every one costs boot time...
+      expect(outcomes.map((outcome) => outcome.booted)).toEqual([true, true, true, true]);
+      // ...but only the first started the engine. The rest are the per-render replacement the render
+      // budget forces, which is routine and must not read as the engine starting up again.
+      expect(outcomes.map((outcome) => outcome.firstBoot)).toEqual([true, false, false, false]);
+    });
+
+    it('does not mark the render after a pre-warm as a boot at all', async () => {
+      const { vm } = setup();
+
+      // The mount-time pre-warm pays the session's only announced start-up...
+      const preWarm = await vm.warmup();
+      // ...and the render that follows it reuses that instance, so it booted nothing.
+      const firstRender = await vm.warmup();
+
+      expect(preWarm).toEqual({ booted: true, firstBoot: true });
+      expect(firstRender).toEqual({ booted: false, firstBoot: false });
+    });
+
+    it('ignores a completed render reported with no instance to attribute it to', async () => {
+      const { vm, factoryCalls } = setup();
+
+      expect(() => vm.renderCompleted()).not.toThrow();
+      const outcome = await vm.warmup();
+
+      // The report landed on nothing, so the instance booted next is fresh and still owes a render.
+      expect(outcome.booted).toBe(true);
+      await vm.warmup();
+      expect(factoryCalls()).toBe(1);
     });
   });
 });

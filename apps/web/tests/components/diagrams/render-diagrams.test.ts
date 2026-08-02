@@ -11,7 +11,8 @@
 // fakes and assert the contract:
 //   - the placeholder ends up holding a SANITIZED <svg>, with the inert source PRESERVED for re-render,
 //   - a spec that references a REMOTE data url is SKIPPED WITH A WARNING and never fetched (zero egress),
-//   - re-running is idempotent (one <svg>, never nested),
+//   - re-running is INCREMENTAL: an already-drawn placeholder keeps the very node it had and the
+//     engine is not run over it again (one <svg>, never nested),
 //   - a malformed/failing diagram fails soft (a warning, no throw) while its neighbours still render,
 //   - the SVG sanitize is a SEPARATE svg-profile call that strips a crafted <script>.
 
@@ -81,18 +82,44 @@ describe('renderDiagrams', () => {
     (globalThis as { fetch?: unknown }).fetch = priorFetch;
   });
 
-  it('is idempotent — a second pass yields one <svg>, not nested output', async () => {
+  it('leaves an already-drawn diagram alone — the same node, and no second engine run', async () => {
+    // The preview refreshes on a keystroke, and the pass that draws diagrams runs after every one of
+    // them. Re-deriving each drawing from its source would be correct output at an absurd price: the
+    // engine re-run for every diagram in the document on every refresh, and the node the reader is
+    // looking at swapped for an identical one each time. A drawing and the source it came from can
+    // never drift apart here — the only thing that puts a placeholder back to bare source is the
+    // preview's DOM patch, and it does that exactly when the source changed — so a placeholder that
+    // still has its drawing is one with nothing left to do.
     const container = makePlaceholder('mermaid', 'graph TD; A-->B');
     const renderMermaid = jest.fn().mockResolvedValue(okSvg('mermaid'));
 
     await renderDiagrams(container, { renderMermaid });
-    await renderDiagrams(container, { renderMermaid });
+    const drawn = container.querySelector('.adc-diagram svg');
+    const second = await renderDiagrams(container, { renderMermaid });
 
     const placeholder = container.querySelector('.adc-diagram')!;
     expect(placeholder.querySelectorAll('svg')).toHaveLength(1);
     expect(placeholder.querySelectorAll('.adc-diagram-source')).toHaveLength(1);
-    // The source drove the re-derive, so the engine ran once per pass over the same source.
-    expect(renderMermaid).toHaveBeenNthCalledWith(2, 'graph TD; A-->B');
+    expect(renderMermaid).toHaveBeenCalledTimes(1);
+    expect(second).toMatchObject({ rendered: 0, preserved: 1 });
+    // Identity, not equality: an identical replacement would still have been a redraw.
+    expect(container.querySelector('.adc-diagram svg')).toBe(drawn);
+  });
+
+  it('draws a diagram again once the DOM patch has put it back to bare source', async () => {
+    // The counterpart to the check above, and what stops it being a way to freeze the first drawing on
+    // screen forever: a changed diagram reaches this pass as a placeholder holding only text again.
+    const container = makePlaceholder('mermaid', 'graph TD; A-->B');
+    const renderMermaid = jest.fn().mockResolvedValue(okSvg('mermaid'));
+
+    await renderDiagrams(container, { renderMermaid });
+    const placeholder = container.querySelector<HTMLElement>('.adc-diagram')!;
+    placeholder.textContent = 'graph TD; A-->C'; // what patching an edited diagram leaves behind
+    const second = await renderDiagrams(container, { renderMermaid });
+
+    expect(renderMermaid).toHaveBeenNthCalledWith(2, 'graph TD; A-->C');
+    expect(second).toMatchObject({ rendered: 1, preserved: 0 });
+    expect(placeholder.querySelectorAll('svg')).toHaveLength(1);
   });
 
   it('fails soft on a malformed diagram — warns, does not throw, neighbours still render', async () => {
@@ -136,6 +163,37 @@ describe('renderDiagrams', () => {
     expect(placeholder.querySelector('svg')).not.toBeNull();
     expect(placeholder.querySelector('script')).toBeNull();
     expect(placeholder.innerHTML).not.toContain('alert(1)');
+  });
+
+  it('records on the placeholder that it holds no drawing, and why', async () => {
+    // A placeholder that failed still carries exactly the source it was asked to draw, so nothing in
+    // the DOM would otherwise separate "could not be drawn" from "drawn and still current". A refresh
+    // that leaves unchanged diagrams alone needs that stated explicitly, or a diagram that failed once
+    // stays on screen untouched forever and is never offered to the renderer again.
+    const container = document.createElement('div');
+    container.append(makePlaceholder('mermaid', 'boom', 2).firstElementChild!);
+    container.append(makePlaceholder('plantuml', '@startuml\n@enduml', 4).firstElementChild!);
+
+    await renderDiagrams(container, { renderMermaid: jest.fn().mockRejectedValue(new Error('parse error')) });
+
+    const placeholders = container.querySelectorAll<HTMLElement>('.adc-diagram');
+    expect(placeholders[0].dataset.diagramFailed).toBe('render-failed');
+    expect(placeholders[1].dataset.diagramFailed).toBe('unsupported-engine');
+  });
+
+  it('clears the failure record once a later pass draws the diagram', async () => {
+    const container = makePlaceholder('mermaid', 'graph TD; A-->B');
+    const failing = jest.fn().mockRejectedValue(new Error('transient engine failure'));
+    const succeeding = jest.fn().mockResolvedValue(okSvg('mermaid'));
+
+    await renderDiagrams(container, { renderMermaid: failing });
+    const afterFailure = container.querySelector<HTMLElement>('.adc-diagram')!.dataset.diagramFailed;
+    await renderDiagrams(container, { renderMermaid: succeeding });
+
+    expect(afterFailure).toBe('render-failed');
+    const placeholder = container.querySelector<HTMLElement>('.adc-diagram')!;
+    expect(placeholder.dataset.diagramFailed).toBeUndefined();
+    expect(placeholder.querySelector('svg')).not.toBeNull();
   });
 
   it('routes the injected sanitizeSvg seam (a separate call from the shared preview sanitizer)', async () => {

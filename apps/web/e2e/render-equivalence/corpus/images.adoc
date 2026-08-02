@@ -1,0 +1,20 @@
+= Images
+:imagesdir: assets
+
+A relative target is resolved against `imagesdir` and then rewritten onto the app's image endpoint;
+an already-qualified target is left exactly as the author wrote it.
+
+image::diagram.png[A relative block image,640,480]
+
+image::nested/photo.jpg[A relative block image in a subfolder]
+
+image::https://example.invalid/remote.png[An absolute block image]
+
+image::/root-relative.png[A root-relative block image]
+
+An inline image:icon.png[icon,16,16] in a sentence, and an inline
+image:https://example.invalid/remote-icon.png[remote icon,16,16] beside it.
+
+[#figure-anchor]
+.A figure with a title, which the engine captions and numbers
+image::diagram.png[A captioned figure]

@@ -105,13 +105,16 @@ function lastRenderRequest() {
   throw new Error('no render request was posted');
 }
 
+/** A stage breakdown of zeros: this fixture's render cost is not what the tests below are about. */
+const NO_STAGE_COST = { vmBootMs: 0, populateMs: 0, pipelineMs: 0, convertMs: 0 };
+
 function makeResult(requestId: string, overrides: Partial<RenderResult> = {}): RenderResult {
   return {
     requestId,
     mode: 'export',
     pdf: new Blob(['%PDF-1.7'], { type: 'application/pdf' }),
     diagnostics: [],
-    stats: { renderMs: 12, cacheHits: 0, rasterFallbacks: 0 },
+    stats: { renderMs: 12, cacheHits: 0, rasterFallbacks: 0, stages: NO_STAGE_COST },
     ...overrides,
   };
 }

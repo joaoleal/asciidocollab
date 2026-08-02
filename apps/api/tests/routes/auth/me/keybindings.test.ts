@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import { UpdateKeyBindingUseCase, ResetKeyBindingUseCase, ValidationError } from '@asciidocollab/domain';
+import { DEFAULT_KEY_BINDINGS, UpdateKeyBindingUseCase, ResetKeyBindingUseCase, ValidationError } from '@asciidocollab/domain';
 import { keybindingsRoutes } from '../../../../src/routes/auth/me/keybindings';
 
 // Mock requireAuth
@@ -34,13 +34,31 @@ describe('Keybindings routes', () => {
     mockKeyBindingRepo.findAll.mockResolvedValue([]);
   });
 
-  it('GET returns 4 bindings with defaults for new user', async () => {
+  it('GET returns every registered binding, defaulted, for a new user', async () => {
     const app = await buildTestServer();
     const response = await app.inject({ method: 'GET', url: '/auth/me/keybindings' });
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.body);
-    expect(body).toHaveLength(5);
-    expect(body.every((b: { isDefault: boolean }) => b.isDefault)).toBe(true);
+    const body = JSON.parse(response.body) as { action: string; isDefault: boolean }[];
+    // Counted from the registry rather than written out as a number. This is what the settings page
+    // lists, so a shortcut added to the registry has to appear here — and a test pinned to a literal
+    // count fails on the addition itself, which says nothing about whether it is being served.
+    expect(body.map((binding) => binding.action).toSorted()).toEqual(
+      Object.keys(DEFAULT_KEY_BINDINGS).toSorted(),
+    );
+    expect(body.every((binding) => binding.isDefault)).toBe(true);
+    await app.close();
+  });
+
+  it('GET serves the editor shortcuts alongside the file tree ones', async () => {
+    // The settings page groups by namespace and offers whatever it is given. The editor's shortcuts
+    // reaching it is the whole of what makes them configurable rather than merely hard-coded.
+    const app = await buildTestServer();
+    const response = await app.inject({ method: 'GET', url: '/auth/me/keybindings?namespace=editor' });
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as { action: string; keyCombo: string }[];
+    expect(body.length).toBeGreaterThan(0);
+    expect(body.every((binding) => binding.action.startsWith('editor:'))).toBe(true);
+    expect(body.find((binding) => binding.action === 'editor:bold')?.keyCombo).toBe('Mod+B');
     await app.close();
   });
 

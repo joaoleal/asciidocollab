@@ -18,8 +18,8 @@ import { asciidocCrossDocumentAttributes } from '@/lib/codemirror/cross-document
 import { asciidocConditionalDimming } from '@/lib/codemirror/conditional-dimming';
 import { asciidocBlockDecorations } from '@/lib/codemirror/asciidoc-block-decorations';
 import { asciidocSourceHighlight } from '@/lib/codemirror/asciidoc-source-highlight';
-import { foldControlsKeymap, foldPersistence } from '@/lib/codemirror/asciidoc-fold-persist';
-import { formatKeymap, autoWrapInputHandler } from '@/lib/codemirror/asciidoc-format-keymap';
+import { foldPersistence } from '@/lib/codemirror/asciidoc-fold-persist';
+import { autoWrapInputHandler } from '@/lib/codemirror/asciidoc-format-keymap';
 import { asciidocPasteHandlers } from '@/lib/codemirror/asciidoc-paste';
 import { asciidocDiagnosticsSource } from '@/lib/codemirror/asciidoc-diagnostics';
 import {
@@ -59,6 +59,13 @@ export interface EditorCompartments {
   grammar: Compartment;
   /** Minimap (document text-preview) compartment, reconfigured when the minimap preference toggles. */
   minimap: Compartment;
+  /**
+   * The author's configurable shortcuts. Empty at mount and reconfigured as soon as the mount hook
+   * has the bindings — which is the same frame for the defaults, and again if the server's copy
+   * differs. Held in a compartment because a keymap is fixed once built, and the author may change
+   * one from the settings page while the editor is open.
+   */
+  shortcuts: Compartment;
 }
 
 /**
@@ -209,9 +216,9 @@ export function buildEditorExtensions(options: BuildEditorExtensionsOptions): Ex
     // List auto-continuation Enter command — registered before defaultKeymap (and at
     // Prec.high) so it handles list lines first and all other lines fall through.
     listContinuationKeymap,
-    // Formatting shortcuts (Mod-b/i/`, Mod-/) + type-over-selection auto-wrap.
-    // Bound before defaultKeymap so they win without overriding save/find/undo.
-    keymap.of([...formatKeymap]),
+    // The author's configurable shortcuts (formatting, folding, review comment), bound before
+    // defaultKeymap so they win without overriding save/find/undo.
+    compartments.shortcuts.of([]),
     autoWrapInputHandler,
     keymap.of([...defaultKeymap, ...nativeHistoryKeymap, ...searchKeymap]),
     search({ top: true }),
@@ -231,7 +238,6 @@ export function buildEditorExtensions(options: BuildEditorExtensionsOptions): Ex
     asciidocFold,
     // Whole-document fold controls (fold-all/unfold-all/to-level) + per-file
     // fold persistence.
-    foldControlsKeymap,
     foldPersistence(foldStorageKey),
     // Paste/drop conveniences: URL→link, HTML→AsciiDoc, image→upload+image::.
     asciidocPasteHandlers({ uploadImage }),

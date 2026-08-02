@@ -21,12 +21,87 @@ export const PREVIEW_DEBOUNCE_MS = Number(
 /**
  * Upper bound, in milliseconds, on how long the live preview may be postponed while the user keeps
  * typing. The preview uses a trailing debounce of {@link PREVIEW_DEBOUNCE_MS}, but continuous typing
- * would otherwise defer the render indefinitely; this caps that so the preview refreshes at least
- * once every {@link PREVIEW_MAX_WAIT_MS} during a sustained edit.
+ * would otherwise defer the render indefinitely; this caps that so a sustained edit refreshes the
+ * preview at least once per {@link PREVIEW_MAX_WAIT_MS} interval, *or* as soon as the refresh in
+ * progress finishes, whichever is later.
+ *
+ * The second clause is not a caveat but the self-limiting part of the guarantee: a document that
+ * takes longer to render than this interval would otherwise have each cap expiry stack another
+ * refresh on top of the one still running. So the cap yields while a render is in flight and fires
+ * the moment it completes, never stacking a FORCED refresh on a render that has not reported back.
+ *
+ * That is a promise about the forced refresh alone. The trailing debounce deliberately does not
+ * consult the in-flight flag (see {@link file://./max-wait-debounce.ts}): it fires only once activity
+ * has actually stopped, and holding it back would make an explicit trigger — a file switch, a setting
+ * change — wait on a render that may never report completion. So a document slower than its trailing
+ * delay can still have a second render posted behind one that is still running; the request-id guard
+ * is what keeps the older one's result from reaching the screen.
  */
 export const PREVIEW_MAX_WAIT_MS = Number(
   process.env.NEXT_PUBLIC_PREVIEW_MAX_WAIT_MS ?? 2000,
 );
+
+/**
+ * Shortest trailing delay, in milliseconds, the live preview will ever wait before refreshing.
+ *
+ * {@link PREVIEW_DEBOUNCE_MS} is the ceiling and this is the floor of the delay derived from what the
+ * last render actually cost (see {@link file://./preview/adaptive-delay.ts}). A floor is needed
+ * because a document cheap enough to render in a couple of frames would otherwise drive the delay
+ * towards zero and re-render on nearly every keystroke, spending more on scheduling and DOM work than
+ * the typing is worth. This leaves the refresh comfortably inside the tenth-of-a-second band where a
+ * change still reads as immediate, without chasing every character.
+ */
+export const PREVIEW_ADAPTIVE_MIN_MS = Number(
+  process.env.NEXT_PUBLIC_PREVIEW_ADAPTIVE_MIN_MS ?? 120,
+);
+
+/**
+ * Longest trailing delay, in milliseconds, the PAGE-FORMATTED (PDF) preview will wait before
+ * refreshing — the ceiling of its derived delay, replacing {@link PREVIEW_DEBOUNCE_MS}, which is the
+ * web preview's.
+ *
+ * The two surfaces do not cost remotely the same. A page-formatted render is measured in seconds
+ * (`specs/043-preview-responsiveness/baseline.md` §5: 1,356 ms at 100 lines, 6,505 ms at 1,500)
+ * against tens of milliseconds for the web preview. Sharing the web preview's half-second ceiling
+ * starts every page-formatted render after a pause far shorter than the render itself takes, so a
+ * document is still laying itself out when the author's next pause asks for another one — and the
+ * work the first one did is discarded. Waiting longer here does not make the preview slower: it is
+ * the difference between refreshing from the text the author stopped at and refreshing from text
+ * they had already moved on from.
+ *
+ * It stays well under {@link PREVIEW_MAX_WAIT_MS} so a genuine pause still triggers the refresh
+ * before the cap has to force one; a ceiling at the cap would leave the cap as the only trigger.
+ */
+export const PDF_PREVIEW_MAX_DEBOUNCE_MS = Number(
+  process.env.NEXT_PUBLIC_PDF_PREVIEW_MAX_DEBOUNCE_MS ?? 1500,
+);
+
+/**
+ * How many times the render worker is rebuilt automatically after it dies before the application
+ * stops trying and asks the author whether to try again.
+ *
+ * Three is a chosen figure, not a derived one. It is enough attempts to ride out a one-off loss — the
+ * browser reclaiming a worker under memory pressure, a transient failure while a large document
+ * loads — without letting a document that kills the engine every single time spin in a rebuild loop
+ * that burns the machine and never converges. Move it on evidence from real crashes, not on taste.
+ */
+export const MAX_ENGINE_REBUILDS = 3;
+
+/**
+ * How long, in milliseconds, the render worker stays alive after its last consumer lets go.
+ *
+ * This reads like a leak and is the opposite of one. The web-formatted preview is the worker's only
+ * consumer, so switching to the page-formatted preview, collapsing the preview panel or hiding it
+ * all drop the consumer count to zero — precisely the moments the worker is meant to survive.
+ * Shutting it down there would charge the engine's whole start-up cost again on the way back. So
+ * having no consumers only starts this clock: the next consumer stops it and gets the running worker
+ * straight away, and the worker is given up only if the clock runs out.
+ *
+ * A minute comfortably covers a look at the other format and back, or a panel closed and reopened,
+ * while still handing the memory back from an editor that has been left sitting. Like the rebuild
+ * bound above, it is a judgement to revisit on evidence.
+ */
+export const RENDER_WORKER_IDLE_RETENTION_MS = 60_000;
 
 /** Milliseconds between external-change HEAD polls when the editor is open. */
 export const EXTERNAL_CHANGE_POLL_INTERVAL_MS = Number(

@@ -173,6 +173,13 @@ export interface StageContext {
 export interface StageResult {
   /** Per-resource/per-block diagnostics produced by this stage (never abort the pipeline). */
   readonly diagnostics?: readonly RenderDiagnostic[];
+  /**
+   * How many renders this stage performed fell back from SVG to a PNG raster. Reported as a count of
+   * its own rather than derived from the diagnostics: the code those warnings carry
+   * (`unsupported-image`) is shared with the image-guard stage's unsupported and oversized images,
+   * so counting them would report failures that are not raster fallbacks at all. Absent means none.
+   */
+  readonly rasterFallbacks?: number;
 }
 
 /**
@@ -237,6 +244,8 @@ export interface OrchestratorResult {
   readonly ranStages: readonly PipelineStageKind[];
   /** All diagnostics accumulated across the run, in report order. */
   readonly diagnostics: readonly RenderDiagnostic[];
+  /** How many renders fell back from SVG to a PNG raster, across every stage that ran. */
+  readonly rasterFallbacks: number;
 }
 
 /**
@@ -256,6 +265,7 @@ export async function runPipeline(
 
   const ranStages: PipelineStageKind[] = [];
   let cancelled = false;
+  let rasterFallbacks = 0;
 
   for (const kind of PIPELINE_STAGE_ORDER) {
     const stage = byKind.get(kind);
@@ -280,6 +290,7 @@ export async function runPipeline(
     for (const diagnostic of result.diagnostics ?? []) {
       context.diagnostics.report(diagnostic);
     }
+    rasterFallbacks += result.rasterFallbacks ?? 0;
     ranStages.push(kind);
   }
 
@@ -288,6 +299,7 @@ export async function runPipeline(
     cancelled,
     ranStages,
     diagnostics: context.diagnostics.all(),
+    rasterFallbacks,
   };
 }
 

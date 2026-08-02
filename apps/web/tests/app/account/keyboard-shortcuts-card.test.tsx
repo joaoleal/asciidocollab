@@ -41,6 +41,36 @@ describe('KeyboardShortcutsCard', () => {
     expect(screen.getByText('F2')).toBeInTheDocument();
   });
 
+  it('lists the editor shortcuts, each with an icon beside it', () => {
+    mockUseKeyBindingSettings.mockReturnValue({
+      groups: [
+        ...defaultGroups,
+        {
+          namespace: 'editor',
+          label: 'Editor',
+          bindings: [
+            { action: 'editor:bold', label: 'Bold', keyCombo: 'Mod+B', isDefault: true },
+            { action: 'editor:review-comment', label: 'Add Review Comment', keyCombo: 'Mod+Shift+M', isDefault: true },
+          ],
+        },
+      ],
+      updateBinding: mockUpdate,
+      resetBinding: mockReset,
+    });
+
+    const { container } = render(<KeyboardShortcutsCard />);
+
+    expect(screen.getByText('Editor')).toBeInTheDocument();
+    expect(screen.getByText('Bold')).toBeInTheDocument();
+    expect(screen.getByText('Mod+B')).toBeInTheDocument();
+    expect(screen.getByText('Add Review Comment')).toBeInTheDocument();
+
+    // One icon per row, and decorative: the label beside it already names the action, so announcing
+    // the glyph too would read every row twice to a screen reader.
+    const icons = container.querySelectorAll('svg[aria-hidden="true"]');
+    expect(icons.length).toBeGreaterThanOrEqual(4);
+  });
+
   it('clicking a binding cell enters capture mode showing "Press a key…"', () => {
     render(<KeyboardShortcutsCard />);
     fireEvent.click(screen.getByText('F2'));

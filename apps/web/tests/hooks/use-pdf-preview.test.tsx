@@ -8,6 +8,7 @@ import {
   type ToWorker,
 } from '@asciidocollab/asciidoc-pdf';
 import { usePdfPreview } from '@/hooks/use-pdf-preview';
+import { PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS } from '@/lib/editor-config';
 import {
   createMermaidPrerenderer,
   type IdleScheduler,
@@ -105,13 +106,48 @@ function makeSnapshot(files: Record<string, string>, rootPath = 'main.adoc'): Pr
   };
 }
 
+/** A stage breakdown of zeros: this fixture's render cost is not what the tests below are about. */
+const NO_STAGE_COST = { vmBootMs: 0, populateMs: 0, pipelineMs: 0, convertMs: 0 };
+
+/** One keystroke every half trailing-delay — fast enough that the trailing timer can never elapse. */
+const KEYSTROKE_INTERVAL_MS = PREVIEW_DEBOUNCE_MS / 2;
+
+/**
+ * Type for `durationMs` of wall clock without ever pausing long enough for the trailing debounce.
+ * Under this input the trailing timer is restarted before it can fire, so the maximum-wait cap is the
+ * only thing that can still refresh the preview — which is exactly what these tests are about.
+ *
+ * @param durationMs - How long the uninterrupted burst lasts.
+ * @param type - Feeds the next value of the edited document to the hook under test.
+ * @returns The document text after the final keystroke.
+ */
+function typeWithoutPausing(durationMs: number, type: (documentText: string) => void): string {
+  let text = '= Doc';
+  for (let elapsed = 0; elapsed < durationMs; elapsed += KEYSTROKE_INTERVAL_MS) {
+    text += 'x';
+    act(() => type(text));
+    act(() => jest.advanceTimersByTime(KEYSTROKE_INTERVAL_MS));
+  }
+  return text;
+}
+
+/**
+ * A snapshot factory that records whether it was called — the lazy form of the hook's snapshot input.
+ *
+ * @param text - The document text the built snapshot carries.
+ * @returns A spy producing that snapshot.
+ */
+function snapshotBuilder(text: string): jest.Mock<ProjectSnapshot, []> {
+  return jest.fn(() => makeSnapshot({ 'main.adoc': text }));
+}
+
 function makeResult(requestId: string, sourceMap?: RenderResult['sourceMap']): RenderResult {
   return {
     requestId,
     mode: 'preview',
     pdf: new Blob(['%PDF'], { type: 'application/pdf' }),
     diagnostics: [],
-    stats: { renderMs: 1, cacheHits: 0, rasterFallbacks: 0 },
+    stats: { renderMs: 1, cacheHits: 0, rasterFallbacks: 0, stages: NO_STAGE_COST },
     ...(sourceMap === undefined ? {} : { sourceMap }),
   };
 }
@@ -201,20 +237,25 @@ describe('usePdfPreview', () => {
       { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= First' }) } },
     );
 
-    // requestId '1' issued.
+    // requestId '1' issued and answered.
     act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+    const firstPdf = result.current.pdf;
+
     // requestId '2' issued.
     act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': '= Second' }) }));
     act(() => jest.advanceTimersByTime(200));
 
-    // Stale result for the superseded request '1' must be ignored.
+    // A late duplicate for the superseded request '1' must be ignored: the preview keeps the document
+    // it is showing and stays rendering, rather than treating the older render as this one's answer.
     act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
-    expect(result.current.pdf).toBeUndefined();
+    expect(result.current.pdf).toBe(firstPdf);
     expect(result.current.isRendering).toBe(true);
 
     // The latest result is honored.
     act(() => lastWorker().emit({ type: 'result', result: makeResult('2') }));
     expect(result.current.pdf).toBeInstanceOf(Blob);
+    expect(result.current.pdf).not.toBe(firstPdf);
     expect(result.current.isRendering).toBe(false);
   });
 
@@ -225,6 +266,7 @@ describe('usePdfPreview', () => {
     );
 
     act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
     act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': '= Second' }) }));
     act(() => jest.advanceTimersByTime(200));
 
@@ -255,6 +297,33 @@ describe('usePdfPreview', () => {
     expect(result.current.diagnostics[0]!.code).toBe('remote-skipped');
   });
 
+  it('surfaces what the render cost, as the engine reported it', () => {
+    const { result } = renderHook(() =>
+      usePdfPreview({ snapshot: makeSnapshot({ 'main.adoc': '= Doc' }), isEnabled: true }),
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    const withStats: RenderResult = {
+      ...makeResult('1'),
+      stats: {
+        coldStartMs: 900,
+        renderMs: 3200,
+        cacheHits: 4,
+        rasterFallbacks: 1,
+        stages: { vmBootMs: 900, populateMs: 40, pipelineMs: 260, convertMs: 2000 },
+      },
+    };
+    act(() => lastWorker().emit({ type: 'result', result: withStats }));
+
+    expect(result.current.stats).toEqual({
+      coldStartMs: 900,
+      renderMs: 3200,
+      cacheHits: 4,
+      rasterFallbacks: 1,
+      stages: { vmBootMs: 900, populateMs: 40, pipelineMs: 260, convertMs: 2000 },
+    });
+  });
+
   it('exposes a fatal error and stops rendering', () => {
     const { result } = renderHook(() =>
       usePdfPreview({ snapshot: makeSnapshot({ 'main.adoc': '= Doc' }), isEnabled: true }),
@@ -283,6 +352,7 @@ describe('usePdfPreview', () => {
     act(() => jest.advanceTimersByTime(200));
     await flushPrepass();
     expect(renderCalls(lastWorker())[0]!.request.changedPaths).toBeUndefined();
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
 
     // A single file changed → the caller supplies the delta.
     act(() =>
@@ -429,5 +499,276 @@ describe('usePdfPreview', () => {
       shimVersion: createMermaidShim().version,
     });
     expect(previewAssets.map((asset) => asset.sourceHash)).toEqual([expectedHash]);
+  });
+});
+
+// ── usePdfPreview — refreshing while typing never pauses ─────────────────────
+
+describe('usePdfPreview — refresh while typing without pause', () => {
+  it('refreshes once the maximum wait elapses even though typing never pauses', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= Doc' }) } },
+    );
+
+    const typed = typeWithoutPausing(PREVIEW_MAX_WAIT_MS + KEYSTROKE_INTERVAL_MS, (documentText) =>
+      rerender({ snapshot: makeSnapshot({ 'main.adoc': documentText }) }),
+    );
+    await flushPrepass();
+
+    // The trailing delay never came due, so this render exists only because the cap forced it.
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(1);
+    const posted = renders[0]!.request.snapshot.files['main.adoc']!;
+    // It carried an edit made during the burst, not the value the hook mounted with.
+    expect(typed.startsWith(posted)).toBe(true);
+    expect(posted).not.toBe('= Doc');
+  });
+
+  it('holds the refresh back while a render is in flight and runs it when that render finishes', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= Doc' }) } },
+    );
+
+    // Two whole cap windows of uninterrupted typing, with the worker never answering the first
+    // render: the second expiry must be held back rather than stacked on the render still running.
+    typeWithoutPausing(PREVIEW_MAX_WAIT_MS * 2 + KEYSTROKE_INTERVAL_MS, (documentText) =>
+      rerender({ snapshot: makeSnapshot({ 'main.adoc': documentText }) }),
+    );
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // The in-flight render reports back with work still pending, so the held-back refresh runs —
+    // without waiting for another cap window.
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+    await flushPrepass();
+
+    expect(renderCalls(lastWorker())).toHaveLength(2);
+  });
+
+  it('never posts a second render while one is still outstanding', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= A' }) } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // The author edits and pauses — twice, each pause long enough for the trailing delay AND the cap —
+    // while the worker has still not answered the render it is holding.
+    for (const text of ['= AB', '= ABC']) {
+      act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': text }) }));
+      act(() => jest.advanceTimersByTime(PREVIEW_MAX_WAIT_MS + 200));
+      await flushPrepass();
+      expect(renderCalls(lastWorker())).toHaveLength(1);
+    }
+
+    // Reporting back releases exactly one render, and it carries the NEWEST document rather than the
+    // one that was current when the first refresh came due.
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+    await flushPrepass();
+
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(2);
+    expect(renders[1]!.request.snapshot.files['main.adoc']).toBe('= ABC');
+  });
+
+  it('renders the edit that was still waiting out its pause when the render finished', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= A' }) } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // An edit comes due while that render is running, so it is held behind it.
+    act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': '= AB' }) }));
+    act(() => jest.advanceTimersByTime(PREVIEW_MAX_WAIT_MS + 200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // A further edit arrives and is still waiting out its trailing pause when the render reports.
+    act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': '= ABC' }) }));
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+    await flushPrepass();
+
+    // The newest edit is the one worth rendering — the held state is a version older, and rendering
+    // it while discarding the run that carried this one is how the newest edit went missing outright.
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(2);
+    expect(renders[1]!.request.snapshot.files['main.adoc']).toBe('= ABC');
+
+    // Nothing further is owed: it was rendered, not merely postponed.
+    act(() => jest.advanceTimersByTime(PREVIEW_MAX_WAIT_MS * 2));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(2);
+  });
+
+  it('holds the render a reopened panel asks for behind the one still running', async () => {
+    const snapshot = makeSnapshot({ 'main.adoc': '= Doc' });
+    const { rerender } = renderHook(
+      ({ isEnabled }: { isEnabled: boolean }) => usePdfPreview({ snapshot, isEnabled }),
+      { initialProps: { isEnabled: true } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // Closing the panel does not reach into the engine: the convert is one synchronous call, so that
+    // render is still running and its VM instance is still one no other render may share.
+    act(() => rerender({ isEnabled: false }));
+    act(() => rerender({ isEnabled: true }));
+    act(() => jest.advanceTimersByTime(PREVIEW_MAX_WAIT_MS + 200));
+    await flushPrepass();
+
+    // Posted, the reopened panel's render would only queue BEHIND the abandoned one — the first
+    // refresh after reopening costing two full page renders instead of one.
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(2);
+  });
+
+  it('releases the held render when the outstanding one fails, not only when it succeeds', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= A' }) } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': '= AB' }) }));
+    act(() => jest.advanceTimersByTime(PREVIEW_MAX_WAIT_MS + 200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    act(() =>
+      lastWorker().emit({
+        type: 'error',
+        error: { requestId: '1', phase: 'convert', code: 'convert-failed', message: 'boom' },
+      }),
+    );
+    await flushPrepass();
+
+    // A failed render must not wedge the preview: the edit made while it was running still renders.
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(2);
+    expect(renders[1]!.request.snapshot.files['main.adoc']).toBe('= AB');
+  });
+
+  it('materialises a lazily-supplied snapshot when the render is due, not on every edit', async () => {
+    const builders = [snapshotBuilder('= A'), snapshotBuilder('= AB'), snapshotBuilder('= ABC')];
+
+    const { rerender } = renderHook(
+      ({ source }: { source: () => ProjectSnapshot }) =>
+        usePdfPreview({ snapshot: source, isEnabled: true }),
+      { initialProps: { source: builders[0]! } },
+    );
+    act(() => rerender({ source: builders[1]! }));
+    act(() => rerender({ source: builders[2]! }));
+
+    // Three edits, no render due yet: capturing the project is what the debounce is protecting.
+    expect(builders.map((builder) => builder.mock.calls.length)).toEqual([0, 0, 0]);
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+
+    // Exactly one capture happened, for the state that actually rendered.
+    expect(builders.map((builder) => builder.mock.calls.length)).toEqual([0, 0, 1]);
+    expect(renderCalls(lastWorker())[0]!.request.snapshot.files['main.adoc']).toBe('= ABC');
+  });
+
+  it('waits longer before the next render when the last one was expensive', async () => {
+    const { rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= A' }) } },
+    );
+
+    // Nothing measured yet, so the first render goes out after the fixed delay.
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // It reports having cost 400 ms, so the next pause is twice that rather than the fixed delay.
+    const costly: RenderResult = {
+      ...makeResult('1'),
+      stats: { renderMs: 400, cacheHits: 0, rasterFallbacks: 0, stages: NO_STAGE_COST },
+    };
+    act(() => lastWorker().emit({ type: 'result', result: costly }));
+
+    act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': '= AB' }) }));
+    act(() => jest.advanceTimersByTime(300));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    act(() => jest.advanceTimersByTime(600));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(2);
+  });
+
+  it('exposes the snapshot the current preview was rendered from, not the latest edit', async () => {
+    const { result, rerender } = renderHook(
+      ({ snapshot }: { snapshot: ProjectSnapshot }) => usePdfPreview({ snapshot, isEnabled: true }),
+      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= A' }) } },
+    );
+
+    expect(result.current.renderedSnapshot).toBeUndefined();
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    // The author types on while the render is running.
+    act(() => rerender({ snapshot: makeSnapshot({ 'main.adoc': '= AB' }) }));
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+
+    // What the preview is showing came from the earlier text, and that is what it reports.
+    expect(result.current.renderedSnapshot?.files['main.adoc']).toBe('= A');
+  });
+
+  it('still renders when the mermaid pre-pass fails, rather than stalling on it', async () => {
+    const failing = {
+      prerender: jest.fn(() => Promise.reject(new Error('the mermaid engine could not be loaded'))),
+    };
+    const { result } = renderHook(() =>
+      usePdfPreview({
+        snapshot: makeSnapshot({ 'main.adoc': mermaidDocument('A') }),
+        isEnabled: true,
+        prerenderer: failing,
+      }),
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+
+    // The render went out with nothing pre-seeded — the worker's own mermaid handling reports the
+    // block — instead of the preview being pinned on "rendering" with no reply ever coming.
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(1);
+    expect(renders[0]!.request.generatedAssets).toBeUndefined();
+    expect(result.current.isRendering).toBe(true);
+
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+    expect(result.current.isRendering).toBe(false);
+  });
+
+  it('cancels the pending refresh when the hook unmounts', () => {
+    const { unmount } = renderHook(() =>
+      usePdfPreview({ snapshot: makeSnapshot({ 'main.adoc': '= Doc' }), isEnabled: true }),
+    );
+
+    // A render is scheduled but neither timer has come due yet.
+    expect(renderCalls(lastWorker())).toHaveLength(0);
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+
+    // Both the trailing timer and the cap are gone — nothing is left armed to fire into a dead hook.
+    expect(jest.getTimerCount()).toBe(0);
   });
 });

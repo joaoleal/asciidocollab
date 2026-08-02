@@ -19,32 +19,41 @@ jest.mock('@/components/math/render-math', () => ({
 }));
 
 import { useAsciidocPreview } from '@/hooks/use-asciidoc-preview';
+import { commitToPreviewOutput, previewHookResult } from '../helpers/preview-panel';
 const mockUsePreview = useAsciidocPreview as jest.Mock;
-
-const fakeReference: React.RefObject<HTMLDivElement> = { current: null };
 
 const PLACEHOLDER_TARGET = 'parts/chapter1.adoc';
 const PLACEHOLDER_HTML = `<div class="${INCLUDE_PLACEHOLDER_CLASS}" ${INCLUDE_PLACEHOLDER_TARGET_ATTR}="${PLACEHOLDER_TARGET}" role="button" tabindex="0">included: ${PLACEHOLDER_TARGET}</div>`;
 
-function withPlaceholderHtml() {
-  mockUsePreview.mockReturnValue({
-    html: PLACEHOLDER_HTML,
-    state: 'up-to-date',
-    error: null,
-    previewRef: fakeReference,
-    mathPresent: false,
-  });
+/**
+ * Render the panel with `markup` on screen, put there the way the hook puts it there — patched into
+ * the element the panel hands over rather than rendered by React. The delegated listener under test is
+ * attached to that element when the panel mounts, so it answers for whatever ends up inside it.
+ *
+ * @param markup - The rendered document to display.
+ * @param onOpenInclude - The open-the-included-file callback under test.
+ * @returns The render harness.
+ */
+function renderPreview(markup: string, onOpenInclude: jest.Mock) {
+  mockUsePreview.mockReturnValue(
+    previewHookResult({ html: markup, state: 'up-to-date', renderNonce: 1 }),
+  );
+  const harness = render(
+    <AsciiDocPreview
+      content="= Doc"
+      isEnabled={true}
+      projectId="proj-1"
+      scrollToLine={null}
+      onOpenInclude={onOpenInclude}
+    />,
+  );
+  commitToPreviewOutput(markup);
+  return harness;
 }
 
 beforeEach(() => {
   mockUsePreview.mockReset();
-  mockUsePreview.mockReturnValue({
-    html: null,
-    state: 'idle',
-    error: null,
-    previewRef: fakeReference,
-    mathPresent: false,
-  });
+  mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle' }));
 });
 
 // ── AsciiDocPreview placeholder interaction ────────────────────────────
@@ -52,18 +61,8 @@ beforeEach(() => {
 describe('AsciiDocPreview placeholder click/interaction', () => {
   // Test 1: Click on placeholder calls onOpenInclude with target
   it('calls onOpenInclude with the include target when placeholder is clicked', () => {
-    withPlaceholderHtml();
     const onOpenInclude = jest.fn();
-
-    const { container } = render(
-      <AsciiDocPreview
-        content="= Doc"
-        isEnabled={true}
-        projectId="proj-1"
-        scrollToLine={null}
-        onOpenInclude={onOpenInclude}
-      />,
-    );
+    const { container } = renderPreview(PLACEHOLDER_HTML, onOpenInclude);
 
     const placeholder = container.querySelector(`.${INCLUDE_PLACEHOLDER_CLASS}`);
     expect(placeholder).toBeInTheDocument();
@@ -76,18 +75,8 @@ describe('AsciiDocPreview placeholder click/interaction', () => {
 
   // Test 2: Enter key on focused placeholder calls onOpenInclude
   it('calls onOpenInclude with the include target when Enter is pressed on the placeholder', () => {
-    withPlaceholderHtml();
     const onOpenInclude = jest.fn();
-
-    const { container } = render(
-      <AsciiDocPreview
-        content="= Doc"
-        isEnabled={true}
-        projectId="proj-1"
-        scrollToLine={null}
-        onOpenInclude={onOpenInclude}
-      />,
-    );
+    const { container } = renderPreview(PLACEHOLDER_HTML, onOpenInclude);
 
     const placeholder = container.querySelector(`.${INCLUDE_PLACEHOLDER_CLASS}`);
     expect(placeholder).toBeInTheDocument();
@@ -100,18 +89,8 @@ describe('AsciiDocPreview placeholder click/interaction', () => {
 
   // Test 3: Space key on focused placeholder calls onOpenInclude
   it('calls onOpenInclude with the include target when Space is pressed on the placeholder', () => {
-    withPlaceholderHtml();
     const onOpenInclude = jest.fn();
-
-    const { container } = render(
-      <AsciiDocPreview
-        content="= Doc"
-        isEnabled={true}
-        projectId="proj-1"
-        scrollToLine={null}
-        onOpenInclude={onOpenInclude}
-      />,
-    );
+    const { container } = renderPreview(PLACEHOLDER_HTML, onOpenInclude);
 
     const placeholder = container.querySelector(`.${INCLUDE_PLACEHOLDER_CLASS}`);
     expect(placeholder).toBeInTheDocument();
@@ -123,41 +102,30 @@ describe('AsciiDocPreview placeholder click/interaction', () => {
   });
 
   // Test 4: DOMPurify sanitization safety guard (Constitution VIII)
-  // Uses the REAL DOMPurify — no React, no component — to confirm the placeholder
-  // HTML survives the same sanitizer config used in useAsciidocPreview.
+  // Uses the REAL DOMPurify — no React, no component — to confirm the placeholder survives the
+  // sanitizer configuration the preview applies, asked for in the shape the preview asks for it:
+  // nodes, which is what gets committed. Read back off the element rather than off serialized markup,
+  // so what is asserted is what the delegated listener will actually find.
   it('placeholder element survives DOMPurify sanitization retaining class, data-include-target, role, and tabindex', () => {
-    const clean = DOMPurify.sanitize(PLACEHOLDER_HTML, { USE_PROFILES: { html: true } });
+    const clean = DOMPurify.sanitize(PLACEHOLDER_HTML, {
+      USE_PROFILES: { html: true },
+      RETURN_DOM_FRAGMENT: true,
+    });
 
-    // class attribute (using the constant)
-    expect(clean).toContain(`class="${INCLUDE_PLACEHOLDER_CLASS}"`);
-    // data-include-target attribute with the target value
-    expect(clean).toContain(`${INCLUDE_PLACEHOLDER_TARGET_ATTR}="${PLACEHOLDER_TARGET}"`);
-    // role="button" — needed for a11y and delegated click handling
-    expect(clean).toContain('role="button"');
-    // tabindex="0" — needed for keyboard focus
-    expect(clean).toContain('tabindex="0"');
+    const placeholder = clean.querySelector(`.${INCLUDE_PLACEHOLDER_CLASS}`);
+    expect(placeholder).not.toBeNull();
+    // The include target the listener reads to open the file.
+    expect(placeholder?.getAttribute(INCLUDE_PLACEHOLDER_TARGET_ATTR)).toBe(PLACEHOLDER_TARGET);
+    // role="button" — needed for a11y and delegated click handling.
+    expect(placeholder?.getAttribute('role')).toBe('button');
+    // tabindex="0" — needed for keyboard focus.
+    expect(placeholder?.getAttribute('tabindex')).toBe('0');
   });
 
   // Test 5: onOpenInclude NOT called when clicking outside a placeholder
   it('does not call onOpenInclude when clicking on a non-placeholder element', () => {
-    mockUsePreview.mockReturnValue({
-      html: '<p id="regular-para">Some regular paragraph text</p>',
-      state: 'up-to-date',
-      error: null,
-      previewRef: fakeReference,
-      mathPresent: false,
-    });
     const onOpenInclude = jest.fn();
-
-    const { container } = render(
-      <AsciiDocPreview
-        content="= Doc"
-        isEnabled={true}
-        projectId="proj-1"
-        scrollToLine={null}
-        onOpenInclude={onOpenInclude}
-      />,
-    );
+    const { container } = renderPreview('<p id="regular-para">Some regular paragraph text</p>', onOpenInclude);
 
     const para = container.querySelector('#regular-para');
     expect(para).toBeInTheDocument();

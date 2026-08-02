@@ -1,0 +1,10 @@
+= Chapter One
+:chapter-attribute: defined in chapter one
+
+Written as a level-0 document and included at an offset, so it renders one level down.
+
+== A Section Of Chapter One
+
+The attribute defined in this file's header reads: {chapter-attribute}.
+
+include::nested-section.adoc[leveloffset=+1]

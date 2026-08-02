@@ -1,0 +1,28 @@
+# frozen_string_literal: true
+
+# The HTML oracle's gem closure, pinned EXACTLY.
+#
+# This is a SECOND definition set, deliberately separate from the page-format one in
+# `e2e/pdf-parity/tools/`. The reference image there is tagged with a hash of its own definition
+# files, so adding an HTML-backend gem to that closure would re-tag it and every committed
+# reference PDF would have been produced by a toolchain that no longer has a name. Two definition
+# sets, one mechanism.
+source "https://rubygems.org"
+
+# The engine, at the core version the in-app JS engine reports (`getCoreVersion()` → 2.0.26 for
+# asciidoctor.js 4.0.6). Matching the version on purpose: the oracle's job is to answer "does the
+# app render this document the way Asciidoctor renders it", and an oracle running a DIFFERENT
+# Asciidoctor would answer "do two versions of Asciidoctor agree" instead — every release-note
+# change would surface as a fidelity failure and drown the differences that are really the app's.
+#
+# It follows that upgrading the `asciidoctor` npm package is a change to this file too. Bump both
+# in the same commit, and re-run the gate: that is the moment the oracle is supposed to speak.
+gem "asciidoctor", "2.0.26"
+
+# NOTE: no `rouge`. `source-highlighter=rouge` selects a highlighter that must be installed to have
+# any effect; asciidoctor.js ships none, so the in-app conversion emits an unhighlighted
+# `<pre class="highlight"><code class="language-x">` and the app colours it afterwards with
+# highlight.js. Installing rouge here would make the reference emit Ruby-side token markup that the
+# app never produces, and the enumerated "highlighting markup" divergence would have to grow from
+# "the app adds token spans" to "the two sides tokenise differently" — a strictly weaker comparison
+# bought for nothing. The reference is the CONVERSION, which is what this gate compares.

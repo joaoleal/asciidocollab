@@ -21,6 +21,7 @@ import type {
   DiagnosticSeverity,
   PdfSourceMap,
   PdfSourceMapEntry,
+  PdfVmStages,
   ProjectSnapshot,
   RenderDiagnostic,
   RenderError,
@@ -29,6 +30,12 @@ import type {
 } from '../protocol';
 import type { RubyPdfVm } from '../vm/ruby-pdf-vm';
 import { SOURCE_PROVENANCE_PATH } from '../vfs/populate';
+import {
+  assessDocumentSize,
+  DOCUMENT_TOO_LARGE_CODE,
+  documentTooLargeMessage,
+  sourceByteLength,
+} from '../pipeline/document-size-limit';
 
 // ---------------------------------------------------------------------------
 // Named paths, keys and literals (no magic strings).
@@ -111,6 +118,12 @@ export const OPTIMIZE_UNAVAILABLE_CODE = 'optimize-unavailable';
 
 const PHASE_CONVERT: RenderErrorPhase = 'convert';
 const PHASE_READ_OUTPUT: RenderErrorPhase = 'read-output';
+/**
+ * The phase a size refusal is reported at. It happens before the engine converts anything, and the
+ * distinction matters to the reader: `convert` means the engine tried and failed, `preprocessing`
+ * means the document never got that far and the reason is the document itself.
+ */
+const PHASE_PREPROCESSING: RenderErrorPhase = 'preprocessing';
 
 /** The subset of enumerated diagnostic codes this module classifies convert warnings into. */
 const CONVERT_DIAGNOSTIC_CODES = {
@@ -217,6 +230,11 @@ export interface ConvertInvocationSuccess {
    * when the hook could not emit it (degrades gracefully — the render never fails over a missing map).
    */
   readonly sourceMap?: PdfSourceMap;
+  /**
+   * What the stages inside the render VM cost, when the convert reported them. Absent on a render
+   * that could not measure them — the render is unaffected either way; only the breakdown is poorer.
+   */
+  readonly vmStages?: PdfVmStages;
 }
 
 /** A failed convert: a structured, non-thrown fatal error. */
@@ -343,9 +361,59 @@ export async function invokeConvert(deps: InvokeConvertDeps): Promise<ConvertInv
   const { vm, request } = deps;
   const { snapshot, requestId } = request;
 
+  const sourcePath = join(PROJECT_MOUNT, snapshot.rootPath);
+
+  // 0. Refuse a document past the declared size bound BEFORE asking the engine to convert it. Past
+  // that size the render exhausts the address space it has and fails part-way through with an error
+  // that describes the runtime rather than the document — and leaves a VM with nothing left to give
+  // the next render. Checked here rather than in a pipeline stage because a stage cannot end a render:
+  // the orchestrator folds a stage's diagnostics into an otherwise-successful run, and this outcome is
+  // the whole render failing, with a reason.
+  const sizeAssessment = assessDocumentSize(assembledSourceBytes(vm, sourcePath, snapshot));
+  if (!sizeAssessment.withinLimit) {
+    // Deliberately NOT reported to the VM as a render. The instance is not spent: the earlier stages
+    // have written the assembled document and its generated assets into its VFS, but that is bounded by
+    // the snapshot and is exactly what the next population overwrites — nothing has been CONVERTED, and
+    // the conversion is the step whose allocation climbs until the instance can serve nothing more.
+    // Retiring a healthy instance over a document that never reached the engine would spend a boot for
+    // no reason.
+    return failure(
+      requestId,
+      PHASE_PREPROCESSING,
+      DOCUMENT_TOO_LARGE_CODE,
+      documentTooLargeMessage(sizeAssessment),
+    );
+  }
+
+  try {
+    return await convertOnCurrentInstance(deps, sourcePath);
+  } finally {
+    // The instance has now served a render. It reports that unconditionally — including when the
+    // convert failed or threw, because the allocation has happened either way and a retry deserves an
+    // instance that has not already spent its memory on the attempt that failed.
+    vm.renderCompleted();
+  }
+}
+
+/**
+ * The convert itself, run against whichever VM instance the facade is currently holding.
+ *
+ * Separated from {@link invokeConvert} only so the instance's render budget can be reported once, on
+ * every exit path, without threading that concern through each of the convert's own early returns.
+ *
+ * @param deps - The convert dependencies, unchanged from the public entry point.
+ * @param sourcePath - The VFS path of the assembled document to convert.
+ * @returns The rendered PDF, or the structured failure that stopped it.
+ */
+async function convertOnCurrentInstance(
+  deps: InvokeConvertDeps,
+  sourcePath: string,
+): Promise<ConvertInvocationResult> {
+  const { vm, request } = deps;
+  const { snapshot, requestId } = request;
+
   mountThemeAlias(vm, snapshot);
 
-  const sourcePath = join(PROJECT_MOUNT, snapshot.rootPath);
   const outputPath = join(OUTPUT_MOUNT, `${deriveOutputName(snapshot.rootPath)}${PDF_EXTENSION}`);
   const attributes = buildConvertAttributes(snapshot);
 
@@ -454,7 +522,14 @@ export async function invokeConvert(deps: InvokeConvertDeps): Promise<ConvertInv
   // 5. Clear /out (removes the rendered PDF and the source-map file).
   clearOutput(vm);
 
-  return { ok: true, pdf, bytes, diagnostics, ...(sourceMap === undefined ? {} : { sourceMap }) };
+  return {
+    ok: true,
+    pdf,
+    bytes,
+    diagnostics,
+    ...(sourceMap === undefined ? {} : { sourceMap }),
+    ...(convertOutcome.vmStages === undefined ? {} : { vmStages: convertOutcome.vmStages }),
+  };
 }
 
 /**
@@ -843,6 +918,141 @@ const SOURCEMAP_WRITE = [
 ].join('\n');
 
 /**
+ * The Ruby global accumulating this render's per-stage costs, in milliseconds, keyed by stage. Set to
+ * a fresh hash immediately before each convert, so a warm VM never reports one render's cost on the
+ * next. The hooks below accumulate into it only while it is a Hash, which makes every eval outside a
+ * convert (the probe, the optimize pass) inert as far as measurement is concerned.
+ */
+const STAGE_MS_GLOBAL = '$__asciidocollab_stage_ms';
+
+/** The Ruby global marking the timing hooks as installed, so a warm VM prepends them exactly once. */
+const TIMING_INSTALLED_GLOBAL = '$__asciidocollab_timing_installed';
+
+/**
+ * Ruby prelude installing the in-VM stage timers.
+ *
+ * These stages cannot be measured from outside the VM. The main thread sees one synchronous `eval`
+ * and can only report what the whole conversion cost, which ranks documents against each other and
+ * supports no decision beyond that. The dry runs are the reason this exists: Asciidoctor-PDF lays
+ * every keep-together block out twice — once into a throwaway scratch document to measure it, once
+ * for real — and that cost is invisible in every figure the host can take.
+ *
+ * Three properties matter and each is deliberate:
+ *
+ * - **Every figure is SELF time.** The stages nest — fonts are parsed during the converter's walk,
+ *   dry runs happen inside it, and dry runs nest inside each other — so a naive accumulator reports
+ *   the same milliseconds under several stages at once and a breakdown that sums to more than the
+ *   render took. A stack keeps each frame's clock paused while a nested frame runs, so the figures
+ *   partition the instrumented time instead of overlapping it.
+ * - **A missing seam is skipped, not faked.** Each hook resolves its constant and checks the method
+ *   exists; an engine version that renamed one simply reports no figure for that stage, which the
+ *   protocol expresses as an absent field rather than a zero.
+ * - **Installation happens once per warm VM.** Prepending on every render would stack wrappers,
+ *   multiplying the measurement overhead on the very path being measured.
+ *
+ * Stage boundaries only — never per block — so the instrumentation cannot meaningfully perturb what
+ * it measures.
+ */
+const TIMING_SHIM = [
+  'module ::AsciidocollabTiming',
+  '  def self.accumulate(key, seconds)',
+  `    acc = ${STAGE_MS_GLOBAL}`,
+  '    return unless acc.is_a?(::Hash)',
+  '    acc[key] = (acc[key] || 0.0) + (seconds * 1000.0)',
+  '  rescue ::StandardError',
+  '  end',
+  '  def self.stack',
+  '    @stack ||= []',
+  '  end',
+  '  def self.now',
+  '    ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)',
+  '  end',
+  // Charge the frame we are leaving behind for the time it has run so far, then start this one's.
+  '  def self.enter(key)',
+  '    frames = stack',
+  '    at = now',
+  '    parent = frames.last',
+  '    accumulate(parent[0], at - parent[1]) if parent',
+  '    frames.push([key, at])',
+  '  rescue ::StandardError',
+  '  end',
+  // Charge this frame, then restart the parent's clock from here so the nested time is not its.
+  '  def self.leave',
+  '    frames = stack',
+  '    frame = frames.pop',
+  '    return if frame.nil?',
+  '    at = now',
+  '    accumulate(frame[0], at - frame[1])',
+  '    parent = frames.last',
+  '    parent[1] = at if parent',
+  '  rescue ::StandardError',
+  '  end',
+  // Resolve a constant by name so a renamed or absent engine class yields nil instead of raising.
+  '  def self.resolve(path)',
+  "    path.split('::').reject { |name| name.empty? }.inject(::Object) { |scope, name| scope.const_get(name) }",
+  '  rescue ::NameError',
+  '    nil',
+  '  end',
+  '  def self.install(path, method, key, singleton = false)',
+  '    owner = resolve(path)',
+  '    return if owner.nil?',
+  '    target = singleton ? owner.singleton_class : owner',
+  '    return unless target.method_defined?(method) || target.private_method_defined?(method)',
+  '    wrapper = ::Module.new do',
+  '      define_method(method) do |*args, &block|',
+  '        ::AsciidocollabTiming.enter(key)',
+  '        begin',
+  '          super(*args, &block)',
+  '        ensure',
+  '          ::AsciidocollabTiming.leave',
+  '        end',
+  '      end',
+  // Keyword arguments must survive the delegation: `dry_run` takes them, and losing them would turn
+  // a measurement into a broken render.
+  '      ruby2_keywords(method) if respond_to?(:ruby2_keywords, true)',
+  '    end',
+  '    target.prepend(wrapper)',
+  '  rescue ::StandardError',
+  '  end',
+  'end',
+  `unless ${TIMING_INSTALLED_GLOBAL}`,
+  "  ::AsciidocollabTiming.install('Asciidoctor::Document', :parse, 'parseMs')",
+  // The converter walk. Everything below happens inside it, and the self-time accounting keeps each
+  // of those out of this figure rather than reporting them twice.
+  "  ::AsciidocollabTiming.install('Asciidoctor::PDF::Converter', :convert_document, 'converterWalkMs')",
+  "  ::AsciidocollabTiming.install('Asciidoctor::PDF::Converter', :dry_run, 'dryRunMs')",
+  // Parsing a font file and building its subset are both font cost, so they share one bucket; a parse
+  // nested inside a subset contributes its time once, to that bucket, like any other nesting.
+  "  ::AsciidocollabTiming.install('TTFunk::File', :open, 'fontMs', true)",
+  "  ::AsciidocollabTiming.install('TTFunk::Subset::Base', :encode, 'fontMs')",
+  "  ::AsciidocollabTiming.install('Prawn::Document', :render, 'serializeMs')",
+  "  ::AsciidocollabTiming.install('Prawn::Document', :render_file, 'serializeMs')",
+  `  ${TIMING_INSTALLED_GLOBAL} = true`,
+  'end',
+].join('\n');
+
+/** Ruby local (in `buildConvertCode`'s eval scope) holding the stage costs written with the result. */
+const TIMINGS_LOCAL = '__asciidocollab_timings';
+
+/**
+ * Ruby that folds the accumulated stage costs into the shape the host reads, dropping any stage that
+ * was never measured. The figures are already self time (see {@link TIMING_SHIM}), so nothing needs
+ * subtracting out of anything else here.
+ */
+const TIMINGS_BUILD = [
+  `${TIMINGS_LOCAL} = begin`,
+  `  acc = ${STAGE_MS_GLOBAL} || {}`,
+  '  out = {}',
+  "  ['parseMs', 'converterWalkMs', 'dryRunMs', 'fontMs', 'serializeMs'].each do |key|",
+  '    out[key] = acc[key] if acc[key]',
+  '  end',
+  '  out',
+  'rescue ::StandardError',
+  '  {}',
+  'end',
+].join('\n');
+
+/**
  * The Ruby global naming the extensions THIS render selected, read by every extension's hooks to
  * decide whether to act.
  *
@@ -921,6 +1131,7 @@ function buildConvertCode(
     "require 'asciidoctor-pdf'",
     READABLE_SHIM,
     SOURCEMAP_SHIM,
+    TIMING_SHIM,
     // Extensions load AFTER the shims and BEFORE convert_file: they customise the converter, so the
     // converter must exist, and the document must not yet have been built.
     //
@@ -943,6 +1154,9 @@ function buildConvertCode(
     `  ${SOURCEMAP_GLOBAL} = []`,
     // Cleared per convert so the out-of-range backstop never filters against a prior render's page count.
     `  ${PAGE_COUNT_GLOBAL} = nil`,
+    // A fresh accumulator per convert: on a warm VM the previous render's figures would otherwise be
+    // added to this one's, and every stage would look worse the longer the session ran.
+    `  ${STAGE_MS_GLOBAL} = {}`,
     // Load the assembly line→source provenance the include-resolve stage wrote (a JSON array; `[]` for
     // exports). The source-map hook reads it to stamp each block's exact origin. Best-effort: any read/parse
     // failure leaves an empty provenance, so the map simply carries no origins.
@@ -961,13 +1175,14 @@ function buildConvertCode(
       `base_dir: ${rubyString(PROJECT_MOUNT)}, ` +
       `sourcemap: true, to_file: ${rubyString(outputPath)}, mkdirs: true, attributes: ${rubyHash(attributes)})`,
     SOURCEMAP_WRITE,
+    TIMINGS_BUILD,
     "  warnings = logger.messages.map { |m| { 'severity' => m[:severity].to_s, " +
       "'message' => (m[:message].is_a?(::Hash) ? m[:message][:text] : m[:message]).to_s } }",
     // The result is WRITTEN to the VFS, not returned. The host reads it via `readFile`, which does not
     // touch wasm memory — unlike marshalling the eval's return value, which a `memory.grow` during this
     // render can corrupt. See the convert step in `invokeConvert`. Both branches must write it.
     `  File.write(${rubyString(RESULT_PATH)}, JSON.generate({ 'ok' => true, 'warnings' => warnings, ` +
-      `'extension_failures' => ${EXTENSION_FAILURES_LOCAL} }))`,
+      `'extension_failures' => ${EXTENSION_FAILURES_LOCAL}, 'timings' => ${TIMINGS_LOCAL} }))`,
     'rescue => e',
     `  ${SOURCEMAP_GLOBAL} = nil`,
     `  File.write(${rubyString(RESULT_PATH)}, JSON.generate({ 'ok' => false, 'code' => e.class.name, ` +
@@ -1119,6 +1334,8 @@ type ConvertOutcome =
       readonly ok: true;
       readonly warnings: readonly ConvertWarning[];
       readonly extensionFailures: readonly ExtensionFailure[];
+      /** The in-VM stage costs the convert program measured, when it reported any. */
+      readonly vmStages?: PdfVmStages;
     }
   | {
       readonly ok: false;
@@ -1137,7 +1354,13 @@ function parseConvertOutcome(raw: string): ConvertOutcome {
   // reason.
   const extensionFailures = parseExtensionFailures(parsed['extension_failures']);
   if (parsed['ok'] === true) {
-    return { ok: true, warnings: parseWarnings(parsed['warnings']), extensionFailures };
+    const vmStages = parseVmStages(parsed['timings']);
+    return {
+      ok: true,
+      warnings: parseWarnings(parsed['warnings']),
+      extensionFailures,
+      ...(vmStages === undefined ? {} : { vmStages }),
+    };
   }
   return {
     ok: false,
@@ -1145,6 +1368,31 @@ function parseConvertOutcome(raw: string): ConvertOutcome {
     message: stringOr(parsed['message'], 'Asciidoctor convert failed'),
     extensionFailures,
   };
+}
+
+/** The in-VM stages, in the order they occur, as the convert program names them. */
+const VM_STAGE_KEYS = ['parseMs', 'converterWalkMs', 'dryRunMs', 'fontMs', 'serializeMs'] as const;
+
+/**
+ * Read the stage costs the convert program reported, keeping only those that are usable durations.
+ *
+ * A value that is not a finite, non-negative number is DROPPED rather than coerced: a stage reported
+ * as `-1`, `NaN` or a string is a stage whose measurement failed, and passing it through would put a
+ * figure that is not a duration into a breakdown people read as one. Returns `undefined` when nothing
+ * usable survives, so "measured nothing" and "measured zero" stay distinguishable.
+ */
+function parseVmStages(value: unknown): PdfVmStages | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const stages: Record<string, number> = {};
+  for (const key of VM_STAGE_KEYS) {
+    const raw = value[key];
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      stages[key] = raw;
+    }
+  }
+  return Object.keys(stages).length > 0 ? stages : undefined;
 }
 
 function parseWarnings(value: unknown): ConvertWarning[] {
@@ -1262,6 +1510,28 @@ function failure(
   message: string,
 ): ConvertInvocationFailure {
   return { ok: false, error: { requestId, phase, code, message } };
+}
+
+/**
+ * The size of the document the engine is about to convert, in bytes.
+ *
+ * Measured from the VFS rather than from the snapshot, because the two are not the same document: the
+ * include-resolve stage expands the include tree into the file at `sourcePath` before the convert
+ * runs, so a project written as a hundred small files reaches the engine as one large one, and it is
+ * the assembled result that has to fit in the engine's memory. The snapshot's own root text is the
+ * fallback for the case where the VFS cannot be read at all — a poorer measurement, but a real one,
+ * and better than treating an unreadable path as a size of zero.
+ */
+function assembledSourceBytes(
+  vm: RubyPdfVm,
+  sourcePath: string,
+  snapshot: ProjectSnapshot,
+): number {
+  try {
+    return vm.readFile(sourcePath).byteLength;
+  } catch {
+    return sourceByteLength(snapshot.files[snapshot.rootPath] ?? '');
+  }
 }
 
 function deriveOutputName(rootPath: string): string {

@@ -289,22 +289,20 @@ function parseMatch(match: RegExpExecArray): ParsedExpression {
   };
 }
 
-/** Data attribute on a produced container recording the original delimited source, for re-render restore. */
+/** Data attribute on a produced container recording the delimited source it was produced from. */
 const SOURCE_ATTRIBUTE = 'data-stem-source';
 
 /**
- * Restore any previously-rendered math in the container back to its original delimiter source, so a
- * re-render converts the same expressions afresh rather than skipping them (their text was already
- * replaced) or double-wrapping. Each produced container carries its source on {@link SOURCE_ATTRIBUTE}.
+ * Collapse adjacent text nodes so the delimiter regex sees each run as one string.
  *
- * @param container - The preview container to restore in place.
+ * A refresh reaches this container as a patch rather than as fresh markup, and patching an element's
+ * contents can leave what reads as one sentence spread over several text nodes. The delimiter regex
+ * runs per text node, so an expression split across two of them would never match and would sit on
+ * screen as raw `\$…\$`.
+ *
+ * @param container - The preview container to tidy in place.
  */
-function restorePriorMath(container: HTMLElement): void {
-  for (const rendered of container.querySelectorAll(`[${SOURCE_ATTRIBUTE}]`)) {
-    const source = rendered.getAttribute(SOURCE_ATTRIBUTE) ?? '';
-    rendered.replaceWith(document.createTextNode(source));
-  }
-  // Collapse the now-adjacent text nodes so the delimiter regex sees contiguous runs.
+function joinTextRuns(container: HTMLElement): void {
   container.normalize();
 }
 
@@ -463,8 +461,17 @@ export async function renderMath(container: HTMLElement): Promise<void> {
       return;
     }
 
-    // Restore any prior render to its source first so this pass re-converts cleanly (idempotent).
-    restorePriorMath(container);
+    // An expression that is ALREADY typeset is left exactly as it is — the node itself, not a fresh
+    // one that looks the same. It stays because the only thing that can put a typeset expression back
+    // to its delimited source is the preview's DOM patch, and that happens precisely when the source
+    // changed; anything still typeset here is therefore still current. Typesetting it again would
+    // throw away work MathJax has already done, and take the node's identity with it — a reader's
+    // focus and the browser's own layout of it included — for output identical to what was there.
+    //
+    // This pass is consequently additive: it converts the delimited runs the patch has just brought
+    // in, and touches nothing else. The collectors below already refuse to look inside a produced
+    // `<math>`/`mjx-container`, so nothing is ever converted twice.
+    joinTextRuns(container);
 
     // Discover every expression. Inline/display sites carry text-node offsets that shift as earlier
     // sites in the same text node are replaced, so replace each text node's sites from LAST to FIRST.

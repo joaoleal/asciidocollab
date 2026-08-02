@@ -11,8 +11,12 @@ import {
   type BlobFactory,
 } from '../../src/convert/invoke';
 import { normalizePdfBytes } from '../../src/convert/normalize-pdf';
+import {
+  DOCUMENT_TOO_LARGE_CODE,
+  MAX_PAGE_FORMAT_SOURCE_BYTES,
+} from '../../src/pipeline/document-size-limit';
 import type { ProjectSnapshot, RenderRequest } from '../../src/protocol';
-import type { RubyPdfVm } from '../../src/vm/ruby-pdf-vm';
+import type { RubyPdfVm, WarmupOutcome } from '../../src/vm/ruby-pdf-vm';
 import type { RubyValue } from '../../src/vm/wasi-bridge';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +63,11 @@ interface FakeConfig {
   sourceMapFile?: Uint8Array | null;
   /** Force a throw when the source-map file is read back. */
   sourceMapReadThrows?: boolean;
+  /**
+   * Bytes served for any path under the project mount — the ASSEMBLED root document the convert is
+   * about to read. Used to model a document whose size the render has to judge.
+   */
+  projectFileBytes?: Uint8Array;
 }
 
 /**
@@ -77,8 +86,15 @@ class FakeVm implements RubyPdfVm {
 
   constructor(private readonly config: FakeConfig = {}) {}
 
-  async warmup(): Promise<{ coldStart: boolean }> {
-    return { coldStart: false };
+  /** How many times the convert path reported that this instance had served a render. */
+  rendersReported = 0;
+
+  async warmup(): Promise<WarmupOutcome> {
+    return { booted: false, firstBoot: false };
+  }
+
+  renderCompleted(): void {
+    this.rendersReported += 1;
   }
 
   // The convert program runs synchronously (on the VM's main stack, not a fiber). Its RESULT is read
@@ -104,6 +120,9 @@ class FakeVm implements RubyPdfVm {
 
   readFile(path: string): Uint8Array {
     this.reads.push(path);
+    if (path.startsWith('/project/') && this.config.projectFileBytes !== undefined) {
+      return this.config.projectFileBytes;
+    }
     if (path === SOURCEMAP_PATH) {
       if (this.config.sourceMapReadThrows === true) {
         throw new Error('cannot read source map');
@@ -488,8 +507,9 @@ describe('invokeConvert — read-back & determinism', () => {
     if (!result.ok) {
       throw new Error('expected success');
     }
-    // The convert result is read from the VFS first, then the PDF bytes.
-    expect(vm.reads).toEqual([RESULT_PATH, '/out/book.pdf']);
+    // The assembled document is sized first (the size bound is checked before the engine runs), then
+    // the convert result is read from the VFS, then the PDF bytes.
+    expect(vm.reads).toEqual(['/project/book.adoc', RESULT_PATH, '/out/book.pdf']);
     expect([...result.bytes]).toEqual([...normalizePdfBytes(RAW_PDF_BYTES)]);
     expect(result.pdf).toBeInstanceOf(Blob);
     expect(result.pdf.type).toBe(PDF_CONTENT_TYPE);
@@ -592,8 +612,9 @@ describe('invokeConvert — source map read-back', () => {
       throw new Error('expected success');
     }
     expect(result.sourceMap).toBeUndefined();
-    // The absent map file is never read, so the read log stays limited to the result and the PDF.
-    expect(vm.reads).toEqual([RESULT_PATH, '/out/book.pdf']);
+    // The absent map file is never read, so the read log stays limited to the size check, the result
+    // and the PDF.
+    expect(vm.reads).toEqual(['/project/book.adoc', RESULT_PATH, '/out/book.pdf']);
   });
 
   it('degrades to no map when the source-map file is present but not valid JSON', async () => {
@@ -758,5 +779,183 @@ describe('invokeConvert — failure', () => {
     }
     expect(result.error.phase).toBe('read-output');
     expect(result.error.code).toBe(CONVERT_ERROR_CODES.READ_OUTPUT_FAILED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Declared size bound.
+// ---------------------------------------------------------------------------
+
+describe('invokeConvert — document size bound', () => {
+  it('refuses a document past the bound before the engine is asked to convert it', async () => {
+    const vm = new FakeVm({
+      projectFileBytes: new Uint8Array(MAX_PAGE_FORMAT_SOURCE_BYTES + 1),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error('expected failure');
+    }
+    expect(result.error.code).toBe(DOCUMENT_TOO_LARGE_CODE);
+    // Reported as a document problem, not an engine one: the engine never ran.
+    expect(result.error.phase).toBe('preprocessing');
+    expect(result.error.requestId).toBe('req-1');
+    expect(vm.evalCalls).toHaveLength(0);
+  });
+
+  it('names the size, the bound, and what to do — never an engine-internal error string', async () => {
+    const vm = new FakeVm({ projectFileBytes: new Uint8Array(341_346) });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    if (result.ok) {
+      throw new Error('expected failure');
+    }
+    expect(result.error.message).toContain('341 kB');
+    expect(result.error.message).toContain('100 kB');
+    expect(result.error.message).toMatch(/main document/i);
+    expect(result.error.message).not.toMatch(/NoMemoryError|outside the bounds of the buffer/i);
+  });
+
+  it('judges the ASSEMBLED document, not the root file the author wrote', async () => {
+    // A project written as many small files reaches the engine as one large one, because the include
+    // tree is expanded into the VFS before the convert. Sizing the author's root file instead would
+    // wave through exactly the documents that fail.
+    const vm = new FakeVm({
+      projectFileBytes: new Uint8Array(MAX_PAGE_FORMAT_SOURCE_BYTES + 1),
+    });
+
+    const result = await invokeConvert({
+      vm,
+      request: request({ snapshot: snapshot({ files: { 'book.adoc': 'include::one.adoc[]' } }) }),
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('renders a document at the bound', async () => {
+    const vm = new FakeVm({ projectFileBytes: new Uint8Array(MAX_PAGE_FORMAT_SOURCE_BYTES) });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('does not spend the instance on a document the engine never saw', async () => {
+    const vm = new FakeVm({
+      projectFileBytes: new Uint8Array(MAX_PAGE_FORMAT_SOURCE_BYTES + 1),
+    });
+
+    await invokeConvert({ vm, request: request() });
+
+    expect(vm.rendersReported).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Instance render budget.
+// ---------------------------------------------------------------------------
+
+describe('invokeConvert — instance render budget', () => {
+  it('reports the completed render so the instance is not reused for the next one', async () => {
+    const vm = new FakeVm();
+
+    await invokeConvert({ vm, request: request() });
+
+    expect(vm.rendersReported).toBe(1);
+  });
+
+  it('reports it for a failed convert too — the allocation happened either way', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({ ok: false, code: 'RuntimeError', message: 'boom' }),
+    });
+
+    await invokeConvert({ vm, request: request() });
+
+    expect(vm.rendersReported).toBe(1);
+  });
+
+  it('reports it when the convert throws out of the VM entirely', async () => {
+    // The failure mode that matters most: a render that exhausted the instance's memory throws from
+    // the eval. Retrying that on the same instance is retrying on the one that has none left.
+    const vm = new FakeVm({ convertReject: true });
+
+    await invokeConvert({ vm, request: request() });
+
+    expect(vm.rendersReported).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// In-VM stage timings.
+// ---------------------------------------------------------------------------
+
+describe('invokeConvert — in-VM stage timings', () => {
+  it('times the stages that only exist inside the VM, including the dry runs', async () => {
+    const vm = new FakeVm();
+    await invokeConvert({ vm, request: request() });
+
+    const code = vm.evalCalls.find((program) => program.includes('convert_file')) ?? '';
+    // The dry runs are the figure this instrumentation exists for: Asciidoctor-PDF lays every
+    // keep-together block out twice, and no measurement taken outside the VM can separate that cost
+    // from the rest of the conversion.
+    expect(code).toContain(':dry_run');
+    expect(code).toContain(':parse');
+    // Carried out on the SAME result file the convert outcome already uses, rather than a second
+    // write-and-read of its own.
+    expect(code).toContain("'timings'");
+    expect(code).toContain("File.write('/out/result.json'");
+  });
+
+  it('carries the figures the convert program reported back on the result', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: [],
+        timings: { parseMs: 40, converterWalkMs: 900, dryRunMs: 1500, fontMs: 260, serializeMs: 300 },
+      }),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.vmStages).toEqual({
+      parseMs: 40,
+      converterWalkMs: 900,
+      dryRunMs: 1500,
+      fontMs: 260,
+      serializeMs: 300,
+    });
+  });
+
+  it('reports no in-VM figures at all when the convert reported none', async () => {
+    const vm = new FakeVm();
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    // Absent, never zeroed: a stage that could not be measured must not read as a stage that cost
+    // nothing, or the breakdown invites exactly the wrong conclusion about where the time goes.
+    expect(result.vmStages).toBeUndefined();
+  });
+
+  it('drops a figure that is not a usable duration rather than passing it through', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: [],
+        timings: { parseMs: 40, converterWalkMs: 'slow', dryRunMs: -3, fontMs: null },
+      }),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.vmStages).toEqual({ parseMs: 40 });
   });
 });

@@ -9,6 +9,7 @@ export * from './constants';
 export * from './room-names';
 export * from './asciidoc-model';
 export * from './review';
+export * from './key-bindings';
 export * from './render-config';
 export * from './grammar';
 export * from './pdf-extensions';

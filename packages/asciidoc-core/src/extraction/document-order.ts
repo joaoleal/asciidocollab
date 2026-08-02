@@ -25,13 +25,22 @@ import { verbatimRanges, isInRanges, type TextSpan } from './text-ranges';
 export const RESERVED_LEVELOFFSET = 'leveloffset';
 
 /**
- * Return a copy of `attributes` with the engine-reserved {@link RESERVED_LEVELOFFSET} removed — used
+ * Return a COPY of `attributes` with the engine-reserved {@link RESERVED_LEVELOFFSET} removed — used
  * at every boundary that exposes an attribute map as resolved VALUES to a consumer. The offset itself
  * is resolved through `effectiveLevelOffset`, never read from a map.
+ *
+ * The parameter is a {@link ReadonlyMap} and the result is a fresh map, so this can never reach back
+ * into the caller's state. That is not ceremony: the map handed here is always derived from the
+ * include walk's RUNNING accumulator, which deliberately KEEPS `leveloffset` so `ifdef::leveloffset[]`
+ * gates exactly as real Asciidoctor does (see {@link applyAttributeEvent}). A version that deleted in
+ * place would, the first time someone passed that accumulator instead of a copy of it, silently switch
+ * that gating off for the rest of the walk — a defect that shows up as a wrong heading level in an
+ * unrelated file, far from the call. One small map per boundary buys that away.
  */
-export function stripReservedAttributes(attributes: Map<string, string>): Map<string, string> {
-  attributes.delete(RESERVED_LEVELOFFSET);
-  return attributes;
+export function stripReservedAttributes(attributes: ReadonlyMap<string, string>): Map<string, string> {
+  const values = new Map(attributes);
+  values.delete(RESERVED_LEVELOFFSET);
+  return values;
 }
 
 /**

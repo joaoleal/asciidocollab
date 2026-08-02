@@ -301,7 +301,7 @@ function offlineBuildPipeline(arguments_: BuildPipelineArguments): BuiltPipeline
 
 function createController(sink: FromWorker[]): PdfRenderController {
   return new PdfRenderController({
-    vm: { warmup: () => Promise.resolve({ coldStart: false }) },
+    vm: { warmup: () => Promise.resolve({ booted: false, firstBoot: false }) },
     populate: (): PopulateResult => ({ written: [], rejected: [], rootPresent: true }),
     runConvert: (): Promise<ConvertOutcome> =>
       Promise.resolve({

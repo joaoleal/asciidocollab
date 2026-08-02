@@ -19,59 +19,126 @@ jest.mock('@/components/math/render-math', () => ({
 }));
 
 import { useAsciidocPreview } from '@/hooks/use-asciidoc-preview';
+import {
+  commitToPreviewOutput,
+  previewHookResult,
+  previewOutputReference,
+  type PreviewHookDouble,
+} from '../helpers/preview-panel';
 const mockUsePreview = useAsciidocPreview as jest.Mock;
 
 /** Flush the microtasks the preview's dynamic `import().then(...)` schedules. */
 const flushAsync = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-const fakeReference: React.RefObject<HTMLDivElement> = { current: null };
+/** The panel under test, with the props every test here shares. */
+const panel = (properties: Partial<React.ComponentProps<typeof AsciiDocPreview>> = {}) => (
+  <AsciiDocPreview content="= Doc" isEnabled projectId="proj-1" scrollToLine={null} {...properties} />
+);
 
-// The exact DOMPurify config used by the preview boundary in `useAsciidocPreview.ts`. Replicated here
-// so the tests below guard the real sanitization the rendered HTML undergoes before display.
-const sanitizePreviewHtml = (html: string) => DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+/**
+ * Mount the panel with a document already on screen — the hook's commit, played out in the order the
+ * hook performs it: the markup goes into the element the panel hands over, and the commit is announced
+ * afterwards, so the panel's post-commit passes find the document already there.
+ *
+ * @param markup - The rendered document to display.
+ * @param result - Anything else about the hook's state this test is asserting on.
+ * @param properties - Panel props this test needs.
+ * @returns The render harness, plus a re-render that keeps the same committed document on screen.
+ */
+function renderShowing(
+  markup: string,
+  result: Partial<PreviewHookDouble> = {},
+  properties: Partial<React.ComponentProps<typeof AsciiDocPreview>> = {},
+) {
+  const showing = (renderNonce: number) =>
+    previewHookResult({ html: markup, state: 'up-to-date', renderNonce, ...result });
+  mockUsePreview.mockReturnValue(showing(0));
+  const harness = render(panel(properties));
+  commitToPreviewOutput(markup);
+  mockUsePreview.mockReturnValue(showing(1));
+  harness.rerender(panel(properties));
+  return {
+    ...harness,
+    /** Re-render with unrelated props changed, the commit unchanged — no second commit happens. */
+    rerenderUncommitted: (next: Partial<React.ComponentProps<typeof AsciiDocPreview>>) =>
+      harness.rerender(panel({ ...properties, ...next })),
+  };
+}
 
+/** A stem block as the worker emits it — the expression still as delimited source text. */
+const stemMarkup = (expression: string) =>
+  String.raw`<div class="stemblock"><div class="content">\$${expression}\$</div></div>`;
+
+/** A panel whose latest render has landed. What that render said is beside the point for its callers. */
 const withHtml = () =>
-  mockUsePreview.mockReturnValue({ html: '<h1>Doc</h1>', state: 'up-to-date', error: null, previewRef: fakeReference });
+  mockUsePreview.mockReturnValue(
+    previewHookResult({ html: '<h1>Doc</h1>', state: 'up-to-date', renderNonce: 1 }),
+  );
+
+// The DOMPurify configuration the preview boundary applies, in the shape the boundary asks for it:
+// nodes, read back as markup so these allow-list expectations can be stated as text. That the two
+// shapes reach the same verdict is proved separately, against payloads, in the hook's sanitizer suite.
+const sanitizePreviewHtml = (html: string) => {
+  const holder = document.createElement('div');
+  holder.append(DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, RETURN_DOM_FRAGMENT: true }));
+  return holder.innerHTML;
+};
 
 beforeEach(() => {
   mockUsePreview.mockReset();
   renderMathMock.mockClear();
-  mockUsePreview.mockReturnValue({
+  mockUsePreview.mockReturnValue(previewHookResult({
     html: null,
     state: 'idle',
     error: null,
-    previewRef: fakeReference,
-  });
+  }));
 });
 
 // ── Component tests ──────────────────────────────────────────────────────────
 
 describe('AsciiDocPreview', () => {
-  // (a) renders HTML inside .asciidoc-preview-content when html is non-null
-  it('renders HTML output inside .asciidoc-preview-content when html is non-null', () => {
-    mockUsePreview.mockReturnValue({
-      html: '<h1>Hello</h1>',
-      state: 'up-to-date',
-      error: null,
-      previewRef: fakeReference,
-    });
+  // (a) the panel supplies the element the render is committed into
+  it('hands the scoped output element to the hook to commit renders into', () => {
+    const { container } = render(panel());
 
-    const { container } = render(
-      <AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />,
-    );
+    // The panel does not put the document on screen any more — it provides the element the hook
+    // patches each render into, and stays out of what is inside it. Handing over the element scoped by
+    // `.asciidoc-preview-content` is what keeps the author's document styled as a document.
+    const output = container.querySelector('.asciidoc-preview-content');
+    expect(output).toBeInTheDocument();
+    expect(previewOutputReference.current).toBe(output);
+  });
 
-    const wrapper = container.querySelector('.asciidoc-preview-content');
-    expect(wrapper).toBeInTheDocument();
-    expect(wrapper?.innerHTML).toContain('<h1>Hello</h1>');
+  it('offers the output element before anything has been rendered', () => {
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'pending', renderNonce: 0 }));
+
+    render(panel());
+
+    // Waiting for something to show before offering somewhere to show it is circular: the very first
+    // render would have nowhere to be committed, so nothing would ever appear.
+    expect(previewOutputReference.current).not.toBeNull();
+    expect(previewOutputReference.current?.innerHTML).toBe('');
+  });
+
+  it('leaves a committed document alone across an unrelated re-render', () => {
+    const { rerenderUncommitted } = renderShowing('<h1>Hello</h1>');
+    const output = screen.getByTestId('asciidoc-output');
+
+    // The contents belong to the hook. If React were given a say in them — a `dangerouslySetInnerHTML`
+    // payload, or children in the panel's own markup — an unrelated re-render such as an editor click
+    // would re-apply them and wipe whatever the client had drawn or typeset in the meantime.
+    rerenderUncommitted({ scrollToLine: { line: 3 } });
+
+    expect(output.innerHTML).toBe('<h1>Hello</h1>');
+    expect(screen.getByTestId('asciidoc-output')).toBe(output);
   });
 
   it('shows the "not part of the main document" notice only when outsideMainTree is set', () => {
-    mockUsePreview.mockReturnValue({
+    mockUsePreview.mockReturnValue(previewHookResult({
       html: '<h1>Hello</h1>',
       state: 'up-to-date',
       error: null,
-      previewRef: fakeReference,
-    });
+    }));
 
     const { queryByTestId, rerender } = render(
       <AsciiDocPreview content="= Hello" isEnabled projectId="proj-1" scrollToLine={null} />,
@@ -87,14 +154,14 @@ describe('AsciiDocPreview', () => {
 
   // (b) shows rendering indicator when state is pending or rendering
   it('shows rendering indicator when state is pending', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'pending', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'pending', error: null }));
     render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
     expect(screen.getByTestId('sync-indicator')).toBeInTheDocument();
     expect(screen.queryByText('✓')).not.toBeInTheDocument();
   });
 
   it('shows rendering indicator when state is rendering', () => {
-    mockUsePreview.mockReturnValue({ html: '<h1>A</h1>', state: 'rendering', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: '<h1>A</h1>', state: 'rendering', error: null }));
     render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
     expect(screen.getByTestId('sync-indicator')).toBeInTheDocument();
     expect(screen.queryByText('✓')).not.toBeInTheDocument();
@@ -102,22 +169,72 @@ describe('AsciiDocPreview', () => {
 
   // (c) shows "✓" indicator when state is up-to-date
   it('shows ✓ indicator when state is up-to-date', () => {
-    mockUsePreview.mockReturnValue({ html: '<h1>A</h1>', state: 'up-to-date', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: '<h1>A</h1>', state: 'up-to-date', error: null }));
     render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
     expect(screen.getByText('✓')).toBeInTheDocument();
   });
 
   // (d) shows "Preview not available" when isEnabled is false
   it('shows "Preview not available" message when isEnabled is false', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'idle', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
     render(<AsciiDocPreview content="" isEnabled={false} projectId="proj-1" scrollToLine={null} />);
     expect(screen.getByText(/preview not available/i)).toBeInTheDocument();
   });
 
-  // (e) data-testid="asciidoc-output" present when html is rendered
-  it('renders data-testid="asciidoc-output" when HTML is present', () => {
-    mockUsePreview.mockReturnValue({ html: '<p>Hello</p>', state: 'up-to-date', error: null, previewRef: fakeReference });
+  // The message is about the FILE, not about the panel's momentary state. It used to appear whenever
+  // the panel was idle, and because the panel was remounted (and so reset to idle) on every file
+  // switch, opening any file announced that its preview was unavailable before rendering it anyway.
+  it('does not claim the preview is unavailable for a previewable file with nothing rendered yet', () => {
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
+
     render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+
+    expect(screen.queryByText(/preview not available/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the previous document on screen, and says nothing about availability, while the newly opened file renders', () => {
+    const { rerenderUncommitted } = renderShowing('<h1>Previously opened</h1>');
+
+    // The newly opened file is being rendered; nothing has been committed for it yet.
+    mockUsePreview.mockReturnValue(
+      previewHookResult({ html: '<h1>Previously opened</h1>', state: 'rendering', renderNonce: 1 }),
+    );
+    rerenderUncommitted({ content: '= Newly opened' });
+
+    expect(screen.queryByText(/preview not available/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('asciidoc-output').innerHTML).toContain('<h1>Previously opened</h1>');
+  });
+
+  it('marks the output as busy while a render is in flight and clears it when one lands', () => {
+    const { rerenderUncommitted } = renderShowing('<h1>Hello</h1>');
+    // A render that has landed is not in flight, so nothing is announced as changing.
+    expect(screen.getByTestId('asciidoc-output')).toHaveAttribute('aria-busy', 'false');
+
+    mockUsePreview.mockReturnValue(
+      previewHookResult({ html: '<h1>Hello</h1>', state: 'rendering', renderNonce: 1 }),
+    );
+    rerenderUncommitted({ content: '= Hello edited' });
+
+    // A reader who cannot see the panel is otherwise given a document that is about to change under
+    // them, with nothing saying so.
+    expect(screen.getByTestId('asciidoc-output')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  it('marks the output as busy from the moment an edit is waiting to be rendered', () => {
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'pending' }));
+
+    render(panel());
+
+    // The wait before a render starts is part of the same "the document is out of date" span; ending
+    // it at the debounce boundary would clear and re-set the flag mid-edit for no reason a reader
+    // could act on.
+    expect(screen.getByTestId('asciidoc-output')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  // (e) data-testid="asciidoc-output" present for any previewable file
+  it('renders data-testid="asciidoc-output" for a previewable file', () => {
+    mockUsePreview.mockReturnValue(previewHookResult({ html: '<p>Hello</p>', state: 'up-to-date' }));
+    render(panel({ content: '= Hello' }));
     expect(screen.getByTestId('asciidoc-output')).toBeInTheDocument();
   });
 
@@ -125,22 +242,28 @@ describe('AsciiDocPreview', () => {
 
   // (a) error state: shows "⚠ Preview error" and error message; previous html still visible
   it('shows error indicator and message when state is error', () => {
-    mockUsePreview.mockReturnValue({
-      html: '<h1>Previous</h1>',
-      state: 'error',
-      error: 'Asciidoctor parse error',
-      previewRef: fakeReference,
-    });
-    render(<AsciiDocPreview content="bad" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+    const { rerenderUncommitted } = renderShowing('<h1>Previous</h1>');
+
+    mockUsePreview.mockReturnValue(
+      previewHookResult({
+        html: '<h1>Previous</h1>',
+        state: 'error',
+        error: 'Asciidoctor parse error',
+        renderNonce: 1,
+      }),
+    );
+    rerenderUncommitted({ content: 'bad' });
+
     expect(screen.getByText(/preview error/i)).toBeInTheDocument();
     expect(screen.getByText(/Asciidoctor parse error/)).toBeInTheDocument();
-    // Previous HTML still rendered
-    expect(screen.getByTestId('asciidoc-output')).toBeInTheDocument();
+    // The last document that did render stays on screen. A failed render has nothing to replace it
+    // with, and blanking the panel would lose the reader's place over a typo they are mid-way through.
+    expect(screen.getByTestId('asciidoc-output').innerHTML).toBe('<h1>Previous</h1>');
   });
 
   // (b) isEnabled=false: indicator shows "–" and content shows neutral message
   it('shows – indicator and file-type message when isEnabled is false', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'idle', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
     render(<AsciiDocPreview content="" isEnabled={false} projectId="proj-1" scrollToLine={null} />);
     expect(screen.getByText('–')).toBeInTheDocument();
     expect(screen.getByText(/preview not available for this file type/i)).toBeInTheDocument();
@@ -148,14 +271,14 @@ describe('AsciiDocPreview', () => {
 
   // (c) error indicator hides when state transitions back to pending
   it('hides error indicator when state is pending', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'pending', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'pending', error: null }));
     render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
     expect(screen.queryByText(/preview error/i)).not.toBeInTheDocument();
   });
 
   // scroll sync toggle
   it('renders scroll sync toggle when onToggleScrollSync is provided', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'idle', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
     render(
       <AsciiDocPreview
         content=""
@@ -169,13 +292,13 @@ describe('AsciiDocPreview', () => {
   });
 
   it('does not render scroll sync toggle when onToggleScrollSync is not provided', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'idle', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
     render(<AsciiDocPreview content="" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
     expect(screen.queryByTestId('scroll-sync-toggle')).not.toBeInTheDocument();
   });
 
   it('scroll sync toggle has aria-pressed=false when scrollSyncEnabled is false', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'idle', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
     render(
       <AsciiDocPreview
         content=""
@@ -189,7 +312,7 @@ describe('AsciiDocPreview', () => {
   });
 
   it('scroll sync toggle has aria-pressed=true when scrollSyncEnabled is true', () => {
-    mockUsePreview.mockReturnValue({ html: null, state: 'idle', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
     render(
       <AsciiDocPreview
         content=""
@@ -204,7 +327,7 @@ describe('AsciiDocPreview', () => {
 
   it('calls onToggleScrollSync when scroll sync toggle is clicked', () => {
     const onToggle = jest.fn();
-    mockUsePreview.mockReturnValue({ html: null, state: 'idle', error: null, previewRef: fakeReference });
+    mockUsePreview.mockReturnValue(previewHookResult({ html: null, state: 'idle', error: null }));
     render(
       <AsciiDocPreview
         content=""
@@ -260,15 +383,16 @@ describe('AsciiDocPreview', () => {
     });
 
     it('does not alter the rendered HTML when the style changes', () => {
-      withHtml();
-      const { rerender } = render(
-        <AsciiDocPreview content="= Doc" isEnabled={true} projectId="proj-1" scrollToLine={null} previewStyle="asciidocollab" onPreviewStyleChange={jest.fn()} />,
-      );
+      const { rerenderUncommitted } = renderShowing('<h1>Doc</h1>', {}, {
+        previewStyle: 'asciidocollab',
+        onPreviewStyleChange: jest.fn(),
+      });
       expect(screen.getByTestId('asciidoc-output').innerHTML).toContain('<h1>Doc</h1>');
-      rerender(
-        <AsciiDocPreview content="= Doc" isEnabled={true} projectId="proj-1" scrollToLine={null} previewStyle="asciidoctor" onPreviewStyleChange={jest.fn()} />,
-      );
-      // Same sanitized HTML; only the style attribute flipped.
+
+      rerenderUncommitted({ previewStyle: 'asciidoctor' });
+
+      // The style is an attribute on the element the hook commits into; changing it must not disturb
+      // what is inside it — including whatever the client drew or typeset there after the commit.
       expect(screen.getByTestId('asciidoc-output').innerHTML).toContain('<h1>Doc</h1>');
       expect(screen.getByTestId('asciidoc-output')).toHaveAttribute('data-preview-style', 'asciidoctor');
     });
@@ -333,19 +457,13 @@ describe('AsciiDocPreview', () => {
 
   // ── lazy MathJax load gated on mathPresent, post-sanitize, scoped ──────────
   describe('STEM math rendering', () => {
-    it('lazy-loads MathJax (renderMath) only when mathPresent and renders post-sanitize, scoped', async () => {
-      mockUsePreview.mockReturnValue({
-        html: String.raw`<div class="stemblock"><div class="content">\$x^2\$</div></div>`,
-        state: 'up-to-date',
-        error: null,
-        previewRef: fakeReference,
-        mathPresent: true,
-      });
-      render(<AsciiDocPreview content=":stem:" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+    it('lazy-loads MathJax (renderMath) only when mathPresent and typesets the scoped output', async () => {
+      renderShowing(stemMarkup('x^2'), { mathPresent: true }, { content: ':stem:' });
       await flushAsync();
 
       expect(renderMathMock).toHaveBeenCalledTimes(1);
-      // Called on the scoped, sanitized output container — the same node holding the rendered HTML.
+      // Typeset in the element the render was committed into, and nowhere else: the document's own
+      // styles are scoped to it, and so is everything the client is allowed to touch.
       const container = renderMathMock.mock.calls[0][0];
       expect(container).toBe(screen.getByTestId('asciidoc-output'));
       expect(container.classList.contains('asciidoc-preview-content')).toBe(true);
@@ -353,87 +471,83 @@ describe('AsciiDocPreview', () => {
     });
 
     it('never loads MathJax when mathPresent is false (no stem in effect)', async () => {
-      mockUsePreview.mockReturnValue({
-        // delimiters present in source but `:stem:` absent ⇒ worker flags mathPresent=false
-        html: String.raw`<div class="paragraph"><p>\$x^2\$</p></div>`,
-        state: 'up-to-date',
-        error: null,
-        previewRef: fakeReference,
-        mathPresent: false,
+      // Delimiters present in the source but `:stem:` absent ⇒ the worker flags mathPresent=false.
+      renderShowing(String.raw`<div class="paragraph"><p>\$x^2\$</p></div>`, { mathPresent: false }, {
+        content: 'stem:[x^2]',
       });
-      render(<AsciiDocPreview content="stem:[x^2]" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
       await flushAsync();
 
       expect(renderMathMock).not.toHaveBeenCalled();
     });
 
-    it('does not load MathJax when there is no rendered html yet', async () => {
-      mockUsePreview.mockReturnValue({
-        html: null,
-        state: 'rendering',
-        error: null,
-        previewRef: fakeReference,
-        mathPresent: true,
-      });
-      render(<AsciiDocPreview content=":stem:" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
-      await flushAsync();
-
-      expect(renderMathMock).not.toHaveBeenCalled();
-    });
-
-    it('re-typesets when the rendered html changes while math stays present', async () => {
-      mockUsePreview.mockReturnValue({
-        html: String.raw`<div class="stemblock"><div class="content">\$a\$</div></div>`,
-        state: 'up-to-date',
-        error: null,
-        previewRef: fakeReference,
-        mathPresent: true,
-      });
-      const { rerender } = render(
-        <AsciiDocPreview content=":stem:" isEnabled={true} projectId="proj-1" scrollToLine={null} />,
+    it('does not load MathJax before anything has been committed', async () => {
+      mockUsePreview.mockReturnValue(
+        previewHookResult({ html: null, state: 'rendering', mathPresent: true, renderNonce: 0 }),
       );
+      render(panel({ content: ':stem:' }));
+      await flushAsync();
+
+      // There is no document on screen yet, so there is nothing to typeset — and loading MathJax to
+      // discover that would pay its whole bundle cost for no result.
+      expect(renderMathMock).not.toHaveBeenCalled();
+    });
+
+    it('re-typesets when a new render is committed while math stays present', async () => {
+      const { rerenderUncommitted } = renderShowing(stemMarkup('a'), { mathPresent: true }, {
+        content: ':stem:',
+      });
       await flushAsync();
       expect(renderMathMock).toHaveBeenCalledTimes(1);
 
-      mockUsePreview.mockReturnValue({
-        html: String.raw`<div class="stemblock"><div class="content">\$b\$</div></div>`,
-        state: 'up-to-date',
-        error: null,
-        previewRef: fakeReference,
-        mathPresent: true,
-      });
-      rerender(<AsciiDocPreview content=":stem:\n\nstem:[b]" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+      commitToPreviewOutput(stemMarkup('b'));
+      mockUsePreview.mockReturnValue(
+        previewHookResult({ html: stemMarkup('b'), state: 'up-to-date', mathPresent: true, renderNonce: 2 }),
+      );
+      rerenderUncommitted({ content: ':stem:\n\nstem:[b]' });
       await flushAsync();
+
       expect(renderMathMock).toHaveBeenCalledTimes(2);
     });
 
-    it('preserves client-typeset math across a re-render that does NOT change the html (on-click revert bug)', async () => {
-      // The worker HTML carries the raw `\$x\$` delimiters; the client (renderMath) replaces them with
-      // a typeset node in the live DOM. A later re-render with the SAME html (e.g. an editor click that
-      // only updates an unrelated prop like scrollToLine) must NOT reset the output's innerHTML — else
-      // React's `dangerouslySetInnerHTML` wipes the typeset math and, because [html, mathPresent] are
-      // unchanged, the typeset effect never re-runs, leaving the raw `\$x\$` on screen.
-      const stableHtml = String.raw`<div class="paragraph"><p>\$x\$</p></div>`;
-      mockUsePreview.mockReturnValue({
-        html: stableHtml, state: 'up-to-date', error: null, previewRef: fakeReference, mathPresent: true,
-      });
-      const { rerender } = render(
-        <AsciiDocPreview content=":stem:" isEnabled={true} projectId="proj-1" scrollToLine={null} />,
+    it('re-typesets a commit whose markup happens to be unchanged', async () => {
+      const unchanged = stemMarkup('x');
+      const { rerenderUncommitted } = renderShowing(unchanged, { mathPresent: true }, { content: ':stem:' });
+      await flushAsync();
+      expect(renderMathMock).toHaveBeenCalledTimes(1);
+
+      // Reopening the same file commits the same markup into an element that no longer holds the
+      // typeset result. Keying this pass on the markup would read "nothing changed" and skip it,
+      // leaving the raw delimiters on screen with nothing left to trigger a retry.
+      commitToPreviewOutput(unchanged);
+      mockUsePreview.mockReturnValue(
+        previewHookResult({ html: unchanged, state: 'up-to-date', mathPresent: true, renderNonce: 2 }),
       );
+      rerenderUncommitted({});
       await flushAsync();
 
-      // Simulate renderMath: swap the delimiter text for a typeset node in the live output container.
+      expect(renderMathMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('preserves client-typeset math across a re-render that commits nothing (on-click revert bug)', async () => {
+      // The rendered markup carries the raw `\$x\$` delimiters; the client replaces them with a typeset
+      // node in the live DOM. A re-render that commits nothing — an editor click updating an unrelated
+      // prop — must leave that node alone. Letting React own the element's contents is what used to
+      // wipe it, and with nothing committed the typeset pass would not run again to put it back.
+      const { rerenderUncommitted } = renderShowing(String.raw`<div class="paragraph"><p>\$x\$</p></div>`, {
+        mathPresent: true,
+      }, { content: ':stem:' });
+      await flushAsync();
+
       const output = screen.getByTestId('asciidoc-output');
       const typeset = document.createElement('math');
       typeset.dataset['stemSource'] = String.raw`\$x\$`;
       output.replaceChildren(typeset);
-      expect(output.querySelector('math')).not.toBeNull();
 
-      // Re-render with unchanged html but a changed unrelated prop. The typeset node must survive.
-      rerender(<AsciiDocPreview content=":stem:" isEnabled={true} projectId="proj-1" scrollToLine={{ line: 3 }} />);
+      rerenderUncommitted({ scrollToLine: { line: 3 } });
       await flushAsync();
 
       expect(output.querySelector('math')).not.toBeNull();
+      expect(renderMathMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -454,5 +568,116 @@ describe('AsciiDocPreview', () => {
     ])('isAsciiDocFile(%s) === %s', (name, expected) => {
       expect(isAsciiDocFile(name)).toBe(expected);
     });
+  });
+});
+
+// ── The engine giving up ─────────────────────────────────────────────────────
+
+/**
+ * Report a preview whose engine has died for good: a last good render still on screen, and no further
+ * rebuild coming.
+ *
+ * @param retryEngine - Stands in for the hook's manual retry.
+ */
+const previewWithFailedEngine = (retryEngine: () => void) =>
+  mockUsePreview.mockReturnValue(previewHookResult({
+    html: '<h1>Last good render</h1>',
+    state: 'rendering',
+    error: null,
+    engineFailed: true,
+    retryEngine,
+  }));
+
+describe('AsciiDocPreview engine failure', () => {
+  it('says the engine stopped, and offers to start it again', () => {
+    previewWithFailedEngine(jest.fn());
+
+    render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+
+    // Nothing will restart it on its own, so a panel that says nothing looks exactly like a document
+    // with nothing new to show.
+    expect(screen.getByTestId('engine-failure-notice')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /restart preview engine/i })).toBeInTheDocument();
+  });
+
+  it('asks for a new engine when the reader clicks through', () => {
+    const retryEngine = jest.fn();
+    previewWithFailedEngine(retryEngine);
+
+    render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+    fireEvent.click(screen.getByRole('button', { name: /restart preview engine/i }));
+
+    expect(retryEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('says nothing while the engine is healthy, including on an ordinary render failure', () => {
+    mockUsePreview.mockReturnValue(previewHookResult({
+      html: '<h1>Doc</h1>',
+      state: 'error',
+      error: 'unterminated block',
+      engineFailed: false,
+    }));
+
+    render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+
+    // A document that does not convert is not an engine that has died; offering to restart the engine
+    // would point the author at the wrong problem.
+    expect(screen.queryByTestId('engine-failure-notice')).not.toBeInTheDocument();
+    expect(screen.getByText('unterminated block')).toBeInTheDocument();
+  });
+
+  it('keeps the failure notice out of the rendered document', () => {
+    previewWithFailedEngine(jest.fn());
+
+    const { container } = render(
+      <AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />,
+    );
+
+    // `.asciidoc-preview-content` is scoped to the author's document; app chrome inside it would be
+    // styled as though the document had written it.
+    expect(container.querySelector('.asciidoc-preview-content')?.textContent).not.toContain(
+      'Restart preview engine',
+    );
+  });
+});
+
+// ── Render-cost overlay ──────────────────────────────────────────────────────
+
+describe('AsciiDocPreview render-cost overlay', () => {
+  it('shows what the last render cost, outside the document content', () => {
+    mockUsePreview.mockReturnValue(previewHookResult({
+      html: '<h1>Hello</h1>',
+      state: 'up-to-date',
+      error: null,
+      timings: { parseMs: 4, convertMs: 18, postProcessMs: 3, totalMs: 27 },
+    }));
+
+    const { container } = render(
+      <AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />,
+    );
+
+    // Put away until asked for: it sits over the document being previewed, and the reader did not
+    // ask to have the corner of their page covered by it.
+    expect(screen.queryByText('27 ms')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Web preview render cost' }));
+
+    expect(screen.getByText('27 ms')).toBeInTheDocument();
+    // Document-rendering styles are scoped to `.asciidoc-preview-content`; app chrome inside it would
+    // be styled as though it were part of the author's document.
+    expect(container.querySelector('.asciidoc-preview-content')?.textContent).not.toContain('27 ms');
+  });
+
+  it('shows no cost overlay before a render has been measured', () => {
+    mockUsePreview.mockReturnValue(previewHookResult({
+      html: '<h1>Hello</h1>',
+      state: 'up-to-date',
+      error: null,
+      timings: null,
+    }));
+
+    render(<AsciiDocPreview content="= Hello" isEnabled={true} projectId="proj-1" scrollToLine={null} />);
+
+    expect(screen.queryByText(/render cost/i)).not.toBeInTheDocument();
   });
 });

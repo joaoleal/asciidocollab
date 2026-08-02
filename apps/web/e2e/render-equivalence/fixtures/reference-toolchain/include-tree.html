@@ -1,0 +1,64 @@
+<h1>An Include Tree</h1>
+<div id="preamble">
+<div class="sectionbody">
+<div class="paragraph">
+<p>The assembled document is what gets converted, so an offset that composes wrongly moves every heading
+below it — and section numbering follows the assembled structure, not the file boundaries.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="chapter-one">1. Chapter One</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Written as a level-0 document and included at an offset, so it renders one level down.</p>
+</div>
+<div class="sect2">
+<h3 id="a-section-of-chapter-one">1.1. A Section Of Chapter One</h3>
+<div class="paragraph">
+<p>The attribute defined in this file&#8217;s header reads: defined in chapter one.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="a-nested-include">1.2. A Nested Include</h3>
+<div class="paragraph">
+<p>Included from a file that was itself included at an offset, so the offsets accumulate rather than
+replace one another.</p>
+</div>
+<div class="sect3">
+<h4 id="inside-the-nested-include">1.2.1. Inside The Nested Include</h4>
+<div class="paragraph">
+<p>Prose.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="chapter-two">2. Chapter Two</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>A second included chapter, so offset composition has to hold across more than one include.</p>
+</div>
+<div class="sect2">
+<h3 id="a-section-of-chapter-two">2.1. A Section Of Chapter Two</h3>
+<div class="paragraph">
+<p>Prose.</p>
+</div>
+<div class="sect3">
+<h4 id="a-subsection-of-chapter-two">2.1.1. A Subsection Of Chapter Two</h4>
+<div class="paragraph">
+<p>Prose, two levels below this file&#8217;s own title and three below the assembled root.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="a-section-back-in-the-root">3. A Section Back In The Root</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Written at the root&#8217;s own level, after two chapters that were shifted down one.</p>
+</div>
+</div>
+</div>

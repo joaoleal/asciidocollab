@@ -3,7 +3,7 @@
 // (asciidoc-preview.css) wins on equal specificity for the few rules we deliberately override.
 import '../styles/asciidoctor-style.generated.css';
 import '../styles/asciidoc-preview.css';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowUpDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utilities';
@@ -12,6 +12,8 @@ import { useAsciidocPreview } from '@/hooks/use-asciidoc-preview';
 import { PdfDiagnostics } from '@/components/pdf-diagnostics';
 import type { RenderDiagnostic, DiagnosticCode } from '@asciidocollab/asciidoc-pdf';
 import type { DiagramWarning } from '@/components/diagrams/render-diagrams';
+import { RenderStatsOverlay, type RenderStatRow } from '@/components/preview/render-stats-overlay';
+import type { RenderTimings } from '@/workers/render-protocol';
 import { PreviewStyleControl, type PreviewStyleValue } from '@/components/preview-style-control';
 import { PreviewModeToggle, type PreviewMode } from '@/components/preview-mode-toggle';
 import { ShowIncludesControl } from '@/components/show-includes-control';
@@ -24,6 +26,24 @@ import {
 // Re-exported for back-compat: the AsciiDoc file-name rule now lives in lib/asciidoc/file-name
 // (single presentation copy of the domain rule), but existing callers import it from here.
 export { isAsciiDocumentFile as isAsciiDocFile } from '@/lib/asciidoc/file-name';
+
+/**
+ * The last render's stage costs as overlay rows, or nothing before one has been measured.
+ *
+ * The mapping lives here rather than in the overlay because the two preview formats report
+ * structurally different things, and each is the authority on how to read its own figures.
+ */
+function webPreviewStatRows(timings: RenderTimings | null | undefined): readonly RenderStatRow[] {
+  if (timings === null || timings === undefined) return [];
+  // The total leads and the three stages sit under it. They are parts of it, not figures beside it —
+  // read as a flat column the four appear to describe a render costing roughly twice what it did.
+  return [
+    { label: 'total', value: timings.totalMs, unit: 'ms' },
+    { label: 'parse', value: timings.parseMs, unit: 'ms', depth: 1 },
+    { label: 'convert', value: timings.convertMs, unit: 'ms', depth: 1 },
+    { label: 'post-process', value: timings.postProcessMs, unit: 'ms', depth: 1 },
+  ];
+}
 
 /** The diagram render-warning code shown as an error (a genuine draw failure); the rest are warnings. */
 const DIAGRAM_ERROR_CODE: DiagnosticCode = 'malformed-diagram';
@@ -200,7 +220,18 @@ export function AsciiDocPreview({
   // Default image base path: AsciiDoc image macros reference files by path, so point Asciidoctor's
   // `imagesdir` at the project's image endpoint (see GET /projects/:id/images/*).
   const imagesDirectory = `${API_BASE_URL}/projects/${projectId}/images`;
-  const { html, state, error, previewRef, mathPresent, diagramsPresent } = useAsciidocPreview({
+  const {
+    state,
+    error,
+    previewRef,
+    outputRef,
+    mathPresent,
+    diagramsPresent,
+    timings,
+    engineFailed,
+    retryEngine,
+    renderNonce,
+  } = useAsciidocPreview({
     content,
     isEnabled,
     scrollToLine,
@@ -213,10 +244,6 @@ export function AsciiDocPreview({
     openFileId: openFilePath,
     showIncludes: showIncludedFiles,
   });
-
-  // Ref to the rendered-output container — the scoped `.asciidoc-preview-content` element whose
-  // sanitized HTML may carry STEM delimiters MathJax typesets in place.
-  const outputReference = useRef<HTMLDivElement | null>(null);
 
   // Per-diagram render diagnostics for the CURRENT preview (skipped remote data, unsupported engine, a
   // draw failure). Surfaced in the shared diagnostics panel so a diagram that fails to generate is
@@ -231,23 +258,21 @@ export function AsciiDocPreview({
   const onNavigateToSourceReference = useRef(onNavigateToSource);
   onNavigateToSourceReference.current = onNavigateToSource;
 
-  // Stable `dangerouslySetInnerHTML` payload, keyed on `html`. A fresh `{ __html }` object literal
-  // every render would make React treat the prop as changed and RE-APPLY innerHTML on every re-render
-  // (even an unrelated one, e.g. an editor click), wiping the client-typeset math (`<math>`/
-  // `mjx-container`) that `renderMath` inserted — and since `[html, mathPresent]` are unchanged the
-  // typeset effect would not re-run, leaving the raw `\$…\$` delimiters on screen. Memoizing keeps the
-  // object referentially stable while `html` is unchanged, so React only re-applies innerHTML (and the
-  // effect re-typesets) when the rendered HTML actually changes.
-  const htmlMarkup = useMemo(() => (html === null ? null : { __html: html }), [html]);
-
-  // Render math client-side AFTER the sanitized HTML is committed to the DOM, and only when the
-  // worker flagged in-effect STEM (resolved `:stem:` + stem markup). MathJax is lazy-imported inside
-  // `renderMath`, so its bundle cost is paid only on a math-bearing preview. Re-runs on
-  // html/mathPresent change; `renderMath` clears prior typeset state so re-renders don't double-render.
-  // Output stays within the scoped container (Constitution VI) — we only ever typeset that node.
+  // Render math client-side AFTER a render has been committed to the DOM, and only when the worker
+  // flagged in-effect STEM (resolved `:stem:` + stem markup). MathJax is lazy-imported inside
+  // `renderMath`, so its bundle cost is paid only on a math-bearing preview. `renderMath` is
+  // incremental: it typesets the delimited expressions this commit brought in and leaves every
+  // expression that is already typeset exactly as it is — the same node, not a fresh one that looks
+  // the same. Output stays within the scoped container (Constitution VI) — we only ever typeset that
+  // node.
+  //
+  // Keyed on the commit, NOT on the rendered markup: the hook patches the output element in place, so
+  // markup that happens to be unchanged says nothing about whether the element now holds expressions
+  // that still need typesetting. A pass gated on the markup would silently skip such a commit and
+  // leave the raw delimiters on screen. `renderNonce === 0` is the genuine "nothing committed yet".
   useEffect(() => {
-    if (!mathPresent || html === null) return;
-    const container = outputReference.current;
+    if (!mathPresent || renderNonce === 0) return;
+    const container = outputRef.current;
     if (!container) return;
     let cancelled = false;
     void import('@/components/math/render-math').then(({ renderMath }) => {
@@ -257,25 +282,28 @@ export function AsciiDocPreview({
     return () => {
       cancelled = true;
     };
-  }, [html, mathPresent]);
+  }, [renderNonce, mathPresent]);
 
-  // Render diagram placeholders client-side AFTER the sanitized HTML is committed, and only when the
+  // Render diagram placeholders client-side AFTER a render has been committed, and only when the
   // worker flagged a native diagram block (`diagramsPresent`). The heavy engines (mermaid/vega/
   // graphviz) are lazy-imported inside `renderDiagrams`, so their bundle cost is paid only on a
-  // diagram-bearing preview — mirroring the MathJax effect above. Re-runs on html/diagramsPresent
-  // change; `renderDiagrams` re-derives each diagram from its preserved inert source, so a re-run does
-  // not double-inject. Fail-soft: `renderDiagrams` never throws and returns per-diagram warnings
+  // diagram-bearing preview — mirroring the MathJax effect above. Keyed on the commit for the same
+  // reason it is: a patch can put an undrawn placeholder on screen without changing the markup, and a
+  // pass gated on the markup would never draw it. `renderDiagrams` is incremental in the same way the
+  // math pass is: a placeholder that already holds a drawing of its current source is left untouched,
+  // so a refresh costs one engine run per diagram the author changed rather than one per diagram in
+  // the document. Fail-soft: `renderDiagrams` never throws and returns per-diagram warnings
   // (unsupported/offline engine, blocked remote resource, render failure) — we log those and leave the
   // rest of the preview intact; a rejected import/promise is caught so it can never crash the preview.
   // Output stays within the scoped container (Constitution VI) — we only ever render into that node.
   useEffect(() => {
-    if (!diagramsPresent || html === null) {
+    if (!diagramsPresent || renderNonce === 0) {
       // No diagrams in the current render ⇒ clear any diagnostics left from a previous one so a fixed
       // document's stale warnings never linger (mirrors the PDF panel clearing on each fresh render).
       setDiagramDiagnostics([]);
       return;
     }
-    const container = outputReference.current;
+    const container = outputRef.current;
     if (!container) return;
     let cancelled = false;
     void import('@/components/diagrams/render-diagrams')
@@ -305,15 +333,20 @@ export function AsciiDocPreview({
     return () => {
       cancelled = true;
     };
-  }, [html, diagramsPresent, openFilePath]);
+  }, [renderNonce, diagramsPresent, openFilePath]);
 
   // Delegated listener for include-placeholder interactions (click + keyboard).
   // A single listener on the container handles all placeholders — even those added
   // after re-render — via `.closest()` delegation (Constitution IV: no per-element handlers).
-  // Re-attaches only when `html` changes (innerHTML is rewritten each render). The ref pattern
-  // above ensures handlers always call the latest `onOpenInclude` without needing it in deps.
+  // The ref pattern above ensures handlers always call the latest `onOpenInclude` without needing it
+  // in deps.
+  //
+  // Re-attached on each commit, and on the panel becoming previewable again. The commit is the same
+  // signal the passes above use; `isEnabled` is here because it is what mounts and unmounts the
+  // container, and a listener attached to a container that has since been replaced is a listener on a
+  // node no longer in the document — clicks in the preview would simply stop being answered.
   useEffect(() => {
-    const container = outputReference.current;
+    const container = outputRef.current;
     if (!container) return;
 
     const handleClick = (event: MouseEvent) => {
@@ -365,10 +398,11 @@ export function AsciiDocPreview({
       container.removeEventListener('click', handleClick);
       container.removeEventListener('keydown', handleKeyDown);
     };
-  }, [html]);
+  }, [renderNonce, isEnabled]);
 
   return (
-    <div className="flex flex-col h-full">
+    // `relative` positions the development-only render-cost overlay against the whole panel.
+    <div className="relative flex flex-col h-full">
       <div className="flex items-center justify-between px-3 py-1.5 border-b shrink-0">
         {/* Left anchor: the HTML/PDF switch sits in the SAME position in both preview modes so the
             header stays stable when the mode changes. Falls back to a static label when this preview
@@ -435,6 +469,32 @@ export function AsciiDocPreview({
         </div>
       )}
 
+      {/* The render engine died repeatedly and supervision has stopped rebuilding it, so nothing will
+          bring the preview back on its own. Said plainly and left standing — an engine that quietly
+          stops updating looks identical to a document that has nothing new to show. The retry is here
+          because only the author can decide the document is worth another attempt.
+
+          Panel chrome, deliberately outside `.asciidoc-preview-content`: those styles belong to the
+          rendered document, and this notice is the app talking, not the document. */}
+      {engineFailed && (
+        <div
+          role="alert"
+          data-testid="engine-failure-notice"
+          className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs border-b shrink-0 text-destructive bg-destructive/10"
+        >
+          <span>The preview engine stopped and could not restart itself. The preview is out of date.</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-6 shrink-0 px-2 text-xs"
+            onClick={retryEngine}
+          >
+            Restart preview engine
+          </Button>
+        </div>
+      )}
+
       {/* Per-diagram render diagnostics, surfaced in the same collapsible panel the PDF export uses so a
           diagram that could not be drawn is reported with what + where instead of failing silently. */}
       {diagramDiagnostics.length > 0 && (
@@ -448,23 +508,36 @@ export function AsciiDocPreview({
         </div>
       )}
 
+      {/* Outside the scroll container, and so outside `.asciidoc-preview-content`: the document's own
+          styles stay scoped to the document, and this chrome cannot be mistaken for part of it. */}
+      <RenderStatsOverlay title="Web preview" rows={webPreviewStatRows(timings)} />
+
       <div ref={previewRef} className="flex-1 overflow-auto p-4" data-testid="preview-scroll-container">
-        {!isEnabled || state === 'idle' ? (
-          <p className="text-muted-foreground text-sm">Preview not available for this file type</p>
+        {/* Reserved for a file this panel genuinely cannot render — that is what `isEnabled` states.
+            It used to be shown for an idle panel as well, which made every switch between two
+            perfectly previewable files announce that the preview was unavailable: the panel was
+            remounted on each switch, and a freshly mounted panel is idle until its first render lands.
+            Being between two renders is not the same as having nothing to render. */}
+        {isEnabled ? (
+          // Deliberately childless, and deliberately mounted before there is anything to show. Its
+          // contents belong to the preview hook, which patches each render into it directly: React
+          // must not be given a say in what is inside it, or it would reconcile away the diagrams and
+          // typeset expressions the client put there. Mounting it up front is what gives the very
+          // first render something to be committed INTO — gate it on having rendered something and it
+          // could never render anything.
+          //
+          // `aria-busy` covers the whole render, not just the moment it lands: a reader on a screen
+          // reader is told the region is being updated for as long as that is true, instead of being
+          // read a document that is about to change under them.
+          <div
+            ref={outputRef}
+            data-testid="asciidoc-output"
+            className="asciidoc-preview-content"
+            data-preview-style={previewStyle}
+            aria-busy={state === 'pending' || state === 'rendering'}
+          />
         ) : (
-          html !== null && (
-            <div
-              ref={outputReference}
-              data-testid="asciidoc-output"
-              className="asciidoc-preview-content"
-              data-preview-style={previewStyle}
-              // dangerouslySetInnerHTML is intentional: content is sanitized by DOMPurify in
-              // useAsciidocPreview. The payload is the memoized `htmlMarkup` (stable while `html` is
-              // unchanged) so React does not re-apply innerHTML — and wipe client-typeset math — on
-              // unrelated re-renders. `html !== null` here, so `htmlMarkup` is non-null.
-              dangerouslySetInnerHTML={htmlMarkup ?? undefined}
-            />
-          )
+          <p className="text-muted-foreground text-sm">Preview not available for this file type</p>
         )}
       </div>
     </div>

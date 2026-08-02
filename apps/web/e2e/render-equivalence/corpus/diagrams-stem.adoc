@@ -1,0 +1,56 @@
+= Diagrams And Equations
+:stem:
+
+The comparison here is over what conversion EMITS — a placeholder for a diagram, delimited markup for
+an equation. Neither is drawn or typeset until after conversion, on the main thread.
+
+== Diagrams
+
+[mermaid]
+----
+graph TD;
+  A[Start] --> B{Decision};
+  B -->|yes| C[Do the thing];
+  B -->|no| D[Stop];
+----
+
+[graphviz]
+----
+digraph G {
+  a -> b;
+  b -> c;
+}
+----
+
+[vega-lite]
+----
+{
+  "mark": "bar",
+  "data": { "values": [ { "a": "A", "b": 28 } ] }
+}
+----
+
+[plantuml]
+----
+Alice -> Bob: a diagram engine with no offline renderer
+----
+
+== Equations
+
+[stem]
+++++
+\sqrt{4} = 2
+++++
+
+An inline equation stem:[a^2 + b^2 = c^2] inside a sentence.
+
+A latexmath macro: latexmath:[\int_0^1 x\,dx = \tfrac{1}{2}].
+
+An asciimath macro: asciimath:[sum_(i=1)^n i = (n(n+1))/2].
+
+A source block that merely CONTAINS delimiter-like characters and is not math at all:
+
+[source,ruby]
+----
+pattern = /\[0-9\]+/
+----

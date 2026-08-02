@@ -1,0 +1,40 @@
+<h1 data-source-line="1" data-source-file="attributes-conditionals.adoc">Attributes And Conditionals</h1>
+<div id="preamble">
+<div class="sectionbody">
+<div id="__src_paragraph_7" data-source-line="7" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>Attribute resolution order is the whole subject here: what a reference resolves to depends on where
+in the document it is read.</p>
+</div>
+<div id="__src_paragraph_10" data-source-line="10" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>The project is AsciiDoc Collab, release 2.1.</p>
+</div>
+<div id="__src_paragraph_14" data-source-line="14" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>After a redefinition, the same reference reads 3.0 — document order decides.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_conditional_regions" data-source-line="16" data-source-file="attributes-conditionals.adoc">1. Conditional Regions</h2>
+<div class="sectionbody">
+<div id="__src_paragraph_20" data-source-line="20" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>This line is included because <code>project-name</code> is set.</p>
+</div>
+<div id="__src_paragraph_28" data-source-line="28" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>This line is included because <code>not-set-anywhere</code> is unset.</p>
+</div>
+<div id="__src_paragraph_32" data-source-line="32" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>This line is included by an expression evaluated against the attribute&#8217;s current value.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_empty_and_unset" data-source-line="38" data-source-file="attributes-conditionals.adoc">2. Empty And Unset</h2>
+<div class="sectionbody">
+<div id="__src_paragraph_40" data-source-line="40" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>An empty attribute resolves to nothing: "" — the quotes are the whole of it.</p>
+</div>
+<div id="__src_paragraph_44" data-source-line="44" data-source-file="attributes-conditionals.adoc" class="paragraph">
+<p>An unset attribute leaves its reference unresolved: {release}</p>
+</div>
+</div>
+</div>
