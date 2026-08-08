@@ -7,6 +7,7 @@ import {
   PermissionDeniedError,
 } from '@asciidocollab/domain';
 import { adminSettingsRoute } from '../../../src/routes/admin/settings';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -20,12 +21,12 @@ jest.mock('../../../src/plugins/require-admin', () => ({
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     systemSetting: { get: jest.fn(), set: jest.fn() },
     user: { findById: jest.fn() },
     auditLog: { save: jest.fn() },
   });
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     storage: { maxUploadSizeBytes: 10_485_760 },
     admin: { invite: { rateLimitMax: 100, rateLimitWindow: 60_000 } },
   });

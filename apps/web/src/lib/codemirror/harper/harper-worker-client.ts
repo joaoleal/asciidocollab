@@ -1,5 +1,6 @@
 import type { GrammarDialect } from './dialect';
 import { HarperEngineInitError, type HarperEngine, type EngineLint } from './harper-engine';
+import { WORKER_GONE_MESSAGE } from './harper-engine-proxy';
 
 /**
  * Main-thread client around a {@link HarperEngine}. It owns three concerns the raw engine does not:
@@ -55,6 +56,20 @@ export interface SegmentLints {
   id: string;
   /** The lints found in the segment. */
   lints: EngineLint[];
+}
+
+/**
+ * Whether a lint rejection is the engine having gone away rather than having failed on its input.
+ *
+ * Teardown is routine — the editor unmounts, or grammar checking is switched off, with a pass in
+ * flight — and there is nothing to report about it. Anything else is a broken engine, and the
+ * difference matters because both arrive here as a rejected promise.
+ *
+ * @param error - The rejection thrown out of `engine.lint`.
+ * @returns True when the worker was disposed underneath the call.
+ */
+function isEngineGoneError(error: unknown): boolean {
+  return error instanceof Error && error.message === WORKER_GONE_MESSAGE;
 }
 
 /** A promise-based client over the Harper engine that adds warm-up, status, and a staleness guard. */
@@ -303,7 +318,40 @@ export function createHarperWorkerClient(engine: HarperEngine): HarperWorkerClie
           results.push({ id: segment.id, lints: cached });
           continue;
         }
-        const lints = await engine.lint(segment.text);
+        // A rejection here is usually the engine going away underneath the pass — the editor
+        // unmounting with this call in flight, or a worker that died — and `null` is exactly what the
+        // callers already treat as "no results this time": both of them say so where they check for
+        // it. Letting it propagate instead would surface as an unhandled rejection out of a CodeMirror
+        // lint source or an included-file pass, neither of which has anywhere to put an error.
+        //
+        // "Usually" is the whole reason this does not swallow indiscriminately. A rejection that is
+        // NOT teardown — a wasm trap, a segment the engine cannot parse — is a broken engine, and
+        // returning `null` for it reports a clean document forever: the reader sees no writing issues
+        // and no indication that nothing is being checked. That failure is put through the same
+        // `failed` status an init failure uses, which is the one channel the panel can report.
+        //
+        // And, exactly as an init failure does, it is NOT memoized. `setupPromise` has to be dropped
+        // with the status: left in place it is an already-resolved promise that `ensureReady` awaits
+        // before returning `readStatus() === 'ready'` — false, for the rest of the session. One
+        // transient trap would then stop grammar checking permanently, on an engine that is fine and
+        // that the proxy would have rebuilt on the next call, and no later pass could recover it.
+        let lints: EngineLint[];
+        try {
+          lints = await engine.lint(segment.text);
+        } catch (error) {
+          if (!isEngineGoneError(error)) {
+            // Dropped whether or not this pass still matters: a trapped engine has to be rebuilt
+            // before anything is linted again, and that is bookkeeping rather than something the
+            // reader is shown.
+            setupPromise = null; // do not memoize the failure — allow a clean retry
+            // The STATUS is what the reader is shown, so it follows the same staleness rule as every
+            // other exit from this loop. A pass superseded while it sat in this `await` has already
+            // been replaced by one that will report its own outcome; letting its failure through as
+            // well would put "grammar checking failed" over a document the newer pass lints cleanly.
+            if (seq === lintSeq) setStatus('failed');
+          }
+          return null;
+        }
         if (seq !== lintSeq) return null; // superseded mid-flight — discard
         cacheSegment(segment.text, lints);
         results.push({ id: segment.id, lints });

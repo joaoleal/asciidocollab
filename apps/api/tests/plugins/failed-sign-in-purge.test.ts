@@ -1,12 +1,13 @@
 import Fastify from 'fastify';
 import { runFailedSignInPurge } from '../../src/plugins/failed-sign-in-purge';
+import { decorateApp } from '../helpers/decorate-app';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function buildApp(deleteOlderThan: jest.Mock) {
   const app = Fastify();
-  app.decorate('config', { failedSignIn: { retentionDays: 90, purgeIntervalHours: 24 } } as never);
-  app.decorate('repos', { authAttemptTelemetry: { deleteOlderThan } } as never);
+  decorateApp(app, 'config', { failedSignIn: { retentionDays: 90, purgeIntervalHours: 24 } });
+  decorateApp(app, 'repos', { authAttemptTelemetry: { deleteOlderThan } });
   return app;
 }
 

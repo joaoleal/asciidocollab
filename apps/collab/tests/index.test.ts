@@ -39,7 +39,7 @@ describe('apps/collab graceful shutdown', () => {
     jest.unstable_mockModule('../src/internal-edit-server.js', () => ({
       startInternalEditServer: jest.fn().mockReturnValue({ close: mockEditServerClose }),
     }));
-    jest.spyOn(process, 'on').mockImplementation((event: string, handler: (...arguments_: unknown[]) => void) => {
+    jest.spyOn(process, 'on').mockImplementation((event: string | symbol, handler: (...arguments_: unknown[]) => void) => {
       if (event === 'SIGTERM' || event === 'SIGINT') {
         shutdownFns.push(handler as () => Promise<void>);
       }

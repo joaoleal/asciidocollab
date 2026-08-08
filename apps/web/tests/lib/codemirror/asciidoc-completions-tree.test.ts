@@ -29,7 +29,7 @@ const lezerParser = buildParser(grammarSource, {
 });
 const langExtension = new LanguageSupport(LRLanguage.define({ name: 'asciidoc', parser: lezerParser }));
 
-type Source = (context: CompletionContext) => CompletionResult | null;
+type Source = (context: CompletionContext) => CompletionResult | Promise<CompletionResult | null> | null;
 
 function completeInView(source: Source, documentContent: string, triggerPosition: number) {
   const view = new EditorView({
@@ -60,6 +60,14 @@ function completeInView(source: Source, documentContent: string, triggerPosition
   }
 }
 
+/** The synchronous result these specs exercise; a source may also return a promise. */
+function syncResult(result: ReturnType<typeof completeInView>): CompletionResult {
+  if (result === null || result instanceof Promise) {
+    throw new Error('expected a synchronous completion result');
+  }
+  return result;
+}
+
 describe('table completions over a live syntax tree', () => {
   test('tableCellCompletionSource counts columns for a row inside a closed table', () => {
     // Closed table (a TableBlock node exists); cursor on the lone `|` row inside it.
@@ -71,7 +79,8 @@ describe('table completions over a live syntax tree', () => {
     const mockView = {
       dispatch: (tr: { changes: { insert: string } }) => { insertedText = tr.changes.insert; },
     };
-    (result!.options[0].apply as (...arguments_: unknown[]) => void)(mockView, result!.options[0], cursor - 1, cursor);
+    const [firstOption] = syncResult(result).options;
+    (firstOption.apply as (...arguments_: unknown[]) => void)(mockView, firstOption, cursor - 1, cursor);
     expect((insertedText.match(/\|/g) ?? []).length).toBe(3);
   });
 

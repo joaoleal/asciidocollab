@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { ListUsersUseCase, PermissionDeniedError } from '@asciidocollab/domain';
 import { usersRoute } from '../../../src/routes/admin/users';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -25,7 +26,7 @@ const mockUser = {
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: { findById: jest.fn() },
     projectMember: {
       findSoleOwnerProjects: jest.fn().mockResolvedValue([

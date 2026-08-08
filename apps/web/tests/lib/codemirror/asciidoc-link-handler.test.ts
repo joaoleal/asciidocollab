@@ -1,6 +1,7 @@
 import { createLinkHandler, xrefHoverPreview } from '@/lib/codemirror/asciidoc-link-handler';
 import { buildProjectSymbolIndex, makeIncludeResolver } from '@/lib/codemirror/asciidoc-symbol-index';
 import type { EditorView } from '@codemirror/view';
+import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 
 type MockView = Pick<EditorView, 'state' | 'posAtCoords'>;
 
@@ -456,7 +457,12 @@ describe('createLinkHandler — xref go-to-definition', () => {
     );
   }
 
-  function clickAt(content: string, marker: string, onNavigateToXref: jest.Mock, getIndex = openIndex) {
+  function clickAt(
+    content: string,
+    marker: string,
+    onNavigateToXref: jest.Mock,
+    getIndex: () => ProjectSymbolIndex | null = openIndex,
+  ) {
     const handler = createLinkHandler({ onNavigateToXref }, undefined, getIndex);
     handler.handleMousedown(
       { ctrlKey: true, clientX: 0, clientY: 0, preventDefault: jest.fn() } as unknown as MouseEvent,

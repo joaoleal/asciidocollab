@@ -31,6 +31,10 @@ function makeTokenGenerator(rawToken = 'raw-token'): TokenGenerator {
   return {
     generatePasswordResetToken: jest.fn(),
     hashToken: jest.fn().mockReturnValue(`hashed-${rawToken}`),
+    // Unused by this use case, but part of the port: a fake that omits them is not the collaborator
+    // the production code is handed.
+    generateInvitationToken: jest.fn(),
+    generateEmailVerificationToken: jest.fn(),
   };
 }
 

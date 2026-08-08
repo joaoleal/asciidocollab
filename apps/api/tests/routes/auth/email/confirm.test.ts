@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { ConfirmEmailChangeUseCase } from '@asciidocollab/domain';
 import { emailConfirmRoute } from '../../../../src/routes/auth/email/confirm';
+import { decorateApp } from '../../../helpers/decorate-app';
 
 const USER_ID = '550e8400-e29b-41d4-a716-446655440022';
 
@@ -11,9 +12,9 @@ async function flush(): Promise<void> {
 function buildApp() {
   const save = jest.fn().mockResolvedValue(undefined);
   const app = Fastify();
-  app.decorate('config', { auth: { emailConfirm: { rateLimitMax: 100, rateLimitWindow: 60_000 } } } as never);
-  app.decorate('repos', { emailChangeToken: {}, user: {}, auditLog: { save } } as never);
-  app.decorate('services', { tokenGenerator: {} } as never);
+  decorateApp(app, 'config', { auth: { emailConfirm: { rateLimitMax: 100, rateLimitWindow: 60_000 } } });
+  decorateApp(app, 'repos', { emailChangeToken: {}, user: {}, auditLog: { save } });
+  decorateApp(app, 'services', { tokenGenerator: {} });
   app.register(emailConfirmRoute);
   return { app, save };
 }

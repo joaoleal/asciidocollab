@@ -21,19 +21,20 @@ jest.mock('../../../src/plugins/require-auth', () => ({
 }));
 
 import { projectRefactoringRoutes } from '../../../src/routes/projects/refactoring';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 
 async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify();
   await app.register(rateLimit, { global: false });
-  app.decorate('config', { project: { refactoring: { rateLimitMax: 60, rateLimitWindow: 60_000 } } } as never);
-  app.decorate('repos', {
+  decorateApp(app, 'config', { project: { refactoring: { rateLimitMax: 60, rateLimitWindow: 60_000 } } });
+  decorateApp(app, 'repos', {
     projectMember: { findByCompositeKey: jest.fn(async () => ({ role: { value: 'editor' } })) },
     fileNode: { findByProjectId: jest.fn(async () => []) },
     auditLog: { save: jest.fn() },
-  } as never);
-  app.decorate('stores', { fileStore: { read: jest.fn(async () => null), write: jest.fn() } } as never);
+  });
+  decorateApp(app, 'stores', { fileStore: { read: jest.fn(async () => null), write: jest.fn() } });
   await app.register(projectRefactoringRoutes);
   await app.ready();
   return app;

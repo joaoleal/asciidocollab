@@ -398,7 +398,7 @@ describe('asciidocSourceHighlight (lazy loader plugin)', () => {
   });
 
   test('does not reparse when the view is disconnected before the load resolves', async () => {
-    let resolveLoad: ((value: unknown) => void) | null = null;
+    let resolveLoad: ((value: unknown) => void) | undefined;
     resolveSourceLanguageMock.mockReturnValue({
       load: () =>
         new Promise((resolve) => {

@@ -63,7 +63,7 @@ describe('useReviewItems', () => {
 
   test('loads threads and resolves ranges against the live doc', async () => {
     mockList.mockResolvedValue([thread('r1')]);
-    mockResolveAnchors.mockReturnValue([{ id: 'r1', from: 0, to: 4, state: 'located' }]);
+    mockResolveAnchors.mockReturnValue([{ id: 'r1', range: { from: 0, to: 4 }, state: 'located' }]);
     mockToRanges.mockReturnValue([{ id: 'r1', from: 0, to: 4 }]);
     const ydoc = ydocWithText('some text');
 

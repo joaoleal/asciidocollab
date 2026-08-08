@@ -260,7 +260,6 @@ async function destinationPage(pdfDocument: PDFDocumentProxy, destination: reado
 export async function internalLinkTargets(bytes: Uint8Array): Promise<InternalLink[]> {
   const pdfDocument = await getDocument({
     data: new Uint8Array(bytes),
-    isEvalSupported: false,
     useSystemFonts: false,
     verbosity: 0, // Errors only: font/standard-data notices would drown the parity run's output.
   }).promise;
@@ -288,6 +287,7 @@ export async function internalLinkTargets(bytes: Uint8Array): Promise<InternalLi
     return links;
   } finally {
     // Releases the (fake, in-process) worker; without it the Node process keeps a live task per PDF.
-    await pdfDocument.destroy();
+    // pdfjs-dist 6 removed `PDFDocumentProxy.destroy()` — the loading task owns the worker.
+    await pdfDocument.loadingTask.destroy();
   }
 }

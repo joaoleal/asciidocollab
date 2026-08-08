@@ -434,6 +434,7 @@ describe('spanToDocumentRange', () => {
     const text = 'Before code.\n\n----\ncode\n----\n\nThe wolrd here.\n';
     const segments = extractProseSegments(parse(text), text);
     const second = segments.at(-1);
+    if (!second) throw new Error('expected a second prose segment');
     const at = second.text.indexOf('wolrd');
     const { from, to } = spanToDocumentRange(second, at, at + 'wolrd'.length);
     expect(text.slice(from, to)).toBe('wolrd');

@@ -57,6 +57,14 @@ export ASCIIDOCOLLAB_COLLAB_EDIT_URL="http://127.0.0.1:${ASCIIDOCOLLAB_COLLAB_IN
 export ASCIIDOCOLLAB_STORAGE_PATH="${ASCIIDOCOLLAB_STORAGE_PATH:-$ROOT/.e2e-storage}"
 # Empty allowlist disables the Origin check for the isolated local stack.
 export ASCIIDOCOLLAB_COLLAB_ALLOWED_ORIGINS=""
+# Raise the per-USER connect rate limit (default 120/min). Unlike the per-IP HTTP limits above, this
+# one is keyed on the authenticated user, and the whole suite drives its parallel workers through
+# effectively one account: every editor open costs a document room plus a presence room, so the
+# bursts run well past 120/min. A rejected connection never syncs, so the bound CodeMirror view stays
+# EMPTY forever (yCollab applies incremental deltas only — no delta is coming), and whichever spec
+# loses that race fails with an empty `.cm-content`. That is why the flake blamed a different test
+# each run — outline, highlighting, file-restore — and always passed on a lone retry.
+export ASCIIDOCOLLAB_COLLAB_CONNECT_RATE_PER_MIN="${ASCIIDOCOLLAB_COLLAB_CONNECT_RATE_PER_MIN:-10000}"
 
 export ASCIIDOCOLLAB_DATABASE_URL="postgresql://asciidocollab:asciidocollab@localhost:${PG_PORT}/asciidocollab_e2e"
 export ASCIIDOCOLLAB_API_PORT="$API_PORT"

@@ -35,6 +35,12 @@ export function startStaticServer(rootDirectory: string): Promise<StaticServer> 
       return;
     }
     response.setHeader('Content-Type', CONTENT_TYPES[path.extname(resolved).toLowerCase()] ?? 'application/octet-stream');
+    // MathJax 4 runs its speech-rule engine in a Worker created from a `blob:` URL, whose origin is
+    // `null`. Every fetch it makes back here — the speech maps under `sre/mathmaps/` — is therefore
+    // cross-origin and blocked without this, and a blocked map fetch leaves the conversion promise
+    // pending forever rather than failing. The server is loopback-only and read-only, serving files this
+    // repo already ships, so allowing any origin costs nothing.
+    response.setHeader('Access-Control-Allow-Origin', '*');
     createReadStream(resolved).pipe(response);
   });
 

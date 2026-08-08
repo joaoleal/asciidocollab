@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { fileContentRoutes } from '../../src/routes/projects/file-content';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -17,7 +18,7 @@ function buildTestServer(
 ) {
   const { memberRole = 'editor', hasDocument = true, fileNodeExists = true } = options;
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest
         .fn()
@@ -35,10 +36,10 @@ function buildTestServer(
     },
     collaborationSession: { isActive: jest.fn().mockResolvedValue(false) },
   });
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: { read: jest.fn(), write: jest.fn() },
   });
-  app.decorate('config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } } as never);
+  decorateApp(app, 'config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } });
   app.register(fileContentRoutes);
   return app;
 }
@@ -105,14 +106,14 @@ describe('GET /projects/:projectId/files/:fileNodeId/collab', () => {
       child() { return recordingLogger; },
     };
     const app = Fastify({ loggerInstance: recordingLogger });
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(null) },
       fileNode: { findById: jest.fn().mockResolvedValue({ projectId: { value: PROJECT_ID } }) },
       document: { findByFileNodeId: jest.fn() },
       collaborationSession: { isActive: jest.fn().mockResolvedValue(false) },
     });
-    app.decorate('stores', { fileStore: { read: jest.fn(), write: jest.fn() } });
-    app.decorate('config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } } as never);
+    decorateApp(app, 'stores', { fileStore: { read: jest.fn(), write: jest.fn() } });
+    decorateApp(app, 'config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } });
     app.register(fileContentRoutes);
 
     const response = await app.inject({
@@ -135,14 +136,14 @@ describe('GET /projects/:projectId/files/:fileNodeId/collab', () => {
       (request as unknown as { session: Record<string, unknown> }).session = {};
     });
     app.addHook('preHandler', realRequireAuth);
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       projectMember: { findByCompositeKey: jest.fn() },
       fileNode: { findById: jest.fn() },
       document: { findByFileNodeId: jest.fn() },
       collaborationSession: { isActive: jest.fn() },
     });
-    app.decorate('stores', { fileStore: { read: jest.fn(), write: jest.fn() } });
-    app.decorate('config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } } as never);
+    decorateApp(app, 'stores', { fileStore: { read: jest.fn(), write: jest.fn() } });
+    decorateApp(app, 'config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } });
     app.register(fileContentRoutes);
 
     const response = await app.inject({

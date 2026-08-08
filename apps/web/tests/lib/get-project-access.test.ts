@@ -16,8 +16,11 @@ import { getProjectAccess } from '@/lib/get-project-access';
 
 const PROJECT_ID = 'proj-1';
 
+/** The slice of `Response` the unit under test reads. */
+type FakeResponse = Pick<Response, 'ok' | 'status' | 'json'>;
+
 /** Builds a fake fetch Response with a JSON body and a status (ok derived from status). */
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(body: unknown, status = 200): FakeResponse {
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -26,7 +29,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /** Queues the three parallel fetches (me, project, members) in call order. */
-function queueResponses(me: Response, project: Response, members: Response): void {
+function queueResponses(me: FakeResponse, project: FakeResponse, members: FakeResponse): void {
   fetchMock
     .mockResolvedValueOnce(me)
     .mockResolvedValueOnce(project)

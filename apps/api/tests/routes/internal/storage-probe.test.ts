@@ -3,12 +3,13 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { storageProbeRoute, STORAGE_PROBE_PREFIX } from '../../../src/routes/internal/storage-probe';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const TOKEN = '550e8400-e29b-41d4-a716-446655440099';
 
 async function buildTestServer(storagePath: string) {
   const app = Fastify();
-  app.decorate('config', { storage: { path: storagePath } } as never);
+  decorateApp(app, 'config', { storage: { path: storagePath } });
   await app.register(storageProbeRoute);
   await app.ready();
   return app;

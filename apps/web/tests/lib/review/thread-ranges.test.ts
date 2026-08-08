@@ -27,7 +27,7 @@ describe('resolveThreadRanges', () => {
   test('resolves a live relative-position anchor to the same passage after a preceding insert', () => {
     const { ydoc, ytext } = makeDocument('Hello, world!');
     const captured = captureAnchor(ytext, 7, 12, ytext.toString(), 1); // "world"
-    const anchor: AnchorDto = { relPos: captured.relPos, quote: captured.quote, state: 'anchored' };
+    const anchor: AnchorDto = { relPos: captured.relPos, quote: captured.quote, state: 'located' };
 
     // A collaborator inserts before the passage; the relpos must track the shift.
     ytext.insert(0, 'XYZ ');
@@ -54,7 +54,7 @@ describe('resolveThreadRanges', () => {
   test('preserves input order across resolvable and unresolvable threads', () => {
     const { ydoc, ytext } = makeDocument('abcdefghij');
     const captured = captureAnchor(ytext, 2, 5, ytext.toString(), 1);
-    const resolvable: AnchorDto = { relPos: captured.relPos, quote: captured.quote, state: 'anchored' };
+    const resolvable: AnchorDto = { relPos: captured.relPos, quote: captured.quote, state: 'located' };
     const detached: AnchorDto = { quote: { prefix: '', exact: 'cde', suffix: '' }, state: 'detached' };
 
     const result = resolveThreadRanges(

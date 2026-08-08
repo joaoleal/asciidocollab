@@ -12,6 +12,7 @@ const issue: IncludedFileIssue = {
   line: 5,
   category: 'spelling',
   message: '“wrold” may be misspelled',
+  rule: 'SpellCheck',
 };
 
 describe('document scope store', () => {

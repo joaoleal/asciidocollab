@@ -4,7 +4,7 @@ import path from 'node:path';
 import { test, expect, type Request } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
-import { createAdocFile, setMainFile, openProject, openFile } from './helpers/editor';
+import { createAdocFile, setMainFile, openProject, openFile, waitCollabSynced } from './helpers/editor';
 
 // Zero source-egress guard for the three new diagram/math render surfaces — the client-side PDF export,
 // the live PDF preview, and the HTML preview's native diagram pass. Rendering happens ENTIRELY in the
@@ -246,7 +246,7 @@ test.describe('diagram and math rendering keeps all source in the browser', () =
 
     await openProject(page, projectId);
     await openFile(page, 'main.adoc', /Egress Canary Diagrams and Math/);
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
 
     // ---- Surface 1: the HTML preview's native diagram pass ----------------------------------------
     // Open the (default HTML) preview; the render worker emits inert `.adc-diagram` placeholders and the

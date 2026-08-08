@@ -144,13 +144,17 @@ beforeEach(() => {
   sessionStorage.clear();
 });
 
-const defaultProps = {
+const defaultProps: React.ComponentProps<typeof ProjectEditorLayout> = {
   projectId: 'p1',
   projectName: 'My Project',
   projectDescription: null,
+  projectLanguage: null,
   mainFileNodeId: null,
-  isOwner: true,
+  canManage: true,
   canEdit: true,
+  canModifyFiles: true,
+  canManageDictionary: true,
+  userId: 'user-1',
 };
 
 // ── ContentArea rendering states ─────────────────────────────────────────────

@@ -213,8 +213,9 @@ describe('DownloadProjectUseCase — content source resolution', () => {
     // file1: active session + reader returns text → inline
     const file1Entry = byId.get(FILE_1_ID);
     expect(file1Entry).toBeDefined();
-    expect(file1Entry!.source.kind).toBe('inline');
-    const inlineBytes = (file1Entry!.source as Extract<typeof file1Entry.source, { kind: 'inline' }>).bytes;
+    if (!file1Entry) throw new Error('file1 is missing from the download');
+    expect(file1Entry.source.kind).toBe('inline');
+    const inlineBytes = (file1Entry.source as Extract<typeof file1Entry.source, { kind: 'inline' }>).bytes;
     expect(inlineBytes).toEqual(Buffer.from(liveText, 'utf8'));
 
     // file2: document exists but NO active session → stored

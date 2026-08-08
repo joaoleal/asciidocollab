@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import Fastify from 'fastify';
 import { assetsRoutes } from '../../src/routes/projects/assets';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _reply: unknown, done: () => void) => done()),
@@ -10,16 +11,16 @@ jest.mock('../../src/plugins/require-auth', () => ({
 
 async function buildAssetsTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: { findByCompositeKey: jest.fn().mockResolvedValue({ role: { value: 'editor' } }) },
     fileNode: { findById: jest.fn().mockResolvedValue(null) },
     asset: { findById: jest.fn().mockResolvedValue(null), save: jest.fn() },
     systemSetting: { get: jest.fn().mockResolvedValue(null) },
     auditLog: { save: jest.fn() },
-  } as never);
-  app.decorate('stores', { fileStore: {} } as never);
-  app.decorate('config', { storage: { maxUploadSizeBytes: 20_971_520 } } as never);
-  app.decorate('fileTreeEventBus', { emit: jest.fn() } as never);
+  });
+  decorateApp(app, 'stores', { fileStore: {} });
+  decorateApp(app, 'config', { storage: { maxUploadSizeBytes: 20_971_520 } });
+  decorateApp(app, 'fileTreeEventBus', { emit: jest.fn() });
   await app.register(assetsRoutes);
   await app.ready();
   return app;

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
-import { createAdocFile, setMainFile, openProject, openFile, editorContent, expectActiveFile } from './helpers/editor';
+import { createAdocFile, setMainFile, openProject, openFile, editorContent, expectActiveFile, waitCollabSynced } from './helpers/editor';
 
 // Ctrl+click on an attribute reference `{name}` jumps to where the attribute is DEFINED — in the
 // current file or another file in the include tree. Mirrors the cross-file xref
@@ -33,7 +33,7 @@ test.describe('editor attribute go-to-definition (Ctrl+click)', () => {
 
     await openProject(page, projectId);
     await openFile(page, 'main.adoc');
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     // Let the cross-file symbol index build so the reference resolves.
     await expect(editorContent(page)).toContainText('sharedAttr', { timeout: 15_000 });
     await page.waitForTimeout(1500);
@@ -55,7 +55,7 @@ test.describe('editor attribute go-to-definition (Ctrl+click)', () => {
 
     await openProject(page, projectId);
     await openFile(page, 'solo.adoc');
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await expect(editorContent(page)).toContainText('laterVar', { timeout: 15_000 });
     await page.waitForTimeout(1500);
 

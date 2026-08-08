@@ -510,7 +510,7 @@ describe('createCollabServer', () => {
         order.push('close');
         return { success: true };
       }),
-    } as unknown as Parameters<typeof createCollabServer>[3];
+    } as unknown as NonNullable<Parameters<typeof createCollabServer>[3]>;
     const documentRepository = {
       findByYjsStateId: jest.fn().mockResolvedValue({ id: documentId }),
     } as unknown as Parameters<typeof createCollabServer>[4];
@@ -548,7 +548,7 @@ describe('createCollabServer', () => {
     const sessionCallbacks = {
       onRoomOpen: jest.fn(),
       onRoomClose: jest.fn().mockResolvedValue({ success: true }),
-    } as unknown as Parameters<typeof createCollabServer>[3];
+    } as unknown as NonNullable<Parameters<typeof createCollabServer>[3]>;
     const documentRepository = {
       findByYjsStateId: jest.fn().mockResolvedValue({ id: documentId }),
     } as unknown as Parameters<typeof createCollabServer>[4];

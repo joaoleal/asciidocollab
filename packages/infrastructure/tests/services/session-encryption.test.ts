@@ -88,7 +88,12 @@ describe('Session Encryption', () => {
     const encryption = new SessionEncryption({ encryptionKey: VALID_KEY });
     const encrypted = encryption.encrypt('test');
     const parts = encrypted.split(':');
-    const tampered = 'ff' + parts[0].slice(2) + ':' + parts[1] + ':' + parts[2];
+    // Flip the first byte rather than setting it to a constant: the IV is random, so assigning `ff`
+    // leaves it UNCHANGED whenever it already began with `ff` — a 1-in-256 run where the "tampered"
+    // value decrypts cleanly and the assertion fails for the right reason. XOR always changes it.
+    const firstByte = Number.parseInt(parts[0].slice(0, 2), 16);
+    const tamperedFirstByte = (firstByte ^ 0xFF).toString(16).padStart(2, '0');
+    const tampered = tamperedFirstByte + parts[0].slice(2) + ':' + parts[1] + ':' + parts[2];
     expect(() => encryption.decrypt(tampered)).toThrow();
   });
 

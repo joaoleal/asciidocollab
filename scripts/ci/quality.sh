@@ -15,23 +15,59 @@ pnpm -r build
 step "Linting …"
 npx eslint .
 
-step "Type-checking shared …"
-npx tsc -p packages/shared/tsconfig.json --noEmit
+# Type-check through each workspace's tsconfig.eslint.json, NOT its build tsconfig.json.
+#
+# Every build config is `include: ["src"]` — that is what it compiles — so pointing the gate at it
+# type-checked source only, and `tests/` and `apps/web/e2e/` were never checked by anything. The gap
+# was not theoretical: closing it surfaced 709 errors, including stubs naming methods their port does
+# not have (`sendInvitationEmail` for `sendInvitation`, `deleteAllForUser`, an event bus stubbed with
+# `on`/`off` when it is `emit`/`subscribe`), a `new User(...)` whose 8th argument landed in the
+# `isAdmin` slot, an `ApiError(code, message)` double against a 4-argument constructor, and a props
+# fixture still passing a prop renamed several features ago. Each one type-checks as a passing test
+# that exercises something the production code never does.
+#
+# tsconfig.eslint.json is the same compiler options over `src` + `tests` (+ `e2e` for web) and is
+# already the project ESLint parses with, so there is one description of the tree rather than two.
+step "Type-checking db …"
+npx tsc -p packages/db/tsconfig.json --noEmit
 
-step "Type-checking domain …"
-npx tsc -p packages/domain/tsconfig.json --noEmit
+# The shared test-helper package every suite builds on. It has no tests/ of its own, so its build
+# config IS its full surface — but it was absent from this list entirely, which left the one package
+# best placed to hide a bad fixture as the only one nothing checked.
+step "Type-checking testing …"
+npx tsc -p packages/testing/tsconfig.json --noEmit
 
-step "Type-checking infrastructure …"
-npx tsc -p packages/infrastructure/tsconfig.json --noEmit
+step "Type-checking shared (src + tests) …"
+npx tsc -p packages/shared/tsconfig.eslint.json --noEmit
 
-step "Type-checking API …"
-npx tsc -p apps/api/tsconfig.json --noEmit
+step "Type-checking asciidoc-core (src + tests) …"
+npx tsc -p packages/asciidoc-core/tsconfig.eslint.json --noEmit
 
-step "Type-checking collab …"
-npx tsc -p apps/collab/tsconfig.json --noEmit
+step "Type-checking asciidoc-pdf (src + tests) …"
+npx tsc -p packages/asciidoc-pdf/tsconfig.eslint.json --noEmit
 
-step "Type-checking web …"
+step "Type-checking domain (src + tests) …"
+npx tsc -p packages/domain/tsconfig.eslint.json --noEmit
+
+step "Type-checking infrastructure (src + tests) …"
+npx tsc -p packages/infrastructure/tsconfig.eslint.json --noEmit
+
+step "Type-checking API (src + tests) …"
+npx tsc -p apps/api/tsconfig.eslint.json --noEmit
+
+step "Type-checking collab (src + tests) …"
+npx tsc -p apps/collab/tsconfig.eslint.json --noEmit
+
+# Web needs BOTH projects, because neither covers the other. tsconfig.eslint.json adds tests/ and
+# e2e/; tsconfig.json adds what Next GENERATES into .next/types (the route table and the page-prop
+# `validator.ts`, present because `pnpm -r build` ran above) plus the root-level configs. Running only
+# the first would widen coverage in one direction while quietly dropping it in the other — and the
+# generated validator is exactly where a page whose props no longer match its route shows up.
+step "Type-checking web (src + generated route types) …"
 npx tsc -p apps/web/tsconfig.json --noEmit
+
+step "Type-checking web (src + tests + e2e) …"
+npx tsc -p apps/web/tsconfig.eslint.json --noEmit
 
 step "Architecture guard (layer boundaries) …"
 # Enforces onion.config.json. This replaced `fresh-onion`, which could not check anything here: it

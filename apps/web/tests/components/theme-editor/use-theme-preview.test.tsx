@@ -12,6 +12,9 @@ import {
 } from '@/lib/pdf/theme-preview-sample';
 import { themeSeedContent } from '@/lib/pdf/theme-seed';
 import type { ProjectSnapshot } from '@asciidocollab/asciidoc-pdf';
+import type { SnapshotFile } from '@/lib/pdf/build-project-snapshot';
+import type { ProjectAssetCache } from '@/hooks/use-project-asset-cache';
+import type { PreviewSnapshotSource } from '@/hooks/use-pdf-preview';
 
 jest.mock('@/hooks/use-pdf-preview', () => ({ usePdfPreview: jest.fn() }));
 
@@ -19,7 +22,13 @@ const mockPreview = usePdfPreview as jest.MockedFunction<typeof usePdfPreview>;
 
 /** The snapshots handed to usePdfPreview, in call order. */
 function snapshots(): (ProjectSnapshot | null)[] {
-  return mockPreview.mock.calls.map((call) => call[0].snapshot);
+  // The hook accepts either a snapshot or a thunk returning one; resolve it the same way so the
+  // assertions read the snapshot itself rather than the union.
+  return mockPreview.mock.calls.map((call) => {
+    const source: PreviewSnapshotSource | null = call[0].snapshot;
+    if (source === null) return null;
+    return typeof source === 'function' ? source() : source;
+  });
 }
 
 beforeEach(() => {
@@ -204,14 +213,15 @@ describe('useThemePreview — a broken theme keeps the last good preview', () =>
 });
 
 /** A stand-in project asset cache reporting the given paths as already fetched. */
-function cacheWith(paths: readonly string[]) {
+function cacheWith(paths: readonly string[]): { cache: ProjectAssetCache; ensureAssets: jest.Mock } {
   const ensureAssets = jest.fn();
   return {
     cache: {
       ensureAssets,
-      getAssets: () =>
+      getAssets: (): SnapshotFile[] =>
         paths.map((path) => ({ path, kind: 'binary' as const, bytes: new Uint8Array([1, 2, 3]) })),
       loadAssets: jest.fn(),
+      assetsSettled: () => true,
       assetVersion: 1,
     },
     ensureAssets,

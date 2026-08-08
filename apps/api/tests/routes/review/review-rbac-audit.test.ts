@@ -3,7 +3,7 @@ jest.mock('../../../src/plugins/require-auth', () => ({
   getAuthenticatedUserId: jest.fn(() => '550e8400-e29b-41d4-a716-446655440001'),
 }));
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import {
   buildServer,
   auditMock,
@@ -19,7 +19,7 @@ import {
 const anchorBody = { quote: { exact: 'passage' } };
 
 /** Every editor-gated write, as a (name, request) pair against a built server. */
-const writes: Array<{ name: string; run: (app: FastifyInstance) => ReturnType<FastifyInstance['inject']> }> = [
+const writes: Array<{ name: string; run: (app: FastifyInstance) => Promise<LightMyRequestResponse> }> = [
   { name: 'create', run: (app) => app.inject({ method: 'POST', url: documentItemsUrl, payload: { kind: 'comment', body: 'x', anchor: anchorBody } }) },
   { name: 'reply', run: (app) => app.inject({ method: 'POST', url: `${itemUrl()}/replies`, payload: { body: 'x' } }) },
   { name: 'resolve', run: (app) => app.inject({ method: 'POST', url: `${itemUrl()}/resolve` }) },
@@ -138,7 +138,7 @@ describe('review RBAC + audit hardening (T042)', () => {
 
   describe('error mapping — a missing item yields 404 NOT_FOUND', () => {
     const notFound = { reviewComment: { findById: jest.fn(async () => null) } };
-    const cases: Array<{ name: string; run: (app: FastifyInstance) => ReturnType<FastifyInstance['inject']> }> = [
+    const cases: Array<{ name: string; run: (app: FastifyInstance) => Promise<LightMyRequestResponse> }> = [
       { name: 'reply', run: (app) => app.inject({ method: 'POST', url: `${itemUrl()}/replies`, payload: { body: 'x' } }) },
       { name: 'resolve', run: (app) => app.inject({ method: 'POST', url: `${itemUrl()}/resolve` }) },
       { name: 'patch-status', run: (app) => app.inject({ method: 'PATCH', url: itemUrl(), payload: { op: 'status', status: 'resolved' } }) },

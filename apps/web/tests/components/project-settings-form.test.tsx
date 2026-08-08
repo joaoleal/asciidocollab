@@ -22,6 +22,7 @@ const makeProject = (overrides: Partial<Project> = {}): Project => ({
   tags: ['alpha', 'beta'],
   rootFolderId: null,
   mainFileNodeId: null,
+  language: null,
   archivedAt: null,
   role: 'owner',
   createdAt: new Date().toISOString(),

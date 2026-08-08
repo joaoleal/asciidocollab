@@ -163,7 +163,51 @@ describe('renderMath', () => {
     expect(config.asciimath).toEqual({ delimiters: [[String.raw`\$`, String.raw`\$`]] });
     // tex-mml-chtml does not bundle the AsciiMath input jax — it must be requested from the loader so
     // MathJax fetches it same-origin from the self-hosted base.
-    expect(config.loader).toEqual({ load: ['input/asciimath'] });
+    expect(config.loader).toEqual({
+      load: ['input/asciimath'],
+      paths: { fonts: '/vendor/mathjax/fonts' },
+    });
+  });
+
+  it('serves fonts from our own origin, never MathJax 4\'s default CDN', async () => {
+    // MathJax 4 moved the fonts into a separate package and defaults `loader.paths.fonts` to
+    // `https://cdn.jsdelivr.net/npm/@mathjax`. Every URL the engine can be told about must therefore be
+    // pinned at the self-hosted copy, or rendering an equation reaches out to a third party.
+    await renderMath(makeContainer(String.raw`<p>\$sqrt(4)\$</p>`));
+
+    const config = (globalThis as unknown as {
+      MathJax: { loader?: { paths?: Record<string, string> }; chtml?: Record<string, string> };
+    }).MathJax;
+
+    for (const url of [
+      config.loader?.paths?.fonts,
+      config.chtml?.fontURL,
+      config.chtml?.dynamicPrefix,
+    ]) {
+      expect(url).toBeDefined();
+      expect(url).toMatch(/^\/vendor\/mathjax\//);
+    }
+  });
+
+  it('leaves MathJax 4\'s speech, braille and enrichment extensions off', async () => {
+    // MathJax 3 loaded no accessibility extension, so these defaulting to ON in v4 would be new
+    // behaviour: extra work on every expression, and enrichment rewriting the MathML with explicit
+    // invisible-times operators. Screen readers are served by the native MathML this module prefers.
+    //
+    // Asserted as `menuOptions.settings` deliberately: the document-level `enableEnrichment` flag is
+    // silently ineffective in 4.1.3, so a test written against that shape would pass while enrichment
+    // kept running.
+    await renderMath(makeContainer(String.raw`<p>\$sqrt(4)\$</p>`));
+
+    const config = (globalThis as unknown as {
+      MathJax: { options?: { menuOptions?: { settings?: Record<string, boolean> } } };
+    }).MathJax;
+
+    expect(config.options?.menuOptions?.settings).toMatchObject({
+      enrich: false,
+      speech: false,
+      braille: false,
+    });
   });
 
   it('converts inline asciimath via asciimath2chtmlPromise with delimiters stripped, leaving NO `$`', async () => {

@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { fileTreePatchRoutes } from '../../src/routes/projects/file-tree-patch';
 import { FileConflictError } from '@asciidocollab/domain';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -57,7 +58,7 @@ function buildRenameServer(options: {
 } = {}) {
   const app = Fastify();
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(
         options.memberResult === undefined ? { role: { value: 'editor' } } : options.memberResult,
@@ -77,7 +78,7 @@ function buildRenameServer(options: {
     },
   });
 
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: {
       read: jest.fn().mockResolvedValue(null),
       write: jest.fn().mockResolvedValue(undefined),
@@ -87,10 +88,9 @@ function buildRenameServer(options: {
     },
   });
 
-  app.decorate('fileTreeEventBus', {
+  decorateApp(app, 'fileTreeEventBus', {
     emit: jest.fn(),
-    on: jest.fn(),
-    off: jest.fn(),
+    subscribe: jest.fn(),
   });
 
   app.register(fileTreePatchRoutes);
@@ -127,7 +127,7 @@ function buildMoveServer(options: {
     return Promise.resolve(moveFileLookups === 1 ? fileNode : postMoveNode);
   });
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(
         options.memberResult === undefined ? { role: { value: 'editor' } } : options.memberResult,
@@ -145,7 +145,7 @@ function buildMoveServer(options: {
     },
   });
 
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: {
       read: jest.fn().mockResolvedValue(null),
       write: jest.fn().mockResolvedValue(undefined),
@@ -155,10 +155,9 @@ function buildMoveServer(options: {
     },
   });
 
-  app.decorate('fileTreeEventBus', {
+  decorateApp(app, 'fileTreeEventBus', {
     emit: jest.fn(),
-    on: jest.fn(),
-    off: jest.fn(),
+    subscribe: jest.fn(),
   });
 
   app.register(fileTreePatchRoutes);
@@ -192,7 +191,7 @@ function buildRenameMoveServer(options: {
     return Promise.resolve(renameMoveFileLookups >= 3 ? postOpNode : mockFileNode);
   });
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(
         options.memberResult === undefined ? { role: { value: 'editor' } } : options.memberResult,
@@ -214,7 +213,7 @@ function buildRenameMoveServer(options: {
   const renameMoveResult = options.renameFileStoreMove ?? { success: true };
   const actualMoveResult = options.moveFileStoreMove ?? { success: true };
 
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: {
       read: jest.fn().mockResolvedValue(null),
       write: jest.fn().mockResolvedValue(undefined),
@@ -224,10 +223,9 @@ function buildRenameMoveServer(options: {
     },
   });
 
-  app.decorate('fileTreeEventBus', {
+  decorateApp(app, 'fileTreeEventBus', {
     emit: jest.fn(),
-    on: jest.fn(),
-    off: jest.fn(),
+    subscribe: jest.fn(),
   });
 
   app.register(fileTreePatchRoutes);

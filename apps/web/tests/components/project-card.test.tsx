@@ -10,6 +10,8 @@ const makeProject = (overrides: Partial<Project> = {}): Project => ({
   owners: [{ userId: 'u1', displayName: 'Owner' }],
   tags: [],
   rootFolderId: null,
+  mainFileNodeId: null,
+  language: null,
   archivedAt: null,
   memberCount: 6,
   fileCount: 24,

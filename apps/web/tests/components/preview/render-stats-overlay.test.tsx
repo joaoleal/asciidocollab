@@ -93,12 +93,12 @@ describe('RenderStatsOverlay', () => {
     // A measurement surface for whoever is working on the renderer, not for authors. The bundler
     // eliminates it from the production bundle on this same condition; here it is exercised directly.
     const previous = process.env.NODE_ENV;
-    process.env['NODE_ENV'] = 'production';
+    Object.assign(process.env, { NODE_ENV: 'production' });
     try {
       const { container } = render(<RenderStatsOverlay title="Web preview" rows={WEB_ROWS} />);
       expect(container).toBeEmptyDOMElement();
     } finally {
-      process.env['NODE_ENV'] = previous;
+      Object.assign(process.env, { NODE_ENV: previous });
     }
   });
 

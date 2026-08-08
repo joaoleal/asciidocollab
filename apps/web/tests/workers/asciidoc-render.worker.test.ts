@@ -44,6 +44,7 @@ import {
   APP_RENDER_DEFAULT_ATTRIBUTES,
   withAppRenderDefaults,
 } from '@/lib/asciidoc/render-app-defaults';
+import type { RenderRequest } from '@/workers/render-protocol';
 
 // The engine exposes `load` as a module function, not a processor factory, and it resolves a promise.
 jest.mock('asciidoctor', () => ({ __esModule: true, load: mockLoad }));
@@ -76,16 +77,9 @@ function makeBlock(options: {
  * Drive one render, and settle before returning. The handler is asynchronous, so the reply exists only
  * once the promise it returns has settled; asserting without awaiting would read no reply at all.
  */
-async function sendMessage(data: {
-  requestId: number;
-  content: string;
-  imagesDir?: string;
-  mainPath?: string;
-  files?: Record<string, string>;
-  rootFileId?: string | null;
-  openFileId?: string;
-  sourceLineHints?: boolean;
-}): Promise<void> {
+// The request type comes from the protocol module rather than a hand-copied duplicate, which had
+// already fallen behind it (no `projectAttributes`, no `showIncludes`).
+async function sendMessage(data: RenderRequest): Promise<void> {
   if (onMessageHandler) {
     await onMessageHandler({ data } as MessageEvent);
   } else {

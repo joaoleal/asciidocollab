@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { verifyEmailRoute } from '../../../src/routes/auth/verify-email';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const USER_ID = '550e8400-e29b-41d4-a716-446655440001';
 const OTHER_USER_ID = '550e8400-e29b-41d4-a716-446655440099';
@@ -45,7 +46,7 @@ function buildTestServer(options: BuildOptions = {}) {
     execute: jest.fn().mockResolvedValue(useCaseResult),
   }));
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: {
       save: jest.fn().mockResolvedValue(undefined),
     },
@@ -57,13 +58,13 @@ function buildTestServer(options: BuildOptions = {}) {
     },
   });
 
-  app.decorate('services', {
+  decorateApp(app, 'services', {
     tokenGenerator: {
       hashToken: jest.fn().mockReturnValue('hashed-token'),
     },
-  } as never);
+  });
 
-  app.decorate('config', DEFAULT_CONFIG as never);
+  decorateApp(app, 'config', DEFAULT_CONFIG);
 
   app.register(verifyEmailRoute);
   return { app, sessionState };

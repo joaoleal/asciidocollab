@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { FileTree } from '@/components/file-tree/file-tree';
 import type { FileTreeEventDto } from '@asciidocollab/shared';
+import type { FileTreeNode } from '@/components/file-tree/types';
 
 // Mock dependencies
 jest.mock('@/hooks/use-file-tree-events', () => ({
@@ -106,7 +107,7 @@ function dragSourceById(container: HTMLElement, nodeId: string) {
   return source;
 }
 
-const rootNode = {
+const rootNode: FileTreeNode = {
   id: 'root-1',
   name: 'root',
   type: 'folder' as const,
@@ -117,7 +118,7 @@ const rootNode = {
   ],
 };
 
-function mockFetch(tree: typeof rootNode) {
+function mockFetch(tree: FileTreeNode) {
   globalThis.fetch = jest.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve(tree),
@@ -274,7 +275,7 @@ describe('FileTree', () => {
     };
 
     act(() => {
-      (globalThis as unknown as Record<string, () => void>).__lastOnEvent(event);
+      (globalThis as unknown as Record<string, (event: FileTreeEventDto) => void>).__lastOnEvent(event);
     });
 
     await waitFor(() => expect(screen.getByTestId('node-new.adoc')).toBeInTheDocument());
@@ -294,7 +295,7 @@ describe('FileTree', () => {
     };
 
     act(() => {
-      (globalThis as unknown as Record<string, () => void>).__lastOnEvent(event);
+      (globalThis as unknown as Record<string, (event: FileTreeEventDto) => void>).__lastOnEvent(event);
     });
 
     await waitFor(() => expect(screen.queryByTestId('node-doc.adoc')).not.toBeInTheDocument());
@@ -314,7 +315,7 @@ describe('FileTree', () => {
     };
 
     act(() => {
-      (globalThis as unknown as Record<string, () => void>).__lastOnEvent(event);
+      (globalThis as unknown as Record<string, (event: FileTreeEventDto) => void>).__lastOnEvent(event);
     });
 
     await waitFor(() => expect(screen.getByTestId('node-renamed.adoc')).toBeInTheDocument());

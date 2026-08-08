@@ -24,8 +24,16 @@ export function nodeShims(): RenderShim[] {
 export interface BrowserEngineBundles {
   /** Absolute path to the single-file mermaid UMD bundle (loaded inline via addScriptTag). */
   readonly mermaidBundlePath: string;
-  /** Loopback base URL serving the MathJax `es5/` dir, so its AsciiMath component loads offline. */
+  /** Loopback base URL serving the MathJax bundle dir, so its AsciiMath component loads offline. */
   readonly mathjaxBaseUrl: string;
+  /**
+   * Loopback base URL serving `node_modules/@mathjax`, so the font component resolves offline.
+   *
+   * MathJax 4 moved the fonts into their own package and defaults `loader.paths.fonts` to
+   * `https://cdn.jsdelivr.net/npm/@mathjax`. Without this the harness would silently render against a
+   * CDN-fetched font — or hang when the network is unavailable.
+   */
+  readonly mathjaxFontsBaseUrl: string;
 }
 
 /** A mermaid renderer that runs the real mermaid engine inside a Playwright page. */
@@ -50,15 +58,25 @@ function pageMermaidRenderer(page: Page, mermaidBundlePath: string): MermaidRend
 }
 
 /** A MathJax SVG converter that runs the real MathJax engine inside a Playwright page. */
-function pageMathConverter(page: Page, mathjaxBaseUrl: string): MathSvgConverter {
+function pageMathConverter(page: Page, mathjaxBaseUrl: string, mathjaxFontsBaseUrl: string): MathSvgConverter {
   return {
     async toSvg({ expression, notation, display }) {
       // Configure MathJax (SVG output, local font cache, AsciiMath input jax) and load the bundle from
       // the served origin so component loading resolves offline; then convert in-page.
       const html =
         '<!doctype html><html><head>' +
-        `<script>window.MathJax={loader:{load:['input/asciimath'],paths:{mathjax:'${mathjaxBaseUrl}'}},` +
-        "startup:{typeset:false},svg:{fontCache:'local'}};</script>" +
+        `<script>window.MathJax={loader:{load:['input/asciimath'],` +
+        `paths:{mathjax:'${mathjaxBaseUrl}',fonts:'${mathjaxFontsBaseUrl}'}},` +
+        "startup:{typeset:false},svg:{fontCache:'local'}," +
+        // Match render-math's production config, so parity is measured against the engine that ships
+        // rather than a differently-configured one.
+        //
+        // It has to be `menuOptions.settings`: the document-level `enableEnrichment` / `enableSpeech`
+        // flags are silently ineffective in MathJax 4's browser bundle (measured — enrichment still ran
+        // and inserted invisible-times operators, which is what broke the worker/browser parity guard).
+        // Enrichment must be off here because the DOM-free PDF worker has no speech-rule engine, so
+        // leaving it on compares an enriched reference against unenriched production output.
+        "options:{menuOptions:{settings:{enrich:false,speech:false,braille:false}}}};</script>" +
         `<script src="${mathjaxBaseUrl}/tex-mml-svg.js"></script>` +
         '</head><body></body></html>';
       await page.setContent(html, { waitUntil: 'load' });
@@ -97,6 +115,8 @@ export function browserShims(page: Page, bundles: BrowserEngineBundles): RenderS
     createGraphvizShim(),
     createVegaShim(),
     createMermaidShim(pageMermaidRenderer(page, bundles.mermaidBundlePath)),
-    createMathJaxShim({ converter: pageMathConverter(page, bundles.mathjaxBaseUrl) }),
+    createMathJaxShim({
+      converter: pageMathConverter(page, bundles.mathjaxBaseUrl, bundles.mathjaxFontsBaseUrl),
+    }),
   ];
 }

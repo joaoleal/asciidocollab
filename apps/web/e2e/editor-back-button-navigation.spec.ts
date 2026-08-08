@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject, createTestFile } from './helpers/test-project';
+import { waitCollabSynced } from './helpers/editor';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -16,11 +17,6 @@ async function writeFileContent(page: Page, projectId: string, fileNodeId: strin
 }
 
 const editorContent = (page: Page) => page.locator('.cm-editor .cm-content');
-
-/** Wait for the post-navigation Yjs sync so content assertions never race the empty pre-sync doc. */
-async function waitCollabSynced(page: Page): Promise<void> {
-  await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
-}
 
 // The SELECTED highlight only — the active row's `bg-primary/10` tint, not the hover `bg-accent`.
 const SELECTED = /(?:^|\s)bg-primary\/10(?:\s|$)/;

@@ -448,7 +448,9 @@ async function rasterizePages(pdfBytes, scale, backends) {
     }
   } finally {
     await doc.cleanup();
-    await doc.destroy();
+    // pdfjs-dist 6 removed `PDFDocumentProxy.destroy()`; tearing the document down now goes through
+    // its loading task, which is what actually owns the worker.
+    await doc.loadingTask.destroy();
   }
   return pages;
 }

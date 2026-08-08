@@ -29,10 +29,9 @@ describe('CreateProject DTOs', () => {
     const dto: CreateProjectResultDto = {
       projectId: '550e8400-e29b-41d4-a716-446655440001',
       rootFolderId: '550e8400-e29b-41d4-a716-446655440002',
-      ownerId: '550e8400-e29b-41d4-a716-446655440003',
-      ownerRole: 'administrator',
+      ownerRole: 'owner',
     };
-    expect(dto.ownerRole).toBe('administrator');
+    expect(dto.ownerRole).toBe('owner');
   });
 });
 
@@ -159,7 +158,7 @@ describe('ProjectEvent DTOs', () => {
     expect(cleared.mainFileNodeId).toBeNull();
   });
 
-  test('ProjectEventDto unifies file-tree, content-changed, and main-file-changed and discriminates on type', () => {
+  test('ProjectEventDto unifies file-tree, content-changed, main-file-changed and review-items-changed and discriminates on type', () => {
     const fileTree: FileTreeEventDto = {
       type: 'created',
       fileNodeId: '550e8400-e29b-41d4-a716-446655440003',
@@ -172,18 +171,34 @@ describe('ProjectEvent DTOs', () => {
       fileTree,
       { type: 'content-changed', fileNodeId: '550e8400-e29b-41d4-a716-446655440004' },
       { type: 'main-file-changed', mainFileNodeId: null },
+      { type: 'review-items-changed', documentId: null },
     ];
 
     const types = events.map((event) => event.type);
-    expect(types).toEqual(['created', 'content-changed', 'main-file-changed']);
+    expect(types).toEqual([
+      'created',
+      'content-changed',
+      'main-file-changed',
+      'review-items-changed',
+    ]);
 
     for (const event of events) {
-      if (event.type === 'content-changed') {
-        expect(event.fileNodeId).toBeDefined();
-      } else if (event.type === 'main-file-changed') {
-        expect('mainFileNodeId' in event).toBe(true);
-      } else {
-        expect(event.nodeType).toBeDefined();
+      switch (event.type) {
+        case 'content-changed': {
+          expect(event.fileNodeId).toBeDefined();
+          break;
+        }
+        case 'main-file-changed': {
+          expect('mainFileNodeId' in event).toBe(true);
+          break;
+        }
+        case 'review-items-changed': {
+          expect('documentId' in event).toBe(true);
+          break;
+        }
+        default: {
+          expect(event.nodeType).toBeDefined();
+        }
       }
     }
   });

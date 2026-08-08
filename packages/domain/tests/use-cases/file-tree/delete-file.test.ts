@@ -134,7 +134,7 @@ describe('DeleteFileUseCase', () => {
     const logs = await auditLogRepo.findByProjectId(projectId);
     expect(logs).toHaveLength(1);
     expect(logs[0].action).toBe('file.deleted');
-    expect(logs[0].userId.value).toBe(actorId.value);
+    expect(logs[0].userId?.value).toBe(actorId.value);
   });
 
   test('deletes a folder cascading to children and their documents', async () => {

@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { AuditLog } from '@asciidocollab/domain';
 import { memberRoutes } from '../../src/routes/projects/members';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -17,7 +18,7 @@ const targetMembership = { userId: { value: TARGET_USER_ID }, role: { value: 'vi
 function buildTestServer() {
   const auditLog = { save: jest.fn() };
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     project: { findById: jest.fn().mockResolvedValue({ id: { value: PROJECT_ID } }) },
     projectMember: {
       findByCompositeKey: jest.fn((_projectId: unknown, userId: { value: string }) =>

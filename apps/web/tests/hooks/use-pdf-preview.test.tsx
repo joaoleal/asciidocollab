@@ -345,7 +345,12 @@ describe('usePdfPreview', () => {
     const { rerender } = renderHook(
       ({ snapshot, changedPaths }: { snapshot: ProjectSnapshot; changedPaths?: readonly string[] }) =>
         usePdfPreview({ snapshot, isEnabled: true, changedPaths }),
-      { initialProps: { snapshot: makeSnapshot({ 'main.adoc': '= A', 'ch.adoc': '== A' }) } },
+      {
+        initialProps: {
+          snapshot: makeSnapshot({ 'main.adoc': '= A', 'ch.adoc': '== A' }),
+          changedPaths: undefined as readonly string[] | undefined,
+        },
+      },
     );
 
     // Initial full render — no changedPaths.

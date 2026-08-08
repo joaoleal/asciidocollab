@@ -19,7 +19,7 @@ const tokenGenerator: TokenGenerator = {
   generateInvitationToken: jest.fn(),
   generateEmailVerificationToken: jest.fn(),
   hashToken: (t) => `hashed:${t}`,
-} as unknown as TokenGenerator;
+};
 
 function makeUser(emailVerified = false): User {
   return new User(

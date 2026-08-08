@@ -997,7 +997,10 @@ export function useEditorMount({
   // Dispose the Harper worker on unmount so its engine + worker are released.
   useEffect(
     () => () => {
-      void harperClientReference.current?.dispose();
+      // Teardown must not raise: disposing an engine that never started, or one whose worker has
+      // already died, rejects — and a rejection from an unmount cleanup has nowhere to go but the
+      // console, as an unhandled one.
+      harperClientReference.current?.dispose().catch(() => undefined);
       harperClientReference.current = null;
     },
     [],

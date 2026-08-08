@@ -811,11 +811,18 @@ export function AsciiDocEditor({
 
   const grammarCounts = useMemo(() => categoryCounts(grammarDiagnostics), [grammarDiagnostics]);
 
+  // The effective collaboration connection state, surfaced on the root below. `synced` renders no
+  // banner (ConnectionBanner returns null), so without this attribute the settled state has NO DOM
+  // representation at all and the only way to observe it is the ABSENCE of the connecting banner —
+  // which reads as "synced" before that banner has even mounted. Absent entirely off the collab path.
+  const effectiveConnectionState = connectionState ?? collab?.connectionState;
+
   return (
     <div
       className="asciidoc-editor flex flex-col h-full"
       style={editorStyle(fontSize)}
       data-theme={theme}
+      data-collab-state={effectiveConnectionState}
     >
       <EditorChrome
         view={viewReference.current}
@@ -840,7 +847,7 @@ export function AsciiDocEditor({
         onDismissExternalChange={() => setExternalChangeBanner(false)}
         onRestoreDraft={restoreDraft}
         onDiscardDraft={discardDraft}
-        connectionState={connectionState ?? collab?.connectionState}
+        connectionState={effectiveConnectionState}
         readOnly={collab?.role === 'observer'}
         collabUnavailable={collabUnavailable}
       />

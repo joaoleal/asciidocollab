@@ -1,4 +1,5 @@
 import { createHarperWorkerClient, toGrammarEngineStatus } from '@/lib/codemirror/harper/harper-worker-client';
+import { WORKER_GONE_MESSAGE } from '@/lib/codemirror/harper/harper-engine-proxy';
 import {
   HarperEngineInitError,
   type HarperEngine,
@@ -77,6 +78,90 @@ function deferred<T>() {
 }
 
 describe('createHarperWorkerClient', () => {
+  // A lint rejection has two very different causes and they arrive identically, as a rejected promise.
+  describe('when engine.lint rejects', () => {
+    test('a disposal mid-pass is swallowed: no results, and the engine is not marked failed', async () => {
+      const engine = makeFakeEngine({
+        async lint() {
+          throw new Error(WORKER_GONE_MESSAGE);
+        },
+      });
+      const client = createHarperWorkerClient(engine);
+      await client.warmUp();
+
+      // Routine teardown — the editor unmounted with this pass in flight. Nothing to report.
+      await expect(client.lint([{ id: 's1', text: 'a bad word' }])).resolves.toBeNull();
+      expect(client.getStatus()).toBe('ready');
+    });
+
+    // Reporting the failure must not memoize it. `ensureReady` short-circuits on a resolved
+    // `setupPromise` and then answers `readStatus() === 'ready'` — so a failure left memoized makes
+    // every later pass return null for the rest of the session, on an engine the proxy would happily
+    // have rebuilt. One transient trap would silently end grammar checking for good.
+    test('recovers on the next pass after a transient engine failure', async () => {
+      let failNext = true;
+      const engine = makeFakeEngine({
+        async lint() {
+          if (failNext) {
+            failNext = false;
+            throw new Error('transient wasm trap');
+          }
+          return [];
+        },
+      });
+      const client = createHarperWorkerClient(engine);
+      await client.warmUp();
+
+      await expect(client.lint([{ id: 's1', text: 'a bad word' }])).resolves.toBeNull();
+      expect(client.getStatus()).toBe('failed');
+
+      // The engine is healthy again; the next pass must actually run.
+      await expect(client.lint([{ id: 's2', text: 'a bad word' }])).resolves.toEqual([
+        { id: 's2', lints: [] },
+      ]);
+      expect(client.getStatus()).toBe('ready');
+    });
+
+    // Every other exit from the lint loop discards a pass that was superseded while it was awaiting.
+    // The rejection path has to as well, or a trap belonging to a pass the reader has already typed
+    // past puts "grammar checking failed" over the document the newer pass linted cleanly.
+    test('a failure belonging to a superseded pass does not report over the pass that replaced it', async () => {
+      const stalled = deferred<EngineLint[]>();
+      const engine = makeFakeEngine({
+        async lint(text: string) {
+          return text === 'superseded' ? stalled.promise : [];
+        },
+      });
+      const client = createHarperWorkerClient(engine);
+      await client.warmUp();
+
+      // Starts, reaches the engine, and stays there — the reader keeps typing meanwhile.
+      const superseded = client.lint([{ id: 's1', text: 'superseded' }]);
+      await expect(client.lint([{ id: 's2', text: 'current' }])).resolves.toEqual([
+        { id: 's2', lints: [] },
+      ]);
+
+      stalled.reject(new Error('unreachable executed'));
+      await expect(superseded).resolves.toBeNull();
+      expect(client.getStatus()).toBe('ready');
+    });
+
+    test('a genuine engine failure is reported rather than read as a clean document', async () => {
+      const engine = makeFakeEngine({
+        async lint() {
+          throw new Error('unreachable executed');
+        },
+      });
+      const client = createHarperWorkerClient(engine);
+      await client.warmUp();
+
+      // Returning null and saying nothing would show the reader a document with no writing issues,
+      // indefinitely and indistinguishably from one that really has none.
+      await expect(client.lint([{ id: 's1', text: 'a bad word' }])).resolves.toBeNull();
+      expect(client.getStatus()).toBe('failed');
+    });
+  });
+
   test('warmUp initialises the engine and reports ready', async () => {
     const engine = makeFakeEngine();
     const client = createHarperWorkerClient(engine);
@@ -85,6 +170,22 @@ describe('createHarperWorkerClient', () => {
     expect(engine.setupCalls).toBe(1);
     expect(client.getStatus()).toBe('ready');
     expect(client.isReady()).toBe(true);
+  });
+
+  test('reports no results, rather than rejecting, when the engine goes away mid-pass', async () => {
+    // What disposing the engine with a lint in flight looks like from here: the call the pass is
+    // awaiting rejects. Both callers — the CodeMirror lint source and the included-file pass — read
+    // `null` as "no results this time" and stay usable; a rejection has nowhere to go in either, and
+    // surfaces as an unhandled one in the console of an editor that is already being torn down.
+    const engine = makeFakeEngine({
+      async lint() {
+        throw new Error('The Harper worker was disposed while this call was in flight');
+      },
+    });
+    const client = createHarperWorkerClient(engine);
+    await client.warmUp();
+
+    await expect(client.lint([{ id: '0', text: 'a bad line' }])).resolves.toBeNull();
   });
 
   test('a failed init reports "failed" and is not memoized — a later warmUp retries a clean setup', async () => {

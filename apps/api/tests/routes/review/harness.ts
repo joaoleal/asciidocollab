@@ -12,6 +12,7 @@ import {
   UserId,
 } from '@asciidocollab/domain';
 import { reviewRoutes } from '../../../src/routes/review';
+import { decorateApp } from '../../helpers/decorate-app';
 
 // ── Stable ids shared across every review route test ────────────────────────
 export const ACTOR_ID = '550e8400-e29b-41d4-a716-446655440001';
@@ -134,7 +135,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     bulkDeleteRateLimitMax: 1000,
     bulkDeleteRateLimitWindow: 60_000,
   };
-  app.decorate('config', { project: { review: limits } } as never);
+  decorateApp(app, 'config', { project: { review: limits } });
 
   const reviewComment = {
     findById: jest.fn(async () => comment()),
@@ -174,8 +175,8 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     ...options.fileNode,
   };
 
-  app.decorate('repos', { reviewComment, reviewReaction, projectMember, user, auditLog, document, fileNode } as never);
-  app.decorate('fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
+  decorateApp(app, 'repos', { reviewComment, reviewReaction, projectMember, user, auditLog, document, fileNode });
+  decorateApp(app, 'fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
 
   await app.register(reviewRoutes);
   await app.ready();

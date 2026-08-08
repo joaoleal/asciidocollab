@@ -10,7 +10,7 @@ const globals = require('globals');
 module.exports = tseslint.config(
   // Design-sync working artifacts (also .gitignored): generated .jsx/CSS not part of any tsconfig
   // project, so linting them errors out. Keep in sync with the design-sync entries in .gitignore.
-  { ignores: ['**/dist/**', '**/*.generated.ts', 'node_modules/**', '**/coverage/**', '**/*.js', '**/*.cjs', '**/*.mjs', '**/*.d.ts', '**/specs/**', '**/.next/**', '**/.next-dev/**', '**/next-env.d.ts', '**/prisma.config.ts', '**/scripts/**', '.claude/**', 'ds-bundle/**', '.ds-sync/**', '.design-sync/**'] },
+  { ignores: ['**/dist/**', '**/*.generated.ts', 'node_modules/**', '**/coverage/**', '**/*.js', '**/*.cjs', '**/*.mjs', '**/*.d.ts', '**/specs/**', '**/.next/**', '**/.next-dev/**', '**/next-env.d.ts', '**/public/vendor/**', '**/prisma.config.ts', '**/scripts/**', '.claude/**', 'ds-bundle/**', '.ds-sync/**', '.design-sync/**'] },
 
   eslint.configs.recommended,
 
@@ -230,6 +230,21 @@ module.exports = tseslint.config(
   // no-assertions rule is relaxed HERE ONLY — every other source file in the leaf stays cast-free.
   {
     files: ['packages/asciidoc-pdf/src/vm/wasi-bridge.ts'],
+    rules: {
+      '@typescript-eslint/consistent-type-assertions': 'off',
+    },
+  },
+
+  // Same rationale, second boundary: pdf.js declares the annotation layer's `linkService` as the
+  // concrete `PDFLinkService` from its bundled web viewer — a class this app cannot construct (the
+  // viewer bundle requires a `globalThis.pdfjsLib`, and its `EventBus` is not exported from the
+  // package entry) and does not need, because `AnnotationLayer` reads the copy taken in its
+  // constructor rather than the `render()` parameter. Reconciling the preview's minimal service to
+  // that declared type cannot be expressed cast-free, so the rule is relaxed HERE ONLY; the module
+  // keeps its own implementation structurally checked via `satisfies PreviewLinkService`, and the
+  // preview component that consumes it stays cast-free.
+  {
+    files: ['apps/web/src/lib/pdf-preview-link-service.ts'],
     rules: {
       '@typescript-eslint/consistent-type-assertions': 'off',
     },

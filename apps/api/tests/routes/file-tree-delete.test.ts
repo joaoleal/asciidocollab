@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { DeleteFileUseCase, PermissionDeniedError } from '@asciidocollab/domain';
 import { fileTreeDeleteRoutes } from '../../src/routes/projects/file-tree-delete';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -13,7 +14,7 @@ const FILE_NODE_ID = '550e8400-e29b-41d4-a716-446655440003';
 function buildTestServer(options: { activeSession?: boolean; memberRole?: string } = {}) {
   const app = Fastify();
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue({ role: { value: options.memberRole ?? 'editor' } }),
     },
@@ -41,7 +42,7 @@ function buildTestServer(options: { activeSession?: boolean; memberRole?: string
     },
   });
 
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: {
       remove: jest.fn().mockResolvedValue(undefined),
       removeDirectory: jest.fn().mockResolvedValue(undefined),
@@ -51,10 +52,9 @@ function buildTestServer(options: { activeSession?: boolean; memberRole?: string
     },
   });
 
-  app.decorate('fileTreeEventBus', {
+  decorateApp(app, 'fileTreeEventBus', {
     emit: jest.fn(),
-    on: jest.fn(),
-    off: jest.fn(),
+    subscribe: jest.fn(),
   });
 
   app.register(fileTreeDeleteRoutes);
@@ -104,7 +104,7 @@ describe('DELETE /projects/:projectId/files/:fileNodeId', () => {
   test('returns 204 without emitting event when fileNode not found before delete', async () => {
     jest.spyOn(DeleteFileUseCase.prototype, 'execute').mockResolvedValue({
       success: true,
-      value: undefined,
+      value: { mainFileCleared: false },
     });
 
     const app = buildTestServer();
@@ -123,7 +123,7 @@ describe('DELETE /projects/:projectId/files/:fileNodeId', () => {
   test('emits event with parentId=null when file node has no parent', async () => {
     jest.spyOn(DeleteFileUseCase.prototype, 'execute').mockResolvedValue({
       success: true,
-      value: undefined,
+      value: { mainFileCleared: false },
     });
 
     const app = buildTestServer();

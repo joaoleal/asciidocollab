@@ -202,6 +202,7 @@ function makeBinding(role: 'editor' | 'observer'): CollabBinding {
   return {
     doc: {} as unknown as Y.Doc,
     awareness: {} as unknown as Awareness,
+    documentId: 'doc-1',
     connectionState: 'synced',
     role,
     yjsStateId: 'y-room-1',

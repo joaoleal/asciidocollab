@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { accessDeniedRoute } from '../../../src/routes/admin/access-denied';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -10,13 +11,13 @@ function buildTestServer() {
   const app = Fastify();
   const savedLogs: unknown[] = [];
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     auditLog: {
       save: jest.fn().mockImplementation((log: unknown) => { savedLogs.push(log); }),
     },
   });
 
-  app.decorate('config', {});
+  decorateApp(app, 'config', {});
 
   app.register(accessDeniedRoute);
   return { app, savedLogs };

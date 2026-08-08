@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { GetProjectTreeUseCase } from '@asciidocollab/domain';
 import { fileTreeGetRoutes } from '../../src/routes/projects/file-tree-get';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -11,7 +12,16 @@ const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 const ROOT_ID = '550e8400-e29b-41d4-a716-446655440003';
 const FILE_ID = '550e8400-e29b-41d4-a716-446655440004';
 
-const rootNode = {
+/** The slice of a file node these route tests stand in for. */
+type NodeFixture = {
+  id: { value: string };
+  name: string;
+  type: { value: string };
+  path: { value: string };
+  parentId: { value: string } | null;
+};
+
+const rootNode: NodeFixture = {
   id: { value: ROOT_ID },
   name: 'root',
   type: { value: 'folder' },
@@ -19,7 +29,7 @@ const rootNode = {
   parentId: null,
 };
 
-const fileNode = {
+const fileNode: NodeFixture = {
   id: { value: FILE_ID },
   name: 'doc.adoc',
   type: { value: 'file' },
@@ -40,12 +50,12 @@ function buildTestServer({
 }: {
   isMember?: boolean;
   projectExists?: boolean;
-  nodes?: typeof rootNode[];
+  nodes?: NodeFixture[];
   documents?: typeof document_[];
 } = {}) {
   const app = Fastify();
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(isMember ? { role: { value: 'viewer' } } : null),
     },
@@ -62,12 +72,12 @@ function buildTestServer({
           : null,
       ),
     },
-  } as never);
+  });
 
-  app.decorate('config', {} as never);
-  app.decorate('stores', {} as never);
-  app.decorate('services', {} as never);
-  app.decorate('prisma', null as never);
+  decorateApp(app, 'config', {});
+  decorateApp(app, 'stores', {});
+  decorateApp(app, 'services', {});
+  decorateApp(app, 'prisma', null);
 
   return app;
 }

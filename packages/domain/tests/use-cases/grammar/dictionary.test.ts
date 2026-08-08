@@ -69,8 +69,10 @@ describe('Project dictionary use cases', () => {
     it('denies a viewer and an outsider', async () => {
       const viewerResult = await add.execute(VIEWER, PROJECT, 'x');
       const outsiderResult = await add.execute(OUTSIDER, PROJECT, 'x');
-      expect(viewerResult.error).toBeInstanceOf(PermissionDeniedError);
-      expect(outsiderResult.error).toBeInstanceOf(PermissionDeniedError);
+      expect(viewerResult.success).toBe(false);
+      expect(outsiderResult.success).toBe(false);
+      if (!viewerResult.success) expect(viewerResult.error).toBeInstanceOf(PermissionDeniedError);
+      if (!outsiderResult.success) expect(outsiderResult.error).toBeInstanceOf(PermissionDeniedError);
       expect(await repo.listByProject(PROJECT)).toHaveLength(0);
     });
 

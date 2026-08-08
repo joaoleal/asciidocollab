@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { meRoute } from '../../../src/routes/auth/me';
+import { decorateApp } from '../../helpers/decorate-app';
 
 describe('GET /auth/me (unit)', () => {
   it('returns 401 when session has userId but user is not found in the database', async () => {
@@ -10,9 +11,9 @@ describe('GET /auth/me (unit)', () => {
       };
       done();
     });
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       user: { findById: jest.fn().mockResolvedValue(null) },
-    } as never);
+    });
     app.register(meRoute);
     await app.ready();
 

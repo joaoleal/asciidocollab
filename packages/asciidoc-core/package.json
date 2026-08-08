@@ -7,10 +7,10 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "jest",
+    "typecheck": "tsc --noEmit -p tsconfig.eslint.json"
   },
-  "dependencies": {},
   "devDependencies": {
-    "@types/node": "^24.12.4"
+    "@types/node": "^24.13.3"
   }
 }

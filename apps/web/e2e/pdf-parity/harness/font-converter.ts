@@ -21,12 +21,16 @@ const WOFF2_WASM_PATH = path.join(process.cwd(), 'public', 'vendor', 'woff2', 'w
 let initialization: Promise<void> | null = null;
 
 function ensureCodecReady(): Promise<void> {
-  initialization ??= woff2.init(readFileSync(WOFF2_WASM_PATH).buffer as ArrayBuffer).catch(
-    (error: unknown) => {
+  // `woff2.init` resolves with the codec handle; the callers only need to know it is ready. Discard
+  // it explicitly so the memoised promise's type matches, and clear the slot on failure so a later
+  // call retries rather than re-awaiting a rejected promise forever.
+  initialization ??= woff2
+    .init(readFileSync(WOFF2_WASM_PATH).buffer as ArrayBuffer)
+    .then(() => undefined)
+    .catch((error: unknown) => {
       initialization = null;
       throw error;
-    },
-  );
+    });
   return initialization;
 }
 

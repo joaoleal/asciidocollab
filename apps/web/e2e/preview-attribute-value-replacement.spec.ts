@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
-import { createAdocFile, setMainFile, openProject, openFile, expandPreview, editorContent } from './helpers/editor';
+import { createAdocFile, setMainFile, openProject, openFile, expandPreview, editorContent, waitCollabSynced } from './helpers/editor';
 
 // Consistency across the THREE attribute sources (current / parent-including / included child),
 // proving an attribute's value is REPLACED (recognized AND shown) on both surfaces:
@@ -47,7 +47,7 @@ test.describe('attribute value replacement across current/parent/included docume
     await setMainFile(page, projectId, await fileId(page, projectId, 'main.adoc'));
     await openProject(page, projectId);
     await openFile(page, 'child.adoc');
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await expandPreview(page);
 
     // PREVIEW: the child resolves the inherited parent value.
@@ -77,7 +77,7 @@ test.describe('attribute value replacement across current/parent/included docume
     await setMainFile(page, projectId, await fileId(page, projectId, 'main.adoc'));
     await openProject(page, projectId);
     await openFile(page, 'main.adoc');
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await expandPreview(page);
 
     // EDITOR: {edition} is known anywhere in the tree → carries the known cross-document mark.

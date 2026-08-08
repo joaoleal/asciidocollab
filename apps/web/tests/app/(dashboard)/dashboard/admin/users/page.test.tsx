@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 
-const mockRedirect = jest.fn(() => {
+const mockRedirect = jest.fn((_path: string) => {
   throw new Error('REDIRECT');
 });
 jest.mock('next/navigation', () => ({ redirect: (path: string) => mockRedirect(path) }));

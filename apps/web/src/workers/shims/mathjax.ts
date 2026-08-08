@@ -9,7 +9,7 @@
 // performs network I/O.
 //
 // DOM-FREE by construction (Constitution VI/VIII/IX): the default converter typesets with the
-// `mathjax-full` liteAdaptor — an in-memory DOM shim — so math renders INSIDE the PDF Web Worker, which
+// `@mathjax/src` liteAdaptor — an in-memory DOM shim — so math renders INSIDE the PDF Web Worker, which
 // has no `window`/`document`. No `<script>` tag, no self-hosted bundle, no CDN, no font URL, no network.
 // Every glyph is embedded per expression (`svg.fontCache: 'local'`) so each produced SVG is standalone
 // and the output is deterministic (identical source + params → identical bytes).
@@ -19,14 +19,15 @@
 // maps that to the TeX or AsciiMath input jax. Per Asciidoctor, an unqualified `stem` block defaults to
 // AsciiMath.
 
-import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
-import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
-import { AsciiMath } from 'mathjax-full/js/input/asciimath.js';
-import { TeX } from 'mathjax-full/js/input/tex.js';
-import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
-import { mathjax } from 'mathjax-full/js/mathjax.js';
-import { SVG } from 'mathjax-full/js/output/svg.js';
-import mathjaxPackage from 'mathjax-full/package.json';
+import { liteAdaptor } from '@mathjax/src/js/adaptors/liteAdaptor.js';
+import { RegisterHTMLHandler } from '@mathjax/src/js/handlers/html.js';
+import { AsciiMath } from '@mathjax/src/js/input/asciimath.js';
+import { TeX } from '@mathjax/src/js/input/tex.js';
+import { mathjax } from '@mathjax/src/js/mathjax.js';
+import { SVG } from '@mathjax/src/js/output/svg.js';
+import mathjaxPackage from '@mathjax/src/package.json';
+
+import { ALL_TEX_PACKAGES } from './mathjax-tex-packages';
 
 import type { DiagnosticCode, RenderShim, ShimAssetFormat, ShimInput, ShimKind, ShimOutput } from '@asciidocollab/asciidoc-pdf';
 
@@ -104,7 +105,7 @@ export interface MathConversion {
 
 /**
  * The seam that turns one inert math expression into a standalone SVG document string. The default
- * implementation ({@link createMathJaxSvgConverter}) drives the DOM-free `mathjax-full` liteAdaptor;
+ * implementation ({@link createMathJaxSvgConverter}) drives the DOM-free `@mathjax/src` liteAdaptor;
  * unit tests may inject an in-memory fake so the shim contract is testable in isolation.
  */
 export interface MathSvgConverter {
@@ -124,7 +125,7 @@ export interface MathJaxShimDeps {
 }
 
 // ---------------------------------------------------------------------------
-// The default DOM-free converter (mathjax-full liteAdaptor — runs in the worker, no DOM).
+// The default DOM-free converter (@mathjax/src liteAdaptor — runs in the worker, no DOM).
 // ---------------------------------------------------------------------------
 
 /**
@@ -157,7 +158,7 @@ export function createMathJaxSvgConverter(): MathSvgConverter {
   return {
     toSvg({ expression, notation, display }: MathConversion): Promise<string> {
       const inputJax =
-        notation === 'asciimath' ? new AsciiMath({}) : new TeX({ packages: AllPackages });
+        notation === 'asciimath' ? new AsciiMath({}) : new TeX({ packages: ALL_TEX_PACKAGES });
       const outputJax = new SVG({ fontCache: 'local' });
       const document = mathjax.document('', { InputJax: inputJax, OutputJax: outputJax });
 
@@ -373,7 +374,7 @@ async function renderMath(converter: MathSvgConverter, input: ShimInput): Promis
 }
 
 /**
- * Build the MathJax math {@link RenderShim}. With no arguments it uses the DOM-free `mathjax-full`
+ * Build the MathJax math {@link RenderShim}. With no arguments it uses the DOM-free `@mathjax/src`
  * converter (SVG output, local font cache), which typesets inside the PDF Web Worker; tests may inject
  * an in-memory converter to exercise the contract in isolation.
  */

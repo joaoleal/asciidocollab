@@ -11,6 +11,7 @@ import {
   openFile,
   editorContent,
   expandPreview,
+  getEditorText,
 } from './helpers/editor';
 
 // Both preview formats refresh on a trailing debounce, so a burst of keystrokes collapses into one
@@ -79,6 +80,21 @@ const SERIAL_REFRESH_MARGIN = 0.8;
 
 /** Where the recorder parks its observations on the page's global object. */
 const RECORDER_KEY = 'previewRefreshObservations';
+
+/** Where the recorder parks the teardown for its current installation, so a retry can replace it. */
+const RECORDER_TEARDOWN_KEY = 'previewRefreshRecorderTeardown';
+
+/**
+ * How many times a burst is attempted before its interruption is treated as a real fault.
+ *
+ * The burst is the harness setting up the condition the claim is about, and a single unlucky stall —
+ * a GC pause, another worker landing on the same core — says nothing about the preview. Retrying makes
+ * the setup deterministic instead of probabilistic. It is deliberately NOT a way to tolerate a busy
+ * main thread: a thread genuinely too busy for the author to type is one of the failures this feature
+ * exists to prevent, so exhausting every attempt still FAILS, loudly and with every attempt's widest
+ * gap in the message.
+ */
+const SUSTAINED_BURST_ATTEMPTS = 3;
 
 /** Where the single-refresh timer parks its two instants on the page's global object. */
 const REFRESH_TIMER_KEY = 'previewRefreshCostTiming';
@@ -237,14 +253,22 @@ async function startRecording(page: Page, containerSelector: string): Promise<vo
         refreshes.push({ at: performance.now(), marker: highestMarker(text) });
       };
       sample(); // the pre-burst baseline, so the first real refresh is recognisable as a change
-      new MutationObserver(sample).observe(container, {
-        childList: true,
-        subtree: true,
-        characterData: true,
+      // Tear down any previous installation first: a burst may be retried, and a stacked observer /
+      // listener pair would keep writing into the abandoned recording.
+      const previousTeardown = Reflect.get(globalThis, options.teardownKey);
+      if (typeof previousTeardown === 'function') previousTeardown();
+      const observer = new MutationObserver(sample);
+      observer.observe(container, { childList: true, subtree: true, characterData: true });
+      const onKeydown = (): void => {
+        keystrokes.push(performance.now());
+      };
+      document.addEventListener('keydown', onKeydown, true);
+      Reflect.set(globalThis, options.teardownKey, () => {
+        observer.disconnect();
+        document.removeEventListener('keydown', onKeydown, true);
       });
-      document.addEventListener('keydown', () => keystrokes.push(performance.now()), true);
     },
-    { containerSelector, key: RECORDER_KEY, markerPattern: MARKER_PATTERN },
+    { containerSelector, key: RECORDER_KEY, teardownKey: RECORDER_TEARDOWN_KEY, markerPattern: MARKER_PATTERN },
   );
 }
 
@@ -391,30 +415,110 @@ function burstDurationMs(renderCostMs: number): number {
 }
 
 /**
- * Assert a burst was genuinely uninterrupted: the browser received every character, and no two
- * consecutive keystrokes were far enough apart for the trailing debounce to elapse between them.
- *
- * Without this the whole exercise is worthless — a refresh observed after an accidental pause proves
- * only that the ordinary trailing debounce works.
+ * The longest pause between two consecutive keystrokes of a burst.
  *
  * @param recording - What the recorder saw.
- * @param typed - The text that was typed.
+ * @returns The widest gap in milliseconds, or 0 when fewer than two keystrokes were seen.
  */
-function expectUninterruptedTyping(recording: Recording, typed: string): void {
-  expect(
-    recording.keystrokes.length,
-    'the browser must have received every character of the burst',
-  ).toBeGreaterThanOrEqual(typed.length);
-  let widestGapMs = 0;
+function widestKeystrokeGapMs(recording: Recording): number {
+  let widest = 0;
   for (let index = 1; index < recording.keystrokes.length; index += 1) {
     const gap = recording.keystrokes[index] - recording.keystrokes[index - 1];
-    if (gap > widestGapMs) widestGapMs = gap;
+    if (gap > widest) widest = gap;
   }
-  expect(
-    widestGapMs,
-    `typing paused for ${Math.round(widestGapMs)} ms — longer than the ${PREVIEW_DEBOUNCE_MS} ms trailing ` +
-      'delay, so a refresh during this burst would prove nothing about sustained typing',
-  ).toBeLessThan(PREVIEW_DEBOUNCE_MS);
+  return widest;
+}
+
+/**
+ * Delete back to `pristine`, one character at a time, checking the document after each.
+ *
+ * Deliberately NOT a count of what was typed. One of the two things that sends a burst round again is
+ * the browser having received FEWER keystrokes than were sent — so on exactly the runs this is needed,
+ * the number typed overstates the number that landed, and deleting that many eats into the fixture the
+ * burst was appended to. Every later attempt would then be typing into a document the caller never
+ * measured, which is the outcome restoring exists to prevent.
+ *
+ * Reading the document back is also what makes over-deletion impossible to do quietly: shrinking past
+ * `pristine` throws here rather than surviving as a smaller experiment that still reports green.
+ *
+ * @param page - The Playwright page with the document open.
+ * @param pristine - The editor text to restore, as {@link getEditorText} reads it.
+ * @param maxDeletions - Upper bound on characters to remove; exceeding it is a harness fault.
+ */
+async function restoreDocument(page: Page, pristine: string, maxDeletions: number): Promise<void> {
+  for (let deleted = 0; deleted <= maxDeletions; deleted += 1) {
+    const text = await getEditorText(page);
+    if (text === pristine) return;
+    if (text.length <= pristine.length) {
+      throw new Error(
+        `restoring the document overshot: it is now ${text.length} characters against the ` +
+          `${pristine.length} it started at, so the burst was typed into a document the caller ` +
+          'never measured',
+      );
+    }
+    await page.keyboard.press('Backspace');
+  }
+  throw new Error(
+    `could not restore the document within ${maxDeletions} deletions — it still differs from the ` +
+      'text the render cost was measured against',
+  );
+}
+
+/**
+ * Type a burst into the open document and return what the preview did during it, retrying until the
+ * burst was genuinely uninterrupted.
+ *
+ * A burst only proves something about SUSTAINED typing if no two consecutive keystrokes were far
+ * enough apart for the trailing debounce to elapse between them — otherwise a refresh observed during
+ * it shows only that the ordinary trailing debounce works. That precondition is the harness's job to
+ * establish, so it is retried rather than asserted once and hoped for.
+ *
+ * Exhausting the attempts is a FAILURE, never a skip: the preview being unable to keep up with an
+ * author is precisely the fault this spec guards, and skipping on it would hide the regression while
+ * still reporting green.
+ *
+ * Each attempt RESTORES the document first, so every attempt is the same experiment. Left in place,
+ * attempt 2 would type into a document twice the size while `renderCostMs` — and so the burst length
+ * derived from it — still described the smaller one, making the retry measure something the caller
+ * never asked about and its outcome depend on which attempt happened to succeed.
+ *
+ * @param page - The Playwright page with the document open and its preview showing.
+ * @param containerSelector - The preview surface to observe.
+ * @param renderCostMs - One measured refresh of this document, which sizes the burst.
+ * @returns The recording of the sustained burst and the text that produced it.
+ */
+async function recordSustainedBurst(
+  page: Page,
+  containerSelector: string,
+  renderCostMs: number,
+): Promise<{ recording: Recording; typed: string }> {
+  const attempts: string[] = [];
+  // The document as the caller measured it — captured once, before anything is typed, so every attempt
+  // is restored to the same text rather than to whatever the previous attempt left behind.
+  const pristine = await getEditorText(page);
+  let typedLastAttempt = 0;
+  for (let attempt = 1; attempt <= SUSTAINED_BURST_ATTEMPTS; attempt += 1) {
+    if (typedLastAttempt > 0) await restoreDocument(page, pristine, typedLastAttempt);
+    await startRecording(page, containerSelector);
+    const typed = burstText(burstDurationMs(renderCostMs));
+    typedLastAttempt = typed.length;
+    await page.keyboard.type(typed, { delay: KEYSTROKE_INTERVAL_MS });
+    const recording = await readRecording(page);
+    const receivedEveryCharacter = recording.keystrokes.length >= typed.length;
+    const widestGapMs = widestKeystrokeGapMs(recording);
+    if (receivedEveryCharacter && widestGapMs < PREVIEW_DEBOUNCE_MS) {
+      return { recording, typed };
+    }
+    attempts.push(
+      `attempt ${attempt}: ${recording.keystrokes.length}/${typed.length} keystrokes, ` +
+        `widest pause ${Math.round(widestGapMs)} ms`,
+    );
+  }
+  throw new Error(
+    `could not type a sustained burst in ${SUSTAINED_BURST_ATTEMPTS} attempts — every one paused ` +
+      `longer than the ${PREVIEW_DEBOUNCE_MS} ms trailing delay, so the preview never kept up with ` +
+      `the typing (${attempts.join('; ')})`,
+  );
 }
 
 /**
@@ -509,12 +613,12 @@ test.describe('preview refresh during sustained typing', () => {
       REFRESH_MEASUREMENT_TIMEOUT_MS,
     );
 
-    await startRecording(page, '[data-testid="preview-scroll-container"]');
-    const typed = burstText(burstDurationMs(renderCostMs));
-    await page.keyboard.type(typed, { delay: KEYSTROKE_INTERVAL_MS });
+    const { recording } = await recordSustainedBurst(
+      page,
+      '[data-testid="preview-scroll-container"]',
+      renderCostMs,
+    );
 
-    const recording = await readRecording(page);
-    expectUninterruptedTyping(recording, typed);
     expectRefreshedWhileTyping(refreshesDuringTyping(recording), 'web-formatted');
   });
 
@@ -545,12 +649,12 @@ test.describe('preview refresh during sustained typing', () => {
       PAGE_RENDER_SETTLE_TIMEOUT_MS,
     );
 
-    await startRecording(page, '[aria-label="Rendered PDF pages"]');
-    const typed = burstText(burstDurationMs(renderCostMs));
-    await page.keyboard.type(typed, { delay: KEYSTROKE_INTERVAL_MS });
+    const { recording } = await recordSustainedBurst(
+      page,
+      '[aria-label="Rendered PDF pages"]',
+      renderCostMs,
+    );
 
-    const recording = await readRecording(page);
-    expectUninterruptedTyping(recording, typed);
     expectRefreshedWhileTyping(refreshesDuringTyping(recording), 'page-formatted');
   });
 
@@ -605,12 +709,12 @@ test.describe('preview refresh during sustained typing', () => {
         `${PREVIEW_MAX_WAIT_MS} ms cap interval — enlarge the document so renders genuinely outlast the cap`,
     ).toBeGreaterThan(PREVIEW_MAX_WAIT_MS);
 
-    await startRecording(page, '[data-testid="preview-scroll-container"]');
-    const typed = burstText(burstDurationMs(renderCostMs));
-    await page.keyboard.type(typed, { delay: KEYSTROKE_INTERVAL_MS });
+    const { recording } = await recordSustainedBurst(
+      page,
+      '[data-testid="preview-scroll-container"]',
+      renderCostMs,
+    );
 
-    const recording = await readRecording(page);
-    expectUninterruptedTyping(recording, typed);
 
     // Refreshes keep coming for as long as the typing does — AND each one is a completed render whose
     // result was still current when it arrived. A schedule that released a refresh on every cap expiry

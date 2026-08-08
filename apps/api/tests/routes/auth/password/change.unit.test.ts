@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { ChangePasswordUseCase } from '@asciidocollab/domain';
 import { passwordChangeRoute } from '../../../../src/routes/auth/password/change';
+import { decorateApp } from '../../../helpers/decorate-app';
 
 function buildTestServer() {
   const app = Fastify();
@@ -10,21 +11,21 @@ function buildTestServer() {
     };
     done();
   });
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: { findById: jest.fn().mockResolvedValue(null) },
-  } as never);
-  app.decorate('services', {
+  });
+  decorateApp(app, 'services', {
     passwordHasher: { hash: jest.fn(), verify: jest.fn() },
     breachChecker: { isBreached: jest.fn().mockResolvedValue(false) },
     emailSender: { send: jest.fn().mockResolvedValue(undefined) },
-  } as never);
-  app.decorate('config', {
+  });
+  decorateApp(app, 'config', {
     auth: {
       passwordChange: { rateLimitMax: 100, rateLimitWindow: 60_000 },
       password: { historyDepth: 3 },
       email: { templates: { passwordChanged: { subject: 'changed', html: '<p>changed</p>' } } },
     },
-  } as never);
+  });
   app.register(passwordChangeRoute);
   return app;
 }

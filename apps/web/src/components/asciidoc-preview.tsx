@@ -117,6 +117,12 @@ function SyncIndicator({ state, isEnabled }: { state: PreviewState; isEnabled: b
 interface AsciiDocPreviewProperties {
   content: string;
   isEnabled: boolean;
+  /**
+   * Whether `content` for the open file is still being fetched, so an empty buffer means "not here
+   * yet" rather than "this file is empty". Passed straight through — see the hook option of the same
+   * name for why nothing downstream can work it out for itself.
+   */
+  contentPending?: boolean;
   /** Project id, used to resolve the base path for image macros in the preview. */
   projectId: string;
   /** When set with {@link getFiles}, render the assembled main document with includes inlined. */
@@ -196,6 +202,7 @@ interface AsciiDocPreviewProperties {
 export function AsciiDocPreview({
   content,
   isEnabled,
+  contentPending,
   projectId,
   mainPath,
   getFiles,
@@ -234,6 +241,7 @@ export function AsciiDocPreview({
   } = useAsciidocPreview({
     content,
     isEnabled,
+    contentPending,
     scrollToLine,
     imagesDir: imagesDirectory,
     mainPath,

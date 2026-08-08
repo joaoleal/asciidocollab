@@ -6,6 +6,7 @@ import {
   PermissionDeniedError,
 } from '@asciidocollab/domain';
 import { usersInviteRoute } from '../../../src/routes/admin/users-invite';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -18,16 +19,16 @@ jest.mock('../../../src/plugins/require-admin', () => ({
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: { findById: jest.fn().mockResolvedValue({ displayName: 'Admin' }) },
-    userInvitation: { findByEmail: jest.fn(), save: jest.fn() },
+    userInvitation: { findPendingByEmail: jest.fn(), save: jest.fn() },
     auditLog: { save: jest.fn() },
   });
-  app.decorate('services', {
+  decorateApp(app, 'services', {
     tokenGenerator: { generateInvitationToken: jest.fn(), hashToken: jest.fn() },
-    registrationInvitationNotifier: { sendInvitationEmail: jest.fn() },
+    registrationInvitationNotifier: { sendInvitation: jest.fn() },
   });
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     admin: { invite: { rateLimitMax: 100, rateLimitWindow: 60_000 } },
   });
   app.register(usersInviteRoute);

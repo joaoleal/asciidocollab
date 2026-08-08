@@ -1022,6 +1022,39 @@ export function ProjectEditorLayout({
   // the page stack).
   const liveContentLineCount = useMemo(() => liveContent.split('\n').length, [liveContent]);
 
+  /**
+   * Whether the open file's content is still on its way, so the preview can tell an empty buffer that
+   * means "not here yet" from one that means "this file is empty".
+   *
+   * "Pending" is only ever a statement that something is STILL COMING, so each clause names the thing
+   * that will deliver it. An earlier version asked the opposite question — "do we have content yet?" —
+   * and answered yes-still-pending whenever we did not. That is indistinguishable from a load that
+   * FAILED: on a content fetch that rejects, `useFileSelection` leaves `content: null` with an error
+   * and no collab, so the answer stayed pending forever and the preview went on showing the previous
+   * file's document, marked as catching up, beside an editor pane displaying the error. Permanently
+   * wrong beats briefly blank, so a settled-with-no-content file must render as the empty document it
+   * has turned out to be.
+   *
+   * Clause 1 — the REST path, pending exactly while its fetch is in flight.
+   * Clause 2 — collaboration, whose document never comes through `content` at all: a collab file
+   * arrives by the editor's own seeding, so it is pending until the session says it is synced (and
+   * `editorPending` covers both the discovery hop before a binding exists and the offline fallback's
+   * own fetch). Both end in a bounded time, which is what makes them safe to wait on.
+   * Clause 3 — the same-commit guard. `liveOverlayContent` is computed DURING RENDER from the fetched
+   * content, while the buffer handed to the preview (`liveContent`) is applied by an effect on that
+   * same content — one commit later. Without it there is an in-between commit reporting "settled"
+   * about a buffer that is still the reset-to-empty one, and the preview believes the file it just
+   * opened is genuinely empty: it publishes a blank render and drops the flag that would have flushed
+   * the real content on arrival. That commit and nothing else — once the user types the overlay IS
+   * the buffer, and while the overlay is null the earlier clauses already answer.
+   */
+  const previewContentPending =
+    (liveOverlayContent === null &&
+      (contentState.isLoading ||
+        editorPending ||
+        (editorCollab !== null && editorConnectionState !== 'synced'))) ||
+    (liveOverlayContent !== null && liveOverlayContent !== liveContent);
+
   // Accurate scroll-sync bridge: the engine's source map is keyed to the ASSEMBLED (include-expanded)
   // document the worker converts, but the editor's cursor line is in the OPEN file. Build the same
   // provenance map the include-resolve stage would (via the shared helper), gated on the PDF preview
@@ -1425,6 +1458,10 @@ export function ProjectEditorLayout({
                   // the open file through its props instead, and keeps its engine across the switch.
                   <AsciiDocPreview
                     content={liveContent}
+                    // The live buffer is reset to '' the instant the selection changes, and stays that
+                    // way until the newly opened file's content arrives. Only this side knows which of
+                    // those an empty buffer is, so it says so rather than leaving the panel to guess.
+                    contentPending={previewContentPending}
                     isEnabled={previewOpen}
                     projectId={projectId}
                     mainPath={previewMainPath}

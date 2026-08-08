@@ -53,6 +53,13 @@ function mismatch(expected: HarperMethod, value: HarperValue): Error {
 }
 
 /**
+ * Why a call in flight was rejected when the worker went away — disposal or a reset. Exported so the
+ * client can tell this apart from an engine that genuinely failed on its input: the first is a normal
+ * teardown to swallow, the second must be reported rather than read as "no writing issues".
+ */
+export const WORKER_GONE_MESSAGE = 'The Harper worker was disposed while this call was in flight';
+
+/**
  * Build the main-thread {@link HarperEngine} that drives the grammar worker.
  *
  * @param dialect - The English dialect to enforce from the first lint; applied to each freshly spawned
@@ -223,7 +230,7 @@ export function createHarperEngineProxy(
         running.terminate();
         if (worker === running) worker = null;
         for (const call of abandoned) {
-          call.reject(new Error('The Harper worker was disposed while this call was in flight'));
+          call.reject(new Error(WORKER_GONE_MESSAGE));
         }
       }
     },

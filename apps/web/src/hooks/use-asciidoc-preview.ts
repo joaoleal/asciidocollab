@@ -28,6 +28,17 @@ export interface UseAsciidocPreviewOptions {
   content: string;
   /** True when the selected file is AsciiDoc and the preview panel is open. False transitions to idle. */
   isEnabled: boolean;
+  /**
+   * Whether {@link UseAsciidocPreviewOptions.content} for the OPEN FILE is still on its way.
+   *
+   * This is the one thing an empty buffer cannot say for itself, and without it the two cases it
+   * covers are indistinguishable here: a file that genuinely has nothing in it, and a file whose
+   * content has simply not arrived yet. Rendering the second publishes a blank panel the reader never
+   * asked for — and whether it lands at all is a race with the fetch, so it blanks on a loaded machine
+   * and not on an idle one. Absent/false means "this buffer is the file", which is what a caller that
+   * does not know says, and is the behaviour this hook has always had.
+   */
+  contentPending?: boolean;
   /** When set, the hook scrolls the preview to the element with the matching data-source-line. */
   scrollToLine: ScrollRequest | null;
   /** Base path Asciidoctor prepends to relative image targets (the project's image endpoint). */
@@ -147,6 +158,7 @@ export interface UseAsciidocPreviewResult {
 export function useAsciidocPreview({
   content,
   isEnabled,
+  contentPending = false,
   scrollToLine,
   imagesDir,
   mainPath,
@@ -449,6 +461,15 @@ export function useAsciidocPreview({
     }, adaptiveDelayMs(lastSuccessfulRenderMsReference.current));
   };
 
+  // Set when the open file's content was found not yet loaded — by a file switch, or by the panel
+  // being reopened onto one — and cleared by the content effect below when it arrives. See the
+  // file-switch effect for why that is the normal case.
+  const openedFileAwaitingContentReference = useRef(false);
+  // Read inside effects that run on other signals, so they see the CURRENT answer rather than the one
+  // captured when they were last declared.
+  const contentPendingReference = useRef(contentPending);
+  contentPendingReference.current = contentPending;
+
   // Handle isEnabled changes.
   useEffect(() => {
     if (!isEnabled) {
@@ -456,15 +477,25 @@ export function useAsciidocPreview({
       setState('idle');
       return;
     }
+    // Reopening onto a file whose content has not arrived yet. `isWorthRendering` says yes — the
+    // buffer is empty, but something has rendered before, so the flag it consults has latched — and
+    // rendering it would publish exactly the blank the content and switch effects refuse for this
+    // case. It reaches here at all because the switch that opened the file happened while the panel
+    // was CLOSED: the switch effect took its `!isEnabled` return and so never recorded that the file
+    // was still loading. Reopening is the first moment this hook can act on that, which is why it
+    // picks up the flag the switch dropped rather than only declining — without it, the file's
+    // content arriving would render one full trailing delay late, and a file that settles EMPTY would
+    // leave the previous file's document on screen with nothing left to take it off.
+    if (contentPending && content === '') {
+      openedFileAwaitingContentReference.current = true;
+      setState('pending');
+      return;
+    }
     if (!isWorthRendering(content)) return;
     // Re-enabled with current content — start fresh render.
     setState('pending');
     scheduleRender(content);
   }, [isEnabled]);
-
-  // Set when a file switch found the newly opened file's content not yet loaded, and cleared by the
-  // content effect below when it arrives. See the file-switch effect for why that is the normal case.
-  const openedFileAwaitingContentReference = useRef(false);
 
   // Debounce content changes.
   //
@@ -476,6 +507,11 @@ export function useAsciidocPreview({
   // unmount alone, below.
   useEffect(() => {
     if (!isEnabled || !isWorthRendering(content)) return;
+    // An empty buffer whose file is still being fetched is not content, it is the absence of it. The
+    // switch effect below declines to publish it for that reason, and this effect — which runs on the
+    // same commit, because a switch empties the buffer — has to decline for the same one, or the
+    // render it schedules lands the blank the other one refused.
+    if (contentPending && content === '') return;
     setState('pending');
     scheduleRender(content);
     // This is the content of a file the reader has just opened, arriving after the switch that asked
@@ -517,11 +553,31 @@ export function useAsciidocPreview({
       // the content effect, the file the reader just opened would appear only after the full trailing
       // delay, which is exactly the wait this effect exists to avoid.
       openedFileAwaitingContentReference.current = true;
-      // An empty buffer here is a file still loading and a file that genuinely has nothing in it, and
-      // nothing distinguishes the two. So the empty render is scheduled but deliberately NOT forced:
-      // content arriving inside the trailing delay replaces it (and is forced through, above), while
-      // a file that really is empty empties the preview one delay later. Skipping it altogether is
-      // what left the file the reader had just LEFT on screen, apparently up to date.
+      // An empty buffer here is a file still loading and a file that genuinely has nothing in it —
+      // and `contentPending` is the caller telling the two apart, which nothing here could.
+      //
+      // Still loading: rendering it would publish a blank panel for a file that previews perfectly
+      // well. It used to be scheduled-but-not-forced, on the reasoning that the real content would
+      // arrive inside the trailing delay and replace it — which is a RACE, and one the fetch loses on
+      // a loaded machine, where the empty render lands and the panel goes blank mid-switch. The
+      // previous document stays on screen instead, marked as catching up, until there is something to
+      // replace it with. `state` is set below rather than left alone, so nothing reads as up to date
+      // while it is the previous file's document being shown.
+      //
+      // Genuinely empty: the empty render is scheduled, and deliberately NOT forced, exactly as
+      // before — a file that really is empty empties the preview one trailing delay later.
+      if (contentPendingReference.current) {
+        // Drop whatever was still queued for the file being LEFT. Every other path out of this effect
+        // ends in `scheduleRender`, which replaces the pending run; this one renders nothing, so
+        // without the cancel an edit made in the previous file seconds ago fires after the switch. It
+        // would not even be published as that file's: the render callback reads the open file, root
+        // and snapshot at FIRE time, so the old text is assembled and scoped as the new file, accepted
+        // by the request-id guard, and painted — and completing it clears the very 'pending' set
+        // below, so the panel reads as up to date while showing something that was never a document.
+        debounceReference.current?.cancel();
+        setState('pending');
+        return;
+      }
       if (isWorthRendering(content)) scheduleRender(content);
       return;
     }
@@ -534,6 +590,39 @@ export function useAsciidocPreview({
     scheduleRender(content);
     debounceReference.current?.flush();
   }, [openFileId]);
+
+  // The open file's content has settled, and it is empty.
+  //
+  // This is the only signal that says so. The buffer was already '' when the file was opened, so the
+  // content effect never re-ran — the string did not change — and the switch effect published nothing
+  // because at that point the file might still have been loading. Without this, opening a genuinely
+  // empty file would leave the previous file's document on screen indefinitely, which is worse than
+  // the blank flash it was written to prevent: wrong, and permanently so, rather than briefly ugly.
+  //
+  // A file that arrived with content is not this case — the content effect sees the change, and forces
+  // it through rather than waiting out a trailing delay nothing is typing into.
+  //
+  // `isEnabled` is a dependency as well as `contentPending`: settling while the panel happens to be
+  // closed would otherwise be observed once, in the one commit that returns early, and never revisited
+  // when it reopens. `content` is deliberately NOT one, though the effect reads it — this must fire
+  // when the pending answer SETTLES, and content changes on the switch commit itself, one commit
+  // earlier, where it would consume the just-set flag and leave the arriving text with nothing to
+  // flush it.
+  useEffect(() => {
+    if (!isEnabled || contentPending) return;
+    if (!openedFileAwaitingContentReference.current || content !== '') return;
+    openedFileAwaitingContentReference.current = false;
+    if (isWorthRendering(content)) {
+      scheduleRender(content);
+      return;
+    }
+    // Nothing to render, and — unlike the branch above — nothing coming that could clear the state
+    // later: this is an empty file opened before the panel had ever rendered anything, so there is no
+    // previous document being shown and `isWorthRendering` declines. The switch effect set 'pending'
+    // on the possibility that content was still on its way; that possibility has now resolved to no,
+    // and leaving the indicator saying "catching up" over an empty panel would be a wait for nothing.
+    setState('idle');
+  }, [contentPending, isEnabled]);
 
   // Drop any pending render when the hook goes away, so nothing fires into a torn-down component.
   useEffect(() => () => debounceReference.current?.cancel(), []);

@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { acceptInviteRoute } from '../../../src/routes/auth/accept-invite';
 import { InvalidTokenError, DuplicateEmailError } from '@asciidocollab/domain';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const USER_ID = '550e8400-e29b-41d4-a716-446655440001';
 
@@ -49,7 +50,7 @@ function buildTestServer(options: BuildOptions = {}) {
     value: { userId: { value: USER_ID } },
   };
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     userInvitation: {
       findByTokenHash: jest.fn().mockResolvedValue(
         options.invitation === undefined ? validInvitation : options.invitation,
@@ -64,24 +65,24 @@ function buildTestServer(options: BuildOptions = {}) {
     },
   });
 
-  app.decorate('services', {
+  decorateApp(app, 'services', {
     tokenGenerator: {
       hashToken: jest.fn().mockReturnValue('hashed-token'),
-      generateToken: jest.fn().mockReturnValue('generated-token'),
+      generateInvitationToken: jest.fn(),
     },
     passwordHasher: {
       hash: jest.fn().mockResolvedValue('hashed-password'),
       verify: jest.fn().mockResolvedValue(true),
     },
     commonPasswordChecker: {
-      isCommonPassword: jest.fn().mockResolvedValue(false),
+      isCommon: jest.fn().mockReturnValue(false),
     },
     breachChecker: {
       isBreached: jest.fn().mockResolvedValue(false),
     },
   });
 
-  app.decorate('config', DEFAULT_CONFIG as never);
+  decorateApp(app, 'config', DEFAULT_CONFIG);
 
   // We mock AcceptUserInvitationUseCase to control result
   const useCaseResult = options.useCaseResult ?? defaultUseCaseResult;

@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { loginRoute } from '../../../src/routes/auth/login';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const USER_ID = '550e8400-e29b-41d4-a716-446655440010';
 
@@ -33,16 +34,16 @@ function buildApp(mocks: Partial<Mocks> = {}): { app: FastifyInstance; m: Mocks 
     (request as unknown as { session: Record<string, unknown> }).session = {};
     done();
   });
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     auth: { login: { rateLimitMax: 100, rateLimitWindow: 60_000 } },
     failedSignIn: { coalesceWindowMinutes: 60 },
-  } as never);
-  app.decorate('repos', {
+  });
+  decorateApp(app, 'repos', {
     user: { findByEmail: m.findByEmail },
     authAttemptTelemetry: { record: m.record },
     auditLog: { save: m.save },
-  } as never);
-  app.decorate('services', { passwordHasher: { verify: m.verify } } as never);
+  });
+  decorateApp(app, 'services', { passwordHasher: { verify: m.verify } });
   app.register(loginRoute);
   return { app, m };
 }

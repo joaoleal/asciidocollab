@@ -1,3 +1,4 @@
+import type { CollaborationSessionRepository } from '../../../src/ports/project/collaboration-session.repository';
 import { OpenCollaborationSessionUseCase } from '../../../src/use-cases/project/open-collaboration-session';
 import { CloseCollaborationSessionUseCase } from '../../../src/use-cases/project/close-collaboration-session';
 import { InMemoryCollaborationSessionRepository } from '../../ports/project/in-memory-collaboration-session-repository';
@@ -34,26 +35,26 @@ describe('CollaborationSession use cases', () => {
     });
 
     test('propagates repository errors as Result.error', async () => {
-      const failingRepo = {
-        ...repo,
+      const failingRepo: CollaborationSessionRepository = {
         open: jest.fn().mockRejectedValue(new Error('db error')),
         isActive: jest.fn().mockResolvedValue(false),
         close: jest.fn(),
         closeAllForProject: jest.fn(),
         closeAll: jest.fn(),
+        findActiveDocumentIds: jest.fn().mockResolvedValue([]),
       };
       const result = await openUseCase.execute(projectId, documentId, failingRepo);
       expect(result.success).toBe(false);
     });
 
     test('wraps a non-Error thrown value in a new Error', async () => {
-      const failingRepo = {
-        ...repo,
+      const failingRepo: CollaborationSessionRepository = {
         open: jest.fn().mockRejectedValue('plain string rejection'),
         isActive: jest.fn().mockResolvedValue(false),
         close: jest.fn(),
         closeAllForProject: jest.fn(),
         closeAll: jest.fn(),
+        findActiveDocumentIds: jest.fn().mockResolvedValue([]),
       };
       const result = await openUseCase.execute(projectId, documentId, failingRepo);
       expect(result.success).toBe(false);
@@ -79,26 +80,26 @@ describe('CollaborationSession use cases', () => {
     });
 
     test('propagates repository errors as Result.error', async () => {
-      const failingRepo = {
-        ...repo,
+      const failingRepo: CollaborationSessionRepository = {
         close: jest.fn().mockRejectedValue(new Error('db error')),
         isActive: jest.fn().mockResolvedValue(true),
         open: jest.fn(),
         closeAllForProject: jest.fn(),
         closeAll: jest.fn(),
+        findActiveDocumentIds: jest.fn().mockResolvedValue([]),
       };
       const result = await closeUseCase.execute(projectId, documentId, failingRepo);
       expect(result.success).toBe(false);
     });
 
     test('wraps a non-Error thrown value in a new Error', async () => {
-      const failingRepo = {
-        ...repo,
+      const failingRepo: CollaborationSessionRepository = {
         close: jest.fn().mockRejectedValue('plain string rejection'),
         isActive: jest.fn().mockResolvedValue(true),
         open: jest.fn(),
         closeAllForProject: jest.fn(),
         closeAll: jest.fn(),
+        findActiveDocumentIds: jest.fn().mockResolvedValue([]),
       };
       const result = await closeUseCase.execute(projectId, documentId, failingRepo);
       expect(result.success).toBe(false);

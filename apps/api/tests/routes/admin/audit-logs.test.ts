@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { ListAuditLogsUseCase } from '@asciidocollab/domain';
 import { auditLogsRoute } from '../../../src/routes/admin/audit-logs';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -27,7 +28,7 @@ const mockAuditLogs = [
 function buildTestServer(overrides?: Partial<{ findWithFiltersResult: unknown; findDistinctResult: unknown }>) {
   const app = Fastify();
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     auditLog: {
       findWithFilters: jest.fn().mockResolvedValue({
         items: mockAuditLogs,
@@ -47,7 +48,7 @@ function buildTestServer(overrides?: Partial<{ findWithFiltersResult: unknown; f
     },
   });
 
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     admin: { auditLog: { rateLimitMax: 1000, rateLimitWindow: 60_000 } },
   });
 
@@ -117,14 +118,14 @@ describe('Rate limiting', () => {
     const rateLimit = require('@fastify/rate-limit') as { default: typeof import('@fastify/rate-limit')['default'] };
     const app = Fastify();
 
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       auditLog: {
         findWithFilters: jest.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 50 }),
         findDistinctActionTypes: jest.fn().mockResolvedValue([]),
       },
       user: { findById: jest.fn().mockResolvedValue({ id: { value: 'u1' }, displayName: 'Admin', isAdmin: true }) },
     });
-    app.decorate('config', { admin: { auditLog: { rateLimitMax: 1, rateLimitWindow: 60_000 } } });
+    decorateApp(app, 'config', { admin: { auditLog: { rateLimitMax: 1, rateLimitWindow: 60_000 } } });
 
     await app.register(rateLimit.default, { global: false });
     app.register(auditLogsRoute);

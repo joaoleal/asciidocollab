@@ -69,6 +69,27 @@ function createMockView(content: string = '') {
   } as unknown as EditorView & { dispatched: unknown[] };
 }
 
+/**
+ * The mock view's selection, which `EditorState` declares read-only. The double is built by casting a
+ * plain object to `EditorView`, so the fields really are writable — this says so at the one place a
+ * spec needs to move the cursor, instead of pretending the CM6 type allows it.
+ */
+function mockSelection(view: EditorView): {
+  from: number;
+  to: number;
+  head: number;
+  anchor: number;
+  empty: boolean;
+} {
+  return view.state.selection.main as unknown as {
+    from: number;
+    to: number;
+    head: number;
+    anchor: number;
+    empty: boolean;
+  };
+}
+
 describe('EditorToolbar', () => {
   test('renders four labelled groups (Text Formatting, Structure, Blocks, Inline/References)', () => {
     const view = createMockView('');
@@ -90,9 +111,9 @@ describe('EditorToolbar', () => {
 
   test('clicking Bold with selected text wraps it in * ... *', () => {
     const view = createMockView('hello world');
-    view.state.selection.main.from = 0;
-    view.state.selection.main.to = 5;
-    view.state.selection.main.empty = false;
+    mockSelection(view).from = 0;
+    mockSelection(view).to = 5;
+    mockSelection(view).empty = false;
     (view.state as { sliceDoc: (f: number, t: number) => string }).sliceDoc = (_f, _t) => 'hello';
 
     render(<EditorToolbar view={view} />);
@@ -278,7 +299,7 @@ describe('EditorToolbar', () => {
 
     test('Refactor button seeds the dialog with the symbol under the cursor', () => {
       const view = createMockView('{product}');
-      view.state.selection.main.head = 3; // inside {product}
+      mockSelection(view).head = 3; // inside {product}
       const onRefactor = jest.fn();
       render(<EditorToolbar view={view} onRefactor={onRefactor} />);
       fireEvent.click(screen.getByRole('button', { name: /refactor/i }));
@@ -287,7 +308,7 @@ describe('EditorToolbar', () => {
 
     test('Refactor button passes null when the cursor is not on a symbol', () => {
       const view = createMockView('plain text');
-      view.state.selection.main.head = 2;
+      mockSelection(view).head = 2;
       const onRefactor = jest.fn();
       render(<EditorToolbar view={view} onRefactor={onRefactor} />);
       fireEvent.click(screen.getByRole('button', { name: /refactor/i }));

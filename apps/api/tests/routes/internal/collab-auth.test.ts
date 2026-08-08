@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { collabAuthRoute } from '../../../src/routes/internal/collab-auth';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const USER_ID = '550e8400-e29b-41d4-a716-446655440001';
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
@@ -28,13 +29,13 @@ function buildTestServer(options: {
   const app = Fastify();
 
   app.addHook('preHandler', async (request) => {
-    (request as unknown as { session: { userId: string } }).session = authenticated ? { userId: USER_ID } : {};
+    (request as unknown as { session: { userId?: string } }).session = authenticated ? { userId: USER_ID } : {};
   });
 
   const member = memberRole === null ? null : { role: { value: memberRole } };
   const fileNode = { id: { value: FILE_NODE_ID }, projectId: makeProjectId(fileNodeProjectId) };
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     document: { findByYjsStateId: jest.fn().mockResolvedValue(mockDocument) },
     fileNode: { findById: jest.fn().mockResolvedValue(fileNode) },
     projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(member) },
@@ -100,7 +101,7 @@ describe('GET /internal/collab/auth/document', () => {
     app.addHook('preHandler', async (request) => {
       (request as unknown as { session: { userId: string } }).session = { userId: USER_ID };
     });
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       document: { findByYjsStateId: jest.fn().mockResolvedValue(null) },
       fileNode: { findById: jest.fn().mockResolvedValue(null) },
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(null) },
@@ -133,7 +134,7 @@ describe('GET /internal/collab/auth/document', () => {
     app.addHook('preHandler', async (request) => {
       (request as unknown as { session: { userId: string } }).session = { userId: USER_ID };
     });
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       document: { findByYjsStateId: jest.fn().mockResolvedValue(null) },
       fileNode: { findById: jest.fn().mockResolvedValue(null) },
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(null) },
@@ -202,7 +203,7 @@ describe('GET /internal/collab/auth/presence', () => {
     app.addHook('preHandler', async (request) => {
       (request as unknown as { session: { userId: string } }).session = { userId: USER_ID };
     });
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       document: { findByYjsStateId: jest.fn() },
       fileNode: { findById: jest.fn() },
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(null) },

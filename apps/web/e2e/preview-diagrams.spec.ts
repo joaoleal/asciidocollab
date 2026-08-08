@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
-import { createAdocFile, setMainFile, openProject, openFile, expandPreview } from './helpers/editor';
+import { createAdocFile, setMainFile, openProject, openFile, expandPreview, waitCollabSynced } from './helpers/editor';
 
 // End-to-end guard for NATIVE on-screen diagram rendering in the HTML preview. The heavy engines
 // (mermaid) run only in a real browser — a seam the unit suites cannot exercise — so this is the test
@@ -67,7 +67,7 @@ test.describe('preview diagram (mermaid) rendering', () => {
 
     await openProject(page, projectId);
     await openFile(page, 'doc.adoc');
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await expandPreview(page);
 
     const output = page.getByTestId('asciidoc-output');

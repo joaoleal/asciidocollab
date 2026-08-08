@@ -62,7 +62,10 @@ function loadTakingOwnership(loaded: object) {
         destroy: mockDocumentDestroy,
       };
     }
-    data.buffer.transfer();
+    // Detach exactly as the worker hand-off does. `data.buffer` is typed ArrayBufferLike, and only a
+    // plain ArrayBuffer can be transferred.
+    const { buffer } = data;
+    if (buffer instanceof ArrayBuffer) buffer.transfer();
     return { promise: Promise.resolve(loaded), destroy: mockDocumentDestroy };
   };
 }
@@ -77,9 +80,9 @@ const mockGetDocument = jest.fn(loadTakingOwnership(loadedDocument(1)));
 // The text and annotation layers are pdf.js DOM overlays; jsdom cannot lay out real glyphs, so each is
 // stubbed to record that the component constructed and rendered one per page. The TextLayer stub also
 // exposes `cancel()` so the teardown assertions can prove the overlay render is abandoned on supersede.
-const mockTextLayerRender = jest.fn(() => Promise.resolve());
+const mockTextLayerRender = jest.fn((..._arguments: unknown[]) => Promise.resolve());
 const mockTextLayerConstructor = jest.fn();
-const mockAnnotationLayerRender = jest.fn(() => Promise.resolve());
+const mockAnnotationLayerRender = jest.fn((..._arguments: unknown[]) => Promise.resolve());
 const mockAnnotationLayerConstructor = jest.fn();
 
 class MockTextLayer {
@@ -99,7 +102,7 @@ class MockAnnotationLayer {
 
 jest.mock('pdfjs-dist', () => ({
   __esModule: true,
-  getDocument: (...arguments_: unknown[]) => mockGetDocument(...arguments_),
+  getDocument: (parameters: { data: Uint8Array }) => mockGetDocument(parameters),
   GlobalWorkerOptions: { workerSrc: '' },
   TextLayer: class {
     constructor(options: unknown) {

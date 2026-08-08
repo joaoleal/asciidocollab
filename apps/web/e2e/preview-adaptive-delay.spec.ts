@@ -48,6 +48,49 @@ const LARGE_DOCUMENT_BASELINE_MS = 1059;
 /** The recorded pre-change median for the short document, quoted so a run reports what it improved on. */
 const SMALL_DOCUMENT_BASELINE_MS = 509;
 
+/**
+ * The widest the schedule's own choice of delay can make two refreshes of one document differ.
+ *
+ * It may wait anywhere between the floor and the ceiling, so two samples can honestly differ by that
+ * much before any render variation is counted.
+ */
+const DELAY_RANGE_MS = PREVIEW_DEBOUNCE_MS - PREVIEW_ADAPTIVE_MIN_MS;
+
+/**
+ * How much of the liveliest sample is allowed as ordinary render-to-render variation on top.
+ *
+ * Proportional, and that is the point: a machine that renders this document in 400 ms varies by tens
+ * of milliseconds between renders, one that takes 2,000 ms varies by hundreds, and a fixed allowance
+ * would be either uselessly loose on the first or a guaranteed flake on the second. Half is generous
+ * for variation and still far too tight to admit a queued render, which costs a whole extra render.
+ */
+const RENDER_VARIATION_SHARE = 0.5;
+
+/**
+ * Assert that a document's refreshes stayed together, whatever this machine's absolute speed.
+ *
+ * This is the machine-independent half of the claim and it runs everywhere, including where the
+ * recorded baseline does not apply. Both figures come from the same machine, the same document and
+ * the same run, so what it measures is the SCHEDULE rather than the hardware: a schedule that let a
+ * render queue behind another, or that compounded its delay, separates its samples by more than its
+ * own range of choices plus the variation of a render, on any hardware at all.
+ *
+ * @param samples - Every refresh measured for one document, in milliseconds.
+ * @param lines - The document's size, for the failure message.
+ */
+function expectSamplesHoldTogether(samples: readonly number[], lines: number): void {
+  const fastest = Math.min(...samples);
+  const slowest = Math.max(...samples);
+  const allowance = Math.round(DELAY_RANGE_MS + fastest * RENDER_VARIATION_SHARE);
+  expect(
+    slowest - fastest,
+    `the ${lines}-line document's refreshes ranged from ${fastest} to ${slowest} ms after the last ` +
+      `keystroke — a spread of ${slowest - fastest} ms, wider than the ${allowance} ms the schedule ` +
+      `could account for (its ${DELAY_RANGE_MS} ms of choice, plus half the ${fastest} ms liveliest ` +
+      'sample for render variation), so something is queueing behind something else',
+  ).toBeLessThanOrEqual(allowance);
+}
+
 /** How many refreshes are timed per document. Odd, so the median is a measured sample and not a mean. */
 const SAMPLES_PER_DOCUMENT = 5;
 
@@ -268,6 +311,13 @@ test.describe('preview refresh delay after the last keystroke', () => {
     // floor plus one render plus the paint, so a figure close to the target says the schedule is
     // right and the remaining time is the render; a figure far above it says the schedule is not
     // deriving its delay from what the render actually cost.
+    expectSamplesHoldTogether(samples, SMALL_DOCUMENT_LINES);
+
+    // Enforced EVERYWHERE, deliberately. This is the criterion the feature set itself, on a 100-line
+    // document whose render is tens of milliseconds on any machine that can run the suite at all — so
+    // unlike the large document's recorded median, almost none of this figure is hardware. Gating it
+    // on the runner once seemed reasonable and was simply wrong: it let a real regression pass on CI
+    // while still reporting green.
     expect(
       measured,
       `the median refresh landed ${measured} ms after the last keystroke, against a target of ` +
@@ -306,6 +356,12 @@ test.describe('preview refresh delay after the last keystroke', () => {
     // The other half of the claim. A document this expensive renders for longer than half the fixed
     // delay, so doubling its cost exceeds the ceiling and the schedule waits exactly what it always
     // did — making a short document livelier must not have been paid for by making a long one slower.
+    expectSamplesHoldTogether(samples, LARGE_DOCUMENT_LINES);
+
+    // Enforced everywhere. Gating this on the runner was a guess that measurement disproved: the
+    // median is 471 ms against a recorded 1059 ms, and most of it is the schedule's own delay (capped
+    // at PREVIEW_DEBOUNCE_MS) rather than the render, so even a runner half this speed lands well
+    // inside the figure. The comparison was never as hardware-bound as the gate assumed.
     expect(
       measured,
       `the median refresh landed ${measured} ms after the last keystroke, against a recorded ` +

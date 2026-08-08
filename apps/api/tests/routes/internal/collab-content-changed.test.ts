@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { collabContentChangedRoute } from '../../../src/routes/internal/collab-content-changed';
 import { COLLAB_CONTENT_CHANGED_PATH } from '@asciidocollab/shared';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 const YJS_STATE_ID = '550e8400-e29b-41d4-a716-446655440003';
@@ -11,10 +12,10 @@ function buildTestServer(options: { document?: unknown | null } = {}) {
   const app = Fastify();
   const emit = jest.fn();
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     document: { findByYjsStateId: jest.fn().mockResolvedValue(document) },
   });
-  app.decorate('fileTreeEventBus', { emit, subscribe: jest.fn() });
+  decorateApp(app, 'fileTreeEventBus', { emit, subscribe: jest.fn() });
 
   app.register(collabContentChangedRoute);
   return { app, emit };

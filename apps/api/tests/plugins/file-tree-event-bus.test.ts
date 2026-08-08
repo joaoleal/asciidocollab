@@ -22,7 +22,7 @@ async function buildTestServer() {
 describe('FileTreeEventBus', () => {
   it('subscribed listener receives emitted event for same project', async () => {
     const app = await buildTestServer();
-    const received: FileTreeEventDto[] = [];
+    const received: ProjectEventDto[] = [];
     app.fileTreeEventBus.subscribe('project-1', (event) => received.push(event));
     app.fileTreeEventBus.emit('project-1', makeEvent());
     expect(received).toHaveLength(1);
@@ -32,8 +32,8 @@ describe('FileTreeEventBus', () => {
 
   it('multiple listeners on same project all receive the event', async () => {
     const app = await buildTestServer();
-    const received1: FileTreeEventDto[] = [];
-    const received2: FileTreeEventDto[] = [];
+    const received1: ProjectEventDto[] = [];
+    const received2: ProjectEventDto[] = [];
     app.fileTreeEventBus.subscribe('project-1', (event) => received1.push(event));
     app.fileTreeEventBus.subscribe('project-1', (event) => received2.push(event));
     app.fileTreeEventBus.emit('project-1', makeEvent());
@@ -44,7 +44,7 @@ describe('FileTreeEventBus', () => {
 
   it('listener for project A does not receive events for project B', async () => {
     const app = await buildTestServer();
-    const received: FileTreeEventDto[] = [];
+    const received: ProjectEventDto[] = [];
     app.fileTreeEventBus.subscribe('project-A', (event) => received.push(event));
     app.fileTreeEventBus.emit('project-B', makeEvent());
     expect(received).toHaveLength(0);
@@ -53,7 +53,7 @@ describe('FileTreeEventBus', () => {
 
   it('returned unsubscribe function stops delivery', async () => {
     const app = await buildTestServer();
-    const received: FileTreeEventDto[] = [];
+    const received: ProjectEventDto[] = [];
     const unsubscribe = app.fileTreeEventBus.subscribe('project-1', (event) => received.push(event));
     unsubscribe();
     app.fileTreeEventBus.emit('project-1', makeEvent());

@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MembersClient } from '@/app/(dashboard)/dashboard/projects/[id]/members/members-client';
+import type { ProjectMember } from '@/lib/api';
 
 interface MemberListProperties {
   members: Array<{ userId: string; role: string }>;
@@ -53,11 +54,11 @@ jest.mock('@/components/invite-member-form', () => ({
   ),
 }));
 
-const OWNER = { userId: 'user-1', email: 'a@example.com', displayName: 'Alice', role: 'owner', joinedAt: '' };
-const EDITOR = { userId: 'user-2', email: 'b@example.com', displayName: 'Bob', role: 'editor', joinedAt: '' };
+const OWNER: ProjectMember = { userId: 'user-1', email: 'a@example.com', displayName: 'Alice', role: 'owner', joinedAt: '' };
+const EDITOR: ProjectMember = { userId: 'user-2', email: 'b@example.com', displayName: 'Bob', role: 'editor', joinedAt: '' };
 
 function renderClient(overrides: Partial<React.ComponentProps<typeof MembersClient>> = {}) {
-  const properties = {
+  const properties: React.ComponentProps<typeof MembersClient> = {
     projectId: 'proj-1',
     projectName: 'My Project',
     members: [OWNER, EDITOR],
@@ -101,7 +102,7 @@ describe('MembersClient — sole owner warning', () => {
   });
 
   test('does not warn when there are multiple owners', () => {
-    const secondOwner = { ...EDITOR, role: 'owner' };
+    const secondOwner: ProjectMember = { ...EDITOR, role: 'owner' };
     renderClient({ members: [OWNER, secondOwner] });
     expect(screen.queryByText(/sole owner of this project/i)).not.toBeInTheDocument();
   });

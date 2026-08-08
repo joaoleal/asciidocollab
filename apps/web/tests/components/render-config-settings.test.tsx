@@ -23,8 +23,10 @@ const TREE: FolderNode[] = [
 const FLAT_FOLDERS = ['assets', 'assets/fonts', 'branding', 'images', 'img'];
 const FILES = ['branding/corporate-theme.yml', 'docs/intro.adoc', 'refs.bib'];
 
-function stub(overrides: Partial<ReturnType<typeof useProjectRenderConfig>> = {}) {
-  const save = overrides.save ?? jest.fn(async () => true);
+function stub(overrides: Partial<ReturnType<typeof useProjectRenderConfig>> = {}): jest.Mock {
+  const save: jest.Mock = jest.isMockFunction(overrides.save)
+    ? overrides.save
+    : jest.fn(async () => true);
   mockHook.mockReturnValue({
     config: overrides.config ?? {},
     loading: overrides.loading ?? false,

@@ -1,7 +1,7 @@
 /*
  * @jest-environment jsdom
  */
-import { EditorState, EditorSelection, StateEffect } from '@codemirror/state';
+import { EditorState, EditorSelection, StateEffect, type EditorStateConfig } from '@codemirror/state';
 import { EditorView, Decoration } from '@codemirror/view';
 import {
   computeAttributeReplacements,
@@ -16,7 +16,7 @@ import {
 const staticFold = asciidocAttributeFold();
 
 /** Mount a CM6 view with the (no-seed) attribute-fold plugin over `documentContent`. */
-function mountView(documentContent: string, selection?: EditorSelection): EditorView {
+function mountView(documentContent: string, selection?: EditorStateConfig['selection']): EditorView {
   const state = EditorState.create({
     doc: documentContent,
     selection,

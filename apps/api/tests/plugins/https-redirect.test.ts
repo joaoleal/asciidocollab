@@ -1,9 +1,10 @@
 import Fastify from 'fastify';
 import { httpsRedirectPluginWrapped } from '../../src/plugins/https-redirect';
+import { decorateApp } from '../helpers/decorate-app';
 
 function buildApp(config: { httpsRedirect: boolean; trustProxy: boolean }) {
   const app = Fastify();
-  app.decorate('config', { api: config } as never);
+  decorateApp(app, 'config', { api: config });
   app.register(httpsRedirectPluginWrapped);
   app.get('/test', (_request, reply) => reply.status(200).send('ok'));
   return app;

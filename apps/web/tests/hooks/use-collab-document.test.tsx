@@ -114,7 +114,7 @@ describe('useCollabDocument', () => {
 
     view.unmount();
 
-    expect(provider.awareness.setLocalState).toHaveBeenCalledWith(null);
+    expect(provider.awareness?.setLocalState).toHaveBeenCalledWith(null);
     expect(provider.destroy).toHaveBeenCalled();
     expect(docDestroy).toHaveBeenCalled();
   });

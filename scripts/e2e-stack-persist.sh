@@ -23,6 +23,9 @@ export ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_PORT="${E2E_COLLAB_EDIT_PORT:-4103}"
 export ASCIIDOCOLLAB_COLLAB_EDIT_URL="http://127.0.0.1:${ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_PORT}"
 export ASCIIDOCOLLAB_STORAGE_PATH="${ASCIIDOCOLLAB_STORAGE_PATH:-$ROOT/.e2e-storage}"
 export ASCIIDOCOLLAB_COLLAB_ALLOWED_ORIGINS=""
+# Match scripts/ci/e2e-local.sh: the per-user connect rate limit (default 120/min) throttles the
+# suite's shared account and leaves the editor empty. See the comment there.
+export ASCIIDOCOLLAB_COLLAB_CONNECT_RATE_PER_MIN="${ASCIIDOCOLLAB_COLLAB_CONNECT_RATE_PER_MIN:-10000}"
 export ASCIIDOCOLLAB_DATABASE_URL="postgresql://asciidocollab:asciidocollab@localhost:${PG_PORT}/asciidocollab_e2e"
 export ASCIIDOCOLLAB_API_PORT="$API_PORT"; export ASCIIDOCOLLAB_API_HOST="0.0.0.0"
 export ASCIIDOCOLLAB_API_FRONTEND_URL="http://localhost:${WEB_PORT}"

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject, createTestFile } from './helpers/test-project';
+import { waitCollabSynced } from './helpers/editor';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -17,16 +18,6 @@ async function writeFileContent(
   if (!response.ok()) {
     throw new Error(`writeFileContent failed: ${response.status()} ${await response.text()}`);
   }
-}
-
-/**
- * The preview renders the collaboratively-synced Yjs document, and the editor content IS that
- * synced document. Asserting preview/editor content before the collab provider finishes connecting
- * races an empty pre-sync document. The "connecting" banner is removed once the provider is synced,
- * so wait for it to clear after selecting a file and before asserting any content.
- */
-async function waitCollabSynced(page: Parameters<typeof signIn>[0]): Promise<void> {
-  await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
 }
 
 test.describe('AsciiDoc live preview', () => {

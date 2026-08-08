@@ -1,3 +1,4 @@
+import { editorPreferences } from '../../helpers/editor-preferences';
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 
@@ -15,19 +16,32 @@ jest.mock('@codemirror/view', () => {
     EditorView: class MockEditorView {
       dom: HTMLDivElement;
       scrollDOM: HTMLDivElement;
-      state: { doc: { toString: () => string }; readOnly: boolean; selection: { main: { head: number } }; lines: number };
+      state: {
+        doc: {
+          toString: () => string;
+          lineAt: (pos: number) => { number: number; from: number; text: string };
+          line: (number_: number) => { number: number; from: number; text: string };
+          lines: number;
+        };
+        readOnly: boolean;
+        selection: { main: { head: number } };
+        lines: number;
+        field: (fieldDefinition: unknown) => unknown[];
+      };
       private updateListeners: Array<(update: unknown) => void> = [];
-      static updateListener = {
+      static updateListener: { of: (function_: unknown) => object } = {
         of: (function_: unknown) => ({ _isUpdateListener: true, _fn: function_ }),
       };
-      static lineWrapping = {};
-      static editable = { of: (value: unknown) => ({ editable: value }) };
-      static domEventHandlers = (handlers: Record<string, unknown>) => {
+      static lineWrapping: object = {};
+      static editable: { of: (value: unknown) => object } = { of: (value: unknown) => ({ editable: value }) };
+      static domEventHandlers: (handlers: Record<string, unknown>) => object = (
+        handlers: Record<string, unknown>,
+      ) => {
         const sink = globalThis as unknown as Record<string, unknown[]>;
         (sink['__cmDomHandlers'] ??= []).push(handlers);
         return {};
       };
-      static inputHandler = { of: (function_: unknown) => ({ function_ }) };
+      static inputHandler: { of: (function_: unknown) => object } = { of: (function_: unknown) => ({ function_ }) };
 
       constructor({ state, parent }: {
         state: { doc: { toString: () => string }; readOnly?: boolean; _extensions?: unknown[] };
@@ -83,6 +97,7 @@ jest.mock('@codemirror/view', () => {
             doc: {
               toString: () => newContent,
               lineAt: (_pos: number) => ({ number: 1, from: 0, text: '' }),
+              line: (number_: number) => ({ number: number_, from: 0, text: '' }),
               lines: 1,
             },
           };
@@ -255,8 +270,12 @@ jest.mock('@replit/codemirror-minimap', () => ({
   showMinimap: { of: () => ({}) },
 }));
 
+// One stable object for the whole file: the component keeps preference values in dependency arrays,
+// so a mock that built a fresh result (and a fresh `spellIgnore: []`) on every render would loop.
+const STABLE_PREFERENCES = editorPreferences({ fontSize: 14, theme: 'default' });
+
 jest.mock('@/hooks/use-editor-preferences', () => ({
-  useEditorPreferences: jest.fn(() => ({ fontSize: 14, theme: 'default', setFontSize: jest.fn(), setTheme: jest.fn() })),
+  useEditorPreferences: jest.fn(() => STABLE_PREFERENCES),
 }));
 
 jest.mock('@/lib/codemirror/asciidoc-theme', () => ({
@@ -491,9 +510,7 @@ describe('AsciiDocEditor', () => {
 
     afterEach(() => {
       mockUseEditorPreferences.mockReset();
-      mockUseEditorPreferences.mockImplementation(() => ({
-        fontSize: 14, theme: 'default', setFontSize: jest.fn(), setTheme: jest.fn(),
-      }));
+      mockUseEditorPreferences.mockReturnValue(STABLE_PREFERENCES);
     });
 
     // This test verifies the CSS rules that apply font-size and theme styles are
@@ -509,9 +526,7 @@ describe('AsciiDocEditor', () => {
     });
 
     test('editor wrapper applies --editor-font-size CSS variable from preference', () => {
-      mockUseEditorPreferences.mockReturnValue({
-        fontSize: 20, theme: 'default', setFontSize: jest.fn(), setTheme: jest.fn(),
-      });
+      mockUseEditorPreferences.mockReturnValue(editorPreferences({ fontSize: 20, theme: 'default' }));
       const { container } = render(<AsciiDocEditor content="test" canEdit={true} />);
       const wrapper = container.querySelector('.asciidoc-editor');
       expect(wrapper).not.toBeNull();
@@ -519,24 +534,18 @@ describe('AsciiDocEditor', () => {
     });
 
     test('editor wrapper applies data-theme attribute from preference', () => {
-      mockUseEditorPreferences.mockReturnValue({
-        fontSize: 14, theme: 'high-contrast', setFontSize: jest.fn(), setTheme: jest.fn(),
-      });
+      mockUseEditorPreferences.mockReturnValue(editorPreferences({ fontSize: 14, theme: 'high-contrast' }));
       const { container } = render(<AsciiDocEditor content="test" canEdit={true} />);
       const wrapper = container.querySelector('.asciidoc-editor');
       expect(wrapper).toHaveAttribute('data-theme', 'high-contrast');
     });
 
     test('editor wrapper updates --editor-font-size when font size preference changes', () => {
-      mockUseEditorPreferences.mockReturnValue({
-        fontSize: 16, theme: 'default', setFontSize: jest.fn(), setTheme: jest.fn(),
-      });
+      mockUseEditorPreferences.mockReturnValue(editorPreferences({ fontSize: 16, theme: 'default' }));
       const { rerender, container } = render(<AsciiDocEditor content="test" canEdit={true} />);
       expect((container.querySelector('.asciidoc-editor') as HTMLElement).style.getPropertyValue('--editor-font-size')).toBe('16px');
 
-      mockUseEditorPreferences.mockReturnValue({
-        fontSize: 24, theme: 'default', setFontSize: jest.fn(), setTheme: jest.fn(),
-      });
+      mockUseEditorPreferences.mockReturnValue(editorPreferences({ fontSize: 24, theme: 'default' }));
       rerender(<AsciiDocEditor content="test" canEdit={true} />);
       expect((container.querySelector('.asciidoc-editor') as HTMLElement).style.getPropertyValue('--editor-font-size')).toBe('24px');
     });
