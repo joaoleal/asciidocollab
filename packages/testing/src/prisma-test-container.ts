@@ -24,15 +24,78 @@ function findRootDirectory(directory: string): string {
 }
 
 /**
+ * Backoff before each retry of the container start, in milliseconds.
+ *
+ * Four attempts in total. Sized for a registry hiccup measured in seconds — the failure this exists
+ * for reset the connection immediately rather than hanging — and deliberately not longer: a registry
+ * that is still refusing after ~17s is an outage, and a suite that waits minutes to say so is worse
+ * than one that fails while the reason is still on screen.
+ */
+const CONTAINER_START_BACKOFF_MS = [2000, 5000, 10_000];
+
+/**
+ * Whether a failed container start is worth another attempt.
+ *
+ * Pulling the image is a network call to a third party, and it fails in ways that have nothing to do
+ * with the code under test: a 500 from the registry, a reset connection, a DNS blip, an anonymous
+ * pull-rate limit. Those are transient by nature and retrying is the correct response. A missing
+ * image or a malformed configuration is not, and retrying it just delays a failure that was never
+ * going to resolve itself — so the match is on the transport, not on "anything that threw".
+ *
+ * @param error - The rejection from `.start()`.
+ * @returns True when the failure looks like the registry or the network rather than the container.
+ */
+function isTransientStartFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    'registry-1.docker.io',
+    'auth.docker.io',
+    'connection reset',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'ENOTFOUND',
+    'TLS handshake',
+    'toomanyrequests',
+    'i/o timeout',
+    'server error',
+  ].some((marker) => message.toLowerCase().includes(marker.toLowerCase()));
+}
+
+/**
  * Starts a PostgreSQL test container and pushes the Prisma schema.
  *
+ * The start is retried on transient registry failures. Every one of these suites pulls its image
+ * from Docker Hub at test time, so a few seconds of trouble there failed the whole integration job
+ * with nothing wrong in the repository — and no amount of test-level retry helps, because the
+ * container never came up for the tests to run in. Retrying here covers all of them at once, and
+ * covers a local run as well as CI.
+ *
  * @returns A TestContainer with the running container and connected Prisma client.
+ * @throws The last error from `.start()` if every attempt failed, or immediately for a failure that
+ *   retrying cannot fix.
  */
 export async function startTestContainer(): Promise<TestContainer> {
-  const container = await new GenericContainer('postgres:16-alpine')
+  const image = new GenericContainer('postgres:16-alpine')
     .withEnvironment({ POSTGRES_USER: 'test', POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'test' })
-    .withExposedPorts(5432)
-    .start();
+    .withExposedPorts(5432);
+
+  let container: StartedTestContainer | undefined;
+  for (let attempt = 0; container === undefined; attempt += 1) {
+    try {
+      container = await image.start();
+    } catch (error) {
+      const backoffMs = CONTAINER_START_BACKOFF_MS[attempt];
+      if (backoffMs === undefined || !isTransientStartFailure(error)) throw error;
+      // Reported rather than swallowed: a suite that took 17s longer than usual should say why, and
+      // a retry that becomes routine is a signal about the registry worth seeing in the log.
+      console.warn(
+        `[test-container] start failed (${error instanceof Error ? error.message : String(error)}); ` +
+          `retrying in ${backoffMs}ms — attempt ${attempt + 2} of ${CONTAINER_START_BACKOFF_MS.length + 1}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
 
   const port = container.getMappedPort(5432);
   const host = container.getHost();
