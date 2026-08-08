@@ -1634,6 +1634,73 @@ describe('useAsciidocPreview — opening a different file', () => {
     expect(lastWorker().postMessage.mock.calls.at(-1)[0].content).toBe('');
   });
 
+  // A file switch made while the panel is CLOSED never reaches the part of the switch effect that
+  // records the file as still loading — it returns at `!isEnabled` first. Reopening is therefore the
+  // first moment the hook can act on it, and the reopen path has to decline the empty buffer for the
+  // same reason the switch and content effects do. `isWorthRendering` will not decline for it: the
+  // buffer is empty, but a previous file has rendered, so the flag it consults has latched.
+  it('publishes nothing when reopened onto a file whose content has not arrived yet', () => {
+    const harness = renderHook(
+      ({ content, openFileId, contentPending, isEnabled }: { content: string; openFileId: string; contentPending: boolean; isEnabled: boolean }) =>
+        useAsciidocPreview({ content, isEnabled, scrollToLine: null, openFileId, contentPending }),
+      { initialProps: { content: '= First', openFileId: 'first.adoc', contentPending: false, isEnabled: true } },
+    );
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>First</h1>', error: null }));
+    const postedBefore = lastWorker().postMessage.mock.calls.length;
+
+    // Close the panel, then open a different file while it is closed — the selection changes at once
+    // and the buffer empties, exactly as it does with the panel open.
+    act(() => harness.rerender({ content: '= First', openFileId: 'first.adoc', contentPending: false, isEnabled: false }));
+    act(() => harness.rerender({ content: '', openFileId: 'second.adoc', contentPending: true, isEnabled: false }));
+    // Reopen before the fetch lands.
+    act(() => harness.rerender({ content: '', openFileId: 'second.adoc', contentPending: true, isEnabled: true }));
+    act(() => jest.advanceTimersByTime(2000));
+
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(postedBefore);
+    expect(harness.result.current.html).toBe('<h1>First</h1>');
+    expect(harness.result.current.state).toBe('pending');
+
+    // Declining is only half of it: the reopen also has to take over the bookkeeping the closed switch
+    // dropped, or the content arriving would wait out the full trailing delay instead of going out at
+    // once the way it does for a switch made with the panel open.
+    act(() => harness.rerender({ content: '= Second', openFileId: 'second.adoc', contentPending: false, isEnabled: true }));
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(postedBefore + 1);
+    expect(lastWorker().postMessage.mock.calls.at(-1)[0].content).toBe('= Second');
+  });
+
+  // The other half of the same bookkeeping. A file opened while the panel was closed that turns out to
+  // be EMPTY never changes the buffer, so the settled-and-empty effect is the only thing that can take
+  // the previous file's document off screen — and it acts only on the flag the reopen now sets.
+  it('empties the preview for a file opened while the panel was closed that turns out to be empty', () => {
+    const harness = renderHook(
+      ({ content, openFileId, contentPending, isEnabled }: { content: string; openFileId: string; contentPending: boolean; isEnabled: boolean }) =>
+        useAsciidocPreview({ content, isEnabled, scrollToLine: null, openFileId, contentPending }),
+      { initialProps: { content: '= First', openFileId: 'first.adoc', contentPending: false, isEnabled: true } },
+    );
+    act(() => jest.advanceTimersByTime(200));
+    act(() => lastWorker().emit({ requestId: 1, ok: true, html: '<h1>First</h1>', error: null }));
+
+    const postedBefore = lastWorker().postMessage.mock.calls.length;
+    act(() => harness.rerender({ content: '= First', openFileId: 'first.adoc', contentPending: false, isEnabled: false }));
+    act(() => harness.rerender({ content: '', openFileId: 'empty.adoc', contentPending: true, isEnabled: false }));
+    act(() => harness.rerender({ content: '', openFileId: 'empty.adoc', contentPending: true, isEnabled: true }));
+    act(() => jest.advanceTimersByTime(2000));
+
+    // Asserted BEFORE the file settles, because the empty render landing eventually is not the point —
+    // it lands eventually either way. What separates emptying the preview from blanking it is that
+    // nothing goes out while the answer is still unknown.
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(postedBefore);
+    expect(harness.result.current.html).toBe('<h1>First</h1>');
+
+    // The fetch completes and the file really is empty. Now — and only now — the preview empties.
+    act(() => harness.rerender({ content: '', openFileId: 'empty.adoc', contentPending: false, isEnabled: true }));
+    act(() => jest.advanceTimersByTime(1000));
+
+    expect(lastWorker().postMessage).toHaveBeenCalledTimes(postedBefore + 1);
+    expect(lastWorker().postMessage.mock.calls.at(-1)[0].content).toBe('');
+  });
+
   // Every other path out of the switch effect ends in `scheduleRender`, which REPLACES whatever was
   // queued. The still-loading path renders nothing, so it has to drop the queued run itself: an edit
   // made in the file being left would otherwise fire after the switch, and not even as that file's —

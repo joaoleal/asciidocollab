@@ -122,6 +122,30 @@ describe('createHarperWorkerClient', () => {
       expect(client.getStatus()).toBe('ready');
     });
 
+    // Every other exit from the lint loop discards a pass that was superseded while it was awaiting.
+    // The rejection path has to as well, or a trap belonging to a pass the reader has already typed
+    // past puts "grammar checking failed" over the document the newer pass linted cleanly.
+    test('a failure belonging to a superseded pass does not report over the pass that replaced it', async () => {
+      const stalled = deferred<EngineLint[]>();
+      const engine = makeFakeEngine({
+        async lint(text: string) {
+          return text === 'superseded' ? stalled.promise : [];
+        },
+      });
+      const client = createHarperWorkerClient(engine);
+      await client.warmUp();
+
+      // Starts, reaches the engine, and stays there — the reader keeps typing meanwhile.
+      const superseded = client.lint([{ id: 's1', text: 'superseded' }]);
+      await expect(client.lint([{ id: 's2', text: 'current' }])).resolves.toEqual([
+        { id: 's2', lints: [] },
+      ]);
+
+      stalled.reject(new Error('unreachable executed'));
+      await expect(superseded).resolves.toBeNull();
+      expect(client.getStatus()).toBe('ready');
+    });
+
     test('a genuine engine failure is reported rather than read as a clean document', async () => {
       const engine = makeFakeEngine({
         async lint() {

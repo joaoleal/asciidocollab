@@ -340,8 +340,15 @@ export function createHarperWorkerClient(engine: HarperEngine): HarperWorkerClie
           lints = await engine.lint(segment.text);
         } catch (error) {
           if (!isEngineGoneError(error)) {
-            setStatus('failed');
+            // Dropped whether or not this pass still matters: a trapped engine has to be rebuilt
+            // before anything is linted again, and that is bookkeeping rather than something the
+            // reader is shown.
             setupPromise = null; // do not memoize the failure — allow a clean retry
+            // The STATUS is what the reader is shown, so it follows the same staleness rule as every
+            // other exit from this loop. A pass superseded while it sat in this `await` has already
+            // been replaced by one that will report its own outcome; letting its failure through as
+            // well would put "grammar checking failed" over a document the newer pass lints cleanly.
+            if (seq === lintSeq) setStatus('failed');
           }
           return null;
         }

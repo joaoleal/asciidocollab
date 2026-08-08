@@ -11,6 +11,7 @@ import {
   openFile,
   editorContent,
   expandPreview,
+  getEditorText,
 } from './helpers/editor';
 
 // Both preview formats refresh on a trailing debounce, so a burst of keystrokes collapses into one
@@ -429,6 +430,41 @@ function widestKeystrokeGapMs(recording: Recording): number {
 }
 
 /**
+ * Delete back to `pristine`, one character at a time, checking the document after each.
+ *
+ * Deliberately NOT a count of what was typed. One of the two things that sends a burst round again is
+ * the browser having received FEWER keystrokes than were sent — so on exactly the runs this is needed,
+ * the number typed overstates the number that landed, and deleting that many eats into the fixture the
+ * burst was appended to. Every later attempt would then be typing into a document the caller never
+ * measured, which is the outcome restoring exists to prevent.
+ *
+ * Reading the document back is also what makes over-deletion impossible to do quietly: shrinking past
+ * `pristine` throws here rather than surviving as a smaller experiment that still reports green.
+ *
+ * @param page - The Playwright page with the document open.
+ * @param pristine - The editor text to restore, as {@link getEditorText} reads it.
+ * @param maxDeletions - Upper bound on characters to remove; exceeding it is a harness fault.
+ */
+async function restoreDocument(page: Page, pristine: string, maxDeletions: number): Promise<void> {
+  for (let deleted = 0; deleted <= maxDeletions; deleted += 1) {
+    const text = await getEditorText(page);
+    if (text === pristine) return;
+    if (text.length <= pristine.length) {
+      throw new Error(
+        `restoring the document overshot: it is now ${text.length} characters against the ` +
+          `${pristine.length} it started at, so the burst was typed into a document the caller ` +
+          'never measured',
+      );
+    }
+    await page.keyboard.press('Backspace');
+  }
+  throw new Error(
+    `could not restore the document within ${maxDeletions} deletions — it still differs from the ` +
+      'text the render cost was measured against',
+  );
+}
+
+/**
  * Type a burst into the open document and return what the preview did during it, retrying until the
  * burst was genuinely uninterrupted.
  *
@@ -441,10 +477,10 @@ function widestKeystrokeGapMs(recording: Recording): number {
  * author is precisely the fault this spec guards, and skipping on it would hide the regression while
  * still reporting green.
  *
- * Each attempt UNDOES the previous one's text first, so every attempt is the same experiment. Left in
- * place, attempt 2 would type into a document twice the size while `renderCostMs` — and so the burst
- * length derived from it — still described the smaller one, making the retry measure something the
- * caller never asked about and its outcome depend on which attempt happened to succeed.
+ * Each attempt RESTORES the document first, so every attempt is the same experiment. Left in place,
+ * attempt 2 would type into a document twice the size while `renderCostMs` — and so the burst length
+ * derived from it — still described the smaller one, making the retry measure something the caller
+ * never asked about and its outcome depend on which attempt happened to succeed.
  *
  * @param page - The Playwright page with the document open and its preview showing.
  * @param containerSelector - The preview surface to observe.
@@ -457,12 +493,12 @@ async function recordSustainedBurst(
   renderCostMs: number,
 ): Promise<{ recording: Recording; typed: string }> {
   const attempts: string[] = [];
+  // The document as the caller measured it — captured once, before anything is typed, so every attempt
+  // is restored to the same text rather than to whatever the previous attempt left behind.
+  const pristine = await getEditorText(page);
   let typedLastAttempt = 0;
   for (let attempt = 1; attempt <= SUSTAINED_BURST_ATTEMPTS; attempt += 1) {
-    // Restore the document to what the caller measured before typing into it again.
-    for (let index = 0; index < typedLastAttempt; index += 1) {
-      await page.keyboard.press('Backspace');
-    }
+    if (typedLastAttempt > 0) await restoreDocument(page, pristine, typedLastAttempt);
     await startRecording(page, containerSelector);
     const typed = burstText(burstDurationMs(renderCostMs));
     typedLastAttempt = typed.length;

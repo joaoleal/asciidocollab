@@ -461,6 +461,15 @@ export function useAsciidocPreview({
     }, adaptiveDelayMs(lastSuccessfulRenderMsReference.current));
   };
 
+  // Set when the open file's content was found not yet loaded — by a file switch, or by the panel
+  // being reopened onto one — and cleared by the content effect below when it arrives. See the
+  // file-switch effect for why that is the normal case.
+  const openedFileAwaitingContentReference = useRef(false);
+  // Read inside effects that run on other signals, so they see the CURRENT answer rather than the one
+  // captured when they were last declared.
+  const contentPendingReference = useRef(contentPending);
+  contentPendingReference.current = contentPending;
+
   // Handle isEnabled changes.
   useEffect(() => {
     if (!isEnabled) {
@@ -468,19 +477,25 @@ export function useAsciidocPreview({
       setState('idle');
       return;
     }
+    // Reopening onto a file whose content has not arrived yet. `isWorthRendering` says yes — the
+    // buffer is empty, but something has rendered before, so the flag it consults has latched — and
+    // rendering it would publish exactly the blank the content and switch effects refuse for this
+    // case. It reaches here at all because the switch that opened the file happened while the panel
+    // was CLOSED: the switch effect took its `!isEnabled` return and so never recorded that the file
+    // was still loading. Reopening is the first moment this hook can act on that, which is why it
+    // picks up the flag the switch dropped rather than only declining — without it, the file's
+    // content arriving would render one full trailing delay late, and a file that settles EMPTY would
+    // leave the previous file's document on screen with nothing left to take it off.
+    if (contentPending && content === '') {
+      openedFileAwaitingContentReference.current = true;
+      setState('pending');
+      return;
+    }
     if (!isWorthRendering(content)) return;
     // Re-enabled with current content — start fresh render.
     setState('pending');
     scheduleRender(content);
   }, [isEnabled]);
-
-  // Set when a file switch found the newly opened file's content not yet loaded, and cleared by the
-  // content effect below when it arrives. See the file-switch effect for why that is the normal case.
-  const openedFileAwaitingContentReference = useRef(false);
-  // Read inside effects that run on other signals, so they see the CURRENT answer rather than the one
-  // captured when they were last declared.
-  const contentPendingReference = useRef(contentPending);
-  contentPendingReference.current = contentPending;
 
   // Debounce content changes.
   //
