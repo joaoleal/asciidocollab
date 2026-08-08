@@ -14,7 +14,7 @@
     "@asciidocollab/asciidoc-core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24.12.4",
+    "@types/node": "^24.13.3",
     "re2": "^1.26.1"
   }
 }

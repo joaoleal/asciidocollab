@@ -28,8 +28,11 @@ step "Domain unit tests with coverage …"
 step "Asciidoc-pdf unit tests with coverage …"
 pnpm --filter @asciidocollab/asciidoc-pdf test:ci
 
+# @fastify/cookie 11.1.2 reaches the (ESM-only) `cookie` package through a dynamic import, which jest's
+# CJS runtime rejects without --experimental-vm-modules. The package's own `test` script sets it; pass it
+# here too since we invoke jest directly for coverage.
 step "API unit tests with coverage …"
-(cd apps/api && npx jest --coverage --coverageReporters=text lcov)
+(cd apps/api && NODE_OPTIONS=--experimental-vm-modules npx jest --coverage --coverageReporters=text lcov)
 
 # The collab suite runs under ESM, so it needs --experimental-vm-modules (its own `test` script sets
 # it); pass it here too since we invoke jest directly for coverage.

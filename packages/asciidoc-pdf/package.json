@@ -16,10 +16,10 @@
   "dependencies": {
     "@asciidocollab/asciidoc-core": "workspace:*",
     "@bjorn3/browser_wasi_shim": "^0.4.2",
-    "@ruby/wasm-wasi": "^2.8.1"
+    "@ruby/wasm-wasi": "^2.10.1"
   },
   "devDependencies": {
     "@asciidocollab/shared": "workspace:*",
-    "@types/node": "^24.12.4"
+    "@types/node": "^24.13.3"
   }
 }

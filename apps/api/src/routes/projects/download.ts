@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { Readable } from 'stream';
-import archiver from 'archiver';
+// archiver 8 is ESM-only and this app compiles to CommonJS, so it is reached through a dynamic
+// `import()` inside the handler rather than a static one. `module: node16` keeps that a real import
+// instead of downlevelling it to a `require()` the ESM package would reject. v8 also replaced the
+// `archiver('zip', …)` factory with per-format classes, hence `ZipArchive` below.
 import {
   DownloadProjectUseCase,
   PermissionDeniedError,
@@ -65,11 +68,18 @@ export async function projectDownloadRoute(app: FastifyInstance): Promise<void> 
       // route stays identical in shape to the other download routes (and keeps their quoting/escaping).
       const archiveName = exportFileName(projectName, 'zip');
 
+      // Loaded BEFORE any header is staged on the raw response. archiver 8 is ESM-only, so it can no
+      // longer be required at module scope and a failure to load it moved from process start to here —
+      // a per-request rejection. Reaching Fastify's error handler with the ZIP headers already set
+      // would serve the 500 JSON body advertised as `Content-Type: application/zip` and named as an
+      // attachment. The import is cached after the first request, so the ordering costs nothing.
+      const { ZipArchive } = await import('archiver');
+
       flushFastifyHeadersToRaw(reply);
       reply.raw.setHeader('Content-Type', 'application/zip');
       reply.raw.setHeader('Content-Disposition', buildAttachmentDisposition(archiveName, archiveName));
 
-      const archive = archiver('zip', { zlib: { level: 6 } });
+      const archive = new ZipArchive({ zlib: { level: 6 } });
       // archiveError races against finalize() so an entry-stream error doesn't leave the
       // handler suspended on a hanging finalize() (the ZIP engine waits for 'end' which
       // destroy() never emits, causing finalize() to hang indefinitely).

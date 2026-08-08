@@ -17,23 +17,23 @@
     "@asciidocollab/domain": "workspace:*",
     "@asciidocollab/infrastructure": "workspace:*",
     "@asciidocollab/shared": "workspace:*",
-    "@hocuspocus/server": "^4.1.1",
-    "@prisma/adapter-pg": "^7.8.0",
+    "@hocuspocus/server": "^4.5.0",
+    "@prisma/adapter-pg": "^7.9.1",
     "convict": "^6.2.5",
     "pino": "^10.3.1",
     "re2": "^1.26.1",
-    "yjs": "^13.6.31"
+    "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@asciidocollab/testing": "workspace:*",
-    "@jest/globals": "^30.4.0",
+    "@jest/globals": "^30.4.1",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/jest-runner": "^9.6.1",
     "@types/convict": "^6.1.6",
     "@types/jest": "^30.0.0",
-    "@types/node": "^24.12.4",
-    "jest": "^30.4.0",
-    "testcontainers": "^12.0.3",
-    "ts-jest": "^29.4.0"
+    "@types/node": "^24.13.3",
+    "jest": "^30.4.2",
+    "testcontainers": "^12.1.0",
+    "ts-jest": "^29.4.12"
   }
 }
