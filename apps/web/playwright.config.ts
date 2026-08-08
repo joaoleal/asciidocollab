@@ -9,6 +9,16 @@ export default defineConfig({
   // within a single attempt under gate load, rather than tripping the deadline and surfacing as a
   // flaky retry. Steady-state tests finish in a few seconds; only cold starts approach this.
   timeout: 45_000,
+  // Whole-run ceiling, and the reason it exists: the per-test `timeout` above bounds a test that
+  // hangs, not a RUN that stops making progress. A worker wedged between tests, a stack that stops
+  // answering, a retry storm — none of those trip a per-test deadline, and a run in that state used
+  // to sit until the CI job was killed. A green run takes ~10 minutes here and the slowest observed
+  // failing one 25, so 35 is well clear of both.
+  //
+  // Set BELOW the e2e job's `timeout-minutes` deliberately. Playwright stopping itself prints what
+  // was still running and leaves the HTML report for the workflow to upload; the runner killing the
+  // job produces neither. The gap between the two is what keeps that diagnostic.
+  globalTimeout: 35 * 60 * 1000,
   retries: process.env.CI ? 2 : 0,
   // Cap concurrency for the isolated stack: every collab-backed test opens Yjs sync session(s) against
   // a SINGLE test collaboration server, and collab pair-tests use two browser contexts each. The

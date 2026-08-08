@@ -22,11 +22,23 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Every job below carries a `timeout-minutes`, because the GitHub default is SIX HOURS. A job that
+# hangs — a Playwright run that never returns, a container that never becomes ready — otherwise sits
+# there burning a runner and holding the queue for the rest of the day, and is killed at the end with
+# no report to show for it. The budgets are sized off observed green runs (quality ~4m, unit ~4m,
+# integration ~2m, pdf-parity ~3m, docker ~4m, e2e ~10m) with room for the slower paths that failures
+# legitimately take, so a timeout means "this is not coming back" rather than "this was busy".
+#
+# A timeout here is the OUTER bound and a blunt one: the runner kills the job, so nothing after the
+# failing step runs and no artifact is uploaded. Where a tool can bound itself and still report — the
+# e2e job's Playwright `globalTimeout` — that limit is set lower on purpose, so the self-imposed stop
+# wins and leaves an HTML report behind to explain what was still running.
 jobs:
   # ── Fast feedback: lint, type-check, architecture guard ────────────────────
   quality:
     name: Quality (lint · types · architecture)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     # The migration drift check (scripts/ci/check-migrations.sh) replays
     # prisma/migrations into a shadow database and compares it to schema.prisma,
@@ -74,6 +86,7 @@ jobs:
   unit:
     name: Unit tests + coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: quality
 
     steps:
@@ -117,6 +130,7 @@ jobs:
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: quality
 
     steps:
@@ -145,6 +159,7 @@ jobs:
   e2e:
     name: E2E tests (Playwright)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # Also `needs` pdf-wasm so — when it runs (a wasm-input change) — its freshly built engine is ready
     # to download here and the live-PDF specs run for real. pdf-wasm is conditional, so the `if` below
     # keeps e2e running (via always()) whether pdf-wasm succeeded, was skipped, or failed.
@@ -352,6 +367,7 @@ jobs:
   pdf-parity:
     name: PDF reference parity
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [unit, pdf-wasm]
     if: ${{ always() && needs.unit.result == 'success' }}
 
@@ -425,6 +441,7 @@ jobs:
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       # A job-level permissions block REPLACES the workflow default, so contents:read must be
       # restated here or actions/checkout loses repo-read access (breaks if the repo goes private).
@@ -499,6 +516,7 @@ jobs:
   pdf-wasm:
     name: PDF wasm engine build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: [quality, changes]
     # Build when the inputs changed OR when no cached engine survives (eviction) — see the probe in
     # `changes`. The second condition is what stops a silently-empty parity suite becoming permanent.
@@ -571,6 +589,7 @@ jobs:
   docker:
     name: Docker images (production targets)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # After quality so a branch that cannot lint or type-check does not spend ~10 minutes here first.
     needs: quality
 
@@ -603,6 +622,7 @@ jobs:
   security:
     name: Security scan (SAST · secrets · deps · workflows)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v5
