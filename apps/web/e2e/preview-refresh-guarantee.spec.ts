@@ -446,22 +446,39 @@ function widestKeystrokeGapMs(recording: Recording): number {
  * @param maxDeletions - Upper bound on characters to remove; exceeding it is a harness fault.
  */
 async function restoreDocument(page: Page, pristine: string, maxDeletions: number): Promise<void> {
-  for (let deleted = 0; deleted <= maxDeletions; deleted += 1) {
-    const text = await getEditorText(page);
-    if (text === pristine) return;
-    if (text.length <= pristine.length) {
-      throw new Error(
-        `restoring the document overshot: it is now ${text.length} characters against the ` +
-          `${pristine.length} it started at, so the burst was typed into a document the caller ` +
-          'never measured',
-      );
-    }
+  // Read ONCE to size the deletion, and once more to confirm it. Checking the document after every
+  // character is the obvious way to write this and it is a trap: it costs a round trip per character,
+  // which on a loaded CI runner spent the test's whole budget before it could reach the error it
+  // exists to report — turning a clear "the burst was interrupted" into a bare timeout. The count
+  // still comes from the DOCUMENT rather than from what was typed, which is the whole point.
+  const current = await getEditorText(page);
+  const excess = current.length - pristine.length;
+  if (excess <= 0) {
+    if (current === pristine) return;
+    throw new Error(
+      `restoring the document overshot: it is now ${current.length} characters against the ` +
+        `${pristine.length} it started at, so the burst would be typed into a document the caller ` +
+        'never measured',
+    );
+  }
+  if (excess > maxDeletions) {
+    throw new Error(
+      `the document grew by ${excess} characters, more than the ${maxDeletions} the burst typed — ` +
+        'something other than this harness is editing it',
+    );
+  }
+
+  for (let index = 0; index < excess; index += 1) {
     await page.keyboard.press('Backspace');
   }
-  throw new Error(
-    `could not restore the document within ${maxDeletions} deletions — it still differs from the ` +
-      'text the render cost was measured against',
-  );
+
+  const restored = await getEditorText(page);
+  if (restored !== pristine) {
+    throw new Error(
+      `the document did not return to what the render cost was measured against after ${excess} ` +
+        `deletions (${restored.length} characters against ${pristine.length})`,
+    );
+  }
 }
 
 /**
