@@ -1,4 +1,4 @@
-import Fastify, { FastifyError } from 'fastify';
+import Fastify from 'fastify';
 import { errorHandler, notFoundHandler } from '../../src/plugins/error-handler';
 
 function buildTestServer(throwValue: unknown) {
@@ -20,7 +20,7 @@ describe('errorHandler', () => {
   });
 
   it('returns 400 VALIDATION_ERROR for a FastifyError with statusCode 400', async () => {
-    const error = Object.assign(new Error('bad input'), { statusCode: 400 }) as FastifyError;
+    const error = Object.assign(new Error('bad input'), { statusCode: 400 });
     const app = buildTestServer(error);
     const response = await app.inject({ method: 'GET', url: '/error' });
     expect(response.statusCode).toBe(400);
@@ -31,7 +31,7 @@ describe('errorHandler', () => {
     const error = Object.assign(new Error('too many'), {
       statusCode: 429,
       headers: { 'retry-after': '30' },
-    }) as FastifyError;
+    });
     const app = buildTestServer(error);
     const response = await app.inject({ method: 'GET', url: '/error' });
     expect(response.statusCode).toBe(429);
@@ -41,21 +41,21 @@ describe('errorHandler', () => {
   });
 
   it('returns retryAfter=60 when headers is missing', async () => {
-    const error = Object.assign(new Error('too many'), { statusCode: 429 }) as FastifyError;
+    const error = Object.assign(new Error('too many'), { statusCode: 429 });
     const app = buildTestServer(error);
     const response = await app.inject({ method: 'GET', url: '/error' });
     expect(JSON.parse(response.body).error.retryAfter).toBe(60);
   });
 
   it('returns retryAfter=60 when headers is not an object', async () => {
-    const error = Object.assign(new Error('too many'), { statusCode: 429, headers: 'bad' }) as FastifyError;
+    const error = Object.assign(new Error('too many'), { statusCode: 429, headers: 'bad' });
     const app = buildTestServer(error);
     const response = await app.inject({ method: 'GET', url: '/error' });
     expect(JSON.parse(response.body).error.retryAfter).toBe(60);
   });
 
   it('returns retryAfter=60 when retry-after key is absent', async () => {
-    const error = Object.assign(new Error('too many'), { statusCode: 429, headers: {} }) as FastifyError;
+    const error = Object.assign(new Error('too many'), { statusCode: 429, headers: {} });
     const app = buildTestServer(error);
     const response = await app.inject({ method: 'GET', url: '/error' });
     expect(JSON.parse(response.body).error.retryAfter).toBe(60);
@@ -65,7 +65,7 @@ describe('errorHandler', () => {
     const error = Object.assign(new Error('too many'), {
       statusCode: 429,
       headers: { 'retry-after': 'abc' },
-    }) as FastifyError;
+    });
     const app = buildTestServer(error);
     const response = await app.inject({ method: 'GET', url: '/error' });
     expect(JSON.parse(response.body).error.retryAfter).toBe(60);

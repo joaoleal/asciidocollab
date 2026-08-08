@@ -71,7 +71,7 @@ describe('InviteUserUseCase', () => {
     const logs = await auditLogRepo.findByProjectId(projectId);
     const inviteLog = logs.find((l) => l.action === 'member.invited');
     expect(inviteLog).toBeDefined();
-    expect(inviteLog!.userId.value).toBe(adminId.value);
+    expect(inviteLog!.userId?.value).toBe(adminId.value);
     expect(inviteLog!.projectId!.value).toBe(projectId.value);
     expect(inviteLog!.resourceType).toBe('ProjectMember');
     expect(inviteLog!.resourceId).toBe(inviteeId.value);

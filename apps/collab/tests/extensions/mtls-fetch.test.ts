@@ -1,3 +1,7 @@
+// Top-level `await` below is only legal in a module, and this file has no static imports or exports
+// of its own — so give it one. (`export {}` is rejected by unicorn/require-module-specifiers.)
+export const IS_MODULE = true;
+
 // Native ESM: jest.mock() cannot intercept a static import, so mock the module and import both it
 // and the unit under test dynamically. The mock object is shared by reference, so reassigning
 // mockHttps.Agent / configuring mockHttps.request is visible to createMtlsFetch's default import.

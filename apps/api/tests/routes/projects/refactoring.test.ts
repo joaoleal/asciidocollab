@@ -1,3 +1,4 @@
+import type { InjectOptions } from 'fastify';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import {
@@ -8,6 +9,7 @@ import {
   FilePath,
 } from '@asciidocollab/domain';
 import { projectRefactoringRoutes } from '../../../src/routes/projects/refactoring';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -45,7 +47,7 @@ async function buildServer(options: ServerOptions = {}): Promise<{ app: FastifyI
   });
   const app = Fastify();
   await app.register(rateLimit, { global: false });
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     project: {
       refactoring: {
         rateLimitMax,
@@ -54,8 +56,8 @@ async function buildServer(options: ServerOptions = {}): Promise<{ app: FastifyI
         suggestionRateLimitWindow: 60_000,
       },
     },
-  } as never);
-  app.decorate('repos', {
+  });
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
     },
@@ -63,8 +65,8 @@ async function buildServer(options: ServerOptions = {}): Promise<{ app: FastifyI
       findByProjectId: jest.fn(async () => nodes()),
     },
     auditLog: { save: jest.fn() },
-  } as never);
-  app.decorate('stores', {
+  });
+  decorateApp(app, 'stores', {
     fileStore: {
       read: jest.fn(async (_p: unknown, path: { value: string }) => {
         const content = store.get(path.value);
@@ -72,7 +74,7 @@ async function buildServer(options: ServerOptions = {}): Promise<{ app: FastifyI
       }),
       write: writes,
     },
-  } as never);
+  });
   await app.register(projectRefactoringRoutes);
   await app.ready();
   return { app, store, writes };
@@ -162,7 +164,7 @@ describe('GET /projects/:projectId/symbol-usages', () => {
   });
 });
 
-function rename(app: FastifyInstance, body: unknown) {
+function rename(app: FastifyInstance, body: InjectOptions['payload']) {
   return app.inject({ method: 'POST', url: `/projects/${PROJECT_ID}/symbol-rename`, payload: body });
 }
 

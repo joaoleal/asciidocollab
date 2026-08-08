@@ -12,8 +12,11 @@ function buildRequest(pathname: string, cookieHeader?: string): NextRequest {
   return new NextRequest(new URL(`https://app.example.com${pathname}`), { headers });
 }
 
+/** The slice of `Response` the proxy reads. */
+type FakeResponse = Pick<Response, 'ok' | 'json'>;
+
 /** Builds a fake fetch Response resolving to the given session-status body. */
-function sessionResponse(body: unknown, ok = true): Response {
+function sessionResponse(body: unknown, ok = true): FakeResponse {
   const json = jest.fn().mockResolvedValue(body);
   return { ok, json };
 }

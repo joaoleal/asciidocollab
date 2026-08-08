@@ -1,6 +1,7 @@
 import { Server, type Extension } from '@hocuspocus/server';
 import * as Y from 'yjs';
 import { Re2RegexEngine } from '@asciidocollab/infrastructure';
+import type { YjsStateStore } from '@asciidocollab/domain';
 import {
   applyReplacementsToYText,
   applyEditsToDocument,
@@ -183,13 +184,25 @@ describe('applyStructuredReplacementToDocument', () => {
 });
 
 // A YjsStateStore stub that records whether load/save were called (a read must NOT write back).
-function fakeStateStore(state: Buffer | null) {
+/**
+ * The state store's port plus the mock handles, so a spec can both pass it to the unit under test
+ * and assert on the calls. Typing the helper `as never` instead would erase the methods along with
+ * everything else — `expect(store.load)` then checks a property TypeScript believes cannot exist.
+ */
+type MockYjsStateStore = YjsStateStore & {
+  load: jest.Mock;
+  save: jest.Mock;
+  delete: jest.Mock;
+  deleteAllForProject: jest.Mock;
+};
+
+function fakeStateStore(state: Buffer | null): MockYjsStateStore {
   return {
     load: jest.fn(async () => state),
     save: jest.fn(),
     delete: jest.fn(),
     deleteAllForProject: jest.fn(),
-  } as never;
+  } as unknown as MockYjsStateStore;
 }
 
 function encodeText(text: string): Buffer {

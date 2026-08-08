@@ -38,12 +38,9 @@ function countingClient(onLint: () => void): HarperWorkerClient {
   return stub as HarperWorkerClient;
 }
 
-/** Deps with a fixed scope; the source only has to be driven, not to produce issues. */
+/** Deps for a source that only has to be driven, not to produce issues. */
 function countingDeps(onLint: () => void): HarperLintSourceDeps {
-  return {
-    client: countingClient(onLint),
-    getScope: () => 'whole-document',
-  };
+  return { client: countingClient(onLint) };
 }
 
 /** An effect unrelated to grammar, used to prove ordinary transactions do not re-lint. */

@@ -13,6 +13,7 @@ describe('applyRename', () => {
     const { result } = await applyRename({
       projectId: 'p1',
       symbolKind: 'attribute',
+      renamedDefinitionIsSection: false,
       oldName: 'edition',
       newName: 'release',
       renameSymbol,
@@ -22,6 +23,7 @@ describe('applyRename', () => {
       oldName: 'edition',
       newName: 'release',
       definitionAlreadyRenamed: true,
+      renamedDefinitionIsSection: false,
     });
     expect(result).toEqual({ rewrittenReferences: 7, rewrittenFiles: 3, warnings: ['x.adoc: skipped'] });
   });
@@ -31,6 +33,7 @@ describe('applyRename', () => {
     const { undo } = await applyRename({
       projectId: 'p1',
       symbolKind: 'anchor',
+      renamedDefinitionIsSection: false,
       oldName: 'intro',
       newName: 'overview',
       renameSymbol,
@@ -41,6 +44,7 @@ describe('applyRename', () => {
       oldName: 'intro',
       newName: 'overview',
       definitionAlreadyRenamed: true,
+      renamedDefinitionIsSection: false,
     });
     expect(renameSymbol).toHaveBeenNthCalledWith(2, 'p1', { symbolKind: 'anchor', oldName: 'overview', newName: 'intro' });
   });

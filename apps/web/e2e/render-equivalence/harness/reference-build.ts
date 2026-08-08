@@ -31,6 +31,20 @@ import { RENDER_INTRINSIC_ATTRIBUTES } from '../../../src/lib/asciidoc/render-in
 import { APP_RENDER_DEFAULT_ATTRIBUTES } from '../../../src/lib/asciidoc/render-app-defaults';
 import { captureRequestFor, type CorpusDocument } from './capture';
 
+/**
+ * The container's `--user` argument. `getuid`/`getgid` are absent on Windows, where this harness
+ * cannot run at all — so say that plainly rather than rendering "undefined:undefined" into a
+ * docker invocation.
+ */
+function posixUserAndGroup(): string {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined) {
+    throw new Error('this harness needs a POSIX host: process.getuid/getgid are unavailable');
+  }
+  return `${uid}:${gid}`;
+}
+
 /** Where the reference toolchain's output is kept, so the oracle's answer is readable and reviewable. */
 export const REFERENCE_TOOLCHAIN_DIR = path.join(__dirname, '..', 'fixtures', 'reference-toolchain');
 
@@ -269,7 +283,7 @@ export async function buildReferenceRenders(
         'none',
         // Never root: the conversions are copied straight back into the developer's checkout.
         '--user',
-        `${process.getuid()}:${process.getgid()}`,
+        posixUserAndGroup(),
         '-e',
         `SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}`,
         '-v',

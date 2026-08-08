@@ -59,7 +59,7 @@ describe('CreateProjectUseCase', () => {
     const logs = await auditLogRepo.findByProjectId(value.projectId);
     expect(logs).toHaveLength(1);
     expect(logs[0].action).toBe('project.created');
-    expect(logs[0].userId.value).toBe(actorId.value);
+    expect(logs[0].userId?.value).toBe(actorId.value);
     expect(logs[0].resourceType).toBe('Project');
     expect(logs[0].resourceId).toBe(value.projectId.value);
   });

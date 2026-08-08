@@ -224,9 +224,9 @@ jest.mock('@/hooks/use-project-presence', () => ({
 }));
 
 const mockRefreshIndex = jest.fn();
-const mockGetFiles = jest.fn(() => []);
+const mockGetFiles = jest.fn((): Record<string, string> => ({}));
 const mockLineOf = jest.fn((_fileId: string, offset: number) => offset + 100);
-const mockPathOf = jest.fn((id: string) => `/path/${id}.adoc`);
+const mockPathOf = jest.fn((id: string): string | null => `/path/${id}.adoc`);
 const mockInheritedOffset = jest.fn(() => 3);
 const SYMBOLS: ProjectSymbol[] = [
   { kind: 'section', name: 'overview', fileId: 'sym-file', range: { from: 5, to: 9 } },
@@ -325,6 +325,7 @@ const defaultProps = {
   projectId: 'p1',
   projectName: 'Proj',
   projectDescription: 'A description',
+  projectLanguage: null,
   mainFileNodeId: null,
   canManage: true,
   canEdit: true,
@@ -357,7 +358,7 @@ beforeEach(() => {
   mockSelectFile.mockReset();
   mockRefreshIndex.mockReset();
   mockGetFiles.mockReset();
-  mockGetFiles.mockReturnValue([]);
+  mockGetFiles.mockReturnValue({});
   mockExportPdf.mockReset();
   mockExportHtml.mockReset();
   mockGetCollabInfo.mockReset();
@@ -463,7 +464,7 @@ describe('ProjectEditorLayout — PDF export', () => {
     const rootPath = '/path/mainfile-1.adoc';
     // The root is missing from the snapshot source until a rebuild (re)loads it.
     let rootAvailable = false;
-    mockGetFiles.mockImplementation(() => (rootAvailable ? { [rootPath]: '= Doc' } : {}));
+    mockGetFiles.mockImplementation((): Record<string, string> => (rootAvailable ? { [rootPath]: '= Doc' } : {}));
     mockRefreshIndex.mockImplementation(() => {
       rootAvailable = true;
       return Promise.resolve();
@@ -536,7 +537,7 @@ describe('ProjectEditorLayout — HTML export', () => {
     mockFileSelection = adocFile('mainfile-1');
     const rootPath = '/path/mainfile-1.adoc';
     let rootAvailable = false;
-    mockGetFiles.mockImplementation(() => (rootAvailable ? { [rootPath]: '= Doc' } : {}));
+    mockGetFiles.mockImplementation((): Record<string, string> => (rootAvailable ? { [rootPath]: '= Doc' } : {}));
     mockRefreshIndex.mockImplementation(() => {
       rootAvailable = true;
       return Promise.resolve();
@@ -572,7 +573,7 @@ describe('ProjectEditorLayout — go to symbol', () => {
   test('Ctrl+Shift+O keyboard shortcut opens the palette', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
     act(() => {
-      fireEvent.keyDown(globalThis, { key: 'o', ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(globalThis.window, { key: 'o', ctrlKey: true, shiftKey: true });
     });
     expect(screen.getByTestId('go-to-symbol')).toBeInTheDocument();
   });
@@ -613,7 +614,7 @@ describe('ProjectEditorLayout — refactor dialog', () => {
   test('Ctrl+Shift+R keyboard shortcut opens the dialog cold (no cursor seed)', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
     act(() => {
-      fireEvent.keyDown(globalThis, { key: 'r', ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(globalThis.window, { key: 'r', ctrlKey: true, shiftKey: true });
     });
     const dialog = screen.getByTestId('refactor');
     expect(dialog).toBeInTheDocument();
@@ -787,13 +788,13 @@ describe('ProjectEditorLayout — viewer gating & description', () => {
 describe('ProjectEditorLayout — keyboard shortcut variants', () => {
   test('Cmd+Shift+O (uppercase) opens go-to-symbol', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
-    act(() => { fireEvent.keyDown(globalThis, { key: 'O', metaKey: true, shiftKey: true }); });
+    act(() => { fireEvent.keyDown(globalThis.window, { key: 'O', metaKey: true, shiftKey: true }); });
     expect(screen.getByTestId('go-to-symbol')).toBeInTheDocument();
   });
 
   test('Cmd+Shift+R (uppercase) opens the refactor dialog', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
-    act(() => { fireEvent.keyDown(globalThis, { key: 'R', metaKey: true, shiftKey: true }); });
+    act(() => { fireEvent.keyDown(globalThis.window, { key: 'R', metaKey: true, shiftKey: true }); });
     expect(screen.getByTestId('refactor')).toBeInTheDocument();
   });
 });
@@ -904,6 +905,80 @@ describe('ProjectEditorLayout — restored-line & index-null edge branches', () 
     fireEvent.click(screen.getByRole('button', { name: /go to symbol/i }));
     // index null → symbolPathOf returns null; the palette still renders (empty symbol list).
     expect(screen.getByTestId('go-to-symbol')).toHaveAttribute('data-symbol-count', '0');
+  });
+
+  // The preview is told two things about the open file: the buffer, and whether that buffer is still
+  // on its way. They come from different places in this component — `liveOverlayContent` is derived
+  // during render from the fetched content, while the buffer the preview receives is applied by an
+  // effect on that same content, one commit later. If the "settled" answer is allowed to arrive
+  // first, the preview reads a file it just opened as GENUINELY EMPTY: it publishes a blank render
+  // and drops the flag that would have flushed the real content the moment it landed, so the panel
+  // blanks and then waits out a full trailing delay for a file that previews perfectly well.
+  test('never reports the open file as settled while the buffer is still the reset-to-empty one', () => {
+    // The file is selected and its fetch is still in flight — `content` is null until it lands.
+    mockFileSelection = {
+      selectedFile: { nodeId: 'arriving', nodeName: 'doc.adoc', path: '/doc.adoc', nodeType: 'file' as const },
+      contentState: { content: null, etag: null, isLoading: true, error: null, isBinary: false, notFound: false },
+    };
+    const view = render(<ProjectEditorLayout {...defaultProps} />);
+    fireEvent.click(screen.getByRole('button', { name: /expand preview/i }));
+
+    // The fetch lands. Every commit from here on is checked, not just the last one — the defect lived
+    // entirely in an intermediate commit that the final state gives no sign of.
+    mockFileSelection = {
+      selectedFile: { nodeId: 'arriving', nodeName: 'doc.adoc', path: '/doc.adoc', nodeType: 'file' as const },
+      contentState: { content: '= Arrived', etag: null, isLoading: false, error: null, isBinary: false, notFound: false },
+    };
+    view.rerender(<ProjectEditorLayout {...defaultProps} />);
+
+    const preview = jest.requireMock('@/components/asciidoc-preview').AsciiDocPreview;
+    const settledWhileEmpty = preview.mock.calls
+      .map((call: [{ content: string; contentPending?: boolean }]) => call[0])
+      .filter((properties: { content: string; contentPending?: boolean }) =>
+        properties.contentPending === false && properties.content === '',
+      );
+    expect(settledWhileEmpty).toEqual([]);
+    // And once it has settled, it settled on the content that arrived.
+    expect(lastPreviewProperties()?.contentPending).toBe(false);
+    expect(lastPreviewProperties()?.content).toBe('= Arrived');
+  });
+
+  // "Pending" says content is still coming. A fetch that FAILED is not still coming — and if it is
+  // reported as pending anyway, the preview waits for it forever: it publishes nothing, so the file
+  // the reader has LEFT stays on screen marked as catching up, beside an editor pane showing the
+  // error. Permanently wrong is worse than briefly blank, so a settled-with-no-content file has to
+  // read as settled.
+  test('reports the open file as settled when its content fetch fails', () => {
+    mockFileSelection = adocFile('first');
+    const view = render(<ProjectEditorLayout {...defaultProps} />);
+    fireEvent.click(screen.getByRole('button', { name: /expand preview/i }));
+
+    mockFileSelection = {
+      selectedFile: { nodeId: 'broken', nodeName: 'doc.adoc', path: '/doc.adoc', nodeType: 'file' as const },
+      contentState: {
+        content: null, etag: null, isLoading: false, error: 'Failed to load', isBinary: false,
+        notFound: false, collab: null, collabUnavailable: false,
+      },
+    };
+    view.rerender(<ProjectEditorLayout {...defaultProps} />);
+
+    expect(lastPreviewProperties()?.contentPending).toBe(false);
+  });
+
+  // The counterpart: while the fetch is genuinely in flight, it IS pending — otherwise the empty
+  // buffer is published as a blank render for a file that previews perfectly well.
+  test('reports the open file as pending while its content fetch is in flight', () => {
+    mockFileSelection = {
+      selectedFile: { nodeId: 'arriving', nodeName: 'doc.adoc', path: '/doc.adoc', nodeType: 'file' as const },
+      contentState: {
+        content: null, etag: null, isLoading: true, error: null, isBinary: false,
+        notFound: false, collab: null, collabUnavailable: false,
+      },
+    };
+    render(<ProjectEditorLayout {...defaultProps} />);
+    fireEvent.click(screen.getByRole('button', { name: /expand preview/i }));
+
+    expect(lastPreviewProperties()?.contentPending).toBe(true);
   });
 
   test('the assembled-document preview path is omitted when the main file has no resolvable path', () => {

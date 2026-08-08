@@ -20,20 +20,23 @@ describe('apiRequest error handling', () => {
     globalThis.fetch = jest.fn(async () =>
       mockResponse(false, 400, { statusCode: 400, error: 'Bad Request', message: 'body/op must be equal to one of the allowed values' }),
     ) as never;
-    const error = await apiRequest('/x').catch((error_) => error_);
+    const error: unknown = await apiRequest('/x').catch((error_: unknown) => error_);
     expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw new Error('expected an ApiError');
     expect(error.message).toMatch(/allowed values/);
   });
 
   test('uses a top-level code when present (Fastify validation)', async () => {
     globalThis.fetch = jest.fn(async () => mockResponse(false, 400, { code: 'FST_ERR_VALIDATION', message: 'bad' })) as never;
-    const error = await apiRequest('/x').catch((error_) => error_);
+    const error: unknown = await apiRequest('/x').catch((error_: unknown) => error_);
+    if (!(error instanceof ApiError)) throw new Error('expected an ApiError');
     expect(error.code).toBe('FST_ERR_VALIDATION');
   });
 
   test('falls back to the string error body when no message is present', async () => {
     globalThis.fetch = jest.fn(async () => mockResponse(false, 429, { error: 'Too Many Requests' })) as never;
-    const error = await apiRequest('/x').catch((error_) => error_);
+    const error: unknown = await apiRequest('/x').catch((error_: unknown) => error_);
+    if (!(error instanceof ApiError)) throw new Error('expected an ApiError');
     expect(error.message).toBe('Too Many Requests');
   });
 

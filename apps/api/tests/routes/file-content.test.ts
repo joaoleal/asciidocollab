@@ -7,6 +7,7 @@ import {
   ContentNotFoundError,
 } from '@asciidocollab/domain';
 import { fileContentRoutes } from '../../src/routes/projects/file-content';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -23,7 +24,7 @@ const YJS_STATE_ID = '880e8400-e29b-41d4-a716-446655440006';
 
 function buildTestServer(options: { contentId?: string; activeSession?: boolean } = {}) {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: { findByCompositeKey: jest.fn().mockResolvedValue({ role: { value: 'viewer' } }) },
     fileNode: { findById: jest.fn().mockResolvedValue({ projectId: { value: PROJECT_ID }, path: { value: '/test.adoc' } }) },
     document: {
@@ -42,15 +43,15 @@ function buildTestServer(options: { contentId?: string; activeSession?: boolean 
       isActive: jest.fn().mockResolvedValue(options.activeSession ?? false),
     },
   });
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: {
       read: jest.fn().mockResolvedValue(Buffer.from('= Hello')),
       write: jest.fn().mockResolvedValue(undefined),
     },
   });
   app.addContentTypeParser('text/plain', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
-  app.decorate('config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } } as never);
-  app.decorate('fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
+  decorateApp(app, 'config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } });
+  decorateApp(app, 'fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
   app.register(fileContentRoutes);
   return app;
 }
@@ -275,7 +276,7 @@ describe('PUT /projects/:projectId/files/:fileNodeId/content', () => {
     });
 
     const app = Fastify();
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue({ role: { value: 'viewer' } }) },
       fileNode: { findById: jest.fn().mockResolvedValue({ projectId: { value: PROJECT_ID }, path: { value: '/test.adoc' } }) },
       document: {
@@ -288,12 +289,12 @@ describe('PUT /projects/:projectId/files/:fileNodeId/content', () => {
       },
       collaborationSession: { isActive: jest.fn().mockResolvedValue(false) },
     });
-    app.decorate('stores', {
+    decorateApp(app, 'stores', {
       fileStore: { read: jest.fn().mockResolvedValue(Buffer.from('= Hello')), write: jest.fn().mockResolvedValue(undefined) },
     });
     app.addContentTypeParser('text/markdown', { parseAs: 'string' }, (_request, body, done) => done(null, body));
-    app.decorate('config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } } as never);
-    app.decorate('fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
+    decorateApp(app, 'config', { project: { fileContent: { rateLimitMax: 600, rateLimitWindow: 3_600_000 } } });
+    decorateApp(app, 'fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
     app.register(fileContentRoutes);
     await app.ready();
 

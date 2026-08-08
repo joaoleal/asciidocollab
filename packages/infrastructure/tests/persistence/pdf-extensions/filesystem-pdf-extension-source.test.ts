@@ -13,7 +13,9 @@ let folder: string;
 let clock = 1000;
 
 /** Build the adapter over the temp folder, with a controllable clock. */
-function adapter(overrides: Partial<Parameters<typeof FilesystemPdfExtensionSource.prototype.constructor>[0]> = {}) {
+function adapter(
+  overrides: Partial<ConstructorParameters<typeof FilesystemPdfExtensionSource>[0]> = {},
+) {
   return new FilesystemPdfExtensionSource({
     path: folder,
     maxExtensions: 50,

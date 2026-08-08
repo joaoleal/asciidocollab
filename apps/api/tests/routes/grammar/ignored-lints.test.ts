@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ignoredLintsRoutes } from '../../../src/routes/grammar/ignored-lints';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -20,7 +21,7 @@ async function buildServer(options: ServerOptions = {}) {
   const upsert = jest.fn();
   const instance = await (async (): Promise<FastifyInstance> => {
     const app = Fastify();
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       ignoredLint: {
         findByUserAndDocument: jest.fn(async () =>
           stored === null ? null : { ignoredLintsJson: stored },
@@ -33,7 +34,7 @@ async function buildServer(options: ServerOptions = {}) {
       projectMember: {
         findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
       },
-    } as never);
+    });
     await app.register(ignoredLintsRoutes);
     return app;
   })();

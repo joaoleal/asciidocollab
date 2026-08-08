@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { fileTreeEventBusPlugin } from '../../src/plugins/file-tree-event-bus';
 import { eventsRoutes } from '../../src/routes/projects/events';
+import { decorateApp } from '../helpers/decorate-app';
 
 // Mock requireAuth and project member check
 jest.mock('../../src/plugins/require-auth', () => ({
@@ -13,15 +14,15 @@ async function buildTestServer(isMember: boolean) {
   await app.register(fileTreeEventBusPlugin);
 
   // Mock repos
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(isMember ? { role: { value: 'editor' } } : null),
     },
-  } as never);
-  app.decorate('config', { storage: { maxUploadSizeBytes: 20_971_520, path: '/tmp' } } as never);
-  app.decorate('stores', { fileStore: {}, yjsStateStore: {} } as never);
-  app.decorate('services', {} as never);
-  app.decorate('prisma', null as never);
+  });
+  decorateApp(app, 'config', { storage: { maxUploadSizeBytes: 20_971_520, path: '/tmp' } });
+  decorateApp(app, 'stores', { fileStore: {}, yjsStateStore: {} });
+  decorateApp(app, 'services', {});
+  decorateApp(app, 'prisma', null);
 
   await app.register(eventsRoutes);
   await app.ready();

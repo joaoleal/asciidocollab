@@ -227,7 +227,7 @@ describe('useFileSelection', () => {
 
   // C3: unmounting while a fetch is in-flight must abort the request so setState is never called
   it('aborts any in-flight fetch when the hook is unmounted', async () => {
-    let capturedSignal: AbortSignal | undefined;
+    let capturedSignal: AbortSignal | null | undefined;
     globalThis.fetch = jest.fn().mockImplementation((_url: string, { signal }: RequestInit) => {
       capturedSignal = signal;
       return new Promise(() => {}); // never resolves
@@ -261,7 +261,7 @@ describe('useFileSelection', () => {
   });
 
   it('clearSelection aborts an in-flight fetch', async () => {
-    let capturedSignal: AbortSignal | undefined;
+    let capturedSignal: AbortSignal | null | undefined;
     globalThis.fetch = jest.fn().mockImplementation((_url: string, { signal }: RequestInit) => {
       capturedSignal = signal;
       return new Promise(() => {}); // never resolves — stays in-flight

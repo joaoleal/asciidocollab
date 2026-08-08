@@ -889,7 +889,7 @@ describe('useEditorMount file-drop handler', () => {
       view.contentDOM.dispatchEvent(makeDropEvent(JSON.stringify({ path: 'pic.png' })));
     });
 
-    expect(view.state.doc.toString()).toMatch(/before\n.*pic\.png.*\n after/s);
+    expect(view.state.doc.toString()).toMatch(/before\n[\s\S]*pic\.png[\s\S]*\n after/);
     rendered.unmount();
   });
 
@@ -1240,7 +1240,8 @@ function hoverSourceOf(view: EditorView): HoverSource {
     const source = instance.value?.source;
     if (typeof source !== 'function') continue;
     const probe = source(view, HOVER_PROBE_POS, 1);
-    if (probe && !Array.isArray(probe) && (probe.create(view).dom.textContent ?? '').includes('file tree')) {
+    if (!probe || probe instanceof Promise || !('create' in probe)) continue;
+    if ((probe.create(view).dom.textContent ?? '').includes('file tree')) {
       return source;
     }
   }
@@ -1249,7 +1250,9 @@ function hoverSourceOf(view: EditorView): HoverSource {
 
 /** Render a resolved tooltip's DOM (invoking its create()) so the create-branch is covered. */
 function tooltipDomText(view: EditorView, tooltip: HoverTooltip): string {
-  if (!tooltip || Array.isArray(tooltip)) throw new Error('expected a single tooltip');
+  if (!tooltip || tooltip instanceof Promise || !('create' in tooltip)) {
+    throw new Error('expected a single tooltip');
+  }
   const { dom } = tooltip.create(view);
   return dom.textContent ?? '';
 }

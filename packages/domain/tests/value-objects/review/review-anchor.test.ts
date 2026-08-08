@@ -13,8 +13,10 @@ describe('ReviewAnchor', () => {
     anchor.relPos![0] = 42;
     expect([...anchor.relPos!]).toEqual([1, 2, 3]);
 
+    // `exact` is declared readonly, so assign through Object.assign: the guarantee under test is the
+    // RUNTIME defensive copy, and a compile-time modifier does not stop a caller reaching the field.
     const returnedQuote = anchor.quote!;
-    returnedQuote.exact = 'mutated';
+    Object.assign(returnedQuote, { exact: 'mutated' });
     expect(anchor.quote!.exact).toBe('passage');
   });
 

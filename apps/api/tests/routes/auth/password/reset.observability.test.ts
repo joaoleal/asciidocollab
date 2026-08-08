@@ -10,6 +10,8 @@ import {
 import { passwordResetRoute } from '../../../../src/routes/auth/password/reset';
 import { setupTestEnvironment } from '../../../helpers/test-environment';
 import { randomUUID } from 'crypto';
+import { decorateApp } from '../../../helpers/decorate-app';
+import type { FastifyBaseLogger } from 'fastify';
 
 // Pin the password policy (buildPasswordPolicy reads the global getConfig() singleton)
 // so this test does not break if a schema default changes or another test's config leaks.
@@ -26,12 +28,12 @@ const RAW_TOKEN = 'raw-token';
 const TOKEN_HASH = 'hashed-raw-token';
 
 /** A Fastify-compatible logger that records `warn` calls (loggerInstance pattern). */
-function makeRecordingLogger() {
+function makeRecordingLogger(): { logger: FastifyBaseLogger; warn: jest.Mock } {
   const warn = jest.fn();
-  const logger = {
+  const logger: FastifyBaseLogger = {
     level: 'info',
     fatal: jest.fn(), error: jest.fn(), warn, info: jest.fn(), debug: jest.fn(), trace: jest.fn(), silent: jest.fn(),
-    child() { return logger; },
+    child: () => logger,
   };
   return { logger, warn };
 }
@@ -41,7 +43,7 @@ function makeRecordingLogger() {
  * logger wiring is exercised end-to-end. The audit repo's `save` is provided by
  * the caller so we can make it fail.
  */
-function buildApp(auditSave: jest.Mock, logger: object) {
+function buildApp(auditSave: jest.Mock, logger: FastifyBaseLogger) {
   const userId = UserId.create(randomUUID());
   const user = new User(
     userId, Email.create('user@example.com'), 'Test', 'old-hash', [], null, null, false, new Timestamps(), true, 'SELF_REGISTERED',
@@ -50,19 +52,19 @@ function buildApp(auditSave: jest.Mock, logger: object) {
     PasswordResetTokenId.create(randomUUID()), userId, TOKEN_HASH, new Date(Date.now() + 3_600_000), null, new Date(),
   );
 
-  const app = Fastify({ loggerInstance: logger as never });
-  app.decorate('config', {
+  const app = Fastify({ loggerInstance: logger });
+  decorateApp(app, 'config', {
     auth: { passwordReset: { rateLimitMax: 100, rateLimitWindow: 60_000 }, password: { historyDepth: 5 } },
-  } as never);
-  app.decorate('repos', {
+  });
+  decorateApp(app, 'repos', {
     user: { findById: jest.fn().mockResolvedValue(user), save: jest.fn() },
     passwordResetToken: { findByTokenHash: jest.fn().mockResolvedValue(token), markAsUsed: jest.fn() },
     auditLog: { save: auditSave },
-  } as never);
-  app.decorate('services', {
+  });
+  decorateApp(app, 'services', {
     passwordHasher: { hash: jest.fn().mockResolvedValue('new-hash'), verify: jest.fn().mockResolvedValue(false) },
     tokenGenerator: { hashToken: jest.fn().mockReturnValue(TOKEN_HASH) },
-  } as never);
+  });
   app.register(passwordResetRoute);
   return app;
 }

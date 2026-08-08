@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ProjectEditorLayout } from '@/app/(dashboard)/dashboard/projects/[id]/project-editor-layout';
 import type { FileTreeEventDto } from '@asciidocollab/shared';
+import type { FileTreeNode } from '@/components/file-tree/types';
 
 jest.mock('@/contexts/current-user-context', () => ({
   useCurrentUser: () => ({ userId: 'u-test', displayName: 'Test User', email: 't@example.com', avatarKey: null }),
@@ -85,7 +86,7 @@ jest.mock('@/hooks/use-file-tree-events', () => ({
 // The cross-file symbol index has its own tests and registers its own useFileTreeEvents
 // consumer; stub it here so it doesn't interfere with the file-tree SSE assertions below. A jest.fn
 // (defaulting to the empty index) so a test can supply a populated index to drive the preview root.
-const mockUseProjectSymbolIndex = jest.fn(() => ({ index: null, getIndex: () => null }));
+const mockUseProjectSymbolIndex = jest.fn((..._arguments: unknown[]) => ({ index: null, getIndex: () => null }));
 jest.mock('@/hooks/use-project-symbol-index', () => ({
   useProjectSymbolIndex: (...arguments_: unknown[]) => mockUseProjectSymbolIndex(...arguments_),
 }));
@@ -143,7 +144,7 @@ jest.mock('@/components/asciidoc-preview', () => ({
   isAsciiDocFile: (name: string) => name.endsWith('.adoc'),
 }));
 
-const emptyRoot = {
+const emptyRoot: FileTreeNode = {
   id: 'root-1',
   name: 'root',
   type: 'folder' as const,
@@ -152,7 +153,7 @@ const emptyRoot = {
   children: [],
 };
 
-function mockFetch(tree = emptyRoot) {
+function mockFetch(tree: FileTreeNode = emptyRoot) {
   globalThis.fetch = jest.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve(tree),
@@ -163,6 +164,7 @@ const defaultProps = {
   projectId: 'p1',
   projectName: 'My Project',
   projectDescription: null,
+  projectLanguage: null,
   mainFileNodeId: null,
   canManage: true,
   canEdit: true,

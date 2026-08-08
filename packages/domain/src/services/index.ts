@@ -9,12 +9,12 @@ export {
   resolveIncludeTarget,
   resolveImageTarget,
 } from './asciidoc-path';
-export { PasswordHasher } from './password-hasher';
-export { BreachChecker } from './breach-checker';
-export { EmailSender } from './email-sender';
-export { TokenGenerator, PasswordResetTokenData } from './token-generator';
-export { CommonPasswordChecker } from './common-password-checker';
-export { PasswordResetNotifier } from './password-reset-notifier';
-export { EmailChangeNotifier } from './email-change-notifier';
-export { RegistrationInvitationNotifier } from './registration-invitation-notifier';
-export { EmailVerificationNotifier } from './email-verification-notifier';
+export type { PasswordHasher } from './password-hasher';
+export type { BreachChecker } from './breach-checker';
+export type { EmailSender } from './email-sender';
+export type { TokenGenerator, PasswordResetTokenData } from './token-generator';
+export type { CommonPasswordChecker } from './common-password-checker';
+export type { PasswordResetNotifier } from './password-reset-notifier';
+export type { EmailChangeNotifier } from './email-change-notifier';
+export type { RegistrationInvitationNotifier } from './registration-invitation-notifier';
+export type { EmailVerificationNotifier } from './email-verification-notifier';

@@ -18,7 +18,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint src/ tests/ e2e/",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eslint.json",
     "test": "jest",
     "test:ci": "jest --coverage --coverageReporters=text lcov",
     "check": "tsc --noEmit && eslint src/ tests/ e2e/ && jest --passWithNoTests",

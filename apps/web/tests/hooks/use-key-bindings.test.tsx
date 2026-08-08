@@ -106,8 +106,8 @@ test('uses NEXT_PUBLIC_API_URL when the env var is set', async () => {
   // inside a test illegally re-registers its module-level afterEach/beforeAll.
   try {
     jest.resetModules();
-    let react: typeof import('react');
-    let reactDomClient: typeof import('react-dom/client');
+    let react: typeof import('react') | undefined;
+    let reactDomClient: typeof import('react-dom/client') | undefined;
     let useKeyBindingsWithApiBase: typeof useKeyBindings;
     jest.isolateModules(() => {
       react = require('react');
@@ -117,6 +117,7 @@ test('uses NEXT_PUBLIC_API_URL when the env var is set', async () => {
     });
     // Use the *isolated* React's own act so the renderer and act share one
     // instance (testing-library's act is bound to the top-level React).
+    if (!react || !reactDomClient) throw new Error('isolateModules did not load the isolated React');
     const isolatedAct = react.act;
     function Probe() {
       useKeyBindingsWithApiBase('editor');
@@ -124,8 +125,9 @@ test('uses NEXT_PUBLIC_API_URL when the env var is set', async () => {
     }
     const container = document.createElement('div');
     const root = reactDomClient.createRoot(container);
+    const isolatedReact = react;
     await isolatedAct(async () => {
-      root.render(react.createElement(Probe));
+      root.render(isolatedReact.createElement(Probe));
     });
     expect(mockFetch).toHaveBeenCalled();
     const url = String(mockFetch.mock.calls[0][0]);

@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { fileTreeCreateRoutes } from '../../src/routes/projects/file-tree-create';
 import { FileConflictError } from '@asciidocollab/domain';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -39,7 +40,7 @@ function buildTestServer(options: BuildOptions = {}) {
     ? parentFolderNode
     : options.findByIdResult;
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(memberResult),
     },
@@ -56,7 +57,7 @@ function buildTestServer(options: BuildOptions = {}) {
     },
   });
 
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: {
       createExclusive: jest.fn().mockResolvedValue(
         options.fileConflict
@@ -68,10 +69,9 @@ function buildTestServer(options: BuildOptions = {}) {
     },
   });
 
-  app.decorate('fileTreeEventBus', {
+  decorateApp(app, 'fileTreeEventBus', {
     emit: jest.fn(),
-    on: jest.fn(),
-    off: jest.fn(),
+    subscribe: jest.fn(),
   });
 
   app.register(fileTreeCreateRoutes);

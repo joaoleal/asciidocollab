@@ -1,3 +1,7 @@
+// No imports or exports of its own would make this a SCRIPT, putting its top-level helpers in the
+// global scope where they collide by name with another spec's. This export makes it a module.
+export const IS_MODULE = true;
+
 function mockOk(body: unknown) {
   return Promise.resolve({ ok: true, status: 200, json: jest.fn().mockResolvedValue(body) });
 }

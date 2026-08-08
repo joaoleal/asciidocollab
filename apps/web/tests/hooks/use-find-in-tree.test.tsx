@@ -19,6 +19,19 @@ const tree: FileTreeNode = folder('root', 'root', [
   file('f4', 'delta.adoc'),
 ], null);
 
+/**
+ * Runs `body` inside `act` and hands back what it returned. `act` itself returns nothing, so the
+ * value had to be smuggled out through a `let` — which TypeScript cannot see assigned, leaving the
+ * assertions below reading a variable it believes is still `null`.
+ */
+function actReturning<T>(body: () => T): T {
+  let captured: T | undefined;
+  act(() => {
+    captured = body();
+  });
+  return captured as T;
+}
+
 describe('useFindInTree', () => {
   it('returns no matches and null navigation for a null tree', () => {
     const { result } = renderHook(() => useFindInTree(null, new Map(), jest.fn()));
@@ -73,8 +86,7 @@ describe('useFindInTree', () => {
     act(() => { result.current.setQuery('a'); }); // multiple 'a' matches
     const firstMatchId = result.current.currentMatch?.id;
 
-    let returnedNode: ReturnType<typeof result.current.nextMatch>;
-    act(() => { returnedNode = result.current.nextMatch(); });
+    const returnedNode = actReturning(() => result.current.nextMatch());
 
     // The returned node must be the NEW match, not the pre-call (first) match
     expect(returnedNode).not.toBeNull();
@@ -91,8 +103,7 @@ describe('useFindInTree', () => {
     act(() => { result.current.nextMatch(); }); // advance to index 1
     const indexOneId = result.current.currentMatch?.id;
 
-    let returnedNode: ReturnType<typeof result.current.prevMatch>;
-    act(() => { returnedNode = result.current.prevMatch(); });
+    const returnedNode = actReturning(() => result.current.prevMatch());
 
     // Should return the node at index 0 (previous)
     expect(returnedNode).not.toBeNull();

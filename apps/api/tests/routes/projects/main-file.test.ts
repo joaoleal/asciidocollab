@@ -1,3 +1,4 @@
+import type { InjectOptions } from 'fastify';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import {
@@ -10,6 +11,7 @@ import {
   FilePath,
 } from '@asciidocollab/domain';
 import { projectMainFileRoutes } from '../../../src/routes/projects/main-file';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -38,8 +40,8 @@ async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance
   const { role = 'editor', projectExists = true, rateLimitMax = 50 } = options;
   const app = Fastify();
   await app.register(rateLimit, { global: false });
-  app.decorate('config', { project: { mainFile: { rateLimitMax, rateLimitWindow: 60_000 } } } as never);
-  app.decorate('repos', {
+  decorateApp(app, 'config', { project: { mainFile: { rateLimitMax, rateLimitWindow: 60_000 } } });
+  decorateApp(app, 'repos', {
     project: {
       findById: jest.fn(async () =>
         projectExists ? new Project(ProjectId.create(PROJECT_ID), ProjectName.create('P'), null, [], FileNodeId.create(ROOT_ID)) : null,
@@ -57,8 +59,8 @@ async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance
       }),
     },
     auditLog: { save: jest.fn() },
-  } as never);
-  app.decorate('fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
+  });
+  decorateApp(app, 'fileTreeEventBus', { emit: jest.fn(), subscribe: jest.fn() });
   await app.register(projectMainFileRoutes);
   await app.ready();
   return app;
@@ -69,7 +71,7 @@ function emitMock(app: FastifyInstance) {
   return (app as unknown as { fileTreeEventBus: { emit: jest.Mock } }).fileTreeEventBus.emit;
 }
 
-function put(app: FastifyInstance, body: unknown) {
+function put(app: FastifyInstance, body: InjectOptions['payload']) {
   return app.inject({ method: 'PUT', url: `/projects/${PROJECT_ID}/main-file`, payload: body });
 }
 

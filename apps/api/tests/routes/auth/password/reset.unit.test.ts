@@ -1,23 +1,24 @@
 import Fastify from 'fastify';
 import { ResetPasswordUseCase, PasswordReuseError } from '@asciidocollab/domain';
 import { passwordResetRoute } from '../../../../src/routes/auth/password/reset';
+import { decorateApp } from '../../../helpers/decorate-app';
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: { findById: jest.fn() },
     passwordResetToken: { findByTokenHash: jest.fn() },
-  } as never);
-  app.decorate('services', {
+  });
+  decorateApp(app, 'services', {
     passwordHasher: { hash: jest.fn() },
-    tokenGenerator: { generate: jest.fn() },
-  } as never);
-  app.decorate('config', {
+    tokenGenerator: { hashToken: jest.fn() },
+  });
+  decorateApp(app, 'config', {
     auth: {
       passwordReset: { rateLimitMax: 100, rateLimitWindow: 60_000 },
       password: { historyDepth: 3 },
     },
-  } as never);
+  });
   app.register(passwordResetRoute);
   return app;
 }

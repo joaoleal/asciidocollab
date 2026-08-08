@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { DEFAULT_KEY_BINDINGS, UpdateKeyBindingUseCase, ResetKeyBindingUseCase, ValidationError } from '@asciidocollab/domain';
 import { keybindingsRoutes } from '../../../../src/routes/auth/me/keybindings';
+import { decorateApp } from '../../../helpers/decorate-app';
 
 // Mock requireAuth
 jest.mock('../../../../src/plugins/require-auth', () => ({
@@ -18,11 +19,11 @@ const mockKeyBindingRepo = {
 
 async function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', { keyBinding: mockKeyBindingRepo } as never);
-  app.decorate('config', {} as never);
-  app.decorate('stores', {} as never);
-  app.decorate('services', {} as never);
-  app.decorate('prisma', null as never);
+  decorateApp(app, 'repos', { keyBinding: mockKeyBindingRepo });
+  decorateApp(app, 'config', {});
+  decorateApp(app, 'stores', {});
+  decorateApp(app, 'services', {});
+  decorateApp(app, 'prisma', null);
   await app.register(keybindingsRoutes);
   await app.ready();
   return app;

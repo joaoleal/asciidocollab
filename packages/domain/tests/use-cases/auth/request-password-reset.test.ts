@@ -37,6 +37,10 @@ function makeTokenGenerator(): TokenGenerator {
       expiresAt: new Date(Date.now() + 3_600_000),
     }),
     hashToken: jest.fn().mockReturnValue('hashed-token'),
+    // Unused by this use case, but part of the port: a fake that omits them is not the collaborator
+    // the production code is handed.
+    generateInvitationToken: jest.fn(),
+    generateEmailVerificationToken: jest.fn(),
   };
 }
 

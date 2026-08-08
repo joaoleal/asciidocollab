@@ -1,3 +1,7 @@
+// This file has no imports or exports of its own, which would make it a SCRIPT: its top-level
+// helpers would land in the global scope and collide by name with another spec's. This export makes it one.
+export const IS_MODULE = true;
+
 // Issue 4: file-tree.ts must not define its own NEXT_PUBLIC_API_URL constant —
 // the same divergence risk that was just fixed in use-auto-save.ts and
 // use-file-selection.ts. It must import API_BASE_URL from lib/api/file-content.

@@ -83,6 +83,7 @@ const defaultProps = {
   projectId: 'p1',
   projectName: 'My Project',
   projectDescription: null,
+  projectLanguage: null,
   mainFileNodeId: null,
   canManage: true,
   canEdit: true,

@@ -6,7 +6,7 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from '@codemirror/view';
-import { RangeSetBuilder, StateEffect, type Extension } from '@codemirror/state';
+import { RangeSetBuilder, StateEffect } from '@codemirror/state';
 import { resolveAttributeReferences } from '@asciidocollab/asciidoc-core';
 
 /**
@@ -119,7 +119,7 @@ function buildDecorations(view: EditorView, getInheritedAttributes: () => Readon
  */
 export function asciidocAttributeFold(
   getInheritedAttributes: () => ReadonlyMap<string, string> = () => NO_INHERITED_ATTRIBUTES,
-): Extension {
+) {
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;

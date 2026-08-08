@@ -18,6 +18,7 @@ function createTestUser(passwordHash: string = 'current-hash'): User {
     [],
     null,
     null,
+    false,
     new Timestamps(),
   );
 }
@@ -211,6 +212,7 @@ describe('ChangePasswordUseCase', () => {
         ['old-hash-1'],
         null,
         null,
+        false,
         new Timestamps(),
       );
       (userRepo.findById as jest.Mock).mockResolvedValue(userWithHistory);

@@ -24,7 +24,7 @@ describe('RecordAuditEventUseCase', () => {
     const all = await repo.findAll();
     expect(all).toHaveLength(1);
     expect(all[0].action).toBe('auth.signed_in');
-    expect(all[0].userId.value).toBe(actorId.value);
+    expect(all[0].userId?.value).toBe(actorId.value);
     expect(all[0].projectId).toBeNull();
   });
 

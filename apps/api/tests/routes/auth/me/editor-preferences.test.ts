@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { GetEditorPreferencesUseCase, SaveEditorPreferencesUseCase } from '@asciidocollab/domain';
 import { editorPreferencesRoutes } from '../../../../src/routes/auth/me/editor-preferences';
+import { decorateApp } from '../../../helpers/decorate-app';
 
 jest.mock('../../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -15,7 +16,7 @@ function buildTestServer(
   const app = Fastify();
 
   let currentPrefs = storedPrefs;
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     editorPreferences: {
       findByUserId: jest.fn().mockImplementation(() =>
         currentPrefs

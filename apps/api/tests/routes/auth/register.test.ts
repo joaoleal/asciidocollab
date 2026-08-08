@@ -1,24 +1,25 @@
 import Fastify from 'fastify';
 import { RegisterUseCase } from '@asciidocollab/domain';
 import { registerRoute } from '../../../src/routes/auth/register';
+import { decorateApp } from '../../helpers/decorate-app';
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: { findByEmail: jest.fn(), save: jest.fn() },
-    systemSetting: { findByKey: jest.fn() },
+    systemSetting: { get: jest.fn() },
     emailVerificationToken: { save: jest.fn() },
-  } as never);
-  app.decorate('services', {
+  });
+  decorateApp(app, 'services', {
     commonPasswordChecker: { isCommon: jest.fn() },
     breachChecker: { isBreached: jest.fn() },
     passwordHasher: { hash: jest.fn() },
-    tokenGenerator: { generate: jest.fn() },
-    emailVerificationNotifier: { send: jest.fn() },
-  } as never);
-  app.decorate('config', {
+    tokenGenerator: { generateEmailVerificationToken: jest.fn() },
+    emailVerificationNotifier: { sendVerificationEmail: jest.fn() },
+  });
+  decorateApp(app, 'config', {
     auth: { registration: { rateLimitMax: 100, rateLimitWindow: 60_000 } },
-  } as never);
+  });
   app.register(registerRoute);
   return app;
 }

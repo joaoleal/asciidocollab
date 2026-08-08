@@ -22,8 +22,20 @@ function makeFakeResponse(statusCode: number, body: Buffer) {
   return result;
 }
 
-function makeFakeRequest() {
-  const request = {
+/**
+ * The slice of `http.ClientRequest` the adapter drives. Named so a fake whose `on` handler returns
+ * the request itself can be annotated — otherwise the object references itself in its own
+ * initializer and TypeScript can only infer `any`.
+ */
+interface FakeClientRequest {
+  on: jest.Mock;
+  write: jest.Mock;
+  end: jest.Mock;
+  destroy: jest.Mock;
+}
+
+function makeFakeRequest(): FakeClientRequest {
+  const request: FakeClientRequest = {
     on: jest.fn().mockReturnThis(),
     write: jest.fn(),
     end: jest.fn(),
@@ -74,7 +86,7 @@ describe('createMtlsFetch (infrastructure)', () => {
 
   it('rejects when the request errors', async () => {
     (mockHttps.Agent as unknown) = jest.fn();
-    const request = {
+    const request: FakeClientRequest = {
       on: jest.fn((event: string, callback: (error: Error) => void) => {
         if (event === 'error') setImmediate(() => callback(new Error('ECONNREFUSED')));
         return request;

@@ -283,6 +283,7 @@ describe('AsciiDocPreview', () => {
       <AsciiDocPreview
         content=""
         isEnabled={true}
+        projectId="proj-1"
         scrollToLine={null}
         scrollSyncEnabled={false}
         onToggleScrollSync={jest.fn()}
@@ -303,6 +304,7 @@ describe('AsciiDocPreview', () => {
       <AsciiDocPreview
         content=""
         isEnabled={true}
+        projectId="proj-1"
         scrollToLine={null}
         scrollSyncEnabled={false}
         onToggleScrollSync={jest.fn()}
@@ -317,6 +319,7 @@ describe('AsciiDocPreview', () => {
       <AsciiDocPreview
         content=""
         isEnabled={true}
+        projectId="proj-1"
         scrollToLine={null}
         scrollSyncEnabled={true}
         onToggleScrollSync={jest.fn()}
@@ -332,6 +335,7 @@ describe('AsciiDocPreview', () => {
       <AsciiDocPreview
         content=""
         isEnabled={true}
+        projectId="proj-1"
         scrollToLine={null}
         scrollSyncEnabled={false}
         onToggleScrollSync={onToggle}

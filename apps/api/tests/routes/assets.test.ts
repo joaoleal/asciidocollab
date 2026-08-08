@@ -10,6 +10,7 @@ import {
   ContentNotFoundError,
 } from '@asciidocollab/domain';
 import { assetsRoutes } from '../../src/routes/projects/assets';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _reply: unknown, done: () => void) => done()),
@@ -22,18 +23,18 @@ const ASSET_ID = '550e8400-e29b-41d4-a716-446655440004';
 
 async function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: { findByCompositeKey: jest.fn().mockResolvedValue({ role: { value: 'editor' } }) },
     fileNode: { findById: jest.fn().mockResolvedValue(null) },
     asset: { findById: jest.fn().mockResolvedValue(null), save: jest.fn() },
     systemSetting: { get: jest.fn().mockResolvedValue(null) },
     auditLog: { save: jest.fn() },
-  } as never);
-  app.decorate('stores', {
+  });
+  decorateApp(app, 'stores', {
     fileStore: { write: jest.fn().mockResolvedValue(undefined), read: jest.fn().mockResolvedValue(Buffer.from('img')) },
-  } as never);
-  app.decorate('config', { storage: { maxUploadSizeBytes: 20_971_520 } } as never);
-  app.decorate('fileTreeEventBus', { emit: jest.fn() } as never);
+  });
+  decorateApp(app, 'config', { storage: { maxUploadSizeBytes: 20_971_520 } });
+  decorateApp(app, 'fileTreeEventBus', { emit: jest.fn() });
   await app.register(assetsRoutes);
   await app.ready();
   return app;

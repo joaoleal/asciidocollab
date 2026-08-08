@@ -16,7 +16,7 @@ import {
   resolvePdfExtensions,
   type PdfExtensionSource,
 } from '../../src/extensions/registry';
-import type { PdfExtensionCatalogueEntry } from '@asciidocollab/shared';
+import type { PdfExtensionCatalogueEntry } from '@asciidocollab/asciidoc-core';
 
 /** A catalogue entry for `id`, available by default. */
 function entry(

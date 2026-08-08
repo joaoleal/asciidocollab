@@ -145,7 +145,7 @@ function renderClient(
   section?: string,
 ) {
   searchParameters = new URLSearchParams(section === undefined ? '' : `section=${section}`);
-  const properties = {
+  const properties: React.ComponentProps<typeof SettingsClient> = {
     project: PROJECT,
     currentUserRole: 'owner',
     ...overrides,

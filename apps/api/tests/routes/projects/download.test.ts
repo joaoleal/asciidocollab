@@ -7,6 +7,7 @@ import {
   type DownloadProjectFile,
 } from '@asciidocollab/domain';
 import { projectDownloadRoute } from '../../../src/routes/projects/download';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -51,7 +52,7 @@ function buildTestServer(options: {
     ? Readable.from(Buffer.from('= Hello'))
     : readStreamResult;
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(
         memberRole ? { role: { value: memberRole } } : null,
@@ -85,7 +86,7 @@ function buildTestServer(options: {
     },
   });
 
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: {
       readStream: jest.fn().mockResolvedValue(fileStream),
     },
@@ -94,7 +95,7 @@ function buildTestServer(options: {
     },
   });
 
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     downloads: {
       zip: { rateLimitMax: 10, rateLimitWindow: 60_000 },
     },
@@ -188,18 +189,18 @@ describe('GET /projects/:projectId/download', () => {
     const rateLimit = require('@fastify/rate-limit') as { default: typeof import('@fastify/rate-limit')['default'] };
     const app = Fastify();
 
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue({ role: { value: 'viewer' } }) },
       project: { findById: jest.fn().mockResolvedValue({ id: { value: PROJECT_ID }, name: { value: 'P' }, rootFolderId: null }) },
       fileNode: { findByProjectId: jest.fn().mockResolvedValue([]) },
       document: { findByFileNodeId: jest.fn().mockResolvedValue(null) },
       collaborationSession: { isActive: jest.fn().mockResolvedValue(false) },
     });
-    app.decorate('stores', {
+    decorateApp(app, 'stores', {
       fileStore: { readStream: jest.fn().mockResolvedValue(Readable.from('')) },
       collaborativeContentEditor: { readContent: jest.fn().mockResolvedValue({ success: true, value: null }) },
     });
-    app.decorate('config', { downloads: { zip: { rateLimitMax: 1, rateLimitWindow: 60_000 } } });
+    decorateApp(app, 'config', { downloads: { zip: { rateLimitMax: 1, rateLimitWindow: 60_000 } } });
 
     await app.register(rateLimit.default, { global: false });
     app.register(projectDownloadRoute);
@@ -409,19 +410,19 @@ describe('GET /projects/:projectId/download — archiver fault isolation', () =>
     });
 
     const app = Fastify();
-    app.decorate('repos', {
+    decorateApp(app, 'repos', {
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue({ role: { value: 'viewer' } }) },
       project: { findById: jest.fn().mockResolvedValue({ id: { value: PROJECT_ID }, name: { value: 'My Project' } }) },
       fileNode: { findByProjectId: jest.fn().mockResolvedValue([]) },
       document: { findByFileNodeId: jest.fn().mockResolvedValue(null) },
       collaborationSession: { isActive: jest.fn().mockResolvedValue(false) },
     });
-    app.decorate('stores', {
+    decorateApp(app, 'stores', {
       fileStore: { readStream: jest.fn().mockResolvedValue(faultyStream) },
       collaborativeContentEditor: { readContent: jest.fn().mockResolvedValue({ success: true, value: null }) },
     });
-    app.decorate('config', { downloads: { zip: { rateLimitMax: 10, rateLimitWindow: 60_000 } } });
-    app.setErrorHandler((error, _request, reply) => {
+    decorateApp(app, 'config', { downloads: { zip: { rateLimitMax: 10, rateLimitWindow: 60_000 } } });
+    app.setErrorHandler((error: Error, _request, reply) => {
       onFastifyError(error.message);
       return reply.status(500).send({ error: error.message });
     });

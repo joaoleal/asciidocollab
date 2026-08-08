@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { logoutRoute } from '../../../src/routes/auth/logout';
+import { decorateApp } from '../../helpers/decorate-app';
 
 const USER_ID = '550e8400-e29b-41d4-a716-446655440010';
 
@@ -20,7 +21,7 @@ function buildApp(userId: string | undefined) {
     };
     done();
   });
-  app.decorate('repos', { auditLog: { save } } as never);
+  decorateApp(app, 'repos', { auditLog: { save } });
   app.register(logoutRoute);
   return { app, save };
 }

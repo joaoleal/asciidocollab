@@ -32,6 +32,13 @@ async function gotoProject(page: Page, projectId: string) {
  * `setData` ran on `dragstart` — the move must still succeed because the app captures the dragged
  * id in React state on `dragstart` rather than depending on the dataTransfer round-trip.
  */
+/** The `Input.dispatchDragEvent` payload, as the DevTools protocol declares it. */
+interface CdpDragData {
+  items: Array<{ mimeType: string; data: string; title?: string; baseURL?: string }>;
+  files?: string[];
+  dragOperationsMask: number;
+}
+
 async function nativeDragOntoFolder(
   page: Page,
   sourceTestId: string,
@@ -50,8 +57,8 @@ async function nativeDragOntoFolder(
   const tx = tb.x + tb.width / 2;
   const ty = options.dropAtBottom ? tb.y + tb.height - 8 : tb.y + tb.height / 2;
 
-  const dataPromise = new Promise<{ items: unknown[]; dragOperationsMask: number }>((resolve) =>
-    client.on('Input.dragIntercepted', (event: { data: { items: unknown[]; dragOperationsMask: number } }) => resolve(event.data)),
+  const dataPromise = new Promise<CdpDragData>((resolve) =>
+    client.on('Input.dragIntercepted', (event: { data: CdpDragData }) => resolve(event.data)),
   );
   await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: sx, y: sy, button: 'left', buttons: 1, clickCount: 1 });
   await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: sx + 8, y: sy + 8, button: 'left', buttons: 1 });

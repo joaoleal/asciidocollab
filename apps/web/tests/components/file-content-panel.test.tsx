@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { FileContentPanel } from '@/components/file-content-panel';
+import type { FileContentState } from '@/hooks/use-file-selection';
 
 const selectedFile = {
   nodeId: 'n1',
@@ -9,11 +10,15 @@ const selectedFile = {
   path: '/doc.adoc',
 };
 
-const initialContentState = {
+const initialContentState: FileContentState = {
   content: null,
+  etag: null,
   isLoading: false,
   error: null,
   isBinary: false,
+  notFound: false,
+  collab: null,
+  collabUnavailable: false,
 };
 
 describe('FileContentPanel', () => {

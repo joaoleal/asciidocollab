@@ -152,7 +152,8 @@ pnpm build                # build all packages
 pnpm test                 # run all tests
 pnpm test --filter=domain # run tests for a specific package
 pnpm test:coverage        # run tests with coverage
-pnpm typecheck            # TypeScript type-checking
+pnpm typecheck            # TypeScript type-checking (src + tests; run `pnpm build` first —
+                          # each package resolves its workspace deps through their built dist/*.d.ts)
 pnpm lint                 # lint all packages
 pnpm architecture         # validate architecture boundaries (layer rules)
 pnpm semgrep              # SAST scan (Semgrep packs + first-party .semgrep.yml rules)

@@ -181,7 +181,7 @@ const resolveInclude = (files: Record<string, string>) => (from: string, target:
 
 describe('buildIncludeGraph attribute substitution', () => {
   test('resolves an include whose target uses an attribute reference', () => {
-    const files = {
+    const files: Record<string, string> = {
       'main.adoc': ':partsdir: parts\n\ninclude::{partsdir}/intro.adoc[]\n',
       'parts/intro.adoc': '== Intro\n',
     };
@@ -191,7 +191,7 @@ describe('buildIncludeGraph attribute substitution', () => {
   });
 
   test('reports the raw (unsubstituted) target when an attribute is undefined', () => {
-    const files = { 'main.adoc': 'include::{missing}/intro.adoc[]\n' };
+    const files: Record<string, string> = { 'main.adoc': 'include::{missing}/intro.adoc[]\n' };
     const tree = buildIncludeGraph('main.adoc', (id) => files[id] ?? null, resolveInclude(files));
     expect(tree.unresolved).toEqual([
       expect.objectContaining({ fromFile: 'main.adoc', target: '{missing}/intro.adoc' }),
@@ -199,7 +199,7 @@ describe('buildIncludeGraph attribute substitution', () => {
   });
 
   test('resolves an include whose target uses a nested attribute reference', () => {
-    const files = {
+    const files: Record<string, string> = {
       'main.adoc': ':root: parts\n:dir: {root}/sub\n\ninclude::{dir}/intro.adoc[]\n',
       'parts/sub/intro.adoc': '== Intro\n',
     };
@@ -209,7 +209,7 @@ describe('buildIncludeGraph attribute substitution', () => {
   });
 
   test('does not substitute an attribute defined after the include (document order)', () => {
-    const files = {
+    const files: Record<string, string> = {
       'main.adoc': 'include::{partsdir}/intro.adoc[]\n\n:partsdir: parts\n',
       'parts/intro.adoc': '== Intro\n',
     };
@@ -554,7 +554,7 @@ describe('resolveReference (cross-file / case-insensitive parity)', () => {
 
 describe('buildIncludeGraph attribute substitution', () => {
   test('resolves an include whose target uses an attribute reference', () => {
-    const files = {
+    const files: Record<string, string> = {
       'main.adoc': ':partsdir: parts\n\ninclude::{partsdir}/intro.adoc[]\n',
       'parts/intro.adoc': '== Intro\n',
     };
@@ -564,7 +564,7 @@ describe('buildIncludeGraph attribute substitution', () => {
   });
 
   test('reports the raw target when the attribute is undefined', () => {
-    const files = { 'main.adoc': 'include::{missing}/intro.adoc[]\n' };
+    const files: Record<string, string> = { 'main.adoc': 'include::{missing}/intro.adoc[]\n' };
     const tree = buildIncludeGraph('main.adoc', read(files), resolveInclude(files));
     expect(tree.unresolved).toEqual([expect.objectContaining({ fromFile: 'main.adoc', target: '{missing}/intro.adoc' })]);
   });

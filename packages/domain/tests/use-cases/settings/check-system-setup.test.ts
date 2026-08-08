@@ -29,6 +29,7 @@ describe('CheckSystemSetupUseCase', () => {
       [],
       null,
       null,
+      false,
       new Timestamps(),
     );
     await repo.save(user);

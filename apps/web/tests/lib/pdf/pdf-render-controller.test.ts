@@ -375,6 +375,7 @@ describe('PdfRenderController', () => {
       format: 'svg',
       bytes: new Uint8Array([1]),
       rasterFallback: false,
+      altText: 'Bibliography',
     };
     const hittingCache: AssetCachePort = {
       get: (sourceHash) => (sourceHash === asset.sourceHash ? asset : undefined),
@@ -593,7 +594,7 @@ describe('PdfRenderController', () => {
       {
         buildPipeline: (arguments_) => ({ ...makeBuildPipeline(arguments_), stages: [pausingStage] }),
       },
-      [false],
+      [NO_BOOT],
     );
 
     const rendering = controller.handleMessage({

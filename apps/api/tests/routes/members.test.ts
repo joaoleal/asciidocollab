@@ -11,6 +11,7 @@ import {
   CannotRemoveLastOwnerError,
 } from '@asciidocollab/domain';
 import { memberRoutes } from '../../src/routes/projects/members';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -33,7 +34,7 @@ const mockUsers = [
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     project: { findById: jest.fn().mockResolvedValue({ id: { value: PROJECT_ID } }) },
     projectMember: {
       findByCompositeKey: jest.fn().mockResolvedValue(mockCallerMembership),

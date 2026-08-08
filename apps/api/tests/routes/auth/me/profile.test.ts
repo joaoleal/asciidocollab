@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { User, UserId, Email, Timestamps } from '@asciidocollab/domain';
 import { profileUpdateRoute } from '../../../../src/routes/auth/me/profile';
+import { decorateApp } from '../../../helpers/decorate-app';
 
 jest.mock('../../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -31,14 +32,14 @@ function buildTestServer() {
   const app = Fastify();
   let currentUser = makeUser();
 
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: {
       findById: jest.fn().mockImplementation(() => currentUser),
       save: jest.fn().mockImplementation((user: User) => { currentUser = user; }),
     },
   });
 
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     auth: { profileUpdate: { rateLimitMax: 100, rateLimitWindow: 60_000 } },
   });
 

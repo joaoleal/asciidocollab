@@ -12,11 +12,11 @@ jest.mock('@codemirror/view', () => ({
     dom: HTMLDivElement;
     scrollDOM: HTMLDivElement;
     state: { doc: { toString: () => string } };
-    static updateListener = { of: (function_: unknown) => ({ function_ }) };
-    static lineWrapping = {};
-    static editable = { of: (value: unknown) => ({ editable: value }) };
-    static domEventHandlers = (_handlers: unknown) => ({});
-    static inputHandler = { of: (function_: unknown) => ({ function_ }) };
+    static updateListener: { of: (function_: unknown) => object } = { of: (function_: unknown) => ({ function_ }) };
+    static lineWrapping: object = {};
+    static editable: { of: (value: unknown) => object } = { of: (value: unknown) => ({ editable: value }) };
+    static domEventHandlers: (handlers: unknown) => object = (_handlers: unknown) => ({});
+    static inputHandler: { of: (function_: unknown) => object } = { of: (function_: unknown) => ({ function_ }) };
 
     constructor({ state, parent }: {
       state: { doc: { toString: () => string }; readOnly?: boolean };
@@ -101,7 +101,13 @@ jest.mock('@/hooks/use-section-outline', () => ({
 }));
 jest.mock('@/lib/codemirror/asciidoc-outline', () => ({ outlineField: { field: true }, outlineResolvedScopeFacet: { of: () => ({}) } }));
 jest.mock('@replit/codemirror-minimap', () => ({ showMinimap: { of: () => ({}) } }));
-jest.mock('@/hooks/use-editor-preferences', () => ({ useEditorPreferences: () => ({ fontSize: 14, theme: 'default', setFontSize: jest.fn(), setTheme: jest.fn() }) }));
+// One stable object for the whole file: the component keeps preference values in dependency arrays,
+// so a factory that built a fresh result (and fresh `spellIgnore: []`) on every render would loop.
+jest.mock('@/hooks/use-editor-preferences', () => {
+  const { editorPreferences: build } = require('../../helpers/editor-preferences');
+  const preferences = build({ fontSize: 14, theme: 'default' });
+  return { useEditorPreferences: () => preferences };
+});
 jest.mock('@codemirror/autocomplete', () => ({ autocompletion: () => ({}), completionKeymap: [] }));
 jest.mock('@/lib/codemirror/asciidoc-completions', () => {
   const noopSource = jest.fn();

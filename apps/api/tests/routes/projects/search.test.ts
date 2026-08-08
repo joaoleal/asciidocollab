@@ -1,8 +1,10 @@
+import type { InjectOptions } from 'fastify';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import { ProjectId, FileNodeId, FileNode, FileNodeType, FilePath } from '@asciidocollab/domain';
 import { Re2RegexEngine } from '@asciidocollab/infrastructure';
 import { projectSearchRoutes } from '../../../src/routes/projects/search';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -34,7 +36,7 @@ async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance
   const store = options.store ?? new Map<string, string>([['/alpha.adoc', 'foo bar\nfoo baz\n'], ['/beta.txt', 'nothing here\n']]);
   const app = Fastify();
   await app.register(rateLimit, { global: false });
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     project: {
       search: {
         rateLimitMax: 120,
@@ -47,14 +49,14 @@ async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance
         maxFileBytes: 2_000_000,
       },
     },
-  } as never);
-  app.decorate('repos', {
+  });
+  decorateApp(app, 'repos', {
     projectMember: { findByCompositeKey: jest.fn(async () => (isMember ? { role: { value: options.role ?? 'viewer' } } : null)) },
     fileNode: { findByProjectId: jest.fn(async () => nodes()) },
     document: { findByFileNodeId: jest.fn(async () => null) },
     auditLog: { save: jest.fn() },
-  } as never);
-  app.decorate('stores', {
+  });
+  decorateApp(app, 'stores', {
     fileStore: {
       read: jest.fn(async (_p: unknown, path: { value: string }) => {
         const content = store.get(path.value);
@@ -67,13 +69,13 @@ async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance
     regexEngine: new Re2RegexEngine(),
     collaborativeContentEditor: { readContent: jest.fn(async () => ({ success: true, value: null })) },
     structuredCollaborativeEditor: { applyStructuredReplacement: options.applyStructured ?? jest.fn(async () => ({ success: true, value: 1 })) },
-  } as never);
+  });
   await app.register(projectSearchRoutes);
   await app.ready();
   return app;
 }
 
-const search = (app: FastifyInstance, body: unknown) =>
+const search = (app: FastifyInstance, body: InjectOptions['payload']) =>
   app.inject({ method: 'POST', url: `/projects/${PROJECT_ID}/search`, payload: body });
 
 describe('POST /projects/:projectId/search', () => {
@@ -128,7 +130,7 @@ describe('POST /projects/:projectId/search', () => {
   });
 });
 
-const replace = (app: FastifyInstance, body: unknown) =>
+const replace = (app: FastifyInstance, body: InjectOptions['payload']) =>
   app.inject({ method: 'POST', url: `/projects/${PROJECT_ID}/replace`, payload: body });
 
 const replaceBody = (over: Record<string, unknown> = {}) => ({

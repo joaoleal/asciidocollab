@@ -262,7 +262,7 @@ describe('useProjectPresence — cursorLine (feature 032)', () => {
 
     const { rerender } = renderHook(
       (props: { cursorLine: number | null }) => useProjectPresence({ ...baseProperties, cursorLine: props.cursorLine }),
-      { initialProps: { cursorLine: null } },
+      { initialProps: { cursorLine: null as number | null } },
     );
     rerender({ cursorLine: 10 });
 

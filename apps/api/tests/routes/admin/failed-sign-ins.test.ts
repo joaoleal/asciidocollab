@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { failedSignInsRoute } from '../../../src/routes/admin/failed-sign-ins';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -23,15 +24,15 @@ const mockAttempt = {
 
 function buildApp(isAdmin = true) {
   const app = Fastify();
-  app.decorate('config', {
+  decorateApp(app, 'config', {
     failedSignIn: { rateLimitMax: 120, rateLimitWindow: 60_000 },
-  } as never);
-  app.decorate('repos', {
+  });
+  decorateApp(app, 'repos', {
     authAttemptTelemetry: {
       findWithFilters: jest.fn().mockResolvedValue({ items: [mockAttempt], total: 1, page: 1, limit: 50 }),
     },
     user: { findById: jest.fn().mockResolvedValue({ id: { value: '550e8400-e29b-41d4-a716-446655440001' }, isAdmin }) },
-  } as never);
+  });
   app.register(failedSignInsRoute);
   return app;
 }

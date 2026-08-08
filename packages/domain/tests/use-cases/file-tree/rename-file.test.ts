@@ -104,7 +104,7 @@ describe('RenameFileUseCase', () => {
     const logs = await auditLogRepo.findByProjectId(projectId);
     expect(logs).toHaveLength(1);
     expect(logs[0].action).toBe('file.renamed');
-    expect(logs[0].userId.value).toBe(actorId.value);
+    expect(logs[0].userId?.value).toBe(actorId.value);
     expect(logs[0].metadata.previousName).toBe('original-name.txt');
     expect(logs[0].metadata.newName).toBe('new-name.txt');
   });

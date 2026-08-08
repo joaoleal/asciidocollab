@@ -1,3 +1,4 @@
+import type { InjectOptions } from 'fastify';
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
   getAuthenticatedUserId: jest.fn(() => '550e8400-e29b-41d4-a716-446655440001'),
@@ -42,7 +43,7 @@ function foreignComment(): ReviewComment {
   );
 }
 
-function patch(app: Awaited<ReturnType<typeof buildServer>>, body: unknown) {
+function patch(app: Awaited<ReturnType<typeof buildServer>>, body: InjectOptions['payload']) {
   return app.inject({ method: 'PATCH', url: itemUrl(), payload: body });
 }
 

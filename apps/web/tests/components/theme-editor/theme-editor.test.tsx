@@ -15,7 +15,7 @@ jest.mock('@/components/theme-editor/use-theme-preview', () => ({ useThemePrevie
 // that every edit reaches a save, and that it is disabled wherever the collaboration server owns
 // persistence instead.
 const mockSave = jest.fn();
-const mockAutoSave = jest.fn(() => ({ saveState: 'saved' as const, save: mockSave }));
+const mockAutoSave = jest.fn((_options: unknown) => ({ saveState: 'saved' as const, save: mockSave }));
 jest.mock('@/hooks/use-auto-save', () => ({ useAutoSave: (options: unknown) => mockAutoSave(options) }));
 
 // Editor preferences sync to the account over `fetch`, which jsdom does not provide. The behaviour

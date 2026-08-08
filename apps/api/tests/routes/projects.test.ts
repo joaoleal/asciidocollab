@@ -12,6 +12,7 @@ import {
   ProjectNotArchivedError,
 } from '@asciidocollab/domain';
 import { projectRoutes } from '../../src/routes/projects';
+import { decorateApp } from '../helpers/decorate-app';
 
 jest.mock('../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -53,7 +54,7 @@ const mockUser = {
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     project: { findById: jest.fn().mockResolvedValue(mockProject), save: jest.fn() },
     projectMember: {
       findByProjectId: jest.fn().mockResolvedValue([mockOwnerMember, mockMember]),
@@ -64,7 +65,7 @@ function buildTestServer() {
     fileNode: { save: jest.fn(), findByProjectId: jest.fn().mockResolvedValue([]) },
     auditLog: { save: jest.fn() },
   });
-  app.decorate('stores', {
+  decorateApp(app, 'stores', {
     fileStore: { removeDirectory: jest.fn(), remove: jest.fn() },
     yjsStateStore: { delete: jest.fn() },
   });
@@ -350,7 +351,7 @@ describe('POST /api/projects/:id/archive', () => {
   it('returns 400 ALREADY_ARCHIVED when project is already archived', async () => {
     jest.spyOn(ArchiveProjectUseCase.prototype, 'execute').mockResolvedValue({
       success: false,
-      error: new ProjectAlreadyArchivedError(PROJECT_ID),
+      error: new ProjectAlreadyArchivedError(),
     });
 
     const app = buildTestServer();
@@ -390,7 +391,7 @@ describe('POST /api/projects/:id/restore', () => {
   it('returns 400 NOT_ARCHIVED when project is not archived', async () => {
     jest.spyOn(RestoreProjectUseCase.prototype, 'execute').mockResolvedValue({
       success: false,
-      error: new ProjectNotArchivedError(PROJECT_ID),
+      error: new ProjectNotArchivedError(),
     });
 
     const app = buildTestServer();

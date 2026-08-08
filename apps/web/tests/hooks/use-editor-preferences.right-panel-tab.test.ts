@@ -11,7 +11,19 @@ import { useEditorPreferences } from '@/hooks/use-editor-preferences';
 const mockFetch = jest.fn();
 globalThis.fetch = mockFetch;
 
-const mockLocalStorage = {
+/**
+ * The slice of `Storage` these specs drive. Named so the double's `getItem` can refer back to its own
+ * `store` — an unannotated object literal that references itself is inferred as `any`.
+ */
+interface MockStorage {
+  store: Record<string, string>;
+  getItem: jest.Mock<string | null, [key: string]>;
+  setItem: jest.Mock<void, [key: string, value: string]>;
+  removeItem: jest.Mock<void, [key: string]>;
+  clear: jest.Mock<void, []>;
+}
+
+const mockLocalStorage: MockStorage = {
   store: {} as Record<string, string>,
   getItem: jest.fn((key: string) => mockLocalStorage.store[key] ?? null),
   setItem: jest.fn((key: string, value: string) => { mockLocalStorage.store[key] = value; }),

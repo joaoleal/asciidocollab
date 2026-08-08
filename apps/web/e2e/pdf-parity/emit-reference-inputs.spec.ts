@@ -28,6 +28,20 @@ import { preprocessOurs } from './harness/pipeline';
 import { browserShims } from './harness/shims';
 import { startStaticServer, type StaticServer } from './harness/static-server';
 
+/**
+ * The container's `--user` argument. `getuid`/`getgid` are absent on Windows, where this harness
+ * cannot run at all — so say that plainly rather than rendering "undefined:undefined" into a
+ * docker invocation.
+ */
+function posixUserAndGroup(): string {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined) {
+    throw new Error('this harness needs a POSIX host: process.getuid/getgid are unavailable');
+  }
+  return `${uid}:${gid}`;
+}
+
 const WEB_ROOT = process.cwd();
 const FIXTURES_DIR = path.join(WEB_ROOT, 'e2e', 'pdf-parity', 'fixtures');
 const MERMAID_BUNDLE = path.join(WEB_ROOT, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js');
@@ -88,7 +102,7 @@ async function emitReference(
     ['run', '--rm',
       '--network', 'none',
       // Never root — the PDF is copied straight back into the developer's checkout.
-      '--user', `${process.getuid()}:${process.getgid()}`,
+      '--user', posixUserAndGroup(),
       '-e', `SOURCE_DATE_EPOCH=${sourceDateEpoch}`,
       '-v', `${work}:/work`, '-w', '/work', image,
       // Through bundler, so the render resolves the LOCKED gem closure.

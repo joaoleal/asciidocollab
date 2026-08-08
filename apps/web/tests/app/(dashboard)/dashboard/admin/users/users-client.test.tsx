@@ -12,12 +12,18 @@ const mockRemoveUser = jest.fn();
 const mockUpdateAdminSettings = jest.fn();
 
 jest.mock('@/lib/api', () => {
+  // Mirrors the real ApiError's constructor (status, code, message, retryAfter) so the fixtures the
+  // specs build are the shape production actually throws. A `(code, message)` stand-in type-checks
+  // against nothing and silently shifts every argument one slot left.
   class MockApiError extends Error {
-    code: string;
-    constructor(code: string, message: string) {
+    constructor(
+      readonly status: number,
+      readonly code: string,
+      message: string,
+      readonly retryAfter?: number,
+    ) {
       super(message);
       this.name = 'ApiError';
-      this.code = code;
     }
   }
   return {
@@ -137,7 +143,7 @@ describe('UsersClient — invite user', () => {
   });
 
   test('maps a DUPLICATE_EMAIL error code to a friendly message', async () => {
-    mockInviteUser.mockRejectedValue(new ApiError('DUPLICATE_EMAIL', 'dup'));
+    mockInviteUser.mockRejectedValue(new ApiError(409, 'DUPLICATE_EMAIL', 'dup'));
     render(<UsersClient />);
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText(/email address/i), { target: { value: 'dup@example.com' } });
@@ -146,7 +152,7 @@ describe('UsersClient — invite user', () => {
   });
 
   test('maps an INVITATION_ALREADY_PENDING error code to a friendly message', async () => {
-    mockInviteUser.mockRejectedValue(new ApiError('INVITATION_ALREADY_PENDING', 'pending'));
+    mockInviteUser.mockRejectedValue(new ApiError(409, 'INVITATION_ALREADY_PENDING', 'pending'));
     render(<UsersClient />);
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText(/email address/i), { target: { value: 'p@example.com' } });
@@ -155,7 +161,7 @@ describe('UsersClient — invite user', () => {
   });
 
   test('uses the ApiError message for other API error codes', async () => {
-    mockInviteUser.mockRejectedValue(new ApiError('SOME_OTHER', 'specific reason'));
+    mockInviteUser.mockRejectedValue(new ApiError(400, 'SOME_OTHER', 'specific reason'));
     render(<UsersClient />);
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText(/email address/i), { target: { value: 'x@example.com' } });
@@ -185,7 +191,7 @@ describe('UsersClient — admin status toggle', () => {
 
   test('alerts when toggling admin status fails', async () => {
     const alertSpy = jest.spyOn(globalThis, 'alert').mockImplementation(() => { /* noop */ });
-    mockSetAdminStatus.mockRejectedValue(new ApiError('BAD', 'cannot change'));
+    mockSetAdminStatus.mockRejectedValue(new ApiError(400, 'BAD', 'cannot change'));
     render(<UsersClient />);
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     const aliceRow = screen.getByText('Alice').closest('tr');
@@ -250,7 +256,7 @@ describe('UsersClient — remove user', () => {
 
   test('alerts and keeps the user when removal fails', async () => {
     const alertSpy = jest.spyOn(globalThis, 'alert').mockImplementation(() => { /* noop */ });
-    mockRemoveUser.mockRejectedValue(new ApiError('LOCKED', 'still here'));
+    mockRemoveUser.mockRejectedValue(new ApiError(409, 'LOCKED', 'still here'));
     render(<UsersClient />);
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     const aliceRow = screen.getByText('Alice').closest('tr');

@@ -9,6 +9,7 @@ function namedError(name: string, message = name) {
   return Object.assign(new Error(message), { name });
 }
 import { usersRemoveRoute } from '../../../src/routes/admin/users-remove';
+import { decorateApp } from '../../helpers/decorate-app';
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -23,10 +24,10 @@ const TARGET_ID = '550e8400-e29b-41d4-a716-446655440002';
 
 function buildTestServer() {
   const app = Fastify();
-  app.decorate('repos', {
+  decorateApp(app, 'repos', {
     user: { findById: jest.fn(), delete: jest.fn() },
     projectMember: { findByUserId: jest.fn(), findSoleOwnerProjects: jest.fn() },
-    session: { deleteAllForUser: jest.fn() },
+    session: { deleteByUserId: jest.fn() },
     auditLog: { save: jest.fn() },
   });
   app.register(usersRemoveRoute);

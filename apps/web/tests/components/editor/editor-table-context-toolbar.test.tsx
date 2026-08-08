@@ -270,7 +270,7 @@ describe('EditorTableContextToolbar', () => {
 
   // ── action coverage: each enabled button dispatches a change ─────────────────
 
-  const clickableActions: Array<[string, Partial<typeof makeContext extends (...arguments_: unknown[]) => infer R ? R : never>]> = [
+  const clickableActions: Array<[string, Partial<TableContext>]> = [
     ['Add Row Above',     {}],
     ['Remove Row',        { rowCount: 2, isInHeader: false }],
     ['Add Column Left',   {}],
