@@ -30,105 +30,9 @@ import { cn } from "@/lib/utilities";
 // stylesheet co-locates only the rules the three-layer page stack needs (see the file's header). It is
 // imported by relative path (matching asciidoc-preview.tsx) so the jest css stub matches it.
 import "../styles/pdf-preview.css";
+import { createPreviewLinkService } from "@/lib/pdf-preview-link-service";
+import { clamp } from "@/lib/utilities";
 
-/**
- * The exact pdf.js link-service type `AnnotationLayer.render` expects, derived from the installed types
- * so the preview's service below satisfies the real contract without a cast.
- */
-type PdfLinkService = Parameters<AnnotationLayer["render"]>[0]["linkService"];
-
-/**
- * Build the pdf.js link service the annotation layer renders link annotations through, scoped to one
- * loaded document. External `http(s)` links become hardened new-tab anchors (unchanged); internal links
- * (cross-references, the TOC, figure/image refs) resolve their destination against the document and
- * scroll the target page into view — offset within the page when the destination carries a y-coordinate.
- * Invalid or missing destinations are swallowed so a dead link never throws.
- *
- * @param binding - The loaded pdf.js document and the page-stack container/scroll viewport to scroll.
- * @param binding.pdfDocument - The loaded document, used to resolve a destination to a page index.
- * @param binding.pagesContainer - The stack whose children are the rendered page elements.
- * @param binding.scrollContainer - The scroll viewport whose `scrollTop` positions the destination.
- * @returns A link service satisfying the annotation layer's contract for this document.
- */
-function createPreviewLinkService(binding: {
-  pdfDocument: PDFDocumentProxy;
-  pagesContainer: HTMLElement;
-  scrollContainer: HTMLElement;
-}): PdfLinkService {
-  const { pdfDocument, pagesContainer, scrollContainer } = binding;
-
-  /** Scroll the resolved 0-based page index into view, offsetting within it by `yFraction` when known. */
-  const scrollToPage = (pageIndex: number, yFraction: number | null): void => {
-    const pageElement = pagesContainer.children[pageIndex];
-    if (!(pageElement instanceof HTMLElement)) return;
-    if (yFraction === null) {
-      pageElement.scrollIntoView({ block: "start" });
-      return;
-    }
-    // offsetTop/offsetHeight are layout metrics that ignore any CSS zoom transform, so the target stays
-    // correct while a debounced re-paint is pending.
-    scrollContainer.scrollTop =
-      pageElement.offsetTop + yFraction * pageElement.offsetHeight - INTERNAL_LINK_TOP_MARGIN;
-  };
-
-  return {
-    pagesCount: 0,
-    page: 0,
-    rotation: 0,
-    isInPresentationMode: false,
-    externalLinkEnabled: true,
-    addLinkAttributes(link, url) {
-      link.href = url;
-      link.title = url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-    },
-    getDestinationHash() {
-      // The href is cosmetic — navigation happens through goToDestination on click — so an empty hash
-      // is fine and avoids fabricating a page-anchor the scrollable preview has no location bar for.
-      return "";
-    },
-    getAnchorUrl() {
-      return "";
-    },
-    async goToDestination(destination) {
-      try {
-        const explicit =
-          typeof destination === "string"
-            ? await pdfDocument.getDestination(destination)
-            : destination;
-        if (!Array.isArray(explicit) || explicit.length === 0) return;
-        const pageIndex = await pdfDocument.getPageIndex(explicit[0]);
-        if (!Number.isInteger(pageIndex) || pageIndex < 0) return;
-        // An explicit destination is `[pageRef, {name}, x, y, zoom]`; a numeric y is the target's top in
-        // PDF points measured up from the page bottom. Convert it to a fraction from the top.
-        const y = explicit[3];
-        if (typeof y === "number" && Number.isFinite(y)) {
-          const page = await pdfDocument.getPage(pageIndex + 1);
-          const heightPoints = page.getViewport({ scale: 1 }).height;
-          const fraction = heightPoints > 0 ? clamp((heightPoints - y) / heightPoints, 0, 1) : 0;
-          scrollToPage(pageIndex, fraction);
-        } else {
-          scrollToPage(pageIndex, null);
-        }
-      } catch {
-        // A missing/invalid destination must not throw; leave the view where it is.
-      }
-    },
-    goToPage() {
-      // The preview renders every page at once, so there is nothing to navigate to.
-    },
-    setHash() {
-      // The preview has no addressable location bar to update.
-    },
-    executeNamedAction() {
-      // Named actions (print, next-page, …) have no meaning in a scrollable preview.
-    },
-    executeSetOCGState() {
-      // Optional-content toggles are not exposed by the preview.
-    },
-  };
-}
 
 /** A source location the editor can reveal when a diagnostic carries one. */
 type DiagnosticLocation = NonNullable<RenderDiagnostic["location"]>;
@@ -233,8 +137,6 @@ const SYNC_TOP_FRACTION = 0.18;
  */
 const SYNC_TOP_MARGIN = 12;
 
-/** The same top breathing room applied when an internal link scrolls its destination into view. */
-const INTERNAL_LINK_TOP_MARGIN = 12;
 
 /**
  * The zoom control's state: `fit` scales each page to the panel's current width, while `custom` pins
@@ -282,17 +184,6 @@ function ensurePdfWorkerConfigured(): void {
   }
 }
 
-/**
- * Clamp a value into the inclusive `[low, high]` range.
- *
- * @param value - The value to constrain.
- * @param low - The lower bound.
- * @param high - The upper bound.
- * @returns The value clamped to the range.
- */
-function clamp(value: number, low: number, high: number): number {
-  return Math.min(high, Math.max(low, value));
-}
 
 /**
  * Whether two byte sequences are the same document.
@@ -838,6 +729,8 @@ export function PdfPreviewPanel({
         pageWork.set(slot.number, work);
 
         const renderTask = page.render({
+          // pdfjs-dist 6 requires the canvas itself alongside its context.
+          canvas,
           canvasContext: context,
           viewport,
           transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
@@ -859,6 +752,8 @@ export function PdfPreviewPanel({
         // Clickable-link overlay: render only the page's link annotations through the minimal service.
         const annotations = await page.getAnnotations();
         if (cancelled) return;
+        // pdfjs-dist 6 moved `linkService` onto the constructor and added `commentManager` /
+        // `annotationStorage`; the preview supplies neither editing nor comments, so both are null.
         const annotationLayer = new AnnotationLayer({
           div: annotationDiv,
           page,
@@ -867,12 +762,17 @@ export function PdfPreviewPanel({
           annotationCanvasMap: null,
           annotationEditorUIManager: null,
           structTreeLayer: null,
+          commentManager: null,
+          linkService,
+          annotationStorage: null,
         });
         await annotationLayer.render({
           annotations,
           div: annotationDiv,
           page,
           viewport,
+          // Dead weight at runtime in pdfjs-dist 6 (the layer uses the copy it took in its
+          // constructor), but still required by the declared parameter type.
           linkService,
           renderForms: false,
         });

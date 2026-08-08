@@ -487,7 +487,6 @@ export async function extractPageFormatDocument(bytes: Uint8Array): Promise<Cros
   const links = await internalLinkTargets(bytes);
   const pdf = await getDocument({
     data: new Uint8Array(bytes),
-    isEvalSupported: false,
     useSystemFonts: false,
     verbosity: 0, // Errors only: font/standard-data notices would drown the run's output.
   }).promise;
@@ -514,7 +513,8 @@ export async function extractPageFormatDocument(bytes: Uint8Array): Promise<Cros
     return { text, headings, references };
   } finally {
     // Releases the (fake, in-process) worker; without it the Node process keeps a live task per PDF.
-    await pdf.destroy();
+    // pdfjs-dist 6 removed `PDFDocumentProxy.destroy()` — the loading task owns the worker.
+    await pdf.loadingTask.destroy();
   }
 }
 

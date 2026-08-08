@@ -235,6 +235,21 @@ module.exports = tseslint.config(
     },
   },
 
+  // Same rationale, second boundary: pdf.js declares the annotation layer's `linkService` as the
+  // concrete `PDFLinkService` from its bundled web viewer — a class this app cannot construct (the
+  // viewer bundle requires a `globalThis.pdfjsLib`, and its `EventBus` is not exported from the
+  // package entry) and does not need, because `AnnotationLayer` reads the copy taken in its
+  // constructor rather than the `render()` parameter. Reconciling the preview's minimal service to
+  // that declared type cannot be expressed cast-free, so the rule is relaxed HERE ONLY; the module
+  // keeps its own implementation structurally checked via `satisfies PreviewLinkService`, and the
+  // preview component that consumes it stays cast-free.
+  {
+    files: ['apps/web/src/lib/pdf-preview-link-service.ts'],
+    rules: {
+      '@typescript-eslint/consistent-type-assertions': 'off',
+    },
+  },
+
   // Import-boundary: the domain / application / infrastructure rings must never pull in the
   // browser-only PDF leaf. PDF rendering is a delivery-layer concern instantiated only inside the
   // web app; letting an inner ring import it would drag browser-only runtime into environment-
