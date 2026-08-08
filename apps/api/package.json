@@ -26,7 +26,7 @@
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^5.2.6",
     "@prisma/adapter-pg": "^7.8.0",
-    "@prisma/client": "^7.8.0",
+    "@prisma/client": "^7.9.1",
     "argon2": "^0.44.0",
     "convict": "^6.2.5",
     "fastify": "^5.8.5",
@@ -39,9 +39,10 @@
     "archiver": "^7.0.1"
   },
   "devDependencies": {
+    "@asciidocollab/asciidoc-core": "workspace:*",
     "@asciidocollab/testing": "workspace:*",
-    "@types/convict": "^6.1.6",
     "@types/archiver": "^6.0.3",
+    "@types/convict": "^6.1.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.12.4",
     "@types/nodemailer": "^8.0.0",

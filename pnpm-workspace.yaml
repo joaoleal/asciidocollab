@@ -4,22 +4,28 @@ packages:
 overrides:
   # Force the patched esbuild (GHSA-gv7w-rqvm-qjhr); only pulled transitively via tsx.
   esbuild@<0.28.1: ">=0.28.1"
-  # Force patched brace-expansion (ReDoS GHSA-3jxr-9vmj-r5cp; DoS/OOM GHSA-mh99-v99m-4gvg fixed in
-  # 5.0.8); pulled transitively via jest and eslint, all through minimatch. Each MAJOR must stay on its
-  # own line: the majors are NOT API compatible (v1 exports the expand function as module.exports; v2+
-  # do not), and minimatch 3.x still requests ^1.1.7 — an unversioned `brace-expansion: ">=5.0.8"` drags
-  # it to v5 and breaks it with `TypeError: expand is not a function` (eslint config-array resolution
-  # dies on it). The selector is the advisory's vulnerable range and the target is the exact patched
-  # version for that major, so each consumer is patched in place without a cross-major bump.
-  brace-expansion@<1.1.16: 1.1.16
-  brace-expansion@>=2.0.0 <2.1.2: 2.1.2
-  brace-expansion@>=3.0.0 <5.0.8: 5.0.8
+  # Force patched brace-expansion (ReDoS GHSA-3jxr-9vmj-r5cp; DoS/OOM GHSA-mh99-v99m-4gvg; and the
+  # later round fixed in 1.1.18 / 2.1.4 / 5.0.9); pulled transitively via jest and eslint, all through
+  # minimatch. Each MAJOR must stay on its own line: the majors are NOT API compatible (v1 exports the
+  # expand function as module.exports; v2+ do not), and minimatch 3.x still requests ^1.1.7 — an
+  # unversioned `brace-expansion: ">=5.0.9"` drags it to v5 and breaks it with `TypeError: expand is
+  # not a function` (eslint config-array resolution dies on it). The selector is the advisory's
+  # vulnerable range and the target is the exact patched version for that major, so each consumer is
+  # patched in place without a cross-major bump.
+  #
+  # These pin an EXACT version, so a later advisory against that exact version cannot be resolved by
+  # `pnpm update` — the override holds the tree down at it. When the audit reports brace-expansion
+  # again, raise the target here; that is the only thing that moves it.
+  brace-expansion@<1.1.18: 1.1.18
+  brace-expansion@>=2.0.0 <2.1.4: 2.1.4
+  brace-expansion@>=3.0.0 <5.0.9: 5.0.9
   # Transitive high-severity advisories with no clean parent-bump path — force the patched version.
   # Each stays within its installed major (safe) except @fastify/static (see below). Selector = the
   # advisory's vulnerable range, target = the real patched version on the registry.
   sharp@<0.35.0: ">=0.35.0"           # GHSA-f88m-g3jw-g9cj (transitive)
-  postcss@<8.5.18: ">=8.5.18"         # GHSA-6g55-p6wh-862q + GHSA-r28c-9q8g-f849 (transitive 8.4.x/8.5.x)
-  fast-uri@>=3.0.0 <3.1.4: ">=3.1.4 <4"  # GHSA-v2hh-gcrm-f6hx (fastify); <4 to stay within the major
+  postcss@<8.5.23: ">=8.5.23"         # GHSA-6g55-p6wh-862q + GHSA-r28c-9q8g-f849 + GHSA-jf7x-hpj3-4qcv
+  fast-uri@>=3.0.0 <3.1.5: ">=3.1.5 <4"  # GHSA-v2hh-gcrm-f6hx + GHSA-7p8r-x3mc-p8w7 (fastify); <4 to
+                                         # stay within the major
   find-my-way@>=9.0.0 <9.7.0: ">=9.7.0 <10"  # GHSA-c96f-x56v-gq3h; advisory names 9.6.1 but the
                                              # registry only has 9.7.0 as the patched 9.x release
   # @fastify/static: patched only at 10.x while @fastify/swagger-ui (its sole consumer here) still
