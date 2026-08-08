@@ -10,7 +10,7 @@ const globals = require('globals');
 module.exports = tseslint.config(
   // Design-sync working artifacts (also .gitignored): generated .jsx/CSS not part of any tsconfig
   // project, so linting them errors out. Keep in sync with the design-sync entries in .gitignore.
-  { ignores: ['**/dist/**', '**/*.generated.ts', 'node_modules/**', '**/coverage/**', '**/*.js', '**/*.cjs', '**/*.mjs', '**/*.d.ts', '**/specs/**', '**/.next/**', '**/.next-dev/**', '**/next-env.d.ts', '**/prisma.config.ts', '**/scripts/**', '.claude/**', 'ds-bundle/**', '.ds-sync/**', '.design-sync/**'] },
+  { ignores: ['**/dist/**', '**/*.generated.ts', 'node_modules/**', '**/coverage/**', '**/*.js', '**/*.cjs', '**/*.mjs', '**/*.d.ts', '**/specs/**', '**/.next/**', '**/.next-dev/**', '**/next-env.d.ts', '**/public/vendor/**', '**/prisma.config.ts', '**/scripts/**', '.claude/**', 'ds-bundle/**', '.ds-sync/**', '.design-sync/**'] },
 
   eslint.configs.recommended,
 

@@ -45,7 +45,11 @@ function posixUserAndGroup(): string {
 const WEB_ROOT = process.cwd();
 const FIXTURES_DIR = path.join(WEB_ROOT, 'e2e', 'pdf-parity', 'fixtures');
 const MERMAID_BUNDLE = path.join(WEB_ROOT, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js');
-const MATHJAX_ES5_DIR = path.join(WEB_ROOT, 'node_modules', 'mathjax', 'es5');
+// MathJax 4 dropped the `es5/` directory — the browser bundles sit at the package root now.
+const MATHJAX_BUNDLE_DIR = path.join(WEB_ROOT, 'node_modules', 'mathjax');
+// MathJax 4's fonts live in their own package; serving the scope directory means the loader's
+// `[fonts]/mathjax-newcm-font/...` resolves against this origin instead of the default CDN.
+const MATHJAX_FONTS_DIR = path.join(WEB_ROOT, 'node_modules', '@mathjax');
 /**
  * The SAME content-addressed image the other reference tools use, built from the pinned Dockerfile
  * and locked gem closure. This used to be `adc-pdf-ref:latest` — a moving tag over an image nothing
@@ -120,16 +124,19 @@ async function emitReference(
 test.describe('emit reference inputs (math + diagrams)', () => {
   test.skip(!emitEnabled, 'Set PARITY_EMIT=1 to regenerate the math/diagrams reference builds.');
   test.skip(
-    !existsSync(MERMAID_BUNDLE) || !existsSync(path.join(MATHJAX_ES5_DIR, 'tex-mml-svg.js')),
+    !existsSync(MERMAID_BUNDLE) || !existsSync(path.join(MATHJAX_BUNDLE_DIR, 'tex-mml-svg.js')),
     'mermaid/MathJax bundles not installed.',
   );
 
   let mathjaxServer: StaticServer;
+  let mathjaxFontsServer: StaticServer;
   test.beforeAll(async () => {
-    mathjaxServer = await startStaticServer(MATHJAX_ES5_DIR);
+    mathjaxServer = await startStaticServer(MATHJAX_BUNDLE_DIR);
+    mathjaxFontsServer = await startStaticServer(MATHJAX_FONTS_DIR);
   });
   test.afterAll(async () => {
     await mathjaxServer?.stop();
+    await mathjaxFontsServer?.stop();
   });
 
   for (const fixtureName of ['math', 'diagrams']) {
@@ -137,6 +144,7 @@ test.describe('emit reference inputs (math + diagrams)', () => {
       const shims = browserShims(page, {
         mermaidBundlePath: MERMAID_BUNDLE,
         mathjaxBaseUrl: mathjaxServer.baseUrl,
+        mathjaxFontsBaseUrl: mathjaxFontsServer.baseUrl,
       });
       const { files, diagnostics } = await preprocessOurs(snapshotFor(fixtureName), shims);
       if (diagnostics.length > 0) {

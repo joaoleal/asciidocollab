@@ -76,7 +76,7 @@ const config = {
       testEnvironment: 'node',
       // Exclude `*.integration.test.ts`: those load the REAL self-hosted MathJax bundle, which
       // pollutes the shared worker's module/global state and collides with the unit suites that
-      // VIRTUAL-mock the same `mathjax/es5/*` paths. They run in their own project (below) so the
+      // VIRTUAL-mock the same `mathjax/*` bundle paths. They run in their own project (below) so the
       // two never share a worker.
       testMatch: ['**/tests/**/*.test.ts'],
       testPathIgnorePatterns: ['/node_modules/', '\\.integration\\.test\\.ts$'],
@@ -102,9 +102,13 @@ const config = {
       coveragePathIgnorePatterns,
     },
     {
-      // Integration suites that load the REAL self-hosted MathJax bundle (no mock) to validate the
-      // actual delimiter→input-jax wiring. Isolated in their own project so the real bundle's global
-      // side effects never leak into the virtual-mocked unit suites.
+      // Suites that drive a REAL engine rather than a mock of one, kept in their own project so
+      // whatever globals that engine installs never leak into the unit suites.
+      //
+      // Each such suite picks its own environment with a `@jest-environment` docblock, because what
+      // they need genuinely differs: the MathJax suite builds the engine from `@mathjax/src` modules
+      // and runs under `node`, the grammar/collab one needs `jsdom`. Both currently override the
+      // default below, which is kept only as the fallback for a suite that states no preference.
       displayName: 'integration',
       testEnvironment: 'jsdom',
       testMatch: ['**/tests/**/*.integration.test.ts'],

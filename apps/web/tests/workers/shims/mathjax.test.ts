@@ -1,17 +1,17 @@
 // Contract unit tests for the MathJax math shim. These run in the jest `node` project (NO DOM: there is
 // no `window`/`document`), which is the whole point — the shim now typesets with the DOM-free
-// `mathjax-full` liteAdaptor so it can run inside the PDF Web Worker, which has no DOM.
+// `@mathjax/src` liteAdaptor so it can run inside the PDF Web Worker, which has no DOM.
 //
 // Two layers are asserted here:
 //   - the RenderShim CONTRACT, exercised through an injected in-memory `MathSvgConverter` fake
 //     (identity, SVG-bytes mapping, notation/layout param selection, error mapping, determinism); and
-//   - the DEFAULT converter (no injection), which drives the real `mathjax-full` engine and MUST
+//   - the DEFAULT converter (no injection), which drives the real `@mathjax/src` engine and MUST
 //     produce typeset SVG WITHOUT a DOM — the capability the browser `<script>` path could never have.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import mathjaxPackage from 'mathjax-full/package.json';
+import mathjaxPackage from '@mathjax/src/package.json';
 
 import type { ShimInput, ShimOutput } from '@asciidocollab/asciidoc-pdf';
 
@@ -261,7 +261,7 @@ describe('createMathJaxShim — error mapping (never throws)', () => {
   });
 });
 
-describe('createMathJaxShim — default converter typesets WITHOUT a DOM (mathjax-full liteAdaptor)', () => {
+describe('createMathJaxShim — default converter typesets WITHOUT a DOM (@mathjax/src liteAdaptor)', () => {
   // Guard the premise: this project is the jest `node` environment, so there is genuinely no DOM. If
   // the default converter still produces SVG below, it proves the engine never touched `window`/`document`.
   it('runs in a genuinely DOM-free environment', () => {
@@ -364,13 +364,13 @@ describe('createMathJaxShim — default converter matches the committed PDF-pari
       label: 'quadratic formula (latexmath, display)',
       source: String.raw`x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}`,
       notation: 'latexmath',
-      referenceFile: '1087f6478a440397.svg',
+      referenceFile: '3d2f9f6de6bd4c18.svg',
     },
     {
       label: 'summation (asciimath, display)',
       source: 'sum_(i=1)^n i = (n(n+1))/2',
       notation: 'asciimath',
-      referenceFile: 'd2dce427889c5ba9.svg',
+      referenceFile: '82509c251f2b03c2.svg',
     },
   ] as const;
 

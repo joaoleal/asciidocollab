@@ -45,7 +45,11 @@ const WEB_ROOT = process.cwd();
 const WASM_PATH = path.join(WEB_ROOT, '..', '..', 'packages', 'asciidoc-pdf', 'ruby', 'asciidoctor-pdf.wasm');
 const FIXTURES_DIR = path.join(WEB_ROOT, 'e2e', 'pdf-parity', 'fixtures');
 const MERMAID_BUNDLE = path.join(WEB_ROOT, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js');
-const MATHJAX_ES5_DIR = path.join(WEB_ROOT, 'node_modules', 'mathjax', 'es5');
+// MathJax 4 dropped the `es5/` directory — the browser bundles sit at the package root now.
+const MATHJAX_BUNDLE_DIR = path.join(WEB_ROOT, 'node_modules', 'mathjax');
+// MathJax 4's fonts live in their own package; serving the scope directory means the loader's
+// `[fonts]/mathjax-newcm-font/...` resolves against this origin instead of the default CDN.
+const MATHJAX_FONTS_DIR = path.join(WEB_ROOT, 'node_modules', '@mathjax');
 
 const enginePresent = existsSync(WASM_PATH);
 const parityCases = loadParityCases(FIXTURES_DIR);
@@ -161,6 +165,7 @@ function expectTextLayerParity(ours: string, reference: string): void {
 test.describe('PDF reference parity (render vs external build)', () => {
   let engine: ParityEngine;
   let mathjaxServer: StaticServer;
+  let mathjaxFontsServer: StaticServer;
 
   test.beforeAll(async () => {
     test.skip(
@@ -168,12 +173,14 @@ test.describe('PDF reference parity (render vs external build)', () => {
       `Asciidoctor-PDF wasm engine not present at ${WASM_PATH}; build it to enable the parity suite.`,
     );
     engine = await createParityEngine(WASM_PATH);
-    mathjaxServer = await startStaticServer(MATHJAX_ES5_DIR);
+    mathjaxServer = await startStaticServer(MATHJAX_BUNDLE_DIR);
+    mathjaxFontsServer = await startStaticServer(MATHJAX_FONTS_DIR);
   });
 
   test.afterAll(async () => {
     engine?.dispose();
     await mathjaxServer?.stop();
+    await mathjaxFontsServer?.stop();
   });
 
   // A fixture with no committed reference PDF contributes no case at all, so an empty list means the
@@ -198,6 +205,7 @@ test.describe('PDF reference parity (render vs external build)', () => {
         ? browserShims(page as Page, {
             mermaidBundlePath: MERMAID_BUNDLE,
             mathjaxBaseUrl: mathjaxServer.baseUrl,
+        mathjaxFontsBaseUrl: mathjaxFontsServer.baseUrl,
           })
         : nodeShims();
       const { pdfBytes, diagnostics } = await renderOurs(snapshotFor(parityCase), shims, engine);
@@ -261,6 +269,7 @@ test.describe('PDF reference parity (render vs external build)', () => {
       ? browserShims(page as Page, {
           mermaidBundlePath: MERMAID_BUNDLE,
           mathjaxBaseUrl: mathjaxServer.baseUrl,
+        mathjaxFontsBaseUrl: mathjaxFontsServer.baseUrl,
         })
       : nodeShims();
 

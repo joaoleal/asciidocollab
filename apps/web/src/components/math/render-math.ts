@@ -4,7 +4,7 @@
 // `\$…\$` (asciimath), display `\[…\]`, wrapped for blocks in `<div class="stemblock">`. The render
 // worker leaves it untouched and DOMPurify keeps it (the delimiters are plain text), so by the time
 // we get here the math is already inside the sanitized, scoped `.asciidoc-preview-content` container.
-// This module typesets that already-sanitized DOM in place with MathJax 3.
+// This module typesets that already-sanitized DOM in place with MathJax 4.
 //
 // Output: when the browser can render native MathML (`MathMLElement` exists — Chromium ≥109, Firefox,
 // Safari), each expression is converted to a native `<math>` element (`tex2mmlPromise`/
@@ -24,10 +24,10 @@
 // Constraints (Constitution VI/VIII/IX):
 // - Self-hosted only: MathJax loads from the web app's OWN `public/vendor/mathjax/` (copied from the
 //   `mathjax` npm package at build time by scripts/build-mathjax-assets.mjs). No CDN, no network.
-// - Real `<script>` tag, not `import()`: the package's `es5/*` files are browser IIFE bundles, not ES
+// - Real `<script>` tag, not `import()`: the package's bundle files are browser IIFE scripts, not ES
 //   modules. Importing them as modules in the Next.js/webpack browser bundle does NOT run their global
-//   side effects / deferred MathJax 3 startup, so the convert helpers never appear and nothing renders
-//   (even though it works under jsdom's CommonJS `require`). The supported MathJax 3 browser path is a
+//   side effects / deferred MathJax startup, so the convert helpers never appear and nothing renders
+//   (and MathJax 4's bundle cannot be `require`d under Node at all). The supported browser path is a
 //   `<script src=".../tex-mml-chtml.js">`; MathJax derives its component base URL from that script's
 //   `src`, so the AsciiMath component requested via `loader.load` resolves to the same self-hosted
 //   `/vendor/mathjax/input/asciimath.js`.
@@ -45,6 +45,10 @@
 const MATHJAX_BASE = '/vendor/mathjax';
 /** The combined entry bundle: TeX + MathML input, CHTML output, and the loader/startup. */
 const MATHJAX_SCRIPT = `${MATHJAX_BASE}/tex-mml-chtml.js`;
+/** Where the self-hosted font packages live; the loader appends the font's own package name. */
+const MATHJAX_FONTS_BASE = `${MATHJAX_BASE}/fonts`;
+/** The default font's own directory, for the asset URLs that bypass the loader. */
+const MATHJAX_FONT_BASE = `${MATHJAX_FONTS_BASE}/mathjax-newcm-font`;
 
 /** Output document exposed by MathJax startup; used to attach CHTML styles/fonts after conversion. */
 interface MathJaxDocument {
@@ -54,7 +58,7 @@ interface MathJaxDocument {
   updateDocument: () => void;
 }
 
-/** Minimal shape of the parts of the MathJax 3 global object this module uses. */
+/** Minimal shape of the parts of the MathJax global object this module uses. */
 interface MathJaxGlobal {
   /**
    * Convert a TeX (latexmath) expression string to a CHTML `mjx-container` node.
@@ -100,8 +104,17 @@ interface MathJaxGlobal {
   tex?: { inlineMath?: string[][]; displayMath?: string[][] };
   /** AsciiMath input config — delimiter pairs Asciidoctor wraps asciimath in. */
   asciimath?: { delimiters?: string[][] };
-  /** Component loader config — extra input/output components to fetch from the bundle base. */
-  loader?: { load?: string[] };
+  /**
+   * Component loader config — extra input/output components to fetch, and where to fetch them from.
+   *
+   * `paths.fonts` MUST be set. MathJax 4 defaults it to `https://cdn.jsdelivr.net/npm/@mathjax`, so
+   * leaving it alone sends the first equation on a page out to a CDN.
+   */
+  loader?: { load?: string[]; paths?: Record<string, string> };
+  /** CHTML output config — where the font's woff2 files and on-demand glyph chunks are served from. */
+  chtml?: { fontURL?: string; dynamicPrefix?: string };
+  /** Document-level options; used here to keep MathJax 4's new a11y extensions off. */
+  options?: { menuOptions?: { settings?: { enrich?: boolean; speech?: boolean; braille?: boolean } } };
 }
 
 declare global {
@@ -118,7 +131,7 @@ let mathJaxLoad: Promise<MathJaxGlobal | undefined> | null = null;
 
 /**
  * Inject the self-hosted MathJax script element and resolve once it has loaded. The configuration
- * must be installed on the MathJax global before the script runs, because MathJax 3 reads it on
+ * must be installed on the MathJax global before the script runs, because MathJax reads it on
  * load. The returned promise rejects on the script element's error event, such as when the asset is
  * missing, so the caller can clear the singleton and retry.
  *
@@ -139,9 +152,43 @@ function injectMathJaxScript(): Promise<void> {
       asciimath: { delimiters: [[String.raw`\$`, String.raw`\$`]] },
       // `tex-mml-chtml` does NOT bundle the AsciiMath input jax — ask the loader to fetch it from the
       // same self-hosted base (MathJax derives the base from this script's src → /vendor/mathjax/).
-      loader: { ...globalThis.MathJax?.loader, load: ['input/asciimath'] },
+      //
+      // `paths.fonts` is the one that does not default safely. MathJax 4 moved the fonts out of the
+      // engine into their own package and points at `https://cdn.jsdelivr.net/npm/@mathjax` unless
+      // told otherwise, so this override is what keeps the preview offline and same-origin. Fonts are
+      // copied under `fonts/` by scripts/build-mathjax-assets.mjs; the loader appends the font's own
+      // name, resolving to `/vendor/mathjax/fonts/mathjax-newcm-font/…`.
+      loader: {
+        ...globalThis.MathJax?.loader,
+        load: ['input/asciimath'],
+        paths: { ...globalThis.MathJax?.loader?.paths, fonts: MATHJAX_FONTS_BASE },
+      },
+      // The woff2 files and the on-demand glyph chunks are addressed directly rather than through the
+      // loader, so they need pointing at the same self-hosted copy for the same reason.
+      chtml: {
+        ...globalThis.MathJax?.chtml,
+        fontURL: `${MATHJAX_FONT_BASE}/chtml/woff2`,
+        dynamicPrefix: `${MATHJAX_FONT_BASE}/chtml/dynamic`,
+      },
       // We drive conversion ourselves (per container, post-sanitize); preserve any startup fields.
       startup: { ...globalThis.MathJax?.startup, typeset: false },
+      // MathJax 4 turns speech, braille and semantic enrichment ON by default; MathJax 3 loaded no
+      // accessibility extension at all, so leaving them on would ADD behaviour rather than preserve it —
+      // enrichment rewrites the MathML (inserting explicit invisible-times operators) and costs work on
+      // every expression. Screen-reader support here comes from the native MathML output this module
+      // prefers wherever the browser renders MathML, which assistive tech reads directly.
+      //
+      // It MUST be `menuOptions.settings`. The document-level `enableSpeech`/`enableEnrichment` flags
+      // read like the obvious knob and are silently ineffective — measured against 4.1.3, enrichment
+      // still ran with them set to false. This form actually takes effect.
+      //
+      // Note none of this stops MathJax starting its speech-rule-engine Worker; it fetches speech maps
+      // from `sre/mathmaps/`, which are part of the self-hosted copy under `/vendor/mathjax/`, so that
+      // request stays same-origin and offline.
+      options: {
+        ...globalThis.MathJax?.options,
+        menuOptions: { settings: { enrich: false, speech: false, braille: false } },
+      },
     };
 
     const script = document.createElement('script');
@@ -159,7 +206,7 @@ function injectMathJaxScript(): Promise<void> {
 }
 
 /**
- * Lazily load and configure self-hosted MathJax 3 for BOTH TeX and AsciiMath input with CHTML
+ * Lazily load and configure self-hosted MathJax 4 for BOTH TeX and AsciiMath input with CHTML
  * output. Idempotent: subsequent calls reuse the cached promise. Returns `undefined` outside the
  * browser (SSR) where there is no `document` to inject into.
  *
