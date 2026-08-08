@@ -34,6 +34,12 @@ apps/collab/tests/**/*.d.ts
 apps/collab/tests/**/*.d.ts.map
 apps/collab/tests/**/*.js
 apps/collab/tests/**/*.js.map
+# Hand-written source, not compiler emit — the blanket rule above is aimed at what tsc drops into
+# tests/, and it swallowed this one silently. That is the expensive kind of mistake: the file exists
+# locally, so every local type-check passes against a declaration CI has never seen, and the failure
+# appears only after a push. Anything else hand-written under these directories needs the same
+# exemption.
+!apps/collab/tests/jest-esm.d.ts
 
 TODO.txt
 .TODO.*
