@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
 import { createTestFile } from './helpers/test-project';
-import { openProject, openFile, editorContent } from './helpers/editor';
+import { openProject, openFile, editorContent, waitCollabSynced } from './helpers/editor';
 
 // LIVE attribute collapse-to-value, reproducing the user's exact manual flow:
 // an EMPTY file, NO main file configured, with the document TYPED live (not seeded via the REST
@@ -42,7 +42,7 @@ test.describe('live {attr} collapse-to-value (no main file, typed live)', () => 
     await openProject(page, projectId);
     await openFile(page, 'live.adoc');
     // Wait for collaborative sync before typing so the keystrokes land in the synced document.
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
 
     const content = editorContent(page);
     await content.click();

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
-import { createAdocFile, setMainFile, openProject, openFile, expandPreview } from './helpers/editor';
+import { createAdocFile, setMainFile, openProject, openFile, expandPreview, waitCollabSynced } from './helpers/editor';
 
 // Client-side STEM rendering. A `:stem:` file's math must be typeset by
 // self-hosted MathJax in the live preview — and WITHOUT the stray `$` artifact the old auto
@@ -70,7 +70,7 @@ test.describe('preview STEM (MathJax) rendering', () => {
     await openFile(page, 'math.adoc');
     // The preview renders the collaboratively-synced editor document; wait for the sync to finish
     // (the "connecting" banner clears) before expanding so it never renders an empty pre-sync doc.
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await expandPreview(page);
 
     const output = page.getByTestId('asciidoc-output');

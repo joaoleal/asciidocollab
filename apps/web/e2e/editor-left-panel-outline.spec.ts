@@ -6,7 +6,7 @@ import {
   cleanupProject,
   createTestFile,
 } from './helpers/test-project';
-import { setMainFile } from './helpers/editor';
+import { setMainFile, waitCollabSynced } from './helpers/editor';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -24,10 +24,6 @@ async function writeFileContent(page: Page, projectId: string, fileNodeId: strin
 }
 
 const editorContent = (page: Page) => page.locator('.cm-editor .cm-content');
-
-async function waitCollabSynced(page: Page): Promise<void> {
-  await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
-}
 
 async function openProject(page: Page, projectId: string): Promise<void> {
   await page.goto(`/dashboard/projects/${projectId}`);
@@ -207,7 +203,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     // Open main.adoc from the Files tab first.
     await showView(page, /files/i);
     await page.getByTestId('tree-node-main.adoc').click();
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await railTab(page, /outline/i).click();
 
     // All headings from both files appear in the outline (seamless, in order).
@@ -234,7 +230,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     // Open root.adoc (the main document).
     await showView(page, /files/i);
     await page.getByTestId('tree-node-root.adoc').click();
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
 
     // Switch to the Outline tab and wait for the full outline to load.
     await railTab(page, /outline/i).click();
@@ -269,7 +265,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     // Open doc.adoc (no session on appendix.adoc) and switch to the Outline tab.
     await showView(page, /files/i);
     await page.getByTestId('tree-node-doc.adoc').click();
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await railTab(page, /outline/i).click();
 
     // Shows last-saved headings from appendix.adoc even though nobody is editing it live.
@@ -296,7 +292,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
     await showView(page, /files/i);
     await page.getByTestId('tree-node-live-main.adoc').click();
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await railTab(page, /outline/i).click();
     // Confirm the initial heading from live-ch.adoc is visible.
     await expect(outlineRow(page, 'Original Chapter Heading')).toBeVisible({ timeout: 20_000 });
@@ -311,7 +307,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
 
       // A opens live-ch.adoc (the included file).
       await pageA.getByTestId('tree-node-live-ch.adoc').click();
-      await expect(pageA.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+      await waitCollabSynced(pageA);
 
       // A rewrites the heading in the included file via the editor (no explicit save).
       const contentA = pageA.locator('.cm-editor .cm-content');
@@ -345,7 +341,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     // Open scope-main.adoc and switch to the Outline tab.
     await showView(page, /files/i);
     await page.getByTestId('tree-node-scope-main.adoc').click();
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await railTab(page, /outline/i).click();
 
     // Full-document scope (default): both headings appear.
@@ -385,7 +381,7 @@ test.describe('Editor left panel: Outline view (028)', () => {
     await expect(page.getByText(/loading\.\.\./i)).not.toBeVisible({ timeout: 8000 });
 
     await page.getByTestId('tree-node-standalone.adoc').click();
-    await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+    await waitCollabSynced(page);
     await railTab(page, /outline/i).click();
 
     // Only open-file headings appear.

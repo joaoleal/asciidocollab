@@ -8,6 +8,7 @@ import {
   createTestFolder,
   createViewerInProject,
 } from './helpers/test-project';
+import { waitCollabSynced } from './helpers/editor';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -27,16 +28,6 @@ async function writeFileContent(page: Page, projectId: string, fileNodeId: strin
 // --- UI helpers (drive the real app like a user) ---------------------------------------------
 
 const editorContent = (page: Page) => page.locator('.cm-editor .cm-content');
-
-/**
- * The editor content is the collaboratively-synced Yjs document. After a navigation or reload the
- * provider reconnects (connecting → synced); under heavy parallel load that sync can lag by many
- * seconds. The "connecting" banner is removed once synced, so wait for it to clear before asserting
- * editor/preview content, otherwise the assertion races the empty pre-sync document.
- */
-async function waitCollabSynced(page: Page): Promise<void> {
-  await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
-}
 
 // Matches the SELECTED highlight only — the active row's `bg-primary/10` tint, not the always-present
 // `hover:bg-accent` (a bare /bg-accent/ would match the hover class on every row).

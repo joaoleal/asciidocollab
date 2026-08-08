@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { ensureTestUser, createInvitedUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject, createTestFile } from './helpers/test-project';
-import { setMainFile } from './helpers/editor';
+import { setMainFile, waitCollabSynced } from './helpers/editor';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -33,7 +33,15 @@ async function showView(page: Page, name: RegExp): Promise<void> {
 }
 
 async function waitSynced(page: Page): Promise<void> {
-  await expect(page.getByTestId('collab-banner-connecting')).toHaveCount(0, { timeout: 30_000 });
+  // A POSITIVE signal first. `toHaveCount(0)` on the connecting banner is satisfied by a page that has
+  // not started connecting yet — the banner does not exist before the session does — so on its own
+  // this returned while the editor had not mounted at all. Anything asserted about presence after
+  // that was asserted against a session that was not there: the collaborator's own awareness state,
+  // which is what publishes the file they have open, is written when their editor mounts.
+  await expect(page.locator('.cm-editor .cm-content')).toHaveAttribute('contenteditable', 'true', {
+    timeout: 30_000,
+  });
+  await waitCollabSynced(page);
 }
 
 test.describe('Outline follow-ups', () => {

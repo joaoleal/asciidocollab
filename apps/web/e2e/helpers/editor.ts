@@ -122,6 +122,24 @@ export async function getEditorText(page: Page): Promise<string> {
 export const EDITOR_EDITABLE_TIMEOUT = 30_000;
 
 /**
+ * Waits for the collaboration provider to reach `synced`, so content assertions never race the empty
+ * pre-sync document.
+ *
+ * Waits on the POSITIVE state via `data-collab-state`. Every call site used to assert that the
+ * `collab-banner-connecting` testid had count 0, which is a false-positive wait: the editor root
+ * mounts well before the provider reports anything, so the banner is legitimately absent at that
+ * moment and the assertion passes INSTANTLY — before the sync has even started. It then reads as a
+ * satisfied guard while providing none, and the content assertion that follows carries the whole
+ * race. The settled state renders no banner at all, so absence can never distinguish "synced" from
+ * "not started"; only the attribute can.
+ */
+export async function waitCollabSynced(page: Page, timeout = EDITOR_EDITABLE_TIMEOUT): Promise<void> {
+  await expect(page.locator('.asciidoc-editor')).toHaveAttribute('data-collab-state', 'synced', {
+    timeout,
+  });
+}
+
+/**
  * Test budget for a spec that live-edits the collaborative editor.
  *
  * `EDITOR_EDITABLE_TIMEOUT` alone can consume 30s of a test's allowance waiting for the Yjs

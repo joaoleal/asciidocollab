@@ -286,6 +286,13 @@ jobs:
           ASCIIDOCOLLAB_STORAGE_PATH: ${{ github.workspace }}/.e2e-storage
           # Empty allowlist disables the Origin check for the CI stack.
           ASCIIDOCOLLAB_COLLAB_ALLOWED_ORIGINS: ''
+          # Raise the per-USER connect rate limit (default 120/min). The limits above are per-IP;
+          # this one is keyed on the authenticated user, and the suite drives all 12 workers through
+          # effectively one account — each editor open costs a document room plus a presence room.
+          # A rejected connection never syncs and the bound CodeMirror view stays EMPTY forever
+          # (yCollab applies incremental deltas only), so whichever spec loses the race fails on an
+          # empty `.cm-content`. Matches scripts/ci/e2e-local.sh.
+          ASCIIDOCOLLAB_COLLAB_CONNECT_RATE_PER_MIN: 10000
 
       - name: Wait for collab server to be ready
         run: |
