@@ -12,13 +12,18 @@ export default defineConfig({
   // Whole-run ceiling, and the reason it exists: the per-test `timeout` above bounds a test that
   // hangs, not a RUN that stops making progress. A worker wedged between tests, a stack that stops
   // answering, a retry storm — none of those trip a per-test deadline, and a run in that state used
-  // to sit until the CI job was killed. A green run takes ~10 minutes here and the slowest observed
-  // failing one 25, so 35 is well clear of both.
+  // to sit until the CI job was killed.
+  //
+  // A green run takes ~10 minutes. The headroom over that is for a RED one: the serialized
+  // `chromium-timing` phase is not overlapped with anything, and its eleven long-budget tests are the
+  // slowest way this suite can legitimately fail. Sized so a run that fails honestly still reaches the
+  // end and reports which assertion failed — a ceiling that truncates a real failure into "timed out"
+  // is worse than no ceiling, because it looks like a hang and hides a result.
   //
   // Set BELOW the e2e job's `timeout-minutes` deliberately. Playwright stopping itself prints what
   // was still running and leaves the HTML report for the workflow to upload; the runner killing the
   // job produces neither. The gap between the two is what keeps that diagnostic.
-  globalTimeout: 35 * 60 * 1000,
+  globalTimeout: 45 * 60 * 1000,
   retries: process.env.CI ? 2 : 0,
   // Cap concurrency for the isolated stack: every collab-backed test opens Yjs sync session(s) against
   // a SINGLE test collaboration server, and collab pair-tests use two browser contexts each. The
@@ -90,6 +95,12 @@ export default defineConfig({
         '**/pdf-preview-responsive.spec.ts',
         '**/pdf-image-embed.spec.ts',
         '**/pdf-extensions.spec.ts',
+        // The preview TIMING specs, for the same reason and in their own project below: they measure
+        // how long a refresh takes, so sharing the box with two other browser workers measures
+        // contention and reports it as the preview being slow.
+        '**/preview-adaptive-delay.spec.ts',
+        '**/preview-refresh-guarantee.spec.ts',
+        '**/preview-file-switch.spec.ts',
       ],
       dependencies: ['setup'],
     },
@@ -124,6 +135,54 @@ export default defineConfig({
       // single `npx playwright test pdf-extensions.spec.ts` does not drag the whole `chromium` suite in
       // first — the box is not contended there, which is the only reason the overlap was ever safe.
       dependencies: process.env.CI ? ['chromium'] : ['setup'],
+    },
+
+    // Phase 2e: the preview TIMING specs, run last and alone.
+    //
+    // These three measure elapsed milliseconds — how soon a refresh lands after the last keystroke,
+    // how far apart repeated refreshes of one document fall, how long a file switch takes to show
+    // content — and compare them against fixed targets and figures recorded serially on an idle
+    // machine. Each already says in its own header that it must not share the box; what none of them
+    // had was anything making that true. `test.describe.configure({ mode: 'serial' })` orders the
+    // tests WITHIN a file and does nothing about the two other spec files running beside it, so under
+    // the 3-worker `chromium` project they measured contention and attributed it to the preview.
+    //
+    // On a developer machine that is harmless — there are cores to spare, which is why these pass
+    // locally and always have. On CI's two-core runner it is not: a 15,000-line render that competes
+    // for a core takes wildly different times from one sample to the next, and the spread check reads
+    // that as a queued render. Serializing the phase removes the contention rather than widening the
+    // budgets around it — the same reasoning, and the same mechanism, as `chromium-pdf` above.
+    //
+    // NOT a relaxation: every target, baseline and allowance is untouched. This only gives the
+    // measurement the conditions it documents as its premise.
+    {
+      name: 'chromium-timing',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: [
+        '**/preview-adaptive-delay.spec.ts',
+        '**/preview-refresh-guarantee.spec.ts',
+        '**/preview-file-switch.spec.ts',
+      ],
+      workers: 1,
+      fullyParallel: false,
+      // One retry here, not the suite's two. These eleven tests carry the largest per-test budgets in
+      // the suite (300s, 300s, 180s per describe), and as a serial phase every attempt is paid in
+      // full rather than divided across three workers: a worst case of ~43 minutes per attempt, which
+      // at three attempts would run past the whole-run `globalTimeout` and replace the assertion that
+      // failed with a bare "timed out" — losing the diagnostic that timeout exists to preserve.
+      //
+      // Retries were also worth more when this ran inside `chromium`, where a failure was as likely to
+      // be a contended box as a real regression. Serialized, that reason is gone; one retry still
+      // absorbs a genuine one-off without paying for a third pass over a test that is failing for real.
+      retries: process.env.CI ? 1 : 0,
+      // Last in the chain under CI: `chromium-pdf` already runs after `chromium`, so depending on it
+      // leaves nothing else in flight by the time these start.
+      //
+      // The non-CI branch is for a BARE `npx playwright test preview-file-switch.spec.ts`, so it does
+      // not drag the whole suite in first. Note it does NOT apply to `scripts/ci/e2e-local.sh`, which
+      // deliberately exports CI=1 to match the gate's retry policy — the local gate takes the same
+      // serialized path CI does, which is what makes it a rehearsal rather than a different run.
+      dependencies: process.env.CI ? ['chromium-pdf'] : ['setup'],
     },
   ],
 });

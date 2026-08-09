@@ -159,7 +159,7 @@ jobs:
   e2e:
     name: E2E tests (Playwright)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     # Also `needs` pdf-wasm so — when it runs (a wasm-input change) — its freshly built engine is ready
     # to download here and the live-PDF specs run for real. pdf-wasm is conditional, so the `if` below
     # keeps e2e running (via always()) whether pdf-wasm succeeded, was skipped, or failed.
