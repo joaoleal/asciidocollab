@@ -4,6 +4,7 @@ import {
   SaveEditorPreferencesUseCase,
   UserId,
 } from '@asciidocollab/domain';
+import { PREVIEW_STYLE_VALUES } from '@asciidocollab/primitives';
 import { getAuthenticatedUserId, requireAuth } from '../../../plugins/require-auth';
 import type { EditorPreferencesDto } from '@asciidocollab/shared';
 
@@ -15,7 +16,9 @@ const putBodySchema = {
     theme: { type: 'string', enum: ['default', 'high-contrast', 'dracula', 'tomorrow', 'espresso'] },
     scrollSyncEnabled: { type: 'boolean' },
     softWrap: { type: 'boolean' },
-    previewStyle: { type: 'string', enum: ['asciidocollab', 'asciidoctor'] },
+    // Derived from the single definition rather than restated: a hand-kept copy here is how the API
+    // comes to reject a style the rest of the application already offers.
+    previewStyle: { type: 'string', enum: [...PREVIEW_STYLE_VALUES] },
     spellcheckEnabled: { type: 'boolean' },
     minimapEnabled: { type: 'boolean' },
   },

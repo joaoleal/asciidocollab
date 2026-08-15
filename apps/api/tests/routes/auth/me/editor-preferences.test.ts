@@ -140,6 +140,27 @@ describe('Editor Preferences Routes', () => {
     expect(JSON.parse(getResponse.body)).toHaveProperty('previewStyle', 'asciidoctor');
   });
 
+  test('PUT with previewStyle: "print" returns 204 and persists', async () => {
+    const app = buildTestServer(null);
+    const putResponse = await app.inject({
+      method: 'PUT',
+      url: '/auth/me/editor-preferences',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fontSize: 14, theme: 'default', previewStyle: 'print' }),
+    });
+    expect(putResponse.statusCode).toBe(204);
+
+    const getResponse = await app.inject({ method: 'GET', url: '/auth/me/editor-preferences' });
+    expect(JSON.parse(getResponse.body)).toHaveProperty('previewStyle', 'print');
+  });
+
+  test('GET returns a stored print selection, so it survives a new session', async () => {
+    const app = buildTestServer({ fontSize: 14, theme: 'default', previewStyle: 'print' });
+    const response = await app.inject({ method: 'GET', url: '/auth/me/editor-preferences' });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toHaveProperty('previewStyle', 'print');
+  });
+
   test('PUT with an out-of-enum previewStyle returns 400', async () => {
     const app = buildTestServer(null);
     const response = await app.inject({
