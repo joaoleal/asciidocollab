@@ -144,6 +144,16 @@ export function useProjectSymbolIndex({
     return contentCache.current.get(fileId) ?? null;
   }, []);
 
+  // Which files a `getFiles()` snapshot could name right now: the paths the tree knows, and the ids
+  // whose content has arrived. Deliberately not the content itself — an edit to a file already in the
+  // set arrives as its own signal (the overlay for the open file, a `content-changed` frame for any
+  // other), and hashing every reachable document on each build would cost the whole tree per keystroke
+  // to detect something already announced.
+  const reachableSignature = useCallback(
+    (): string => `${pathById.current.size}:${[...contentCache.current.keys()].toSorted().join(',')}`,
+    [],
+  );
+
   const build = useCallback(async () => {
     const root = rootFileId;
     if (!root) {
@@ -174,6 +184,12 @@ export function useProjectSymbolIndex({
       (path) => idByPath.current.get(path) ?? null,
     );
 
+    // What the reachable snapshot could produce before this build fetched anything. `getFiles()` is
+    // assembled from the path map and the content cache, so a build that adds to either changes what
+    // every derived view — the preview's assembled render, the outline, the export snapshot — would
+    // build from.
+    const before = reachableSignature();
+
     const completed = await fetchReachableContent({
       rootFileId: root,
       readContent,
@@ -199,7 +215,18 @@ export function useProjectSymbolIndex({
     );
     indexReference.current = built;
     setIndex(built);
-  }, [projectId, rootFileId, readContent]);
+
+    // The reachable snapshot gained (or lost) files, so anything derived from `getFiles()` is now
+    // derived from something else. The FIRST build is the case this exists for: the preview posts its
+    // render as soon as the panel opens, and until the include tree's contents land `getFiles()` holds
+    // the open file alone — so the document renders with "Unresolved directive in index.adoc" under
+    // every include line. Nothing announced their arrival: the version bumped only for a
+    // collaborator's `content-changed` frame, so the notice stayed on screen until some unrelated
+    // signal (toggling included files, a keystroke) happened to re-post a render. Guarded by the
+    // signature rather than bumped on every build, because a build also runs shortly after every edit
+    // settles, and bumping there would re-post a render for a snapshot that had not changed.
+    if (reachableSignature() !== before) setReachableDocumentVersion((v) => v + 1);
+  }, [projectId, rootFileId, readContent, reachableSignature]);
 
   // Rebuild when the project or root (main-file) changes.
   useEffect(() => {

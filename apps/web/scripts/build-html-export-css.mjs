@@ -16,6 +16,17 @@
 //
 // DO NOT edit the generated output by hand — edit the sources and re-run:
 //   pnpm --filter @asciidocollab/web run build:html-export-css
+//   pnpm --filter @asciidocollab/web run check:html-export-css   # verify it, change nothing
+//
+// `--check` exists for the same reason it exists on `build-print-highlight-css.mjs` and
+// `build-hljs-language-map.mjs`, and it is not interchangeable with the `prebuild` hook that also
+// runs this script. The hook OVERWRITES the committed module, so it can never disagree with it: a
+// hand edit inside the generated file, or a committed output that no source produces, survives every
+// build and every CI job looking exactly like a generated artefact. Nothing in the repository
+// confirmed that this file's committed bytes came from these sources until `--check` was wired into
+// scripts/ci/quality.sh — and it is wired in BEFORE `pnpm -r build` there, deliberately, because the
+// build's own `prebuild` regenerates this file and a check that ran after it would compare the
+// generator against itself.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -119,8 +130,29 @@ export const ASCIIDOCOLLAB_CSS = ${JSON.stringify(collabCss)};
 export const ASCIIDOCTOR_CSS = ${JSON.stringify(asciidoctorCss)};
 `;
 
-writeFileSync(OUTPUT, banner + body);
-console.log(
-  `Wrote ${OUTPUT} (${light.size} light tokens, ${darkComplete.size} dark tokens, ` +
-    `${collabCss.length} + ${asciidoctorCss.length} bytes of CSS)`,
-);
+const rendered = banner + body;
+const summary =
+  `${light.size} light tokens, ${darkComplete.size} dark tokens, ` +
+  `${collabCss.length} + ${asciidoctorCss.length} bytes of CSS`;
+
+if (process.argv.includes('--check')) {
+  let existing = null;
+  try {
+    existing = readFileSync(OUTPUT, 'utf8');
+  } catch {
+    existing = null;
+  }
+  if (existing !== rendered) {
+    console.error(
+      `${OUTPUT}\ndoes not match what its sources produce (globals.css, asciidoc-preview.css, ` +
+        'asciidoctor-style.generated.css).\n\n' +
+        'Run: pnpm --filter @asciidocollab/web run build:html-export-css',
+    );
+    process.exitCode = 1;
+  } else {
+    console.log(`The committed HTML-export stylesheet payloads match their sources (${summary}).`);
+  }
+} else {
+  writeFileSync(OUTPUT, rendered);
+  console.log(`Wrote ${OUTPUT} (${summary})`);
+}

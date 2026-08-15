@@ -54,6 +54,26 @@ export interface RenderRequest {
    * worker's own tests do; the worker echoes whatever it is given, including nothing.
    */
   renderId?: number;
+  /**
+   * Which consumer this render belongs to, set by the shared-worker holder and never echoed back.
+   *
+   * Not routing — {@link RenderRequest.renderId} does that, and identifies a RENDER. This identifies
+   * the STREAM a render belongs to, which is a different question and the only one the worker asks of
+   * it: whether a newer render of ITS OWN has arrived, so a render already replaced does not spend a
+   * network round trip fetching a syntax grammar for a reply nobody will read.
+   *
+   * The worker had to answer that from "any newer render", because nothing on the wire said whose a
+   * render was: `requestId` is each consumer's own numbering and restarts at 1 for each of them, and
+   * `renderId` names one render rather than its owner. With two previews mounted, either one's render
+   * silenced the other's grammar fetches — and the consumer accepted the reply, because its own
+   * `requestId` still matched, so the listing simply came back uncoloured until something else made it
+   * render again. Invisible when it happens, which is why it is not left to be noticed.
+   *
+   * Absent on a request posted straight to a worker rather than through the holder, which is what the
+   * worker's own tests and the fidelity harness do; every such render is then one stream, exactly as
+   * every render was one stream before this existed.
+   */
+  consumerId?: number;
   /** The AsciiDoc source to render, used as-is unless {@link RenderRequest.mainPath} assembles a tree. */
   content: string;
   /** Base path Asciidoctor prepends to relative image targets (the project's image endpoint). */

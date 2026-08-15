@@ -25,6 +25,17 @@ export interface ProjectAssetCache {
    */
   getAssets: () => SnapshotFile[];
   /**
+   * The bytes held for one path, or undefined when it has not arrived (or came back empty).
+   *
+   * The snapshot builder wants every asset at once; the Print preview's font loader wants one named
+   * face and would otherwise have to scan the whole list to find it. Same cache, same fetch, same
+   * validated path — only a narrower way to read it.
+   *
+   * @param path - The project-relative asset path.
+   * @returns The asset's bytes, if held.
+   */
+  getAssetBytes: (path: string) => Uint8Array | undefined;
+  /**
    * Schedule background fetches for any of `paths` not already cached or in flight. Fire-and-forget:
    * each asset that arrives bumps {@link assetVersion}. Safe to call on every render — it dedupes.
    *
@@ -146,6 +157,8 @@ export function useProjectAssetCache(projectId: string): ProjectAssetCache {
     [],
   );
 
+  const getAssetBytes = useCallback((path: string): Uint8Array | undefined => cache.current.get(path), []);
+
   const ensureAssets = useCallback(
     (paths: readonly string[]): void => {
       for (const path of paths) void fetchOne(path);
@@ -172,5 +185,5 @@ export function useProjectAssetCache(projectId: string): ProjectAssetCache {
     [],
   );
 
-  return { getAssets, ensureAssets, loadAssets, assetsSettled, assetVersion };
+  return { getAssets, getAssetBytes, ensureAssets, loadAssets, assetsSettled, assetVersion };
 }

@@ -9,6 +9,14 @@
 //
 // DO NOT edit the generated output by hand — edit the vendored source and re-run:
 //   pnpm --filter @asciidocollab/web run build:asciidoctor-style
+//   pnpm --filter @asciidocollab/web run check:asciidoctor-style   # verify it, change nothing
+//
+// `--check` is what makes the "do not edit by hand" line above enforceable. This script also runs as
+// a `prebuild`/`predev` hook, and that hook OVERWRITES the committed stylesheet rather than comparing
+// against it — so a hand edit inside the generated file, or a re-vendored source that nobody
+// regenerated from, was invisible to every build and every CI job. It is wired into
+// scripts/ci/quality.sh BEFORE `pnpm -r build`, because the build's own `prebuild` regenerates this
+// file and a check that ran afterwards would be comparing the generator against itself.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -86,5 +94,25 @@ const listMarkerCompensation =
   `${SCOPE} ul{list-style-type:disc}\n` +
   `${SCOPE} ol{list-style-type:decimal}\n`;
 
-writeFileSync(OUTPUT, banner + css + listMarkerCompensation);
-console.log(`Wrote ${OUTPUT}`);
+const rendered = banner + css + listMarkerCompensation;
+
+if (process.argv.includes('--check')) {
+  let existing = null;
+  try {
+    existing = readFileSync(OUTPUT, 'utf8');
+  } catch {
+    existing = null;
+  }
+  if (existing !== rendered) {
+    console.error(
+      `${OUTPUT}\ndoes not match what ${SOURCE}\nproduces under the ${SCOPE} scope.\n\n` +
+        'Run: pnpm --filter @asciidocollab/web run build:asciidoctor-style',
+    );
+    process.exitCode = 1;
+  } else {
+    console.log(`The committed scoped Asciidoctor stylesheet matches its vendored source (${rendered.length} bytes).`);
+  }
+} else {
+  writeFileSync(OUTPUT, rendered);
+  console.log(`Wrote ${OUTPUT}`);
+}

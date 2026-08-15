@@ -2,11 +2,19 @@
    AsciiDoc preview — themed to match the editor brand (AsciiDoc teal).
 
    All colours are driven by the app design tokens defined in globals.css, so
-   the preview adapts automatically to light and dark mode. Scoped to
-   .asciidoc-preview-content.
+   the preview adapts automatically to light and dark mode.
+
+   The scope is stated as an EXCLUSION rather than as a positive match on the
+   brand style's own token, because this styling must also apply when the
+   container carries no style attribute at all. That means every OTHER style has
+   to be excluded by name: one added without its exclusion here inherits all of
+   the rules below on top of its own, and looks almost right — which is the
+   hardest kind of wrong to notice.
+
+   Scoped to .asciidoc-preview-content.
    ─────────────────────────────────────────────────────────────────────────── */
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) {
   font-family: inherit; /* match the app UI sans (Inter) */
   font-size: 15px;
   line-height: 1.65;
@@ -23,17 +31,17 @@
   overflow-wrap: anywhere;
 }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) > :first-child {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) > :first-child {
   margin-top: 0;
 }
 
 /* ── Headings ─────────────────────────────────────────────────────────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h1,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h2,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h3,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h4,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h5,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h6 {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h1,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h2,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h3,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h4,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h5,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h6 {
   color: hsl(var(--foreground));
   font-weight: 700;
   line-height: 1.25;
@@ -42,81 +50,81 @@
   margin-bottom: 0.5em;
 }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h1 { font-size: 2em; letter-spacing: -0.02em; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h2 { font-size: 1.5em; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h3 { font-size: 1.25em; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h4 { font-size: 1.1em; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h5,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) h6 { font-size: 1em; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h1 { font-size: 2em; letter-spacing: -0.02em; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h2 { font-size: 1.5em; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h3 { font-size: 1.25em; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h4 { font-size: 1.1em; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h5,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) h6 { font-size: 1em; }
 
 /* Document header meta (author · revision) rendered under the title. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .details,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) #revnumber,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) #author,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) #email,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) #revdate {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .details,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) #revnumber,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) #author,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) #email,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) #revdate {
   color: hsl(var(--muted-foreground));
   font-size: 0.9em;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .details {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .details {
   margin: -0.25em 0 1.5em;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .details span + span::before {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .details span + span::before {
   content: " · ";
   color: hsl(var(--muted-foreground));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .details br { display: none; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .details br { display: none; }
 
 /* ── Body text ────────────────────────────────────────────────────────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) p { margin: 0.85em 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) p { margin: 0.85em 0; }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) strong { font-weight: 700; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) em { font-style: italic; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) strong { font-weight: 700; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) em { font-style: italic; }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) a {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) a {
   color: hsl(var(--primary));
   text-decoration: none;
   font-weight: 500;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) a:hover { text-decoration: underline; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) a:hover { text-decoration: underline; }
 
 /* ── Lists ────────────────────────────────────────────────────────────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) ul,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) ol {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) ul,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) ol {
   padding-left: 1.4em;
   margin: 0.85em 0;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) li { margin: 0.3em 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) li { margin: 0.3em 0; }
 /* Tailwind Preflight resets `list-style: none` on all ul/ol; re-establish markers for the
    brand preview. (The Asciidoctor style restores its own in asciidoctor-style.generated.css.) */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) ul { list-style-type: disc; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) ol { list-style-type: decimal; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) ul li::marker { color: hsl(var(--primary)); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) ul { list-style-type: disc; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) ol { list-style-type: decimal; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) ul li::marker { color: hsl(var(--primary)); }
 
 /* Description lists: the term reads as a bold title in the brand teal, the
    description sits indented beneath it so the two parts are clearly distinct. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) dl { margin: 0.85em 0; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) dt {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) dl { margin: 0.85em 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) dt {
   font-weight: 600;
   color: hsl(var(--primary));
   margin-top: 0.7em;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) dt:first-child { margin-top: 0; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) dd {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) dt:first-child { margin-top: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) dd {
   margin: 0.15em 0 0 1.4em;
   color: hsl(var(--foreground));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) dd > :first-child { margin-top: 0; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) dd > :last-child { margin-bottom: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) dd > :first-child { margin-top: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) dd > :last-child { margin-bottom: 0; }
 
 /* Checklists: drop the list marker and render a real checkbox in place of Asciidoctor's
    unicode glyph (the worker swaps the glyph for <span class="checklist-box">). */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) ul.checklist {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) ul.checklist {
   list-style: none;
   padding-left: 0.1em;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) ul.checklist li { margin: 0.45em 0; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .checklist-box {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) ul.checklist li { margin: 0.45em 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .checklist-box {
   display: inline-block;
   box-sizing: border-box;
   width: 1.05em;
@@ -128,12 +136,12 @@
   background: hsl(var(--card));
   position: relative;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .checklist-box--checked {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .checklist-box--checked {
   background: hsl(var(--primary));
   border-color: hsl(var(--primary));
 }
 /* The tick: a rotated, two-sided border drawn over the filled box. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .checklist-box--checked::after {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .checklist-box--checked::after {
   content: "";
   position: absolute;
   left: 0.33em;
@@ -146,13 +154,13 @@
 }
 
 /* ── Inline + block code ──────────────────────────────────────────────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) code {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) code {
   font-family: var(--font-mono, ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace);
   font-size: 0.875em;
 }
 
 /* Inline code (not inside a code block). */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) :not(pre) > code {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) :not(pre) > code {
   background: hsl(var(--muted));
   color: hsl(var(--foreground));
   padding: 0.12em 0.38em;
@@ -161,11 +169,11 @@
 }
 
 /* Code block cards. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .listingblock,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .literalblock {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .listingblock,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .literalblock {
   margin: 1.1em 0;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) pre {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) pre {
   font-family: var(--font-mono, ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace);
   font-size: 0.85em;
   line-height: 1.55;
@@ -193,7 +201,7 @@
   overflow-wrap: anywhere;
   color: hsl(var(--foreground));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) pre code {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) pre code {
   background: none;
   border: none;
   padding: 0;
@@ -209,14 +217,14 @@
    because the container sets `anywhere`, which would otherwise still break long tokens apart.
    MUST stay after the generic `pre` rule: identical specificity, so source order decides.
    (Literal and verse blocks need no special case any more — the generic rule now wraps them.) */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) pre.nowrap,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) pre.nowrap pre {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) pre.nowrap,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) pre.nowrap pre {
   white-space: pre;
   overflow-wrap: normal;
 }
 
 /* Block titles (e.g. .Listing caption). */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .title {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .title {
   font-size: 0.85em;
   font-weight: 600;
   color: hsl(var(--muted-foreground));
@@ -224,70 +232,70 @@
 }
 
 /* ── highlight.js syntax tokens (themed via the editor syntax palette) ──────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-comment,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-quote {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-comment,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-quote {
   color: hsl(var(--syntax-comment));
   font-style: italic;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-keyword,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-selector-tag,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-literal,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-doctag {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-keyword,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-selector-tag,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-literal,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-doctag {
   color: hsl(var(--syntax-keyword));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-string,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-regexp,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-addition {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-string,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-regexp,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-addition {
   color: hsl(var(--syntax-string));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-title,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-title.function_,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-section,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-built_in,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-type,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-selector-id,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-selector-class {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-title,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-title.function_,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-section,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-built_in,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-type,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-selector-id,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-selector-class {
   color: hsl(var(--syntax-link));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-attr,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-attribute,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-variable,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-template-variable,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-number,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-symbol,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-bullet {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-attr,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-attribute,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-variable,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-template-variable,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-number,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-symbol,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-bullet {
   color: hsl(var(--syntax-attr));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-meta,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-punctuation,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-params {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-meta,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-punctuation,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-params {
   color: hsl(var(--syntax-punct));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-subst { color: hsl(var(--foreground)); }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-emphasis { font-style: italic; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .hljs-strong { font-weight: 700; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-subst { color: hsl(var(--foreground)); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-emphasis { font-style: italic; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .hljs-strong { font-weight: 700; }
 
 /* ── Admonition blocks (NOTE / TIP / WARNING / CAUTION / IMPORTANT) ─────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock {
   margin: 1.1em 0;
   border: 1px solid hsl(var(--border));
   border-left-width: 4px;
   border-radius: 8px;
   background: hsl(var(--muted) / 0.5);
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock > table {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock > table {
   border: none;
   border-collapse: collapse;
   width: 100%;
   margin: 0;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td {
   border: none;
   background: none;
   padding: 0.7em 1em;
   vertical-align: top;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.icon {
   width: 1px;
   white-space: nowrap;
   padding-right: 0;
@@ -295,71 +303,71 @@
      first line — on a multi-line admonition the top-aligned icon looked stranded. */
   vertical-align: middle;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .title {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.icon .title {
   margin: 0;
   font-size: 0.72em;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.content {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.content {
   color: hsl(var(--foreground));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.content > :first-child { margin-top: 0; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.content > :last-child { margin-bottom: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.content > :first-child { margin-top: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.content > :last-child { margin-bottom: 0; }
 
 /* Per-type accents */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.note {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.note {
   border-left-color: hsl(var(--primary));
   background: hsl(var(--primary) / 0.08);
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.note td.icon .title { color: hsl(var(--primary)); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.note td.icon .title { color: hsl(var(--primary)); }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.tip {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.tip {
   border-left-color: hsl(152 46% 42%);
   background: hsl(152 46% 42% / 0.09);
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.tip td.icon .title { color: hsl(152 46% 38%); }
-.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.tip td.icon .title { color: hsl(152 44% 62%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.tip td.icon .title { color: hsl(152 46% 38%); }
+.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.tip td.icon .title { color: hsl(152 44% 62%); }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.important {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.important {
   border-left-color: hsl(280 40% 56%);
   background: hsl(280 40% 56% / 0.1);
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.important td.icon .title { color: hsl(280 40% 50%); }
-.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.important td.icon .title { color: hsl(280 46% 74%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.important td.icon .title { color: hsl(280 40% 50%); }
+.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.important td.icon .title { color: hsl(280 46% 74%); }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.warning {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.warning {
   border-left-color: hsl(34 88% 48%);
   background: hsl(34 88% 48% / 0.1);
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.warning td.icon .title { color: hsl(34 80% 42%); }
-.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.warning td.icon .title { color: hsl(38 90% 62%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.warning td.icon .title { color: hsl(34 80% 42%); }
+.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.warning td.icon .title { color: hsl(38 90% 62%); }
 
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.caution {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.caution {
   border-left-color: hsl(0 72% 50%);
   background: hsl(0 72% 50% / 0.09);
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.caution td.icon .title { color: hsl(0 70% 46%); }
-.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock.caution td.icon .title { color: hsl(0 75% 68%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.caution td.icon .title { color: hsl(0 70% 46%); }
+.dark .asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock.caution td.icon .title { color: hsl(0 75% 68%); }
 
 /* ── Tables ───────────────────────────────────────────────────────────────── */
 /* Asciidoctor data tables carry .tableblock; admonition layout tables do not,
    so this targets data tables only without a fragile :not(... descendant)
    selector (which can drop the whole rule group on stricter parsers). */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) table.tableblock {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) table.tableblock {
   border-collapse: collapse;
   width: 100%;
   margin: 1.1em 0;
   font-size: 0.92em;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) table.tableblock th,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) table.tableblock td {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) table.tableblock th,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) table.tableblock td {
   border: 1px solid hsl(var(--border));
   padding: 0.5em 0.7em;
   text-align: left;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) table.tableblock thead th {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) table.tableblock thead th {
   background: hsl(var(--muted));
   color: hsl(var(--foreground));
   font-weight: 600;
@@ -367,44 +375,44 @@
 
 /* ── Example & sidebar blocks ─────────────────────────────────────────────── */
 /* Example block: a bordered card with its "Example N." caption on top. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .exampleblock {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .exampleblock {
   margin: 1.1em 0;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--muted) / 0.5);
   padding: 0.9em 1.1em;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .exampleblock > .title {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .exampleblock > .title {
   margin: 0 0 0.5em;
   font-size: 0.82em;
   font-weight: 700;
   letter-spacing: 0.01em;
   color: hsl(var(--primary));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .exampleblock > .content > :first-child { margin-top: 0; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .exampleblock > .content > :last-child { margin-bottom: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .exampleblock > .content > :first-child { margin-top: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .exampleblock > .content > :last-child { margin-bottom: 0; }
 
 /* Sidebar block: a filled card that sets supplementary content apart, title centred. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .sidebarblock {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .sidebarblock {
   margin: 1.1em 0;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--secondary));
   padding: 1em 1.2em;
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .sidebarblock > .content > .title {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .sidebarblock > .content > .title {
   margin: 0 0 0.5em;
   font-size: 1em;
   font-weight: 700;
   text-align: center;
   color: hsl(var(--foreground));
 }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .sidebarblock > .content > :first-child { margin-top: 0; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .sidebarblock > .content > :last-child { margin-bottom: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .sidebarblock > .content > :first-child { margin-top: 0; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .sidebarblock > .content > :last-child { margin-bottom: 0; }
 
 /* ── Blockquote ───────────────────────────────────────────────────────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) blockquote,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .quoteblock blockquote {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) blockquote,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .quoteblock blockquote {
   border-left: 3px solid hsl(var(--border));
   margin: 1.1em 0;
   padding: 0.3em 1em;
@@ -412,14 +420,14 @@
 }
 
 /* ── Horizontal rule ──────────────────────────────────────────────────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) hr {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) hr {
   border: none;
   border-top: 1px solid hsl(var(--border));
   margin: 1.8em 0;
 }
 
 /* ── Images ───────────────────────────────────────────────────────────────── */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) img {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) img {
   max-width: 100%;
   height: auto;
   border-radius: 6px;
@@ -465,10 +473,10 @@
    <span class="role">…</span>; the faithful Asciidoctor style already covers these via its vendored
    stylesheet, so reproduce the same built-in roles for the brand (default) style. All rules are scoped
    to the preview content container so role classes never leak to app chrome (Constitution VI). */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .underline { text-decoration: underline; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .line-through { text-decoration: line-through; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .big { font-size: larger; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .small { font-size: smaller; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .underline { text-decoration: underline; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .line-through { text-decoration: line-through; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .big { font-size: larger; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .small { font-size: smaller; }
 /* `:not(pre)` on all three, exactly as the vendored Asciidoctor stylesheet writes them: `nowrap` is
    also the class Asciidoctor puts on a verbatim `pre` for `[%nowrap]`/`:prewrap!:`, and there it means
    "keep the block's own newlines, just don't re-flow" — `white-space: nowrap` would instead collapse
@@ -477,40 +485,44 @@
    `.nobreak` gets `overflow-wrap: normal` rather than `white-space: nowrap`, again matching upstream:
    the role asks for no breaks INSIDE a word (it opts out of the container's `overflow-wrap: anywhere`),
    not for a run of text that can never wrap and therefore drags the pane sideways. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) :not(pre).nowrap { white-space: nowrap; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) :not(pre).nobreak { overflow-wrap: normal; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) :not(pre).pre-wrap { white-space: pre-wrap; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .paragraph.lead > p,
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) p .lead {
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) :not(pre).nowrap { white-space: nowrap; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) :not(pre).nobreak { overflow-wrap: normal; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) :not(pre).pre-wrap { white-space: pre-wrap; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .paragraph.lead > p,
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) p .lead {
   font-size: 1.21875em;
   line-height: 1.6;
 }
 /* Built-in foreground colour roles. */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .aqua { color: #00bfbf; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .black { color: #000; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .blue { color: #0000bf; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .fuchsia { color: #bf00bf; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .gray { color: #606060; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .green { color: #006000; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .lime { color: #00bf00; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .maroon { color: #600000; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .navy { color: #000060; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .olive { color: #606000; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .purple { color: #600060; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .red { color: #bf0000; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .silver { color: #909090; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .teal { color: #006060; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .white { color: #fff; }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .yellow { color: #bfbf00; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .aqua { color: #00bfbf; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .black { color: #000; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .blue { color: #0000bf; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .fuchsia { color: #bf00bf; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .gray { color: #606060; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .green { color: #006000; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .lime { color: #00bf00; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .maroon { color: #600000; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .navy { color: #000060; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .olive { color: #606000; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .purple { color: #600060; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .red { color: #bf0000; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .silver { color: #909090; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .teal { color: #006060; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .white { color: #fff; }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .yellow { color: #bfbf00; }
 
 /* ── Page break (`<<<`, FR-050) ───────────────────────────────────────────────
    Asciidoctor emits a page break as a `<div style="page-break-after: always">`.
    `page-break-after` only affects paged (print) media, so on the screen preview
    it is invisible. Render a visible boundary from it, scoped to the preview
    container (Constitution VI — never restyle app chrome). Targeted by the inline
-   style attribute (the div carries no class); applies to both preview styles
-   since a page break is structural, not a brand-vs-faithful look choice. */
-.asciidoc-preview-content [style*="page-break-after"] {
+   style attribute (the div carries no class); applies to both screen preview
+   styles since a page break is structural, not a brand-vs-faithful look choice.
+
+   NOT to the Print style, which must render no page break at all: it shows one
+   page's appearance rather than a paginated document, and a dashed rule across
+   the page would be the one thing on it that the export does not draw. */
+.asciidoc-preview-content:not([data-preview-style="print"]) [style*="page-break-after"] {
   display: block;
   height: 0;
   margin: 1.75em 0;
@@ -520,14 +532,49 @@
 
 /* ── Include placeholder (029) ──────────────────────────────────────────────── */
 /* Scoped strictly to the preview content surface — never leaks to app chrome
-   (Constitution VI). Subtle, non-intrusive, clearly interactive. */
+   (Constitution VI). Subtle, non-intrusive, clearly interactive.
+
+   SHARED BY ALL THREE STYLES ON PURPOSE: a hidden include is a fact about the
+   preview surface, not a choice about one style's look. Which is exactly why not
+   one colour below reads a design token — every one of them is derived from
+   `currentColor`, the text colour already in force on whichever page the
+   placeholder lands on.
+
+   A design token was the bug. `hsl(var(--muted-foreground))` follows the
+   APPLICATION's light/dark mode, and two of the three preview styles paint a
+   fixed white page that does not: the Print page is
+   `--print-page-background-color` (#ffffff by default) and the vendored
+   Asciidoctor sheet sets `background:#fff`. In dark mode the placeholder was
+   therefore #91A6AC on white — 2.54:1, and 2.45:1 once hovered — on both of
+   those pages, while light mode measured a respectable 5.06:1. That gap is why
+   it survived review: the defect is invisible to anyone not in dark mode, and
+   `include::` is common enough that it took out whole documents. (The focus ring
+   went the same way: `hsl(var(--ring))` in dark mode is #52B9CB, 2.29:1 against
+   the white page, under the 3:1 a focus indicator owes the surface it sits on.)
+
+   A fixed pair of colours cannot fix it either, and it is worth stating why
+   rather than discovering it twice: 4.5:1 against white needs a relative
+   luminance ≤ 0.183, and 4.5:1 against the dark app background (#0D181C, the
+   brand style's own surface) needs ≥ 0.212. No colour is both. One rule can only
+   be right on all three surfaces if it derives from them, and `currentColor` is
+   that derivation — by construction the colour the surrounding text is already
+   legible in. 78% of it against the page keeps the placeholder visibly subdued
+   at 6.30:1 on the two white pages and 9.59:1 in the dark app theme, with the
+   hover state at 10.56:1 and 11.87:1 respectively.
+
+   Every `color-mix()` here degrades safely where it is not supported: the
+   declaration is dropped and the property keeps full-strength `currentColor` —
+   louder than intended, never illegible. `border: 1px dashed` is written without
+   a colour for the same reason, so a dropped `border-color` leaves the border
+   drawn rather than removing the shorthand whole. */
 .asciidoc-preview-content .adoc-include-placeholder {
   display: block;
   margin: 0.5em 0;
   padding: 0.25em 0.75em;
-  border: 1px dashed hsl(var(--border));
+  border: 1px dashed;
+  border-color: color-mix(in srgb, currentColor 40%, transparent);
   border-radius: 4px;
-  color: hsl(var(--muted-foreground));
+  color: color-mix(in srgb, currentColor 78%, transparent);
   font-size: 0.85em;
   font-style: italic;
   cursor: pointer;
@@ -535,14 +582,17 @@
 }
 
 .asciidoc-preview-content .adoc-include-placeholder:hover {
-  background-color: hsl(var(--accent) / 0.5);
-  border-color: hsl(var(--primary) / 0.4);
-  color: hsl(var(--foreground));
+  /* `color: inherit` takes the placeholder back to full strength, so `currentColor`
+     in the two lines above it is the page's own text colour rather than the muted
+     one — the hover reads as the same mark, brought forward. */
+  color: inherit;
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
+  border-color: color-mix(in srgb, currentColor 60%, transparent);
 }
 
 .asciidoc-preview-content .adoc-include-placeholder:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px hsl(var(--ring));
+  box-shadow: 0 0 0 2px currentColor;
 }
 
 /* ── Admonition icons (self-contained, no Font Awesome) ─────────────────────
@@ -615,11 +665,11 @@
 }
 /* AsciidoCollab style: recolour the icons with theme-aware design tokens so they
    match each admonition's accent border (and adapt to light/dark). */
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-note::before { background-color: hsl(var(--primary)); }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-tip::before { background-color: hsl(152 46% 42%); }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-important::before { background-color: hsl(280 40% 56%); }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-warning::before { background-color: hsl(34 88% 48%); }
-.asciidoc-preview-content:not([data-preview-style="asciidoctor"]) .admonitionblock td.icon .icon-caution::before { background-color: hsl(0 72% 50%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.icon .icon-note::before { background-color: hsl(var(--primary)); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.icon .icon-tip::before { background-color: hsl(152 46% 42%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.icon .icon-important::before { background-color: hsl(280 40% 56%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.icon .icon-warning::before { background-color: hsl(34 88% 48%); }
+.asciidoc-preview-content:not([data-preview-style="asciidoctor"]):not([data-preview-style="print"]) .admonitionblock td.icon .icon-caution::before { background-color: hsl(0 72% 50%); }
 
 /* ── Containing the faithful Asciidoctor style ───────────────────────────────────────────────────────
    The vendored sheet was written for a document that owns the browser viewport, where content too wide
