@@ -17,6 +17,7 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../asciidoc-core" }
+    { "path": "../asciidoc-core" },
+    { "path": "../primitives" }
   ]
 }

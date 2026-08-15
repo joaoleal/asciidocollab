@@ -16,6 +16,7 @@
     "@asciidocollab/db": "workspace:*",
     "@asciidocollab/domain": "workspace:*",
     "@asciidocollab/infrastructure": "workspace:*",
+    "@asciidocollab/primitives": "workspace:*",
     "@asciidocollab/shared": "workspace:*",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^11.3.0",

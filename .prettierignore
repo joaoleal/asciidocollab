@@ -1,0 +1,27 @@
+node_modules/
+dist/
+build/
+coverage/
+.next/
+.next-dev/
+**/*.generated.ts
+# Not named `.generated`, but two thirds of it is: everything between the markers in this file is
+# rewritten wholesale by scripts/build-print-highlight-css.mjs, and `check:print-highlight-css`
+# compares it BYTE FOR BYTE against what the generator produces. A format-on-save inside that region
+# — which is all it takes, since Prettier reflows a 400-line selector list on sight — breaks the
+# quality gate with a diff that belongs to nobody and points at nothing.
+apps/web/src/styles/print-preview.css
+# The same rule, one directory at a time rather than one file at a time. Every file under here is
+# written by a generator in `packages/asciidoc-pdf/scripts`, and each of those generators re-runs
+# itself under `--check` and compares the result BYTE FOR BYTE (`compareDirectories`, which is
+# `a.equals(b)`) — so any reformat at all is drift, not a formatting difference. Prettier already
+# disagrees with three of the committed files on sight: it collapses the two-element `licences` array
+# in `base14-fonts/manifest.json` and in `admonition-icons/manifest.json`, and reflows
+# `rouge/palette.json`. One format-on-save in an editor with the workspace open turns
+# `check:base14-fonts`, `check:admonition-icons` or `check:rouge-palette` red with a diff nobody wrote
+# and nothing explains. Listed as the directory because what makes these unformattable is where they
+# come from, not which of them Prettier happens to have an opinion about today.
+packages/asciidoc-pdf/assets/
+pnpm-lock.yaml
+playwright-report/
+test-results/

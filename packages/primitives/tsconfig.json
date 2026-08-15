@@ -15,8 +15,5 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src"],
-  "references": [
-    { "path": "../primitives" }
-  ]
+  "include": ["src"]
 }

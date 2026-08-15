@@ -1,6 +1,7 @@
 {
   "layers": {
     "asciidoc-core": "./packages/asciidoc-core/src",
+    "primitives": "./packages/primitives/src",
     "asciidoc-pdf": "./packages/asciidoc-pdf/src",
     "domain": "./packages/domain/src",
     "shared": "./packages/shared/src",
@@ -11,12 +12,13 @@
   },
   "rules": [
     { "from": "asciidoc-core", "allowedImports": [] },
+    { "from": "primitives", "allowedImports": [] },
     { "from": "asciidoc-pdf", "allowedImports": ["asciidoc-core"] },
-    { "from": "domain", "allowedImports": ["asciidoc-core"] },
-    { "from": "shared", "allowedImports": ["asciidoc-core"] },
+    { "from": "domain", "allowedImports": ["asciidoc-core", "primitives"] },
+    { "from": "shared", "allowedImports": ["asciidoc-core", "primitives"] },
     { "from": "infrastructure", "allowedImports": ["domain", "shared"] },
-    { "from": "api", "allowedImports": ["domain", "infrastructure", "shared"] },
+    { "from": "api", "allowedImports": ["domain", "infrastructure", "shared", "primitives"] },
     { "from": "collab", "allowedImports": ["domain", "infrastructure", "shared"] },
-    { "from": "web", "allowedImports": ["shared", "asciidoc-core", "asciidoc-pdf"] }
+    { "from": "web", "allowedImports": ["shared", "asciidoc-core", "asciidoc-pdf", "primitives"] }
   ]
 }

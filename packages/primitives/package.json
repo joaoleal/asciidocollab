@@ -1,5 +1,5 @@
 {
-  "name": "@asciidocollab/domain",
+  "name": "@asciidocollab/primitives",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
@@ -10,12 +10,7 @@
     "test": "jest",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json"
   },
-  "dependencies": {
-    "@asciidocollab/asciidoc-core": "workspace:*",
-    "@asciidocollab/primitives": "workspace:*"
-  },
   "devDependencies": {
-    "@types/node": "^24.13.3",
-    "re2": "^1.26.1"
+    "@types/node": "^24.13.3"
   }
 }

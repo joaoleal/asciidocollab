@@ -1,17 +1,28 @@
 packages:
   - "packages/*"
   - "apps/*"
-# No `overrides:` block. Every entry that used to live here was removed once its parent caught up —
-# the last one, @fastify/static, went when @fastify/swagger-ui 6 started requesting ^10.1.0 itself.
+# Think twice before adding an override. It pins the tree down: a later advisory against the pinned
+# version cannot be resolved by `pnpm update`, so the override has to be hand-raised every time, and
+# it is easy to miss. Prefer bumping the parent that declares the vulnerable range.
 #
-# Think twice before adding one back. An override pins the tree down: a later advisory against the
-# pinned version cannot be resolved by `pnpm update`, so the override has to be hand-raised every
-# time, and it is easy to miss. Prefer bumping the parent that declares the vulnerable range.
-#
-# If you do add one, re-check it periodically — parents catch up and the entry becomes dead weight
-# without ever announcing it. To test whether an override is still load-bearing, delete the entry AND
-# the package's stanzas from pnpm-lock.yaml, then reinstall. Dropping the entry alone proves nothing:
-# pnpm keeps an existing satisfying resolution rather than re-deriving it from the parents' ranges.
+# Re-check entries periodically — parents catch up and an entry becomes dead weight without ever
+# announcing it. To test whether one is still load-bearing, delete the entry AND the package's
+# stanzas from pnpm-lock.yaml, then reinstall. Dropping the entry alone proves nothing: pnpm keeps
+# an existing satisfying resolution rather than re-deriving it from the parents' ranges.
+overrides:
+  # qs 6.15.1 is affected by GHSA-q8mj-m7cp-5q26 (CVSS 6.3 — `__proto__` handling in the parser),
+  # fixed in 6.15.2. It is not a dependency of this repo: the only requester is typed-rest-client
+  # 2.3.1 (via @stryker-mutator/core, a devDependency), which declares `"qs": "6.15.1"` — an EXACT
+  # pin, so no amount of `pnpm update` can resolve it and bumping the parent is not available either.
+  # An override is the only remediation, which is why one exists here rather than an entry in
+  # osv-scanner.toml. 6.15.3 is already resolved elsewhere in the tree (express/body-parser), so this
+  # dedupes onto a version that was being installed anyway rather than adding one.
+  #
+  # It is keyed on the exact spec, so it goes dead by itself the moment typed-rest-client asks for
+  # anything else — remove it then. Also note the gate that let this through: OSV-Scanner fails only
+  # at High+ (CVSS >= 7.0), so a Medium with a one-patch fix passes silently. Read the table, not
+  # just the exit code.
+  qs@6.15.1: 6.15.3
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true
