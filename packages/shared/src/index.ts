@@ -11,6 +11,7 @@ export * from './asciidoc-model';
 export * from './review';
 export * from './key-bindings';
 export * from './render-config';
+export * from './print-appearance';
 export * from './grammar';
 export * from './pdf-extensions';
 export * from './export-naming';

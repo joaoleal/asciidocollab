@@ -1,3 +1,5 @@
+import type { PreviewStyleValue } from '@asciidocollab/primitives';
+
 /** DTO representing a user's editor preferences, returned by the API. */
 export interface EditorPreferencesDto {
   /** Font size in pixels. */
@@ -9,7 +11,7 @@ export interface EditorPreferencesDto {
   /** When true, the editor wraps long lines. Defaults to true. */
   softWrap?: boolean;
   /** Preview rendering style token. Defaults to 'asciidocollab'. */
-  previewStyle?: 'asciidocollab' | 'asciidoctor';
+  previewStyle?: PreviewStyleValue;
   /** When false, spellcheck is disabled. The language is a project-level setting. Defaults to true. */
   spellcheckEnabled?: boolean;
   /** When true, the editor shows the document text-preview (minimap). Defaults to false. */

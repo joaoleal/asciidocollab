@@ -53,6 +53,27 @@ const OUTPUT = join(HERE, '..', 'src/render-config/theme-descriptors.generated.t
  * fresh clone.
  */
 const DEFAULT_THEME_OUTPUT = join(HERE, '..', 'src/render-config/default-theme.generated.ts');
+/**
+ * The named page-size table, in PDF points.
+ *
+ * `page.size: A4` is a name, not a measurement, and nothing in either theme file says how wide A4
+ * is — the table lives in prawn's `PDF::Core::PageGeometry::SIZES`, which the converter looks the
+ * name up in and falls back to `A4` when it misses. Hand-copying ~50 entries is exactly the kind of
+ * table that goes stale silently at the next bump, so it is derived from the same vendored gem tree
+ * as everything else here.
+ */
+const PAGE_SIZES_OUTPUT = join(HERE, '..', 'src/print-appearance/page-sizes.generated.ts');
+/**
+ * The theme loader's deprecated-spelling tables.
+ *
+ * The loader rewrites a handful of category and key spellings on the way in, so the export applies
+ * settings written the old way. Which spellings those are is a pair of Ruby literals that has grown
+ * between releases; deriving them is what keeps the preview reading the same theme the export does.
+ */
+const DEPRECATED_KEYS_OUTPUT = join(HERE, '..', 'src/print-appearance/deprecated-keys.generated.ts');
+
+/** `'A4' => [595.28, 841.89],` — one entry of prawn's page-geometry table. */
+const PAGE_SIZE_ENTRY = /^\s*'([^']+)'\s*=>\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*]/;
 
 /**
  * Sub-trees whose CHILDREN are author-supplied names rather than theme settings. `font.catalog` maps
@@ -158,6 +179,66 @@ function findGemThemeDirectory() {
     );
   }
   return { directory: join(GEM_ROOT, gems[0], 'data/themes'), version: gems[0].replace('asciidoctor-pdf-', '') };
+}
+
+/** The directories under {@link GEM_ROOT} whose names start with `prefix`, as full paths. */
+function gemDirectories(prefix) {
+  return readdirSync(GEM_ROOT)
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => join(GEM_ROOT, name));
+}
+
+/**
+ * Which of the files this script reads are not there, so that "available" can mean what the
+ * generation NEEDS rather than what a directory is called.
+ *
+ * `--if-available` used to ask only whether {@link GEM_ROOT} existed, and every other input was
+ * discovered by reading it. A tree that exists and is incomplete is exactly the state an interrupted
+ * or half-restored wasm build leaves behind — which is the state the flag exists for — and against
+ * one the generation threw: an empty tree failed with "Expected exactly one vendored asciidoctor-pdf
+ * gem, found 0", and a tree holding the asciidoctor-pdf gem but no `pdf-core-*` failed with a raw
+ * `ENOENT`. Either one fails the `prebuild` hook, so nothing in the workspace builds — from a
+ * directory whose whole point is that the build does not depend on it.
+ *
+ * Every path the generation reads is listed here rather than only the two that happened to break.
+ * A missing input is an ABSENT gem tree; anything else — two versions of a gem, a file present whose
+ * contents no longer parse — is drift, and drift still fails loudly, under `--if-available` as much
+ * as without it, because keeping a stale catalogue over a gem the app renders with is the defect
+ * `--check` was added to end.
+ *
+ * @returns The missing paths, in the order they would have been read; empty when the tree is whole.
+ */
+function missingGemInputs() {
+  let pdf;
+  let core;
+  try {
+    if (!existsSync(GEM_ROOT)) return [GEM_ROOT];
+    pdf = gemDirectories('asciidoctor-pdf-');
+    core = gemDirectories('pdf-core-');
+  } catch {
+    // `GEM_ROOT` is there but is not a readable directory: nothing can be derived from it either.
+    return [GEM_ROOT];
+  }
+  const missing = [];
+  // Only NONE is absence. Two versions of a gem is an ambiguity about which one the app renders
+  // with, and `findGemThemeDirectory` and `buildPageSizes` refuse it in either mode — a skip there
+  // would leave the catalogue derived from a gem nobody chose.
+  if (pdf.length === 0) missing.push(join(GEM_ROOT, 'asciidoctor-pdf-*'));
+  else if (pdf.length === 1) {
+    for (const relative of [
+      'data/themes/default-theme.yml',
+      'data/themes/base-theme.yml',
+      'lib',
+      'lib/asciidoctor/pdf/theme_loader.rb',
+    ]) {
+      if (!existsSync(join(pdf[0], relative))) missing.push(join(pdf[0], relative));
+    }
+  }
+  if (core.length === 0) missing.push(join(GEM_ROOT, 'pdf-core-*'));
+  else if (core.length === 1 && !existsSync(join(core[0], 'lib/pdf/core/page_geometry.rb'))) {
+    missing.push(join(core[0], 'lib/pdf/core/page_geometry.rb'));
+  }
+  return missing;
 }
 
 /** Normalize a YAML key segment to the hyphenated form the theming guide documents. */
@@ -355,7 +436,18 @@ function buildDescriptors(themeDirectory, gemRoot) {
         ...(defaultText(value) === null ? {} : { defaultValue: defaultText(value) }),
       };
     })
-    .sort((a, b) => a.key.localeCompare(b.key));
+    // Sorted by CODE UNIT, not by `localeCompare` — the same rule, for the same reason, as
+    // `generate-catalogue-fonts.mjs:276` and `generate-base14-fonts.mjs:927`. What `--check` compares
+    // is the emitted TEXT, so the order the descriptors are written in has to be a property of their
+    // keys and of nothing else; `localeCompare` consults the runtime's collation and its default
+    // locale, both of which are the environment's to change.
+    //
+    // This one was not hypothetical. Czech collates `ch` as a SINGLE element that sorts after `h`, so
+    // under `LC_ALL=cs_CZ.UTF-8` `heading.chapter-break-before` sorts after `heading.font-color` and
+    // `--check` exits 1 on an unmodified checkout — a drift report about a locale rather than about
+    // the gems. `LC_ALL=C` exited 0 on the same tree. A check whose verdict depends on the runner's
+    // language is not a check.
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
   // D1: a duplicate key would make completion ambiguous about which descriptor applies.
   const seen = new Set();
@@ -424,32 +516,294 @@ export const DEFAULT_THEME_YAML = \`${escaped}\`;
 }
 
 /**
- * `--if-available` is what the build hook passes: regenerate when the gem is there (so a bump can
- * never ship a stale catalogue), and fall back to the committed output when it is not (so a fresh
- * clone still builds). An explicit `generate:theme-descriptors` passes no flag and fails loudly,
- * because someone who asked for regeneration should be told it did not happen.
+ * Read the loader's two deprecated-spelling tables out of the vendored asciidoctor-pdf gem.
+ *
+ * `ThemeLoader#process_entry` REWRITES a key before storing it (`theme_loader.rb:167-176`): a
+ * deprecated category becomes its current name, and a deprecated key becomes the key that replaced
+ * it. Both are silent as far as the produced PDF is concerned — the export applies the setting — so
+ * a preview that does not perform the same rewrite shows a different page and reports nothing.
+ *
+ * The tables are DERIVED rather than transcribed for the same reason the descriptors are: the key
+ * table is not a list at all in the source, it is one literal pair plus a suffix rename applied over
+ * a prefix list, and the prefix list gained entries between gem releases. A hand-copied subset would
+ * be a subset of one release forever.
+ *
+ * @param gemDirectory - The vendored asciidoctor-pdf gem's root.
+ * @returns The category table, the key table, and the role-key rename rule.
  */
-const optional = process.argv.includes('--if-available');
+function buildDeprecatedKeys(gemDirectory) {
+  const source = readFileSync(join(gemDirectory, 'lib/asciidoctor/pdf/theme_loader.rb'), 'utf8');
+  /** `'old' => 'new'` — one pair of either table's Ruby literal. */
+  const pair = /'([\da-z_]+)'\s*=>\s*'([\da-z_]+)'/g;
 
-if (optional && !existsSync(GEM_ROOT)) {
-  console.log(
-    'asciidoctor-pdf is not vendored; keeping the committed theme descriptor catalogue. ' +
-      'Build the wasm engine and re-run to regenerate it.',
+  const categoryLine = lineDeclaring(source, 'DeprecatedCategoryKeys');
+  const categories = [...categoryLine.matchAll(pair)].map((match) => [match[1], match[2]]);
+
+  const keyLine = lineDeclaring(source, 'DeprecatedKeys');
+  // Everything before `.tap` is the literal hash; the block after it is the generated half.
+  const tapAt = keyLine.indexOf('.tap');
+  const keys = [...keyLine.slice(0, tapAt).matchAll(pair)].map((match) => [match[1], match[2]]);
+  const prefixes = /%w\(([^)]*)\)/.exec(keyLine.slice(tapAt));
+  // `accum[%(#{prefix}_align)] = %(#{prefix}_text_align)` — the two interpolated templates, read
+  // rather than assumed, so a release that renamed a different suffix is followed rather than missed.
+  const rename = /accum\[%\(#\{prefix\}([\da-z_]+)\)\]\s*=\s*%\(#\{prefix\}([\da-z_]+)\)/.exec(
+    keyLine.slice(tapAt),
   );
-} else {
+  if (prefixes === null || rename === null) {
+    throw new Error(
+      'ThemeLoader::DeprecatedKeys is no longer a prefix list with an interpolated rename — ' +
+        'the preview would silently stop following the loader on every key it generates.',
+    );
+  }
+  for (const prefix of prefixes[1].split(/\s+/).filter((entry) => entry !== '')) {
+    keys.push([`${prefix}${rename[1]}`, `${prefix}${rename[2]}`]);
+  }
+
+  // The loader's one rule that is not a table: a `role_…_align` key is renamed by regex rather than
+  // by lookup, because role names are author-chosen and cannot be enumerated.
+  const roleRule = /RoleAlignKeyRx\s*=\s*\/(.+?)\/\s*$/m.exec(source);
+  if (roleRule === null) throw new Error('ThemeLoader::RoleAlignKeyRx is gone; the role rename cannot be followed.');
+
+  if (categories.length === 0 || keys.length === 0) {
+    throw new Error('One of the theme loader’s deprecated-spelling tables parsed empty — the literals changed shape.');
+  }
+  return { categories, keys, roleSuffix: roleRule[1], roleReplacement: rename[2] };
+}
+
+/** The single source line declaring a Ruby constant, which is where each of these tables lives. */
+function lineDeclaring(source, constant) {
+  const line = source.split('\n').find((entry) => entry.trimStart().startsWith(`${constant} =`));
+  if (line === undefined) throw new Error(`ThemeLoader::${constant} is gone from the vendored gem.`);
+  return line;
+}
+
+/** Emit the deprecated-spelling tables as a TypeScript module. */
+function emitDeprecatedKeys(tables, version) {
+  const entries = (pairs) => pairs.map(([from, to]) => `  ${from}: '${to}',`).join('\n');
+  return `/**
+ * @file GENERATED — do not edit.
+ *
+ * The spellings asciidoctor-pdf ${version}'s \`ThemeLoader\` still honours, read from
+ * \`lib/asciidoctor/pdf/theme_loader.rb\` by
+ * \`packages/shared/scripts/generate-theme-descriptors.mjs\`. Regenerate after a gem bump:
+ *
+ *     \`pnpm --filter @asciidocollab/shared generate:theme-descriptors\`
+ *
+ * \`process_entry\` renames a key BEFORE storing it, and says nothing while doing so. The export
+ * therefore applies \`sidebar: title: align\` exactly as if it had been written \`text-align\`, and a
+ * resolver that keeps the written spelling drops the setting instead — showing a page the export
+ * will not produce, with an empty diagnostics list.
+ */
+
+/** Categories the loader renames whole, applied to a mapping's own key. */
+export const DEPRECATED_THEME_CATEGORIES: Readonly<Record<string, string>> = {
+${entries(tables.categories)}
+};
+
+/** Individual settings the loader renames, applied to a leaf key. */
+export const DEPRECATED_THEME_KEYS: Readonly<Record<string, string>> = {
+${entries(tables.keys)}
+};
+
+/**
+ * The suffix a \`role_…\` key's alignment is renamed by, which is a rule rather than a table because
+ * role names are the author's own.
+ */
+export const ROLE_ALIGN_SUFFIX = /${tables.roleSuffix}/;
+
+/** What {@link ROLE_ALIGN_SUFFIX} is replaced with. */
+export const ROLE_ALIGN_REPLACEMENT = '${tables.roleReplacement}';
+`;
+}
+
+/**
+ * Read prawn's named page-size table out of the vendored `pdf-core` gem.
+ *
+ * Parsed line-by-line from the Ruby literal rather than by evaluating anything: the literal is a
+ * flat list of `'NAME' => [w, h]` pairs, and a regex over it either matches an entry or does not.
+ *
+ * @returns The table (name → [width, height] in points) and the pdf-core version it came from.
+ */
+function buildPageSizes() {
+  const gems = readdirSync(GEM_ROOT).filter((name) => name.startsWith('pdf-core-'));
+  if (gems.length !== 1) {
+    throw new Error(
+      `Expected exactly one vendored pdf-core gem, found ${gems.length}: ${gems.join(', ')}. ` +
+        'Two versions means the page-size table could come from a gem the app does not render with.',
+    );
+  }
+  const source = readFileSync(join(GEM_ROOT, gems[0], 'lib/pdf/core/page_geometry.rb'), 'utf8');
+  // Only the SIZES literal — the file opens with a doc comment listing the same dimensions in prose,
+  // and matching those would silently double the table with commented-out values.
+  const literal = source.slice(source.indexOf('SIZES = {'), source.indexOf('}.freeze'));
+  const sizes = [];
+  for (const line of literal.split('\n')) {
+    const match = PAGE_SIZE_ENTRY.exec(line);
+    if (match !== null) sizes.push([match[1], Number(match[2]), Number(match[3])]);
+  }
+  if (sizes.length === 0) {
+    throw new Error('No page sizes parsed from pdf-core page_geometry.rb — the literal has changed shape.');
+  }
+  if (!sizes.some(([name]) => name === 'A4')) {
+    throw new Error('The page-size table has no A4 entry, which the converter falls back to.');
+  }
+  return { sizes, version: gems[0].replace('pdf-core-', '') };
+}
+
+/** Emit the named page-size table as a TypeScript module. */
+function emitPageSizes(sizes, version) {
+  const body = sizes.map(([name, width, height]) => `  '${name}': [${width}, ${height}],`).join('\n');
+  return `/**
+ * @file GENERATED — do not edit.
+ *
+ * prawn's named page-size table (\`PDF::Core::PageGeometry::SIZES\`) from pdf-core ${version}, as
+ * vendored beneath asciidoctor-pdf, emitted by
+ * \`packages/shared/scripts/generate-theme-descriptors.mjs\`. Regenerate after a gem bump:
+ *
+ *     \`pnpm --filter @asciidocollab/shared generate:theme-descriptors\`
+ *
+ * A theme writes \`page.size: A4\`, which is a name; the converter looks it up here and falls back to
+ * A4 when the name is not one of these. Every dimension is in PDF points (1/72 inch).
+ */
+
+/** The pdf-core release this table was read from. */
+export const PAGE_SIZE_GEM_VERSION = '${version}';
+
+/** Portrait width and height, in points, for every page size the renderer recognises by name. */
+export const NAMED_PAGE_SIZES_PT: Readonly<Record<string, readonly [number, number]>> = {
+${body}
+};
+
+/** The size the renderer falls back to when a theme names one it does not recognise. */
+export const FALLBACK_PAGE_SIZE_NAME = 'A4';
+`;
+}
+
+/**
+ * Everything this script derives from the gems, as `path → the text that belongs there`.
+ *
+ * One function for both modes, deliberately: a `--check` that re-derived the outputs by a different
+ * route than the writer takes would be checking two implementations against each other rather than
+ * the committed file against the gem, and could pass while the generator emitted something else.
+ *
+ * @returns The four generated modules, and a summary line for the log.
+ */
+function buildAll() {
   const { directory, version } = findGemThemeDirectory();
-  const { descriptors, unmapped, codeOnlyCount } = buildDescriptors(directory, join(directory, '..', '..'));
-  writeFileSync(OUTPUT, emit(descriptors, version, unmapped), 'utf8');
-  writeFileSync(
-    DEFAULT_THEME_OUTPUT,
-    emitDefaultTheme(readFileSync(join(directory, 'default-theme.yml'), 'utf8'), version),
-    'utf8',
-  );
-  console.log(
-    `Generated ${descriptors.length} theme descriptors (${codeOnlyCount} read from converter source, ` +
-      `not set by any shipped theme) from asciidoctor-pdf ${version} → ${OUTPUT}` +
+  const gemDirectory = join(directory, '..', '..');
+  const { descriptors, unmapped, codeOnlyCount } = buildDescriptors(directory, gemDirectory);
+  const { sizes, version: pageSizeVersion } = buildPageSizes();
+  const deprecated = buildDeprecatedKeys(gemDirectory);
+  return {
+    files: new Map([
+      [OUTPUT, emit(descriptors, version, unmapped)],
+      [
+        DEFAULT_THEME_OUTPUT,
+        emitDefaultTheme(readFileSync(join(directory, 'default-theme.yml'), 'utf8'), version),
+      ],
+      [PAGE_SIZES_OUTPUT, emitPageSizes(sizes, pageSizeVersion)],
+      [DEPRECATED_KEYS_OUTPUT, emitDeprecatedKeys(deprecated, version)],
+    ]),
+    summary:
+      `${descriptors.length} theme descriptors (${codeOnlyCount} read from converter source, ` +
+      `not set by any shipped theme) from asciidoctor-pdf ${version}` +
+      `\n${sizes.length} named page sizes from pdf-core ${pageSizeVersion}` +
+      `\n${deprecated.categories.length} deprecated categories and ${deprecated.keys.length} ` +
+      `deprecated keys from asciidoctor-pdf ${version}` +
       (unmapped.length === 0
         ? ''
         : `\n  ${unmapped.length} flat base-theme keys skipped: ${unmapped.join(', ')}`),
+  };
+}
+
+/**
+ * The whole of this script's command line.
+ *
+ * Both flags used to be looked for with `argv.includes`, which asks whether the exact string is
+ * present and says nothing about the rest. `--check=true` is therefore not `--check`, not any other
+ * known flag either, and fell through to the branch that WRITES — the one mode a caller who typed
+ * `--check` was asking this script not to enter — and exited 0, reporting success for a check that
+ * never ran. Nothing passes that form today; the point is that no argument should be able to mean
+ * "no arguments at all".
+ *
+ * So the flags are the whole vocabulary, matched exactly, and anything else is refused by name. They
+ * are boolean and have no `=value` form: accepting `--check=false` as a request to check would be a
+ * second silent misreading in the opposite direction.
+ */
+const ARGUMENTS = process.argv.slice(2);
+const KNOWN_FLAGS = ['--check', '--if-available'];
+const unrecognised = ARGUMENTS.filter((argument) => !KNOWN_FLAGS.includes(argument));
+if (unrecognised.length > 0) {
+  console.error(
+    `Unrecognised argument${unrecognised.length === 1 ? '' : 's'}: ${unrecognised.join(', ')}\n` +
+      `This script takes ${KNOWN_FLAGS.join(' and ')}, on their own and with no value.`,
   );
+  process.exit(1);
+}
+
+/**
+ * `--if-available` is what the build hook passes: regenerate when the gems are there (so a bump can
+ * never ship a stale catalogue), and fall back to the committed output when they are not (so a fresh
+ * clone still builds). An explicit `generate:theme-descriptors` passes no flag and fails loudly,
+ * because someone who asked for regeneration should be told it did not happen.
+ *
+ * "There" means every file the generation reads — see {@link missingGemInputs}, and the incomplete
+ * trees that used to fail the build hook outright.
+ */
+const optional = ARGUMENTS.includes('--if-available');
+/**
+ * `--check` compares the committed modules against what the vendored gems say they should be, and
+ * writes nothing.
+ *
+ * It exists because `--if-available` cannot catch drift and was the only thing running here: the gem
+ * tree is gitignored, so on every machine and every CI job without a wasm build the generator finds
+ * no gems and no-ops — which reads exactly like "up to date". A `Gemfile.lock` bump that adds theme
+ * keys, renames a deprecated spelling or changes a page size therefore left four committed modules
+ * describing the PREVIOUS renderer, silently: the editor underlines keys the gem now has as
+ * unrecognised, and the preview resolves a theme the export no longer reads the same way.
+ *
+ * Deliberately NOT `--if-available`-shaped. A check that skipped when the gems are absent would be a
+ * check that never fails, which is the defect it was written to end. It is wired into the one job
+ * that holds the gems (`pdf-wasm`), and it fails there when they are missing.
+ *
+ * Which is why it is tested BEFORE `--if-available` below, and not after. The two flags are not
+ * mutually exclusive — `pnpm --filter … check:theme-descriptors --if-available` forwards the extra
+ * flag verbatim onto the same command line — and with `--if-available` tested first, a runner with no
+ * gems printed "keeping the committed catalogue" and exited 0 for a command that had asked to be told
+ * about drift. Nothing in this repository passes both today; the ordering is what stops the first
+ * caller that does from silently disabling the only check that can catch a stale catalogue.
+ */
+const check = ARGUMENTS.includes('--check');
+
+if (check) {
+  const { files, summary } = buildAll();
+  const stale = [];
+  for (const [path, text] of files) {
+    if (!existsSync(path)) {
+      stale.push(`${path} is not committed`);
+    } else if (readFileSync(path, 'utf8') !== text) {
+      stale.push(`${path} does not match the vendored gems`);
+    }
+  }
+  if (stale.length > 0) {
+    console.error(
+      `The committed theme descriptors are out of date with the vendored gems:\n  ${stale.join('\n  ')}\n\n` +
+        'Run: pnpm --filter @asciidocollab/shared generate:theme-descriptors',
+    );
+    process.exitCode = 1;
+  } else {
+    console.log(`The committed theme descriptors match the vendored gems:\n${summary}`);
+  }
+} else {
+  const missing = optional ? missingGemInputs() : [];
+  if (missing.length > 0) {
+    console.log(
+      'The vendored asciidoctor-pdf gems are not all there; keeping the committed theme descriptor ' +
+        `catalogue. Build the wasm engine and re-run to regenerate it. Missing:\n  ${missing.join('\n  ')}`,
+    );
+  } else {
+    const { files, summary } = buildAll();
+    for (const [path, text] of files) writeFileSync(path, text, 'utf8');
+    console.log(`Generated:\n${summary}`);
+  }
 }
