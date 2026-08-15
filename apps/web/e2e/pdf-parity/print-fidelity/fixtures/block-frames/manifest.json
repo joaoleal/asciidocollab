@@ -1,0 +1,18 @@
+{
+  "name": "block-frames",
+  "description": "The anchor for the rule a block is framed with, and for the category a verse takes its own type and frame from. The renderer STROKES a frame on the block's bounds — half of it outside, none of it inside — and measures the padding from that same edge, so the rule costs the block neither height nor content width; a CSS border costs it both, which made every framed block a rule-width taller and its text a rule-width further in. And a verse is not a quotation: the gem's default theme gives `verse` a category of its own whose `$quote_*` defaults are frozen at the DEFAULT theme's quote values when that file loads, so a project that restyles `quote` does not restyle `verse` — which is why this fixture's theme sets every quote value away from the renderer's own.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "frames-theme.yml",
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "frames-theme.yml"
+    }
+  }
+}

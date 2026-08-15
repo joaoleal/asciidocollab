@@ -1,0 +1,15 @@
+{
+  "name": "default-theme",
+  "description": "The anchor document under NO project theme, so the appearance every theme-less project gets is the one compared against a real render. It is the case nothing else covers: the default is what the preview falls back to whenever anything goes wrong, so a defect there hides behind every other fixture passing.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {}
+  }
+}

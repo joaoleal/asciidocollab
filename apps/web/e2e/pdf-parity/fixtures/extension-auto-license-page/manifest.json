@@ -1,6 +1,6 @@
 {
   "name": "extension-auto-license-page",
-  "description": "The auto-license-page extension applied to a book carrying every attribute it reads. Proves the extension's effect matches the canonical toolchain — Principle XV names an extension without passing comparison coverage as not done. Two chapters are present so the generated page is demonstrably after all body content, which is the placement decision this extension had to make: the converter's only hook that is both after the body and before the back cover is the :back call to ink_cover_page. The theme sets both contributed keys away from their defaults so a regression that stopped reading either fails rather than passing silently.",
+  "description": "The auto-license-page extension applied to a book carrying every attribute it reads. Proves the extension's effect matches the canonical toolchain — without a passing comparison against reference output, a claim that the extension matches is an assertion rather than a fact, and the extension is not done. Two chapters are present so the generated page is demonstrably after all body content, which is the placement decision this extension had to make: the converter's only hook that is both after the body and before the back cover is the :back call to ink_cover_page. The theme sets both contributed keys away from their defaults so a regression that stopped reading either fails rather than passing silently.",
   "mainFile": "main.adoc",
   "scale": 2,
   "tolerance": { "pixelThreshold": 0.1, "maxMismatchRatio": 0.01 },

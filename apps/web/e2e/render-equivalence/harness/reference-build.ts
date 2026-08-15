@@ -415,6 +415,10 @@ export interface ReferenceNormalisationInput {
  *     the JS engine does not). Only the tokenisation and the name of the highlighter are dropped: the
  *     code's exact characters including indentation, its `data-lang`, and everything in the block
  *     that is not a token span — callout markers especially — are kept and compared.
+ *   - **unwrap the app's named marker separators** — Asciidoctor writes a footnote entry's separator
+ *     as a bare text node, which no stylesheet can reach; the app wraps it in a span so the Print
+ *     preview can present the marker the way the page format does. The span is unwrapped and its
+ *     characters compared, so a separator whose text changed still fails.
  *   - **canonicalise diagram blocks** — the app replaces a diagram block with an inert placeholder for
  *     the main thread to draw; the reference, having no diagram extension, renders it as a listing.
  *     Both become `<adc-diagram type="TYPE">SOURCE</adc-diagram>`, so a changed type or changed source
@@ -498,6 +502,22 @@ export function normaliseForReferenceComparison(input: ReferenceNormalisationInp
       for (const name of languageClasses) code.classList.remove(name);
       if (code.classList.length === 0) code.removeAttribute('class');
     }
+  }
+
+  // Pass: unwrap the app's named marker separators.
+  //
+  // Asciidoctor writes a footnote entry's separator as a bare text node — `<a …>1</a>. The note` —
+  // and no selector can reach a bare text node. The app wraps that separator, and only that
+  // separator, in a span so a stylesheet can present the marker the way the page format does (the PDF
+  // renderer inks `[1] ` where the HTML backend writes `1. `). It is a handle on characters that were
+  // already there, in the same place and the same order.
+  //
+  // UNWRAPPED, never removed: the separator's own characters go back into the text and are compared,
+  // so a separator that changed, gained or lost a character still fails this gate. Serialising the
+  // body re-joins the neighbouring text, so what is compared is the single text node the reference
+  // toolchain emits.
+  for (const separator of body.querySelectorAll('span.footnote-separator')) {
+    separator.replaceWith(...separator.childNodes);
   }
 
   for (const element of body.querySelectorAll('*')) {

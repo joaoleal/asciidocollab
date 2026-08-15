@@ -1,0 +1,18 @@
+{
+  "name": "highlighting-themed",
+  "description": "The same five blocks under a theme that recolours and slants the code font. It is the witness for the cascade: the renderer paints a token the palette names in the palette's own colour and upright weight, and a token the palette says nothing about in the theme's code colour and slant — so a preview that hard-coded either half would fail here while passing the unthemed anchor.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "code-theme.yml",
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "code-theme.yml"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "rich-theme",
+  "description": "The anchor document under a theme that changes something in every construct the Print style claims to reproduce. Nothing in it is the renderer's own default, so a value the preview silently drops shows up as a difference rather than as a coincidence.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "anchor-theme.yml",
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "anchor-theme.yml"
+    }
+  }
+}

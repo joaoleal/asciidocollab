@@ -1,0 +1,60 @@
+= Marker Columns and Rhythm
+:toc:
+:toclevels: 2
+
+== Lists
+
+A paragraph that ends the run of prose before the subsection below it, so the space the renderer
+opens between the two can be compared against the space this preview opens.
+
+=== Bullets
+
+.Three depths of bullet
+* *first* item at the top level
+* *second* item, which carries a list of its own
+** *nested* item at the second level
+** *another* nested item
+*** *deepest* item, at the third level
+* *third* item, back at the top level
+
+=== Numbers
+
+.Two depths of numbering
+. *first* step
+. *second* step, which carries steps of its own
+.. *nested* step at the second level
+.. *another* nested step
+. *third* step, back at the top level
+
+=== Callouts
+
+.A listing with callouts
+----
+first line of the listing <1>
+second line of the listing <2>
+third line of the listing <3>
+----
+<1> *First* explanation.
+<2> *Second* explanation.
+<3> *Third* explanation.
+
+The paragraph that closes this subsection, before the next section starts.
+
+== Rhythm
+
+'''
+
+A thematic break stands above this paragraph, and it is a rule an author wrote: the one the HTML
+backend opens the footnote list with is not, and only that one is suppressed.
+
+A quotation is set at the alignment body text is set at, because the renderer has no alignment key
+of its own for one and inks its paragraphs at the base alignment.
+
+[quote, Ada Lovelace]
+____
+The Analytical Engine weaves algebraic patterns, just as the Jacquard loom weaves flowers and
+leaves, and it does so at whatever alignment the document around it is set in.
+____
+
+A sentence carrying a footnote.footnote:[The footnote's own text, long enough to break across more
+than one line so that its alignment can be told from its line breaks.]

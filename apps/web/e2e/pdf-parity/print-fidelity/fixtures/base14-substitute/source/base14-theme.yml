@@ -1,0 +1,18 @@
+# The base-14 stand-in anchor: a theme whose body and heading face is one of prawn's own fourteen
+# built-in fonts rather than a file anyone ships.
+#
+# The renderer does not embed anything for `Times-Roman` — it writes the name into the PDF and leaves
+# the reader to find it. The preview cannot do that, so it serves a committed stand-in out of
+# `packages/asciidoc-pdf/assets/base14-fonts` instead, and whether that stand-in sets the same text
+# to the same widths on the same baselines is exactly what nothing measured until this fixture
+# existed: no other anchor's theme names a base-14 family, so `SUBSTITUTE_DIR` and the `substitute`
+# branch of `fontFaceRules` were dead code in the fidelity suite.
+#
+# Code stays on the renderer's own M+ 1mn, so one page carries both a substituted face and an
+# embedded one and the comparison can tell which is which.
+extends: default
+base:
+  font-family: Times-Roman
+  font-size: 10
+heading:
+  font-family: Times-Roman

@@ -1,0 +1,15 @@
+{
+  "name": "highlighting",
+  "description": "Source blocks in five languages, chosen for the token kinds the two highlighters divide differently: comments, keywords, class and constant names, symbols, instance and global variables, interpolated strings, numbers, method definitions, regular expressions, built-in values, preprocessor directives and the bare `title` class the pre-split grammars still emit, and the type annotations one highlighter reads by identity and the other by position. It is the only anchor whose subject is COLOUR INSIDE a code block, which is the one thing the other four cannot see.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {}
+  }
+}

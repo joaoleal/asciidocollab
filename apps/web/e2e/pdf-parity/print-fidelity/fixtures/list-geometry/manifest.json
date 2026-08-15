@@ -1,0 +1,21 @@
+{
+  "name": "list-geometry",
+  "description": "The anchor for the column a list's marker is set in and the vertical rhythm around it: the glyph the renderer draws for each bullet depth, the gutter it leaves between a marker and its text, the pitch a nested list keeps, the marker column of a callout list, the space a paragraph opens before the section that follows it, the space between the document title and the contents heading, and the space above the footnote list. Every one of them is arithmetic the renderer does explicitly and a browser does differently on its own.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "list-theme.yml",
+    "fontPaths": [],
+    "attributes": {
+      "icons": "font"
+    }
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "list-theme.yml",
+      "icons": "font"
+    }
+  }
+}

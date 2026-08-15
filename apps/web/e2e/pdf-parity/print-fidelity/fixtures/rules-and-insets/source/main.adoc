@@ -1,0 +1,38 @@
+= Rules and Insets
+
+A paragraph of body text, long enough that it must break across more than one line, so the measure
+the rest of the document is set in is on the page to compare against.
+
+NOTE: An admonition whose content runs to several lines, because where those lines break is decided
+by the inset on the right as much as by the one on the left, and a right inset that is missing is
+invisible in any admonition short enough to fit on a single line.
+
+.A monospaced column beside a plain one
+[cols="1,1m",options="header"]
+|===
+| Action | Key
+
+| Find in file | Ctrl+F
+| Save the file | Ctrl+S
+| Insert `code` | Ctrl+E
+|===
+
+.A table whose frame the theme sets apart from its grid
+[cols="2,1",options="header"]
+|===
+| Construct | Count
+
+| Paragraphs | 12
+| Lists | 3
+| Tables | 2
+|===
+
+.A sidebar
+****
+A sidebar whose last line sits one padding above the block's own bottom edge, with nothing between
+the two.
+****
+
+'''
+
+The closing paragraph, under a thematic break the theme gives a colour of its own.

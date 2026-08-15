@@ -9,8 +9,12 @@
  * meaningful rather than a comparison of two different documents.
  *
  * Usage:
- *   node apps/web/e2e/pdf-parity/generate-reference.mjs <fixture-dir> [<fixture-dir> ...]
+ *   node apps/web/e2e/pdf-parity/generate-reference.mjs <fixture-dir|fixture-name> [...]
  *   node apps/web/e2e/pdf-parity/generate-reference.mjs --all
+ *
+ * `--all` covers BOTH corpora — the reference-parity fixtures beside this file and the Print style's
+ * fidelity anchors under `print-fidelity/fixtures` — because both are renders of this toolchain and
+ * both go stale at the same gem bump.
  *
  * It reads each fixture's `manifest.json` (`mainFile`, and the `render` block that mirrors the in-app
  * ProjectSnapshot: `themePath`, `fontPaths`, `imagesDir`, `attributes`) and reconstructs the equivalent
@@ -29,7 +33,18 @@ import { spawnSync } from 'node:child_process';
 import { ensureReferenceImage, referenceImageTag, SOURCE_DATE_EPOCH } from './tools/reference-image.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = join(HERE, 'fixtures');
+/**
+ * The fixture corpora `--all` regenerates, and the roots a bare fixture NAME is resolved against.
+ *
+ * TWO, because there are two: the reference-parity corpus beside this file, and the Print style's
+ * fidelity anchors under `print-fidelity/fixtures`. Both are renders of the same external toolchain
+ * and both go stale the same way, but only the first was enumerated — so `--all` regenerated the
+ * parity corpus after a gem bump while the fourteen fidelity anchors kept references built by the
+ * PREVIOUS toolchain, and every "the preview matches the page" comparison went on being measured
+ * against a page the app no longer produces. Nothing said so: naming those fixtures one path at a
+ * time was the only way to reach them, and a bulk regeneration reports "Done."
+ */
+const FIXTURE_ROOTS = [join(HERE, 'fixtures'), join(HERE, 'print-fidelity', 'fixtures')];
 
 // The toolchain image — a digest-pinned base plus a fully locked gem closure, tagged by a hash of its
 // own definition — is defined once in tools/reference-image.mjs and shared by every reference tool.
@@ -302,10 +317,12 @@ export function generate(fixtureDir, tag, options = {}) {
 
 function fixtureDirsFromArgs(argv) {
   if (argv.includes('--all')) {
-    const all = readdirSync(FIXTURES_DIR, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => join(FIXTURES_DIR, entry.name))
-      .filter((dir) => existsSync(join(dir, 'manifest.json')));
+    const all = FIXTURE_ROOTS.flatMap((root) =>
+      readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => join(root, entry.name))
+        .filter((dir) => existsSync(join(dir, 'manifest.json'))),
+    );
     // Named, not silently dropped. A bulk regeneration that quietly covers less than the whole
     // corpus reads as "everything is up to date", which is how a stale reference survives. Asking
     // for one of these BY NAME still fails loudly, so the skip cannot be mistaken for support.
@@ -338,7 +355,15 @@ function fixtureDirsFromArgs(argv) {
       // passed as `apps/web/.../theme-editing` failed with "invalid characters for a local volume
       // name" rather than mounting anything. Tab-completing a path from the repository root is the
       // obvious way to invoke this, so it has to work.
-      .map((arg) => (existsSync(join(arg, 'manifest.json')) ? resolve(arg) : join(FIXTURES_DIR, arg)))
+      //
+      // A bare NAME is looked for in each corpus, so `rules-and-insets` reaches the fidelity anchor
+      // as readily as `code` reaches the parity one. A name in neither resolves to the parity root
+      // and fails there, which is where the manifest it is missing would have to be added.
+      .map((arg) => {
+        if (existsSync(join(arg, 'manifest.json'))) return resolve(arg);
+        const root = FIXTURE_ROOTS.find((each) => existsSync(join(each, arg, 'manifest.json')));
+        return join(root ?? FIXTURE_ROOTS[0], arg);
+      })
   );
 }
 

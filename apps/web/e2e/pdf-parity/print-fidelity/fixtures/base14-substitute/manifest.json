@@ -1,0 +1,18 @@
+{
+  "name": "base14-substitute",
+  "description": "The anchor document set in one of prawn's fourteen built-in fonts, which the renderer names in the PDF rather than embedding. The preview has nothing to read out of the file the export used - there is no such file - so it serves a committed stand-in from packages/asciidoc-pdf/assets/base14-fonts and the question is whether that stand-in sets the same text to the same widths on the same baselines. No other anchor's theme names a base-14 family, so the substitute branch of the font plan was reached by nothing in this suite before this fixture, and the stand-in's own vertical metrics differ from prawn's AFM line box by about half an em - which is why only a real render can answer it.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "base14-theme.yml",
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "base14-theme.yml"
+    }
+  }
+}

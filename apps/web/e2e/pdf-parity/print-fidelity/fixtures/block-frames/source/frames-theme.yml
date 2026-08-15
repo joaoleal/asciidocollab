@@ -1,0 +1,39 @@
+# Every rule here is a width no whole CSS pixel expresses, and every one of them is a different
+# width, so a frame drawn at the browser's own rounding cannot agree with the page by accident.
+#
+# The `quote` category is set as far from the renderer's own defaults as it can be — a different
+# size, a different rule colour, a different rule width, a different padding and a different cite —
+# because `verse` inherits ALL of those from the DEFAULT theme's quote at the moment the default
+# theme loads, and never from this one. Anything the verse block below shows in this theme's quote
+# values is a value the export does not draw.
+extends: default
+base:
+  font-size: 11
+  line-height: 1.4
+  border-color: DCE1E7
+prose:
+  margin-bottom: 9
+block:
+  margin-bottom: 15
+quote:
+  font-size: 12
+  border-color: '1A4E8A'
+  border-left-width: 3
+  padding: [5, 16, 5, 17.5]
+  cite:
+    font-size: 8
+    font-color: '2E7D32'
+code:
+  border-width: 1.5
+  border-color: '884400'
+  background-color: 'F2EFE9'
+  padding: [10, 13, 10, 13]
+sidebar:
+  border-width: 2
+  border-color: '008844'
+  background-color: 'EAF2FF'
+  padding: [12, 15, 12, 15]
+example:
+  border-width: 0.5
+  border-color: 'AA0088'
+  padding: [9, 14, 9, 14]

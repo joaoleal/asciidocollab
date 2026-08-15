@@ -1,0 +1,8 @@
+extends: default
+codespan:
+  # One axis only, which is the whole point of this anchor: `to_styles` turns this into `[:bold]` and
+  # `update_fragment` merges it into whatever the markup around the fragment contributed, so the slant
+  # is still the markup's to decide.
+  font-style: bold
+  # A chip, so the raster can say which constructs the renderer paints one behind and which it does not.
+  background-color: E4EAF2

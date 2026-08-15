@@ -1,0 +1,21 @@
+# Nothing here is the renderer's own value. `prose` and `block` differ by 6pt, which is what makes
+# "a list before a section takes the BLOCK margin" visible; the term is set in a slant the renderer's
+# own default theme does not use, so a preview that hardcoded the default's bold would not agree.
+extends: default
+base:
+  font-size: 11
+  line-height: 1.4
+prose:
+  margin-bottom: 9
+block:
+  margin-bottom: 15
+heading:
+  margin-top: 14
+  margin-bottom: 6
+description-list:
+  term-spacing: 5
+  description-indent: 18
+  term-font-style: italic
+list:
+  indent: 21
+  item-spacing: 4

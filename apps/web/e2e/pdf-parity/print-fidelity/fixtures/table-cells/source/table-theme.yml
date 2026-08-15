@@ -1,0 +1,18 @@
+# The theme for what happens inside a table's cells.
+#
+# `table.foot` is the point of it. The renderer restyles the footer row after its cells are built —
+# fill, colour, family, size and style, one assignment each — and the gem's own default theme sets
+# only the FILL, so a theme that leaves it alone can never show whether the other four arrived. This
+# one sets the four and deliberately leaves the fill to the default it inherits, which is how one
+# footer row carries both the default value and the theme's own.
+#
+# The family and the size are chosen to be visible in a measurement rather than merely different: a
+# footer set in the mono face at 9pt has a face, a size and a line box that no other row on the page
+# shares, so a rule that reached the wrong row or the wrong property cannot pass by coincidence.
+extends: default
+table:
+  foot:
+    font-color: '1F3A5F'
+    font-family: M+ 1mn
+    font-size: 9
+    font-style: italic

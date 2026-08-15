@@ -1,0 +1,34 @@
+= Block Frames
+
+== Verse and quote
+
+[verse, Carl Sandburg, Fog]
+____
+verse-first-line
+a verse line long enough that it has to break somewhere, which is the only way a reference can say whether the renderer justified it or set it flush left
+____
+
+[quote, Ada Lovelace]
+____
+a quotation long enough that it has to break somewhere too, which is the same question asked of the block the renderer does set at the page's own alignment, and long enough again that it runs to a third line as well, because one full line cannot show that two of them end at the very same measure
+____
+
+== Framed blocks
+
+----
+listing-only-line
+----
+
+....
+literal-only-line
+....
+
+****
+sidebar-only-line
+****
+
+====
+example-only-line
+====
+
+closes-frames

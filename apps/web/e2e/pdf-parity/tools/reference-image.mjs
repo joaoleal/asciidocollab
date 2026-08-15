@@ -20,10 +20,12 @@
  *
  * There is now more than one reference toolchain — the page-format one defined beside this file, and
  * the web-format HTML oracle under `e2e/render-equivalence/harness/` — so what follows is written in
- * terms of *a* definition set. The page-format set stays the DEFAULT, and its tag stays byte-identical
- * to what it has always been, because every committed reference PDF was produced by an image with
- * that name: re-tagging it would put the whole page-format corpus in question. That is also why the
- * second toolchain has its own definition files rather than gems added to these ones.
+ * terms of *a* definition set. The page-format set stays the DEFAULT, and its tag moves ONLY when the
+ * whole page-format corpus is regenerated in the same change, because every committed reference PDF
+ * is attributed to the image named by that tag: re-tagging without regenerating would put the corpus
+ * in question. That is also why the second toolchain has its own definition files rather than gems
+ * added to these ones — a gem added here re-tags the page-format image and so obliges a corpus-wide
+ * regeneration, for a change that has nothing to do with the page format.
  */
 
 import { readFileSync } from 'node:fs';
@@ -50,9 +52,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * The page-format (PDF) toolchain: base image, direct gems, locked transitives.
  *
  * The default everywhere, and its `name` plus this exact file list are what make its tag
- * `asciidoc-pdf-reference:7282936feafb89cc` — the name under which every committed reference PDF in
- * `e2e/pdf-parity/fixtures/` was produced. Do not reorder, rename or extend this list to accommodate
- * another toolchain; give the other toolchain its own definition set instead.
+ * `asciidoc-pdf-reference:7b8ad2e6ce6e8682` — the name under which every committed reference PDF in
+ * `e2e/pdf-parity/fixtures/` and `e2e/pdf-parity/print-fidelity/fixtures/` was produced. Do not
+ * reorder, rename or extend this list to accommodate another toolchain; give the other toolchain its
+ * own definition set instead.
+ *
+ * The tag was `7282936feafb89cc` until the reference's rouge was brought back into lockstep with the
+ * wasm engine's (5.0.0 → 4.7.0; see the Gemfile beside this file for why the convergence had to be
+ * downward). That is the sanctioned way to change it, and the only one: a new tag is only sound if
+ * the WHOLE corpus is regenerated under it in the same change, because a tag is a claim about which
+ * toolchain produced every committed PDF. It was — and 38 of the 40 came back byte-identical, the two
+ * exceptions being the `highlighting` and `highlighting-themed` fidelity anchors, where rouge 5 had
+ * been inking `dataclasses` in `from dataclasses import` #bb0066 bold and 4.7.0 leaves it at the code
+ * colour. Reaching a new tag any other way — bumping a gem and regenerating one fixture — leaves the
+ * rest of the corpus attributed to a toolchain that no longer exists.
  *
  * @type {ReferenceDefinition}
  */
@@ -73,7 +86,7 @@ export const SOURCE_DATE_EPOCH = '1704067200'; // 2024-01-01T00:00:00Z
  * base image or a gem left the tag untouched and every machine reused a months-old image forever.
  *
  * @param {ReferenceDefinition} [definition] - The toolchain to name; the page-format one by default.
- * @returns The image tag, e.g. `asciidoc-pdf-reference:7282936feafb89cc`.
+ * @returns The image tag, e.g. `asciidoc-pdf-reference:7b8ad2e6ce6e8682`.
  */
 export function referenceImageTag(definition = PDF_REFERENCE_DEFINITION) {
   const digest = createHash('sha256');

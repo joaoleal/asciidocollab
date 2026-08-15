@@ -1,0 +1,11 @@
+# The geometry anchor: a page that is neither A4 nor the default margins, so the claim that the
+# preview's line lengths are the export's is proven somewhere other than the one size everything
+# else in the corpus already uses.
+extends: default
+page:
+  size: LETTER
+  layout: portrait
+  margin: [54, 90, 54, 90]
+  background-color: 'FFFFFF'
+base:
+  font-size: 10.5

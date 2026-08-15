@@ -1,0 +1,42 @@
+# The theme for the marks the renderer STROKES and the insets it pads with, chosen so each of them is
+# measurable rather than merely present.
+#
+# `table.border-width` and `table.grid-width` are deliberately EQUAL, which is what the gem's own
+# default theme produces too (both come from `$base_border_width`). Equal widths are the case where a
+# frame drawn as the table element's own border loses the collapsed-border contest to the cells and
+# takes their colour, so this is the theme that can tell a frame from a grid at all.
+#
+# `table.head.border-bottom-width` is left unset on purpose: the renderer then computes it as two and
+# a half times the row grid, which is 1.25pt — a width no whole number of CSS pixels can express, and
+# therefore the case that proves the header rule is not drawn as a border.
+extends: default
+base:
+  font-size: 10.5
+  border-color: 'C9D0D7'
+codespan:
+  font-color: '9B2C64'
+  background-color: 'F4F6F8'
+admonition:
+  column-rule-color: '1A4E8A'
+  column-rule-width: 2
+  padding: [6, 14, 6, 14]
+table:
+  border-color: '33475B'
+  border-width: 0.5
+  grid-color: 'DDE2E7'
+  grid-width: 0.5
+  cell-padding: [5, 6, 5, 6]
+  head:
+    background-color: 'EEF2F6'
+# A thematic break in a colour nothing else on the page uses, so the rule can be found in a raster and
+# the air above and below it measured against the lines it separates.
+thematic-break:
+  border-color: 'B03060'
+  border-style: solid
+  border-width: 1
+  padding: [10, 0]
+sidebar:
+  background-color: 'F6F1E7'
+  border-color: 'E2D8C3'
+  border-width: 0.5
+  padding: [12, 15, 12, 15]

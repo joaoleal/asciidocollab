@@ -88,11 +88,9 @@ GEM
     public_suffix (7.0.5)
     racc (1.8.1)
     rexml (3.4.4)
-    rouge (5.0.0)
-      strscan (~> 3.1)
+    rouge (4.7.0)
     ruby-rc4 (0.1.5)
     stringio (3.2.0)
-    strscan (3.1.8)
     time (0.4.2)
       date
     treetop (1.6.18)
@@ -109,7 +107,7 @@ DEPENDENCIES
   asciidoctor-diagram (= 3.2.1)
   asciidoctor-pdf (= 2.3.24)
   prawn-svg (= 0.34.2)
-  rouge (= 5.0.0)
+  rouge (= 4.7.0)
 
 BUNDLED WITH
    2.5.22
