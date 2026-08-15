@@ -1,0 +1,129 @@
+{
+  "gemVersion": "2.3.24",
+  "generatedBy": "scripts/generate-catalogue-fonts.mjs",
+  "families": [
+    {
+      "family": "M+ 1mn",
+      "faces": {
+        "normal": {
+          "file": "mplus-1mn-normal.woff2",
+          "source": "mplus1mn-regular-subset.ttf",
+          "bytes": 20744,
+          "hash": "sha256-adc46d829147db18770af22e6df57ffe5193c4368876f88b46d7f434fb0c4e21",
+          "metrics": {
+            "unitsPerEm": 1000,
+            "ascender": 860,
+            "descender": -140,
+            "lineGap": 90,
+            "xAdvance": 500
+          }
+        },
+        "bold": {
+          "file": "mplus-1mn-bold.woff2",
+          "source": "mplus1mn-bold-subset.ttf",
+          "bytes": 18700,
+          "hash": "sha256-ab0669012c1860af0a768fe4952e98ea22774f1382fa937c5f97f57a4116b517",
+          "metrics": {
+            "unitsPerEm": 1000,
+            "ascender": 860,
+            "descender": -140,
+            "lineGap": 90,
+            "xAdvance": 500
+          }
+        },
+        "italic": {
+          "file": "mplus-1mn-italic.woff2",
+          "source": "mplus1mn-italic-subset.ttf",
+          "bytes": 19100,
+          "hash": "sha256-da2a9aa62a8a869e8a09b4f914f22accd1190c4e317a2945b9c715de2f41775d",
+          "metrics": {
+            "unitsPerEm": 1000,
+            "ascender": 860,
+            "descender": -140,
+            "lineGap": 90,
+            "xAdvance": 500
+          }
+        },
+        "bold_italic": {
+          "file": "mplus-1mn-bold-italic.woff2",
+          "source": "mplus1mn-bold_italic-subset.ttf",
+          "bytes": 17720,
+          "hash": "sha256-00b87b6a7c3a218d449d7da80cb2ffa3a4d399fe8f9f6c159b708684105879ec",
+          "metrics": {
+            "unitsPerEm": 1000,
+            "ascender": 860,
+            "descender": -140,
+            "lineGap": 90,
+            "xAdvance": 500
+          }
+        }
+      }
+    },
+    {
+      "family": "Noto Serif",
+      "faces": {
+        "normal": {
+          "file": "noto-serif-normal.woff2",
+          "source": "notoserif-regular-subset.ttf",
+          "bytes": 56288,
+          "hash": "sha256-df542366aac1c8ecb8e7df225fea95e50448676dd3468927a786770db2c7a004",
+          "metrics": {
+            "unitsPerEm": 2048,
+            "ascender": 2189,
+            "descender": -600,
+            "lineGap": 0,
+            "xAdvance": 1184
+          }
+        },
+        "bold": {
+          "file": "noto-serif-bold.woff2",
+          "source": "notoserif-bold-subset.ttf",
+          "bytes": 56976,
+          "hash": "sha256-e0481eba90b69501cb1d6026ca326f9aebfcd12284a7d8d5d6bb771f40343d1d",
+          "metrics": {
+            "unitsPerEm": 2048,
+            "ascender": 2189,
+            "descender": -600,
+            "lineGap": 0,
+            "xAdvance": 1323
+          }
+        },
+        "italic": {
+          "file": "noto-serif-italic.woff2",
+          "source": "notoserif-italic-subset.ttf",
+          "bytes": 52876,
+          "hash": "sha256-fc44e48a9d2964da4d1e96c809e3d71cba3f57f6819224de854af2d75023922d",
+          "metrics": {
+            "unitsPerEm": 2048,
+            "ascender": 2189,
+            "descender": -600,
+            "lineGap": 0,
+            "xAdvance": 1118
+          }
+        },
+        "bold_italic": {
+          "file": "noto-serif-bold-italic.woff2",
+          "source": "notoserif-bold_italic-subset.ttf",
+          "bytes": 61860,
+          "hash": "sha256-f2a36503183f2fb44aa3114806ade1f542a9c9d2d88c23295e609940ffe41d13",
+          "metrics": {
+            "unitsPerEm": 2048,
+            "ascender": 2189,
+            "descender": -600,
+            "lineGap": 0,
+            "xAdvance": 1237
+          }
+        }
+      }
+    }
+  ],
+  "licences": [
+    "ABOUT-mplus1mn-subset",
+    "ABOUT-mplus1p-subset",
+    "ABOUT-notoemoji-subset",
+    "ABOUT-notosans-subset",
+    "ABOUT-notoserif-subset",
+    "LICENSE-mplus",
+    "LICENSE-noto"
+  ]
+}

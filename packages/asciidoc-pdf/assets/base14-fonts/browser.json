@@ -1,0 +1,284 @@
+{
+  "faces": [
+    {
+      "name": "Courier",
+      "file": "courier.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 269,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Courier-Bold",
+      "file": "courier-bold.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 265,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Courier-BoldOblique",
+      "file": "courier-boldoblique.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 265,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Courier-Oblique",
+      "file": "courier-oblique.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 269,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Helvetica",
+      "file": "helvetica.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 231,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Helvetica-Bold",
+      "file": "helvetica-bold.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 265,
+        "xAdvance": 556
+      }
+    },
+    {
+      "name": "Helvetica-BoldOblique",
+      "file": "helvetica-boldoblique.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 265,
+        "xAdvance": 556
+      }
+    },
+    {
+      "name": "Helvetica-Oblique",
+      "file": "helvetica-oblique.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 231,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Symbol",
+      "file": "symbol.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 0,
+        "descender": 0,
+        "lineGap": 1303
+      }
+    },
+    {
+      "name": "Times-Bold",
+      "file": "times-bold.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 253,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Times-BoldItalic",
+      "file": "times-bolditalic.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 239,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Times-Italic",
+      "file": "times-italic.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 200,
+        "xAdvance": 444
+      }
+    },
+    {
+      "name": "Times-Roman",
+      "file": "times-roman.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 216,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "ZapfDingbats",
+      "file": "zapfdingbats.woff2",
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 0,
+        "descender": 0,
+        "lineGap": 963
+      }
+    }
+  ],
+  "families": [
+    {
+      "family": "Courier",
+      "faces": {
+        "normal": "Courier",
+        "bold": "Courier-Bold",
+        "italic": "Courier-Oblique",
+        "bold_italic": "Courier-BoldOblique"
+      }
+    },
+    {
+      "family": "Courier-Bold",
+      "faces": {
+        "normal": "Courier-Bold",
+        "bold": "Courier-Bold",
+        "italic": "Courier-Bold",
+        "bold_italic": "Courier-Bold"
+      }
+    },
+    {
+      "family": "Courier-BoldOblique",
+      "faces": {
+        "normal": "Courier-BoldOblique",
+        "bold": "Courier-BoldOblique",
+        "italic": "Courier-BoldOblique",
+        "bold_italic": "Courier-BoldOblique"
+      }
+    },
+    {
+      "family": "Courier-Oblique",
+      "faces": {
+        "normal": "Courier-Oblique",
+        "bold": "Courier-Oblique",
+        "italic": "Courier-Oblique",
+        "bold_italic": "Courier-Oblique"
+      }
+    },
+    {
+      "family": "Helvetica",
+      "faces": {
+        "normal": "Helvetica",
+        "bold": "Helvetica-Bold",
+        "italic": "Helvetica-Oblique",
+        "bold_italic": "Helvetica-BoldOblique"
+      }
+    },
+    {
+      "family": "Helvetica-Bold",
+      "faces": {
+        "normal": "Helvetica-Bold",
+        "bold": "Helvetica-Bold",
+        "italic": "Helvetica-Bold",
+        "bold_italic": "Helvetica-Bold"
+      }
+    },
+    {
+      "family": "Helvetica-BoldOblique",
+      "faces": {
+        "normal": "Helvetica-BoldOblique",
+        "bold": "Helvetica-BoldOblique",
+        "italic": "Helvetica-BoldOblique",
+        "bold_italic": "Helvetica-BoldOblique"
+      }
+    },
+    {
+      "family": "Helvetica-Oblique",
+      "faces": {
+        "normal": "Helvetica-Oblique",
+        "bold": "Helvetica-Oblique",
+        "italic": "Helvetica-Oblique",
+        "bold_italic": "Helvetica-Oblique"
+      }
+    },
+    {
+      "family": "Symbol",
+      "faces": {
+        "normal": "Symbol",
+        "bold": "Symbol",
+        "italic": "Symbol",
+        "bold_italic": "Symbol"
+      }
+    },
+    {
+      "family": "Times-Bold",
+      "faces": {
+        "normal": "Times-Bold",
+        "bold": "Times-Bold",
+        "italic": "Times-Bold",
+        "bold_italic": "Times-Bold"
+      }
+    },
+    {
+      "family": "Times-BoldItalic",
+      "faces": {
+        "normal": "Times-BoldItalic",
+        "bold": "Times-BoldItalic",
+        "italic": "Times-BoldItalic",
+        "bold_italic": "Times-BoldItalic"
+      }
+    },
+    {
+      "family": "Times-Italic",
+      "faces": {
+        "normal": "Times-Italic",
+        "bold": "Times-Italic",
+        "italic": "Times-Italic",
+        "bold_italic": "Times-Italic"
+      }
+    },
+    {
+      "family": "Times-Roman",
+      "faces": {
+        "normal": "Times-Roman",
+        "bold": "Times-Bold",
+        "italic": "Times-Italic",
+        "bold_italic": "Times-BoldItalic"
+      }
+    },
+    {
+      "family": "ZapfDingbats",
+      "faces": {
+        "normal": "ZapfDingbats",
+        "bold": "ZapfDingbats",
+        "italic": "ZapfDingbats",
+        "bold_italic": "ZapfDingbats"
+      }
+    }
+  ]
+}

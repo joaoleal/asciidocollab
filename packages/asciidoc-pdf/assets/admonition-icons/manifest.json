@@ -1,0 +1,56 @@
+{
+  "gemVersion": "2.3.24",
+  "iconGemVersion": "3.0.0",
+  "generatedBy": "scripts/generate-admonition-icons.mjs",
+  "icons": [
+    {
+      "type": "caution",
+      "file": "caution.svg",
+      "icon": "fas-fire",
+      "codepoint": "U+F06D",
+      "strokeColor": "BF3400",
+      "sizePt": 24,
+      "hash": "sha256-fdd19bb8f7ee0519be2f6ddfe3cbb39e48abcdf7390c9432732bfb6f9f190bc1"
+    },
+    {
+      "type": "important",
+      "file": "important.svg",
+      "icon": "fas-exclamation-circle",
+      "codepoint": "U+F06A",
+      "strokeColor": "BF0000",
+      "sizePt": 24,
+      "hash": "sha256-6255d562ca50669088b5aa29a0abd7c8d45ce0d68c1c9effb71044a30172bdd5"
+    },
+    {
+      "type": "note",
+      "file": "note.svg",
+      "icon": "fas-info-circle",
+      "codepoint": "U+F05A",
+      "strokeColor": "19407C",
+      "sizePt": 24,
+      "hash": "sha256-e9aca1877f460226fd4e7242d48a85bf2296cce5825cd03d13c6550082874bdd"
+    },
+    {
+      "type": "tip",
+      "file": "tip.svg",
+      "icon": "far-lightbulb",
+      "codepoint": "U+F0EB",
+      "strokeColor": "111111",
+      "sizePt": 24,
+      "hash": "sha256-3be364872d066d951c391c330f3b7f23090550224c45d8e9a5520c8ee04079e1"
+    },
+    {
+      "type": "warning",
+      "file": "warning.svg",
+      "icon": "fas-exclamation-triangle",
+      "codepoint": "U+F071",
+      "strokeColor": "BF6900",
+      "sizePt": 24,
+      "hash": "sha256-7375cb11fbd0b6eb93d08a773ffc18dc455ee7a8412a0b51fd362fe47a52a00c"
+    }
+  ],
+  "licences": [
+    "LICENSE-far",
+    "LICENSE-fas"
+  ]
+}

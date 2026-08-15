@@ -1,0 +1,622 @@
+{
+  "prawnVersion": "2.4.0",
+  "generatedBy": "scripts/generate-base14-fonts.mjs",
+  "faces": [
+    {
+      "name": "Courier",
+      "file": "courier.woff2",
+      "source": "texgyrecursor-regular.otf",
+      "sourceHash": "sha256-0667deb48aa0e88be8f499c4d308e8b9116f290e7f969b0f5a34ee15c9644272",
+      "afm": "Courier.afm",
+      "bytes": 45012,
+      "hash": "sha256-c774c8079758a2a4f9cf68ca292c79c3f1600f2b84edb0cc27d1828dc0e2aebe",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-451c3089f0501b3bd8c3aeeab5545035a5afbff9f821418ecbd30080fa92940c",
+      "divergences": [],
+      "kerning": {
+        "pairs": 0,
+        "unmapped": 0
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 269,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Courier-Bold",
+      "file": "courier-bold.woff2",
+      "source": "texgyrecursor-bold.otf",
+      "sourceHash": "sha256-95e9755bfa05759e8d1f8fba21a919ba46091e1275aeb5bf831dffd9c93b041e",
+      "afm": "Courier-Bold.afm",
+      "bytes": 47368,
+      "hash": "sha256-3bc92c02692dee10308f8a72f6f7fbf1dc92c3c199f968e06e51e40170cf2352",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-451c3089f0501b3bd8c3aeeab5545035a5afbff9f821418ecbd30080fa92940c",
+      "divergences": [],
+      "kerning": {
+        "pairs": 0,
+        "unmapped": 0
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 265,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Courier-BoldOblique",
+      "file": "courier-boldoblique.woff2",
+      "source": "texgyrecursor-bolditalic.otf",
+      "sourceHash": "sha256-6aa5c41f489b898aa890c543e7dcd5e732c63894babc65569e01ee7e46533d82",
+      "afm": "Courier-BoldOblique.afm",
+      "bytes": 48868,
+      "hash": "sha256-4bc115e901b99d69ef649ffe5408fba2fa3cca229a6562334fba94c989f6880f",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-451c3089f0501b3bd8c3aeeab5545035a5afbff9f821418ecbd30080fa92940c",
+      "divergences": [
+        {
+          "code": 153,
+          "glyph": "trademark",
+          "afm": 600,
+          "substitute": 648
+        }
+      ],
+      "kerning": {
+        "pairs": 0,
+        "unmapped": 0
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 265,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Courier-Oblique",
+      "file": "courier-oblique.woff2",
+      "source": "texgyrecursor-italic.otf",
+      "sourceHash": "sha256-545f24a2a9e5dd5ace865fe5e80134f55a37794b36e26abae5424aebff600056",
+      "afm": "Courier-Oblique.afm",
+      "bytes": 46752,
+      "hash": "sha256-d96145d0ea88373a391d0d2b16f3c3f41c6bd98d63e4b84f91b43aa7abde379d",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-451c3089f0501b3bd8c3aeeab5545035a5afbff9f821418ecbd30080fa92940c",
+      "divergences": [
+        {
+          "code": 153,
+          "glyph": "trademark",
+          "afm": 600,
+          "substitute": 652
+        }
+      ],
+      "kerning": {
+        "pairs": 0,
+        "unmapped": 0
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 629,
+        "descender": -157,
+        "lineGap": 269,
+        "xAdvance": 600
+      }
+    },
+    {
+      "name": "Helvetica",
+      "file": "helvetica.woff2",
+      "source": "texgyreheros-regular.otf",
+      "sourceHash": "sha256-6ae1a09d5a940367b7aaaa91ee8bd8a2c333bfe193e7096e23f931357d62081f",
+      "afm": "Helvetica.afm",
+      "bytes": 43140,
+      "hash": "sha256-51bcc3c2b90f027b3643468e0e2729562c3dd3bb5fa25900fad71267978a94af",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-524b30dd85a8540df6d497e6e8f58a8cb5390d404408aa252a8c88ed23af3492",
+      "divergences": [
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 500,
+          "substitute": 667
+        },
+        {
+          "code": 161,
+          "glyph": "exclamdown",
+          "afm": 333,
+          "substitute": 278
+        },
+        {
+          "code": 191,
+          "glyph": "questiondown",
+          "afm": 611,
+          "substitute": 556
+        },
+        {
+          "code": 248,
+          "glyph": "oslash",
+          "afm": 611,
+          "substitute": 556
+        }
+      ],
+      "kerning": {
+        "pairs": 2595,
+        "unmapped": 110
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 231,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Helvetica-Bold",
+      "file": "helvetica-bold.woff2",
+      "source": "texgyreheros-bold.otf",
+      "sourceHash": "sha256-b170162835f4efc288886dd4231406dc47e19b614cf4416836635599d44a7d60",
+      "afm": "Helvetica-Bold.afm",
+      "bytes": 43540,
+      "hash": "sha256-de9fdf85c2429618d5de973fc7aed761bacb3105cbe7884549fce4a5740dcc15",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-bca64a1c4b1bbdb0fee17a3da031b9862051b87620ae3131a851552a56bf5687",
+      "divergences": [
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 556,
+          "substitute": 667
+        }
+      ],
+      "kerning": {
+        "pairs": 2375,
+        "unmapped": 106
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 265,
+        "xAdvance": 556
+      }
+    },
+    {
+      "name": "Helvetica-BoldOblique",
+      "file": "helvetica-boldoblique.woff2",
+      "source": "texgyreheros-bolditalic.otf",
+      "sourceHash": "sha256-166fc6d068d9c9974281555cb3d730365537a9b676ab269bb5163f5a75496505",
+      "afm": "Helvetica-BoldOblique.afm",
+      "bytes": 43304,
+      "hash": "sha256-d48c0e7c1b1cd893f31ee21d0aebe228aca4691dbbfd25487f17f16fcac5634d",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-bca64a1c4b1bbdb0fee17a3da031b9862051b87620ae3131a851552a56bf5687",
+      "divergences": [
+        {
+          "code": 153,
+          "glyph": "trademark",
+          "afm": 1000,
+          "substitute": 1015
+        },
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 556,
+          "substitute": 667
+        }
+      ],
+      "kerning": {
+        "pairs": 2375,
+        "unmapped": 106
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 265,
+        "xAdvance": 556
+      }
+    },
+    {
+      "name": "Helvetica-Oblique",
+      "file": "helvetica-oblique.woff2",
+      "source": "texgyreheros-italic.otf",
+      "sourceHash": "sha256-6473df7fa107b3fb4be38973710afe22b0640c2ac076d5337cf126bed9aa108c",
+      "afm": "Helvetica-Oblique.afm",
+      "bytes": 44644,
+      "hash": "sha256-fb0e76ab5819e1664a4a94dd0d05d9808060a9fe9c766d6bfcc034aa3492da11",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-524b30dd85a8540df6d497e6e8f58a8cb5390d404408aa252a8c88ed23af3492",
+      "divergences": [
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 500,
+          "substitute": 667
+        },
+        {
+          "code": 161,
+          "glyph": "exclamdown",
+          "afm": 333,
+          "substitute": 278
+        },
+        {
+          "code": 191,
+          "glyph": "questiondown",
+          "afm": 611,
+          "substitute": 556
+        }
+      ],
+      "kerning": {
+        "pairs": 2595,
+        "unmapped": 110
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 718,
+        "descender": -207,
+        "lineGap": 231,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Symbol",
+      "file": "symbol.woff2",
+      "source": "FoxitSymbol.cff",
+      "sourceHash": "sha256-47967d055530e7357088a08403115425643ec2cdfd6201ba8af0fbd7116c1539",
+      "afm": "Symbol.afm",
+      "bytes": 15108,
+      "hash": "sha256-736053463a4ba1c93d9013dfa795e37f2f83ad05441f85fe6306d6e4dab6d59c",
+      "encodedBytes": 189,
+      "widthsHash": "sha256-b80a32b10dee711b61fbf68e94574fa81c2e23129852eb1a7f9fff4d97282940",
+      "divergences": [],
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 0,
+        "descender": 0,
+        "lineGap": 1303
+      }
+    },
+    {
+      "name": "Times-Bold",
+      "file": "times-bold.woff2",
+      "source": "texgyretermes-bold.otf",
+      "sourceHash": "sha256-2fb3e952065fa153c7e4e64e04b98b9d79225739b6025aa3f0f0782d299ff61e",
+      "afm": "Times-Bold.afm",
+      "bytes": 52652,
+      "hash": "sha256-7b8f4be80e0c398c0aba1791f3414394ec0e5d10ff710401b92fab6c746e0fd7",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-5d7961f1954bb34b6c66fafd9dd3ae754cab53d5fb2b1b140c1c5a53884961f9",
+      "divergences": [
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 500,
+          "substitute": 722
+        },
+        {
+          "code": 160,
+          "glyph": "space",
+          "afm": 250,
+          "substitute": 333
+        }
+      ],
+      "kerning": {
+        "pairs": 2141,
+        "unmapped": 101
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 253,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Times-BoldItalic",
+      "file": "times-bolditalic.woff2",
+      "source": "texgyretermes-bolditalic.otf",
+      "sourceHash": "sha256-1bf6af99cb0e26c12951317032d79b96ae009551e59ccf02a5b24f325ecfec87",
+      "afm": "Times-BoldItalic.afm",
+      "bytes": 54540,
+      "hash": "sha256-b798187ef039e3c79fd8fc854472c65a5a4e056cea5c0b2c03516d6224ba6789",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-8bcb5d43362b59e457164b94997d43c9fe4867d9d89f83834bee9bda44b3abda",
+      "divergences": [
+        {
+          "code": 153,
+          "glyph": "trademark",
+          "afm": 1000,
+          "substitute": 1012
+        },
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 444,
+          "substitute": 611
+        },
+        {
+          "code": 160,
+          "glyph": "space",
+          "afm": 250,
+          "substitute": 333
+        },
+        {
+          "code": 172,
+          "glyph": "logicalnot",
+          "afm": 606,
+          "substitute": 570
+        }
+      ],
+      "kerning": {
+        "pairs": 1937,
+        "unmapped": 101
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 239,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "Times-Italic",
+      "file": "times-italic.woff2",
+      "source": "texgyretermes-italic.otf",
+      "sourceHash": "sha256-6dd103a1672e50568cd2f8a706ccd48443d44d7d073a59d2286f4e6f746575d6",
+      "afm": "Times-Italic.afm",
+      "bytes": 55468,
+      "hash": "sha256-369655891740b9d700439fbe2d597d751e17d133c9fa40656368ac5e9c1a1771",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-e460efed1403a877906a7908d283b3189575e75e6eed0b8c9f976d79bf13c62c",
+      "divergences": [
+        {
+          "code": 153,
+          "glyph": "trademark",
+          "afm": 980,
+          "substitute": 1009
+        },
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 444,
+          "substitute": 556
+        },
+        {
+          "code": 160,
+          "glyph": "space",
+          "afm": 250,
+          "substitute": 333
+        },
+        {
+          "code": 161,
+          "glyph": "exclamdown",
+          "afm": 389,
+          "substitute": 333
+        }
+      ],
+      "kerning": {
+        "pairs": 2219,
+        "unmapped": 102
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 200,
+        "xAdvance": 444
+      }
+    },
+    {
+      "name": "Times-Roman",
+      "file": "times-roman.woff2",
+      "source": "texgyretermes-regular.otf",
+      "sourceHash": "sha256-cc3fe7c707b81428d23d54df3eadd9228a2bf6a4d43125d94df56f5f63134659",
+      "afm": "Times-Roman.afm",
+      "bytes": 52848,
+      "hash": "sha256-a5783cff5c1f2ab6ced40b48ede9379fa741a916b3a9f78376736c88fff967fc",
+      "encodedBytes": 218,
+      "widthsHash": "sha256-3c15a5466a4e3a87156ecc7935d8597f2bebc2c81247e1eb0fdaeed9ff4d50d4",
+      "divergences": [
+        {
+          "code": 159,
+          "glyph": "ydieresis",
+          "afm": 500,
+          "substitute": 722
+        },
+        {
+          "code": 160,
+          "glyph": "space",
+          "afm": 250,
+          "substitute": 333
+        }
+      ],
+      "kerning": {
+        "pairs": 1971,
+        "unmapped": 102
+      },
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 683,
+        "descender": -217,
+        "lineGap": 216,
+        "xAdvance": 500
+      }
+    },
+    {
+      "name": "ZapfDingbats",
+      "file": "zapfdingbats.woff2",
+      "source": "FoxitDingbats.cff",
+      "sourceHash": "sha256-845c752392b6c914fb989c75a08b7792b88f542d2499042ef2889f8c814a16ed",
+      "afm": "ZapfDingbats.afm",
+      "bytes": 26132,
+      "hash": "sha256-e60a470fea016f5f06b2e6a07a5a96be1810422d56bbb8dce8e529e48f910aca",
+      "encodedBytes": 202,
+      "widthsHash": "sha256-a5bc897ad41911f60b195d445a821d84b8bb4b67af103637b387bc0f738c3c68",
+      "divergences": [],
+      "metrics": {
+        "unitsPerEm": 1000,
+        "ascender": 0,
+        "descender": 0,
+        "lineGap": 963
+      }
+    }
+  ],
+  "families": [
+    {
+      "family": "Courier",
+      "faces": {
+        "normal": "Courier",
+        "bold": "Courier-Bold",
+        "italic": "Courier-Oblique",
+        "bold_italic": "Courier-BoldOblique"
+      }
+    },
+    {
+      "family": "Courier-Bold",
+      "faces": {
+        "normal": "Courier-Bold",
+        "bold": "Courier-Bold",
+        "italic": "Courier-Bold",
+        "bold_italic": "Courier-Bold"
+      }
+    },
+    {
+      "family": "Courier-BoldOblique",
+      "faces": {
+        "normal": "Courier-BoldOblique",
+        "bold": "Courier-BoldOblique",
+        "italic": "Courier-BoldOblique",
+        "bold_italic": "Courier-BoldOblique"
+      }
+    },
+    {
+      "family": "Courier-Oblique",
+      "faces": {
+        "normal": "Courier-Oblique",
+        "bold": "Courier-Oblique",
+        "italic": "Courier-Oblique",
+        "bold_italic": "Courier-Oblique"
+      }
+    },
+    {
+      "family": "Helvetica",
+      "faces": {
+        "normal": "Helvetica",
+        "bold": "Helvetica-Bold",
+        "italic": "Helvetica-Oblique",
+        "bold_italic": "Helvetica-BoldOblique"
+      }
+    },
+    {
+      "family": "Helvetica-Bold",
+      "faces": {
+        "normal": "Helvetica-Bold",
+        "bold": "Helvetica-Bold",
+        "italic": "Helvetica-Bold",
+        "bold_italic": "Helvetica-Bold"
+      }
+    },
+    {
+      "family": "Helvetica-BoldOblique",
+      "faces": {
+        "normal": "Helvetica-BoldOblique",
+        "bold": "Helvetica-BoldOblique",
+        "italic": "Helvetica-BoldOblique",
+        "bold_italic": "Helvetica-BoldOblique"
+      }
+    },
+    {
+      "family": "Helvetica-Oblique",
+      "faces": {
+        "normal": "Helvetica-Oblique",
+        "bold": "Helvetica-Oblique",
+        "italic": "Helvetica-Oblique",
+        "bold_italic": "Helvetica-Oblique"
+      }
+    },
+    {
+      "family": "Symbol",
+      "faces": {
+        "normal": "Symbol",
+        "bold": "Symbol",
+        "italic": "Symbol",
+        "bold_italic": "Symbol"
+      }
+    },
+    {
+      "family": "Times-Bold",
+      "faces": {
+        "normal": "Times-Bold",
+        "bold": "Times-Bold",
+        "italic": "Times-Bold",
+        "bold_italic": "Times-Bold"
+      }
+    },
+    {
+      "family": "Times-BoldItalic",
+      "faces": {
+        "normal": "Times-BoldItalic",
+        "bold": "Times-BoldItalic",
+        "italic": "Times-BoldItalic",
+        "bold_italic": "Times-BoldItalic"
+      }
+    },
+    {
+      "family": "Times-Italic",
+      "faces": {
+        "normal": "Times-Italic",
+        "bold": "Times-Italic",
+        "italic": "Times-Italic",
+        "bold_italic": "Times-Italic"
+      }
+    },
+    {
+      "family": "Times-Roman",
+      "faces": {
+        "normal": "Times-Roman",
+        "bold": "Times-Bold",
+        "italic": "Times-Italic",
+        "bold_italic": "Times-BoldItalic"
+      }
+    },
+    {
+      "family": "ZapfDingbats",
+      "faces": {
+        "normal": "ZapfDingbats",
+        "bold": "ZapfDingbats",
+        "italic": "ZapfDingbats",
+        "bold_italic": "ZapfDingbats"
+      }
+    }
+  ],
+  "licences": [
+    "GUST-FONT-LICENSE.txt",
+    "LICENSE_FOXIT"
+  ],
+  "metricSources": [
+    "Courier-Bold.afm",
+    "Courier-BoldOblique.afm",
+    "Courier-Oblique.afm",
+    "Courier.afm",
+    "Helvetica-Bold.afm",
+    "Helvetica-BoldOblique.afm",
+    "Helvetica-Oblique.afm",
+    "Helvetica.afm",
+    "Symbol.afm",
+    "Times-Bold.afm",
+    "Times-BoldItalic.afm",
+    "Times-Italic.afm",
+    "Times-Roman.afm",
+    "ZapfDingbats.afm",
+    "MustRead.html",
+    "winansi.json"
+  ]
+}

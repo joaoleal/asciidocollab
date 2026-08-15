@@ -23,7 +23,29 @@ gem "prawn-svg"
 gem "prawn-templates", "~> 0.1"
 
 # Source-code syntax highlighting (pure Ruby).
-gem "rouge", "~> 4.5"
+#
+# Pinned EXACTLY, and in lockstep with the reference toolchain's rouge
+# (apps/web/e2e/pdf-parity/tools/Gemfile). Parity and the Print fidelity oracle compare this engine
+# against that one, so a rouge only one side has is measured as a defect in the app rather than as
+# the version skew it is. It really happened: the reference ran 5.0.0 while this ran 4.7.0, and rouge
+# 5's Python overhaul (rouge-ruby/rouge#2271) lexes the module in `from X import` as `Name::Namespace`
+# — #bb0066 bold in `asciidoctor_pdf_default` — where 4.7.0 emits a bare `Name` the theme leaves at
+# the code colour. The two `highlighting` references were drawing a word this engine cannot draw.
+#
+# It was `~> 4.5`, which is why the skew could open in the first place: a floating constraint on the
+# side that must not float. The cap was never the point — `~> 4.5` already excluded 5.x — but the
+# floor let a relock walk to any later 4.x while the reference stayed put.
+#
+# And rouge must NOT cross 5.0 here, which is what makes this the version BOTH sides converge on:
+# rouge >= 5.0 declares a runtime dependency on the `strscan` GEM (`~> 3.1`), and Ruby 3.3's built-in
+# strscan is 3.0.9 — so bundler vendors strscan 3.1.8, which ships `ext/strscan/extconf.rb`. That is
+# a compiled native extension, and this closure may not contain one (see the header above): the gate
+# in build-wasm.sh step 2 rejects it and aborts. Verified by resolving this Gemfile against
+# `rouge "~> 5.0"` — strscan 3.1.8 lands in the vendor tree and the gate's own find(1) matches it.
+#
+# 4.7.0 is the newest 4.x, and unlike 5.x it declares no runtime dependencies at all. Moving off it
+# means moving BOTH pins in one change, and regenerating the reference corpus in that same change.
+gem "rouge", "4.7.0"
 
 # Hyphenation dictionaries (pure Ruby, bundled data).
 gem "text-hyphen", "~> 1.5"
