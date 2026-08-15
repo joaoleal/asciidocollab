@@ -220,6 +220,8 @@ function cacheWith(paths: readonly string[]): { cache: ProjectAssetCache; ensure
       ensureAssets,
       getAssets: (): SnapshotFile[] =>
         paths.map((path) => ({ path, kind: 'binary' as const, bytes: new Uint8Array([1, 2, 3]) })),
+      getAssetBytes: (path: string) =>
+        paths.includes(path) ? new Uint8Array([1, 2, 3]) : undefined,
       loadAssets: jest.fn(),
       assetsSettled: () => true,
       assetVersion: 1,

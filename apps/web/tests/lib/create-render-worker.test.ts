@@ -136,6 +136,19 @@ describe('shared render worker holder', () => {
     // comparing the ids it has always compared.
     expect(newestWorker().posted.map((request) => request.requestId)).toEqual([1, 1]);
 
+    // And each says WHOSE it is, which the routing token above cannot: that names one render, while
+    // the worker also has to know which renders belong to one stream, so that a preview's own newer
+    // keystroke is the only thing that supersedes it. Counted across the page instead, either
+    // panel's render silenced the other's on-demand grammar fetches, and the silenced consumer
+    // accepted the reply because its own `requestId` still matched.
+    const [firstConsumer, secondConsumer] = newestWorker().posted.map((request) => request.consumerId);
+    expect(firstConsumer).toBeDefined();
+    expect(secondConsumer).toBeDefined();
+    expect(firstConsumer).not.toBe(secondConsumer);
+    // A consumer's renders all name the same stream, whatever their own numbering does.
+    firstHandle.post(renderRequest(2));
+    expect(newestWorker().posted.at(-1)?.consumerId).toBe(firstConsumer);
+
     // One consumer leaving is not "nobody is using this": the count still stands at one.
     firstHandle.release();
     jest.advanceTimersByTime(RENDER_WORKER_IDLE_RETENTION_MS * 2);
