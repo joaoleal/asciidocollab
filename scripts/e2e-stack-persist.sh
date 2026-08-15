@@ -9,8 +9,28 @@ CYAN='\033[0;36m'; RESET='\033[0m'
 step() { echo -e "${CYAN}[e2e-persist]${RESET} $*"; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Absolute path to this script, resolved BEFORE the `cd`: the stack lock
+# re-invokes it, and $BASH_SOURCE is relative to the caller's directory.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 cd "$ROOT"
-source "$ROOT/scripts/lib/term.sh"; source "$ROOT/scripts/lib/proc.sh"; term_save
+source "$ROOT/scripts/lib/term.sh"; source "$ROOT/scripts/lib/proc.sh"
+source "$ROOT/scripts/lib/e2e-lock.sh"; term_save
+
+# ─── One owner of the isolated stack ─────────────────────────────────────────
+# The stack lives exactly as long as this process (it stays in the foreground and
+# tears down on exit), so holding the lock for this process's lifetime is the
+# right scope. Without it scripts/ci/e2e-local.sh would begin by destroying the
+# stack a developer is iterating against. Invariant: scripts/lib/e2e-lock.sh.
+e2e_lock_guard "e2e-stack-persist" "$SELF" "$@"
+
+# Refuse to destroy a stack whose owner is still alive (see e2e-lock.sh). FIRST,
+# ahead of everything this run destroys or creates — it used to sit below the
+# `rm -rf` of the PDF extension drop folder, so a run that would correctly refuse
+# had already deleted a live run's directory on the way to saying no. A refusal
+# must leave the other run untouched. (Still before the EXIT trap, which runs
+# `down -v` too — refusing afterwards would destroy on the way out the stack we
+# just declined to touch.) Nothing destructive belongs above this line.
+e2e_assert_stack_not_in_use "e2e-stack-persist"
 
 COMPOSE="docker compose -f $ROOT/docker/docker-compose.e2e.yml"
 PG_PORT="${E2E_PG_PORT:-5433}"; SMTP_PORT="${E2E_SMTP_PORT:-1126}"; MAILPIT_UI_PORT="${E2E_MAILPIT_UI_PORT:-8126}"
@@ -61,6 +81,11 @@ export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL=1000
 # assertions depend on run history.
 rm -rf "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
 mkdir -p "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
+
+# Stamp this run's identity onto the containers we are about to create. (The
+# refusal check itself runs at the top of the script, ahead of every destructive
+# step.)
+e2e_export_stack_owner "e2e-stack-persist"
 
 API_PID=""; WEB_PID=""; COLLAB_PID=""
 cleanup() {

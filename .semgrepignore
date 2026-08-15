@@ -9,7 +9,19 @@ node_modules/
 **/*.spec.ts
 **/tests/
 apps/web/e2e/
-scripts/
+# ANCHORED, and it matters. This line was `scripts/`, and .semgrepignore uses gitignore semantics: an
+# unanchored directory pattern matches a directory of that name at ANY depth. It was written when
+# `scripts/` meant the repo-root shell wrappers, and it silently grew to cover apps/web/scripts/,
+# packages/asciidoc-pdf/scripts/ and packages/shared/scripts/ — ~6,150 lines of first-party generator
+# JavaScript, including build-print-highlight-css.mjs, which composes CSS selectors and comments out
+# of external input behind hand-rolled `safeName`/`commentSafe`/`selectorSafeName` guards. Exactly the
+# code SAST is for, excluded by a pattern nobody meant to point at it. Measured on semgrep 1.170.0: a
+# probe tree with an `eval()` in five `scripts/` directories reported one file under `scripts/` and
+# four under it once anchored.
+#
+# What is excluded now is what the line was written for — the shell wrappers under the root scripts/
+# tree. `scripts/ci/architecture-guard.mjs` is first-party JavaScript and is scanned like any other.
+/scripts/**/*.sh
 .claude/
 # GitHub Actions workflow security is owned by zizmor (see zizmor.yml) — avoid duplicate,
 # conflicting findings (e.g. Semgrep's mutable-action-tag vs our chosen ref-pin policy).

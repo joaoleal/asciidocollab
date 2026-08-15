@@ -60,6 +60,7 @@ COPY packages/collaboration/package.json   packages/collaboration/package.json
 COPY packages/db/package.json              packages/db/package.json
 COPY packages/domain/package.json          packages/domain/package.json
 COPY packages/infrastructure/package.json  packages/infrastructure/package.json
+COPY packages/primitives/package.json      packages/primitives/package.json
 COPY packages/shared/package.json          packages/shared/package.json
 COPY packages/testing/package.json         packages/testing/package.json
 
@@ -80,7 +81,7 @@ RUN pnpm --filter '!@asciidocollab/web' -r build
 FROM build-backend AS artifacts
 RUN set -eu; \
     for p in packages/asciidoc-core packages/asciidoc-pdf packages/collaboration \
-             packages/db packages/domain packages/infrastructure packages/shared \
+             packages/db packages/domain packages/infrastructure packages/primitives packages/shared \
              apps/api apps/collab; do \
       if [ -d "/app/$p/dist" ]; then \
         mkdir -p "/artifacts/$p"; \

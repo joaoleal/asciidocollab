@@ -20,15 +20,57 @@ ok()   { echo -e "${GREEN}[e2e-local]${RESET} $*"; }
 die()  { echo -e "${RED}[e2e-local]${RESET} $*" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Absolute path to this script, resolved BEFORE the `cd` below: the single-run
+# lock re-invokes it, and $BASH_SOURCE is relative to the caller's directory, so
+# `cd scripts/ci && ./e2e-local.sh` would otherwise re-invoke a path that no
+# longer resolves once we have moved to $ROOT.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 cd "$ROOT"
 
 # Restore the terminal on exit in case a child left it in a raw/TUI mode, and
 # stop spawned server process trees cleanly (no orphaned next-server, etc.).
 source "$ROOT/scripts/lib/term.sh"
 source "$ROOT/scripts/lib/proc.sh"
+source "$ROOT/scripts/lib/e2e-lock.sh"
 term_save
 
 command -v docker &>/dev/null || die "Docker is required."
+
+# ─── One run at a time ───────────────────────────────────────────────────────
+# This script is isolated from the DEV stack, but two copies of ITSELF are not
+# isolated from each other, and neither are scripts/e2e-stack-up.sh and
+# scripts/e2e-stack-persist.sh: all of them share the Compose project, the
+# throwaway database and the fixed ports. The failure is silent and one-sided —
+# stopping the second copy fires its EXIT trap, whose `docker compose down -v`
+# tears down the FIRST run's Postgres and Mailpit, while that run's API/collab/web
+# keep serving with no database. Everything it reports after that is meaningless,
+# and it usually dies much later with a `next start` SIGTERM that names nothing
+# about the real cause.
+# (E2E_*_PORT overrides do not fix this: they move the ports this script talks to
+# but not the Compose project, the ports docker/docker-compose.e2e.yml publishes,
+# or $ROOT/.e2e-storage. Full isolation was considered and rejected — concurrent
+# runs would still race on the shared `pnpm -r build` outputs and apps/web/.next.)
+#
+# The lock is machine-scoped, NOT $ROOT-scoped: the resource it guards is one
+# Compose project per Docker daemon, so a second clone or git worktree must queue
+# behind this run rather than sail past a lock file of its own. Mechanism and
+# invariant: scripts/lib/e2e-lock.sh.
+e2e_lock_guard "e2e-local" "$SELF" "$@"
+
+# ─── Nobody else's stack ─────────────────────────────────────────────────────
+# The lock above is per-user; the Docker daemon is not. Ask the running stack (if
+# any) who owns it and refuse if that owner is still alive.
+#
+# FIRST, before anything this run destroys or creates — not merely before the
+# `docker compose down -v`. It used to sit further down, after the PDF extension
+# drop folder was cleared, which meant a run that would correctly REFUSE had
+# already `rm -rf`'d a live run's directory on its way to saying no. Every path
+# out of a refusal must leave the other run exactly as it was found, so the check
+# leads. (Also still before the EXIT trap is installed, which runs `down -v` too:
+# refusing after that would destroy on the way out the very stack we declined to
+# touch.) If a destructive step is ever added above this line, it is in the wrong
+# place — move it below.
+e2e_assert_stack_not_in_use "e2e-local"
 
 # ─── Isolated configuration (override via env if a port clashes) ─────────────
 COMPOSE="docker compose -f $ROOT/docker/docker-compose.e2e.yml"
@@ -108,6 +150,12 @@ export ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SCAN_CACHE_TTL=1000
 # assertions depend on run history.
 rm -rf "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
 mkdir -p "$ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_PATH"
+
+# Stamp this run's identity onto the containers we are about to create, so a run
+# that cannot see our lock file still refuses to tear them down. (The refusal
+# check itself now runs at the top of the script, ahead of every destructive
+# step — see the "Nobody else's stack" block there.)
+e2e_export_stack_owner "e2e-local"
 
 # ─── Cleanup on exit ─────────────────────────────────────────────────────────
 API_PID=""; WEB_PID=""; COLLAB_PID=""
