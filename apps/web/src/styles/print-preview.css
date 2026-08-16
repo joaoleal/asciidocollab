@@ -79,6 +79,26 @@
   --face-ascender: var(--print-base-face-ascender, 1.068);
   --face-descender: var(--print-base-face-descender, 0.292);
 
+  /* Where a block's FIRST baseline sits below its top, before the ascender of whatever is on that
+     line. The renderer's `calc_line_metrics` makes it `leading / 2 + font.line_gap` and hands it to
+     the text box as `initial_gap`, so the whole of the face's line gap is above the first baseline
+     and none of it below — where CSS splits a line box's leading evenly and has no notion of a gap
+     at all.
+
+     A LENGTH rather than a ratio, because it is spent inside constructs whose own `1em` is a
+     different size from the block's: the strut that puts a codespan's line where the renderer puts
+     it is `this + the codespan face's own ascender x its own size`. A custom property holding `em`
+     would resolve it against the element that USES the property rather than the one that declared
+     it, which for that strut is the wrong element; projecting an absolute length removes the trap.
+
+     Relayed at the same sites as the pair above, and for the same reason — a codespan inside a
+     heading sits in the HEADING's line box, not body text's.
+
+     The fallback is Noto Serif's at the renderer's default body size: half of the 12pt/10.5 leading,
+     and a line gap of zero. */
+  --line-top-gap: var(--print-base-line-top-gap, 1px);
+  --line-bottom-gap: var(--print-base-line-bottom-gap, 5.088px);
+
   /* The third member of the relay, and the one a BOX is measured with rather than a displacement.
      It holds the font stack of the face in force with that face's METRIC-BEARING registration in
      front of it — the same file under a second name, registered with the renderer's own ascender and
@@ -164,6 +184,8 @@
   text-align: var(--print-heading-1-text-align, center);
   --face-ascender: var(--print-heading-1-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-heading-1-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-heading-1-line-top-gap, 0px);
+  --line-bottom-gap: var(--print-heading-1-line-bottom-gap, 10.512px);
   --metric-font-family: var(--print-heading-1-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-heading-1-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   margin-top: var(--print-heading-1-margin-top, 6.4px);
@@ -180,6 +202,8 @@
   text-align: var(--print-heading-2-text-align, left);
   --face-ascender: var(--print-heading-2-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-heading-2-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-heading-2-line-top-gap, 0px);
+  --line-bottom-gap: var(--print-heading-2-line-bottom-gap, 8.5653px);
   --metric-font-family: var(--print-heading-2-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-heading-2-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   margin-top: var(--print-heading-2-margin-top, 6.4px);
@@ -196,6 +220,8 @@
   text-align: var(--print-heading-3-text-align, left);
   --face-ascender: var(--print-heading-3-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-heading-3-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-heading-3-line-top-gap, 0px);
+  --line-bottom-gap: var(--print-heading-3-line-bottom-gap, 7.008px);
   --metric-font-family: var(--print-heading-3-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-heading-3-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   margin-top: var(--print-heading-3-margin-top, 6.4px);
@@ -212,6 +238,8 @@
   text-align: var(--print-heading-4-text-align, left);
   --face-ascender: var(--print-heading-4-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-heading-4-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-heading-4-line-top-gap, 0px);
+  --line-bottom-gap: var(--print-heading-4-line-bottom-gap, 5.0613px);
   --metric-font-family: var(--print-heading-4-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-heading-4-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   margin-top: var(--print-heading-4-margin-top, 6.4px);
@@ -228,6 +256,8 @@
   text-align: var(--print-heading-5-text-align, left);
   --face-ascender: var(--print-heading-5-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-heading-5-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-heading-5-line-top-gap, 0px);
+  --line-bottom-gap: var(--print-heading-5-line-bottom-gap, 4.088px);
   --metric-font-family: var(--print-heading-5-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-heading-5-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   margin-top: var(--print-heading-5-margin-top, 6.4px);
@@ -244,11 +274,14 @@
   text-align: var(--print-heading-6-text-align, left);
   --face-ascender: var(--print-heading-6-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-heading-6-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-heading-6-line-top-gap, 0px);
+  --line-bottom-gap: var(--print-heading-6-line-bottom-gap, 3.504px);
   --metric-font-family: var(--print-heading-6-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-heading-6-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   margin-top: var(--print-heading-6-margin-top, 6.4px);
   margin-bottom: var(--print-heading-6-margin-bottom, 14.4px);
 }
+
 
 /* A `h1` is TWO headings, and only one of them is the document title.
    Asciidoctor writes a level-0 section — a PART, in book doctype — as `<h1 class="sect0">`
@@ -377,6 +410,15 @@
   font-style: var(--print-toc-title-font-style, var(--print-heading-2-font-style, normal));
   line-height: var(--print-heading-2-line-height, 39.8933px);
   text-align: var(--print-toc-title-text-align, var(--print-heading-2-text-align, left));
+  /* The face and the two gaps come from the level-2 heading for the same reason the line height
+     does: `ink_toc` inks this through `ink_general_heading … level: 2`, so its line box IS a level-2
+     heading's. Without them it took `.title`'s — the CAPTION face — because the contents heading
+     carries that class too, and its first baseline then sat a caption's ascender below its top while
+     its box was a heading's tall. */
+  --face-ascender: var(--print-heading-2-face-ascender, var(--print-base-face-ascender, 1.068));
+  --face-descender: var(--print-heading-2-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-heading-2-line-top-gap, 0px);
+  --line-bottom-gap: var(--print-heading-2-line-bottom-gap, 8.5653px);
   /* The contents title is a level-2 heading in every respect the renderer has one: `ink_toc` calls
      `ink_general_heading … level: 2`, so it opens `heading.h2.margin-top` above itself just as a
      section heading does. Nothing here opened any, which left the document title and the contents
@@ -874,6 +916,90 @@
   padding-block: var(--print-codespan-border-offset, 0px);
   border-radius: var(--print-codespan-border-radius, 0px);
 }
+
+/* The line a codespan sits on is as tall as the MONO face, not as the face around it.
+   `wrap.rb:124-126` takes `@ascender = @arranger.max_ascender` — the largest ascender among the
+   line's own fragments, each measured in its own face at its own size (`arranger.rb:306-330`) — and
+   `box.rb:480-486` then puts the first baseline exactly that far under the block's `initial_gap`. So
+   a paragraph whose first line carries a codespan starts LOWER than one that does not, by however
+   much the mono face out-reaches the body face.
+
+   CSS composes a line box the other way round: every inline box brings half of its OWN leading, and
+   the line takes the maximum. Writing the renderer's rule as a line height on the codespan does
+   reach the right top — and buys it by pushing the line's BOTTOM down by the same amount, because
+   half-leading is symmetric where `initial_gap` is not, which moves every following line. A strut
+   cannot make that mistake: an empty inline-block is an atomic inline whose baseline is its bottom
+   margin edge, so it contributes exactly its height ABOVE the baseline and nothing below.
+
+   Its height is the renderer's own arithmetic, term for term: `initial_gap` (the inherited
+   `--line-top-gap`, a length, in the surrounding block's size) plus this face's ascender at this
+   construct's size (`--face-ascender`, the ratio the rule above re-declared, times its own `1em`).
+   Where the mono face reaches less far than the block's, the strut is shorter than the line box the
+   block already has and changes nothing — which is the `max` in `line_measurement_maximums`.
+
+   Not on `pre > code`: a listing block is set in the mono face throughout, so its own line box is
+   already measured against it and a strut would be the same height as the line it sits in. */
+.asciidoc-preview-content[data-preview-style="print"] :not(pre) > code::before,
+.asciidoc-preview-content[data-preview-style="print"] kbd::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: calc(var(--line-top-gap, 1px) + var(--face-ascender, 0.86) * 1em);
+}
+
+/* The same strut for the block's OWN face, which is a fragment of the line like any other and is
+   usually the tallest one on it. It is here for a second reason as well: a browser's used ascent is
+   an integer number of CSS pixels and the renderer's is not, so even a line with nothing but body
+   text on it starts a fraction of a point higher than the page starts it — 0.71pt on the renderer's
+   own default theme, where the declared 1.068 em of ascent at 10.5pt is 14.95px and Chromium lays
+   the line out over 14. The strut is a stated length, so it is not rounded at all, and where it is
+   the tallest thing on the line the first baseline lands exactly where `initial_gap + max_ascender`
+   puts it.
+
+   Not on `li`: its `::before` is the list marker. A list item's first baseline is therefore still
+   the browser's, which is a known gap rather than an oversight — see the marker rules below. */
+.asciidoc-preview-content[data-preview-style="print"] :is(h1, h2, h3, h4, h5, h6)::before,
+.asciidoc-preview-content[data-preview-style="print"] p::before,
+/* The two constructs Asciidoctor does NOT wrap in a `<p>` and that this model still covers. A
+   description-list term is written `<dt class="hdlist1">term</dt>`, and the contents heading is
+   `<div id="toctitle" class="title">` — a div rather than an `hN`, so the heading selector above
+   misses it. Each holds its text directly, so each is a block of its own and needs the same pair:
+   a term whose first baseline had not moved sat 1.19pt above the description beside it, where the
+   export opens the two together. */
+.asciidoc-preview-content[data-preview-style="print"] dt::before,
+.asciidoc-preview-content[data-preview-style="print"] td.hdlist1::before,
+.asciidoc-preview-content[data-preview-style="print"] #toctitle::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: calc(var(--line-top-gap, 1px) + var(--face-ascender, 1.068) * 1em);
+}
+
+/* The HORIZONTAL description list is left on the browser's line model, both of its columns, and
+   that is a deliberate exception rather than an omission.
+
+   Asciidoctor writes its term as `<td class="hdlist1">\nlambda\n</td>` — the newlines are the
+   template's indentation, not content. Collapsible whitespace at the START of a line is dropped, so
+   it costs nothing today; put an atomic inline in front of it and it is no longer at the start of the
+   line, and Chromium renders it as a space. Measured: every term grew by 3.813px, the width of a
+   space in the body face and the same number for a two-letter term as for a wrapping one, which
+   widened the column the renderer sizes from the widest term and moved the description column 2.84pt
+   right. A flex container collapses that whitespace again and its `align-items: baseline` reproduces
+   the strut exactly — but `text-box-trim` acts on a block container's own line boxes, and a flex
+   container's lines belong to an anonymous item no selector can reach, so the cell would gain a
+   correct top and lose its bottom (6.59pt per row, measured).
+
+   Cancelling the space instead needs the face's own advance for U+0020, which nothing in this
+   pipeline carries: it would mean a second per-glyph read in the font reader, both font generators,
+   and all three committed font manifests regenerated — to compensate an artefact of a converter
+   template. Not worth it here.
+
+   So both cells keep the browser's model, which is what they had before this model existed and what
+   every assertion over this construct was written against. What that costs is the ~1pt of absolute
+   quantisation this file removes everywhere else; what it buys is that the term and its description
+   still open on ONE baseline, which is the relationship the export actually shows a reader. Every
+   other construct with a strut holds its text in a `<p>`, and Asciidoctor writes those with no
+   leading whitespace inside the tag. */
 
 /* ── Key caps, buttons and menu paths (the experimental UI macros) ─────────── */
 /* Same construction as inline code: a box drawn around the glyphs, growing by the theme's offset on
@@ -1486,6 +1612,8 @@
      quotation here and moved none on the page. */
   --face-ascender: var(--print-quote-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-quote-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-quote-line-top-gap, var(--print-base-line-top-gap, 1px));
+  --line-bottom-gap: var(--print-quote-line-bottom-gap, var(--print-base-line-bottom-gap, 5.088px));
   --metric-font-family: var(--print-quote-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-quote-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   background-color: var(--print-quote-background-color, transparent);
@@ -1592,6 +1720,8 @@
   text-align: left;
   --face-ascender: var(--print-verse-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-verse-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-verse-line-top-gap, var(--print-base-line-top-gap, 1px));
+  --line-bottom-gap: var(--print-verse-line-bottom-gap, var(--print-base-line-bottom-gap, 5.088px));
   --metric-font-family: var(--print-verse-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-verse-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   background-color: var(--print-verse-background-color, transparent);
@@ -1722,6 +1852,8 @@
   text-align: var(--print-sidebar-title-text-align, center);
   --face-ascender: var(--print-sidebar-title-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-sidebar-title-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-sidebar-title-line-top-gap, var(--print-base-line-top-gap, 1px));
+  --line-bottom-gap: var(--print-sidebar-title-line-bottom-gap, var(--print-base-line-bottom-gap, 5.088px));
   --metric-font-family: var(--print-sidebar-title-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-sidebar-title-font-family, var(--print-base-font-family, "Noto Serif")), serif;
   /* `heading.margin-bottom`, resolved into the title's own group: `convert_sidebar` inks the title
@@ -2273,6 +2405,8 @@
   line-height: var(--print-table-foot-line-height, var(--print-base-line-height, 21.04px));
   --face-ascender: var(--print-table-foot-face-ascender, var(--print-base-face-ascender, 1.068));
   --face-descender: var(--print-table-foot-face-descender, var(--print-base-face-descender, 0.292));
+  --line-top-gap: var(--print-table-foot-line-top-gap, var(--print-base-line-top-gap, 1px));
+  --line-bottom-gap: var(--print-table-foot-line-bottom-gap, var(--print-base-line-bottom-gap, 5.088px));
   --metric-font-family: var(--print-table-foot-metric-font-family, "Noto Serif·print-metrics"),
     var(--print-table-foot-font-family, var(--print-base-font-family, "Noto Serif")), serif;
 }
@@ -2346,6 +2480,16 @@
    swaps it. Neither the gem's base theme nor its default theme carries that key. */
 .asciidoc-preview-content[data-preview-style="print"] p.tableblock.monospaced {
   line-height: var(--print-codespan-line-height, 17.26px);
+  /* The face and the two gaps with it, not the line height alone. This paragraph is a BLOCK set in
+     the codespan's face, so it is the codespan's ascender that decides where its first baseline sits
+     and the codespan's descender that decides where its box ends — and the strut and the trimmed end
+     edge above read both through the relay. Left at body text's, a monospaced cell opened its first
+     line at the body face's ascender and sat level with the plain cell beside it, where the export
+     raises it by the difference between the two faces. */
+  --face-ascender: var(--print-codespan-face-ascender, 0.86);
+  --face-descender: var(--print-codespan-face-descender, 0.14);
+  --line-top-gap: var(--print-codespan-line-top-gap, var(--print-base-line-top-gap, 1px));
+  --line-bottom-gap: var(--print-codespan-line-bottom-gap, var(--print-base-line-bottom-gap, 5.088px));
 }
 
 /* A LITERAL cell (`l|`) is set in the CODE block's face, and it is a third thing again: neither the
@@ -2563,6 +2707,64 @@
    `rouge-style` document attribute rather than by the PDF theme, so there is nothing here for a theme
    key to carry. The code colour underneath it IS a theme value, and the generated rules reach it
    through the same custom-property chain the rest of this file uses. */
+/* What sits under a heading's last baseline, taken off the renderer instead of off the browser.
+   `typeset_text` ends a block by moving down `line_metrics.padding_bottom` from the text box's own
+   bottom, so the distance from the last baseline to the block's edge is `descender + leading / 2`
+   and nothing else. A browser gets to the same place by a different route — the line box keeps the
+   font's descent and half of the leading — and the two agree in exact arithmetic. They do not agree
+   in the arithmetic a browser actually does.
+
+   Measured on Chromium 141 with the committed base-14 stand-ins: a face's used descent is the CEILING
+   of its declared one, the used ascent takes whatever is left of the rounded pair, and the leading's
+   upper half is FLOORED. At 22pt in Times-Bold that lays a line box out over 26px + 7px where the
+   declared overrides give 27.456 + 6.365, and since the box's height is a stated length, all 1.456px
+   the baseline loses at the top is handed to the gap below it. On a heading — whose line height is
+   1 on the renderer's own default theme, so there is no leading to absorb it — that is 1.09pt of
+   space under every heading that the export does not have. Nothing in this file can correct it:
+   the browser's ascent is an integer, so the baseline can only land on one.
+
+   `text-box-trim` removes the question. Trimming the end edge to the alphabetic baseline drops the
+   used descent AND the trailing half-leading, both of them browser-rounded, and leaves the block's
+   bottom exactly at its last baseline; `padding-bottom` then puts the renderer's own two terms back
+   as a projected length. The result is a heading whose height stops depending on how Chromium rounds
+   a font, which is what took the base-14 anchor's heading-to-body measurement 1.09pt off the page.
+
+   Behind `@supports` for BOTH properties, and not only for the trim: where the pair is unsupported
+   the padding must not be applied either, or a browser that keeps the descent would add the
+   renderer's on top of it and every heading would gain a descender's worth of space. Firefox and
+   Safari land there and keep the appearance this file had before, which is the same page a fraction
+   looser rather than a broken one.
+
+   It has to be applied to exactly the elements the strut above is applied to, and to no others. The
+   two are one change: the strut moves a block's first baseline DOWN to where the renderer puts it,
+   and with an untrimmed end edge that makes the block taller by the amount it moved rather than
+   putting the baseline in the right place. Struts on headings and paragraphs with the trim on
+   headings alone was measured at 15 failing assertions against this suite, for that reason.
+
+   It sits here, after every hand-written rule, because it is a correction applied to boxes the rules
+   above have already sized: `td.hdlist1` sets `padding: 0 10pt`, and a shorthand later in the file
+   than this padding would reset the bottom edge to zero and take the trim's replacement with it. */
+@supports (text-box-trim: trim-end) and (text-box-edge: cap alphabetic) {
+  .asciidoc-preview-content[data-preview-style="print"] :is(h1, h2, h3, h4, h5, h6),
+  .asciidoc-preview-content[data-preview-style="print"] p,
+  .asciidoc-preview-content[data-preview-style="print"] dt,
+  .asciidoc-preview-content[data-preview-style="print"] #toctitle {
+    text-box-trim: trim-end;
+    text-box-edge: cap alphabetic;
+    /* The relay, not the per-category name: a paragraph is set in whatever face the block around it
+       establishes, and the same rule has to serve one inside a quotation and one inside a sidebar. */
+    padding-bottom: var(--line-bottom-gap, 5.088px);
+  }
+
+  /* The horizontal list's description keeps the browser's bottom to match its term, which keeps the
+     browser's everything — see the carve-out beside the strut for why that construct is excluded. */
+  .asciidoc-preview-content[data-preview-style="print"] td.hdlist1 {
+    text-box-trim: trim-end;
+    text-box-edge: cap alphabetic;
+    padding: 0 10pt var(--line-bottom-gap, 5.088px);
+  }
+}
+
 /* >>> generated by scripts/build-print-highlight-css.mjs — do not edit by hand */
 /* Derived from asciidoctor-pdf-2.3.24/lib/asciidoctor/pdf/ext/rouge/themes/asciidoctor_pdf_default.rb
    — the palette every export gets, because the convert never sets `rouge-style`.

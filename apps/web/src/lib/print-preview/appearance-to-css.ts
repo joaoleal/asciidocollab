@@ -395,6 +395,95 @@ function lineBox(
 }
 
 /**
+ * One of the two paddings the renderer builds a block's text with, as a CSS LENGTH.
+ *
+ * `calc_line_metrics` (asciidoctor-pdf's `ext/prawn/extensions.rb`) splits a block's leading in two
+ * and puts the FACE's line gap entirely on top of the upper half.
+ *
+ * ```text
+ * leading = line_height x font_size - font_size
+ * padding_top    = leading / 2 + font.line_gap
+ * padding_bottom = leading / 2
+ * ```
+ *
+ * The converter then passes `padding_top` as the text box's `initial_gap` and moves down by
+ * `padding_bottom` after it, so a block's FIRST baseline sits `padding_top + ascender` below its top
+ * and its bottom sits `descender + padding_bottom` below its LAST baseline. Neither is symmetric,
+ * and CSS's own line box is: it splits the leading evenly and puts no gap anywhere. That asymmetry
+ * is why these are read out as lengths rather than left to the browser — see the strut on a codespan
+ * and the trimmed end edge in `print-preview.css`, which are what consume them.
+ *
+ * The `bottom` edge carries the descender as well as the half-leading, because the thing under a
+ * block's last line is the face's descent and then the padding, and CSS measures a trimmed end edge
+ * from the baseline rather than from the descent.
+ *
+ * @param model - The resolved appearance, for the values a construct inherits from body text.
+ * @param faceBox - The vertical measurements of a face.
+ * @param text - How the construct is set, after its own inheritance step.
+ * @param edge - Which of the two to compute.
+ * @returns The padding as a CSS length, or undefined when the face's metrics are unknown.
+ */
+function linePadding(
+  model: AppearanceModel,
+  faceBox: FaceBoxLookup,
+  text: LineBoxText,
+  edge: 'top' | 'bottom',
+): string | undefined {
+  const sizePt = text.fontSizePt ?? model.base.fontSizePt;
+  const multiple = text.lineHeight ?? model.base.lineHeight;
+  const box = faceBox(text.fontFamily ?? model.base.fontFamily, text.fontStyle);
+  if (box === undefined || !Number.isFinite(sizePt) || !Number.isFinite(multiple)) return undefined;
+  const halfLeading = (sizePt * (multiple - 1)) / 2;
+  return px(halfLeading + sizePt * (edge === 'top' ? box.lineGap : box.descender));
+}
+
+/**
+ * The renderer's two block paddings for one typography group.
+ *
+ * Spread EXPLICITLY at the call sites that need them rather than folded into
+ * {@link typographyProperties}, and that is the point: they belong to a group only when the
+ * stylesheet has a block to spend them on. A codespan and a key cap are fragments inside someone
+ * else's line box — they take their block's gaps and must not declare their own — so deriving these
+ * for every group would write a name with no reader, which the vocabulary test in
+ * `appearance-to-css.test.ts` fails on. The list of call sites below IS the list of contexts that
+ * lay out a block of text in a face of their own.
+ *
+ * @param prefix - The property-name prefix, including `--print-`.
+ * @param read - The construct's own typography.
+ * @param inherit - What it falls back to for family and size before body text.
+ * @returns One definition per edge.
+ */
+function linePaddingProperties(
+  prefix: string,
+  read: (model: AppearanceModel) => UnalignedTypography | undefined,
+  inherit: (model: AppearanceModel) => UnalignedTypography | undefined = () => undefined,
+): PropertyDefinition[] {
+  return (
+    [
+      ['top', 'line-top-gap'],
+      ['bottom', 'line-bottom-gap'],
+    ] as const
+  ).map(([edge, suffix]) => ({
+    name: `${prefix}-${suffix}`,
+    read: (model: AppearanceModel, faceBox: FaceBoxLookup) => {
+      const own = read(model);
+      const from = inherit(model);
+      return linePadding(
+        model,
+        faceBox,
+        {
+          fontFamily: own?.fontFamily ?? from?.fontFamily,
+          fontSizePt: own?.fontSizePt ?? from?.fontSizePt,
+          fontStyle: own?.fontStyle ?? from?.fontStyle,
+          lineHeight: own?.lineHeight ?? from?.lineHeight,
+        },
+        edge,
+      );
+    },
+  }));
+}
+
+/**
  * The properties one typography group derives, WITHOUT an alignment.
  *
  * Alignment is not a setting every category has. The converter reads a `text_align` for ten of them
@@ -545,6 +634,7 @@ const PROPERTIES: readonly PropertyDefinition[] = [
   { name: '--print-page-background-color', read: (model) => colour(model.page.backgroundColor) },
 
   ...alignedTypographyProperties('--print-base', (model) => model.base),
+  ...linePaddingProperties('--print-base', (model) => model.base),
   // The one HORIZONTAL face measurement this projection carries, and it is here because a list's
   // geometry is built out of it: `convert_list_item` sets the marker one `rendered_width_of_char 'x'`
   // clear of the text column, in whatever face is in force where the list sits.
@@ -590,6 +680,7 @@ const PROPERTIES: readonly PropertyDefinition[] = [
     const at = (model: AppearanceModel): HeadingAppearance => model.headings[level];
     return [
       ...alignedTypographyProperties(`--print-heading-${level}`, at),
+      ...linePaddingProperties(`--print-heading-${level}`, at),
       { name: `--print-heading-${level}-margin-top`, read: (model) => px(at(model).marginTopPt) },
       { name: `--print-heading-${level}-margin-bottom`, read: (model) => px(at(model).marginBottomPt) },
     ];
@@ -610,6 +701,10 @@ const PROPERTIES: readonly PropertyDefinition[] = [
   // A codespan is a text FRAGMENT, so its font style merges with the markup's rather than replacing
   // it — see {@link FRAGMENT_STYLE_AXES}.
   ...typographyProperties('--print-codespan', (model) => model.codespan, undefined, FRAGMENT_STYLE_AXES),
+  // A codespan is a fragment, but a MONOSPACED COLUMN is a block set in the codespan's own face and
+  // size (`convert_table`'s `:monospaced` branch), and it is `p.tableblock.monospaced` in the
+  // stylesheet that spends these.
+  ...linePaddingProperties('--print-codespan', (model) => model.codespan),
   ...inlineBoxProperties('--print-codespan', (model) => model.codespan),
 
   // A key cap the theme gives no family of its own is drawn in the codespan's, which is the face its
@@ -751,6 +846,7 @@ const PROPERTIES: readonly PropertyDefinition[] = [
   },
 
   ...typographyProperties('--print-quote', (model) => model.quote),
+  ...linePaddingProperties('--print-quote', (model) => model.quote),
   ...frameProperties('--print-quote', (model) => model.quote),
   { name: '--print-quote-border-left-width', read: (model) => px(model.quote.borderLeftWidthPt) },
 
@@ -807,6 +903,7 @@ const PROPERTIES: readonly PropertyDefinition[] = [
     name: '--print-verse-metric-font-family',
     read: (model) => metricFamily(model.verse.fontFamily ?? model.base.fontFamily),
   },
+  ...linePaddingProperties('--print-verse', (model) => model.verse),
   ...frameProperties('--print-verse', (model) => model.verse),
   { name: '--print-verse-border-left-width', read: (model) => px(model.verse.borderLeftWidthPt) },
 
@@ -828,6 +925,7 @@ const PROPERTIES: readonly PropertyDefinition[] = [
 
   ...frameProperties('--print-sidebar', (model) => model.sidebar),
   ...alignedTypographyProperties('--print-sidebar-title', (model) => model.sidebar.title),
+  ...linePaddingProperties('--print-sidebar-title', (model) => model.sidebar.title),
   {
     name: '--print-sidebar-title-margin-bottom',
     read: (model) => px(model.sidebar.title?.marginBottomPt),
@@ -934,6 +1032,7 @@ const PROPERTIES: readonly PropertyDefinition[] = [
         ? undefined
         : metricFamily(model.table.foot.fontFamily ?? model.base.fontFamily),
   },
+  ...linePaddingProperties('--print-table-foot', (model) => model.table.foot),
   {
     name: '--print-table-body-stripe-background-color',
     read: (model) => colour(model.table.body?.stripeBackgroundColor),
