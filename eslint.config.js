@@ -195,6 +195,19 @@ module.exports = tseslint.config(
     },
   },
 
+  // `packages/testing` is the test harness itself — it has no runtime path into any service, and it
+  // is loaded only by jest. `no-console` exists so that production code logs through `request.log` or
+  // a pino instance; a harness has neither, and the one call here reports a retried testcontainer
+  // start, which is precisely the kind of thing a test log has to say out loud. The rule is scoped
+  // away from this package rather than silenced at the call site, because an inline disable would
+  // also cover whatever the next edit puts beside it.
+  {
+    files: ['packages/testing/src/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
   // Import-boundary: the browser-only PDF leaf must stay inward-only. It may depend on the
   // shared asciidoc-core primitive and external libraries, but must NEVER reach outward into an
   // application/delivery package (web/api/collab) or any code under apps/ — app-specific wiring

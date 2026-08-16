@@ -274,7 +274,20 @@ function engineSourceBytes(): {
   const engineRoot = packageRoot(require.resolve('asciidoctor', { paths: [process.cwd()] }));
   const coreRoot = packageRoot(require.resolve('@asciidoctor/core', { paths: [engineRoot] }));
   const { bundle, shippedMinified } = engineBundlePaths(coreRoot);
-  const engineVersion: string = require(path.join(engineRoot, 'package.json')).version;
+  // Read and parsed rather than `require`d: a require whose specifier is built at run time is the
+  // shape `security/detect-non-literal-require` flags, and there is nothing to gain from the module
+  // cache for a manifest read once. This also keeps the value's type honest — `require` hands back
+  // `any`, so the version was a `string` by declaration rather than by check.
+  const manifest: unknown = JSON.parse(readFileSync(path.join(engineRoot, 'package.json'), 'utf8'));
+  if (
+    typeof manifest !== 'object' ||
+    manifest === null ||
+    !('version' in manifest) ||
+    typeof manifest.version !== 'string'
+  ) {
+    throw new Error(`asciidoctor's package.json under ${engineRoot} has no string \`version\`.`);
+  }
+  const engineVersion = manifest.version;
   const minified = esbuild.transformSync(readFileSync(bundle, 'utf8'), { minify: true });
   return {
     file: path.relative(process.cwd(), bundle),
