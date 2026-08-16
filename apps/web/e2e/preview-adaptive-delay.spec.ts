@@ -34,6 +34,16 @@ const TIMER_KEY = 'previewRefreshTiming';
 const SMALL_DOCUMENT_LINES = 100;
 const LARGE_DOCUMENT_LINES = 15_000;
 
+/**
+ * How long the engine requests must stay unchanged before the page's own warm-ups count as settled.
+ *
+ * Sized against what it has to separate rather than by feel: the two mount-time warm-ups fetch the
+ * same 71 MB file, so the second starts once the first is off the connection — a gap measured in
+ * hundreds of milliseconds on a loaded runner, not seconds. Three seconds of silence is comfortably
+ * past that, and the wait ends as soon as the silence is reached rather than sleeping for it.
+ */
+const WARMUP_QUIET_MS = 3000;
+
 /** The target for a short document: the refresh must land within this of the last keystroke. */
 const SMALL_DOCUMENT_TARGET_MS = 200;
 
@@ -462,6 +472,20 @@ test.describe('preview refresh delay after the last keystroke', () => {
     // The claim behind the budget above: the appearance is READ from a theme, never rendered. A wasm
     // engine fetched on this path would be the one cost no amount of memoisation could hide, and it
     // would show up here as a request rather than as a slow sample.
+    //
+    // Recorded from before the page exists, because the project editor boots engines of its own that
+    // have nothing to do with this: `usePdfExport` and `usePdfPreview` are both called unconditionally
+    // (project-editor-layout.tsx:744 and :1048) and each creates a worker on mount and warms it, so
+    // every project page fetches the 71 MB engine twice before any style is chosen. Listening only
+    // from just before the style is selected caught whichever of those two was still starting — the
+    // second is queued behind the first — and reported a mount-time warm-up as something the Print
+    // path had done. It passed on a fast machine and failed on a CI runner, which is the signature of
+    // a window that opens too late rather than of a page that behaves differently.
+    const engineRequests: string[] = [];
+    page.on('request', (request) => {
+      if (/\.wasm(\?|$)/.test(request.url())) engineRequests.push(request.url());
+    });
+
     const name = `print-engine-${SMALL_DOCUMENT_LINES}.adoc`;
     await createAdocFile(
       page,
@@ -476,13 +500,38 @@ test.describe('preview refresh delay after the last keystroke', () => {
       timeout: 60_000,
     });
 
-    const engineRequests: string[] = [];
-    page.on('request', (request) => {
-      if (/\.wasm(\?|$)/.test(request.url())) engineRequests.push(request.url());
-    });
+    // Wait for the page's own warm-ups to go quiet, so what follows is attributable to the style and
+    // to nothing else. The signal is the absence of a NEW engine request for a while, which is the
+    // only thing that says the mount-time boots have all started — a fixed sleep would be the same
+    // guess that made this fail.
+    let lastCount = -1;
+    let lastChangeAt = Date.now();
+    await expect
+      .poll(
+        () => {
+          if (engineRequests.length !== lastCount) {
+            lastCount = engineRequests.length;
+            lastChangeAt = Date.now();
+          }
+          return Date.now() - lastChangeAt;
+        },
+        { timeout: 120_000, intervals: [250] },
+      )
+      .toBeGreaterThanOrEqual(WARMUP_QUIET_MS);
 
+    // The readiness signal has to have had something to wait for. Without this the whole test passes
+    // trivially on a page that fetched no engine at all — a build with the engine missing, a warm-up
+    // that silently stopped being posted — and would go on reporting that the Print style boots
+    // nothing while proving only that nothing boots anything.
+    expect(
+      engineRequests.length,
+      'the project page boots its own engines at mount, which is what this test has to see settle first',
+    ).toBeGreaterThan(0);
+
+    const beforePrint = engineRequests.length;
     await selectPrintStyle(page);
     await timeOneRefresh(page, 'PRINT-NO-ENGINE');
-    expect(engineRequests, `the Print style fetched ${engineRequests.join(', ')}`).toEqual([]);
+    const causedByPrint = engineRequests.slice(beforePrint);
+    expect(causedByPrint, `the Print style fetched ${causedByPrint.join(', ')}`).toEqual([]);
   });
 });
