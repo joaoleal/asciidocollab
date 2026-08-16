@@ -56,7 +56,6 @@ COPY apps/collab/package.json     apps/collab/package.json
 COPY apps/web/package.json        apps/web/package.json
 COPY packages/asciidoc-core/package.json   packages/asciidoc-core/package.json
 COPY packages/asciidoc-pdf/package.json    packages/asciidoc-pdf/package.json
-COPY packages/collaboration/package.json   packages/collaboration/package.json
 COPY packages/db/package.json              packages/db/package.json
 COPY packages/domain/package.json          packages/domain/package.json
 COPY packages/infrastructure/package.json  packages/infrastructure/package.json
@@ -80,7 +79,7 @@ RUN pnpm --filter '!@asciidocollab/web' -r build
 # dragging the source tree along behind it.
 FROM build-backend AS artifacts
 RUN set -eu; \
-    for p in packages/asciidoc-core packages/asciidoc-pdf packages/collaboration \
+    for p in packages/asciidoc-core packages/asciidoc-pdf \
              packages/db packages/domain packages/infrastructure packages/primitives packages/shared \
              apps/api apps/collab; do \
       if [ -d "/app/$p/dist" ]; then \
