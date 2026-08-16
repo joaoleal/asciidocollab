@@ -28,6 +28,7 @@ import { appearanceToCssProperties } from '@/lib/print-preview/appearance-to-css
 import { faceMetricDeclarations, metricFamilyOf, planFontFaces } from '@/lib/print-preview/font-faces';
 import type { FaceMetricOverrides, FaceRegistration, FaceStyle } from '@/lib/print-preview/font-faces';
 import { resolveFaceMetrics } from '@/lib/print-preview/font-metrics';
+import { trimTermIndentation } from '@/lib/asciidoc-html/trim-term-indentation';
 import type { Rgb } from '../harness/pdftools';
 
 /** Where the anchor fixtures live. */
@@ -293,7 +294,9 @@ async function convertDocument(source: string, baseDirectory?: string): Promise<
     // the worker produces and the stylesheet is written against.
     attributes: { icons: 'font', showtitle: '' },
   });
-  return String(await document_.convert());
+  // The one transform of the worker's that changes GEOMETRY rather than naming: without it the
+  // markup here is not the markup the preview lays out. See the module for what it removes.
+  return trimTermIndentation(String(await document_.convert()));
 }
 
 /** What the browser was given, so a failure can be read without re-deriving it. */

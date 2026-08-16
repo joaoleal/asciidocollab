@@ -2,6 +2,7 @@ import { load as loadAsciidoc } from 'asciidoctor';
 import hljs from 'highlight.js/lib/common';
 import { ON_DEMAND_GRAMMARS, type OnDemandGrammar } from './hljs-languages.generated';
 import { assembleIncludes } from './assemble-includes';
+import { trimTermIndentation } from '../lib/asciidoc-html/trim-term-indentation';
 import { resolveAttributeScope, effectiveLevelOffset } from '@asciidocollab/asciidoc-core';
 import { RENDER_INTRINSIC_ATTRIBUTES } from '../lib/asciidoc/render-intrinsics';
 import { resolveSandboxedPath } from '../lib/asciidoc/sandbox-path';
@@ -1229,6 +1230,7 @@ onmessage = async function (event: MessageEvent<RenderRequest>) {
     html = nameFootnoteSeparators(html);
     html = nameKeyseqSeparators(html);
     html = nameMonospacedCells(html);
+    html = trimTermIndentation(html);
     html = restoreColumnWidthStyles(html);
 
     // Inject data-source-line next to each id="..." attribute in a single pass
