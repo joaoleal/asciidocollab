@@ -150,11 +150,31 @@ test.describe('the Print preview applies the project theme', () => {
     // The default theme's body face is the gem's own Noto Serif subset, served from this
     // application's own origin. A family name in a stylesheet proves nothing on its own — what
     // matters is that the browser actually loaded a face under it.
-    const loaded = await page.evaluate(async () => {
-      await document.fonts.ready;
-      return [...document.fonts].map((face) => ({ family: face.family, status: face.status }));
-    });
-    expect(loaded.some((face) => face.family === 'Noto Serif' && face.status === 'loaded')).toBe(true);
+    //
+    // Polled rather than sampled once, because `document.fonts.ready` does NOT mean "the page's
+    // faces are loaded" — it means "nothing is loading right now". A registered face is `unloaded`
+    // until layout asks for it, so `ready` resolves immediately when the preview's text has not been
+    // laid out yet and the read comes back with every face `unloaded`. Measured on a CI runner: the
+    // evaluate ran 0.53 s BEFORE the browser even issued the request for the face, and failed all
+    // three retries because a slower machine loses that race systematically rather than randomly.
+    //
+    // The predicate is unchanged — a face that 404s or is substituted never becomes `loaded`, so
+    // waiting cannot turn a real failure into a pass. The list is returned rather than a boolean so
+    // a genuine failure names what WAS registered instead of just saying `false`.
+    //
+    // The wait belongs here and not in `openPrintPreview`: the helper making the page wait for its
+    // fonts is exactly the fact under test, and a helper that guaranteed it would leave this test
+    // asserting its own setup.
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(async () => {
+            await document.fonts.ready;
+            return [...document.fonts].map((face) => `${face.family} ${face.status}`);
+          }),
+        { timeout: 15_000 },
+      )
+      .toContain('Noto Serif loaded');
     expect(await computed(page, 'p', 'font-family')).toContain('Noto Serif');
   });
 
