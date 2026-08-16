@@ -151,27 +151,37 @@ test.describe('the Print preview applies the project theme', () => {
     // application's own origin. A family name in a stylesheet proves nothing on its own — what
     // matters is that the browser actually loaded a face under it.
     //
-    // Polled rather than sampled once, because `document.fonts.ready` does NOT mean "the page's
-    // faces are loaded" — it means "nothing is loading right now". A registered face is `unloaded`
-    // until layout asks for it, so `ready` resolves immediately when the preview's text has not been
-    // laid out yet and the read comes back with every face `unloaded`. Measured on a CI runner: the
-    // evaluate ran 0.53 s BEFORE the browser even issued the request for the face, and failed all
-    // three retries because a slower machine loses that race systematically rather than randomly.
+    // Polled, and deliberately WITHOUT `document.fonts.ready`.
     //
-    // The predicate is unchanged — a face that 404s or is substituted never becomes `loaded`, so
-    // waiting cannot turn a real failure into a pass. The list is returned rather than a boolean so
-    // a genuine failure names what WAS registered instead of just saying `false`.
+    // `ready` reads like the barrier this wants and is not one. It settles when font loading is idle
+    // and layout is clean, which the specification leaves to the browser's discretion — so on a page
+    // that keeps rendering it can be deferred indefinitely. `expect.poll` reports the last value its
+    // callback SUCCESSFULLY returned, so a callback that hangs inside `ready` cannot produce a newer
+    // one and times out holding a stale early snapshot. That is exactly what a CI runner reported:
+    // an array of nothing but the application's own Inter and Urbanist faces, while the trace for
+    // the same run shows all sixteen catalogue faces fetched 2.5 s before the timeout.
     //
-    // The wait belongs here and not in `openPrintPreview`: the helper making the page wait for its
-    // fonts is exactly the fact under test, and a helper that guaranteed it would leave this test
-    // asserting its own setup.
+    // Nothing here needs a promise. `loadFontFaces` awaits `FontFace.load()` BEFORE `fontSet.add`,
+    // so a face that is in the set is already `loaded` and a plain read of the set is the whole
+    // question. Polling that read waits for the hook's effect without depending on a promise whose
+    // settling is at the browser's discretion.
+    //
+    // The predicate is unchanged: a face that 404s or is substituted never reaches the set at all,
+    // so waiting cannot turn a real failure into a pass. The faces under test are reported rather
+    // than every face on the page, because a page carrying a dozen application faces truncates the
+    // printed array before it reaches the ones this is about — which is what made the first failure
+    // unreadable.
+    //
+    // The wait belongs here and not in `openPrintPreview`: a helper that guaranteed the fonts were
+    // loaded is the fact under test, and this would then be asserting its own setup.
     await expect
       .poll(
         async () =>
-          page.evaluate(async () => {
-            await document.fonts.ready;
-            return [...document.fonts].map((face) => `${face.family} ${face.status}`);
-          }),
+          page.evaluate(() =>
+            [...document.fonts]
+              .filter((face) => face.family.includes('Noto Serif'))
+              .map((face) => `${face.family} ${face.status}`),
+          ),
         { timeout: 15_000 },
       )
       .toContain('Noto Serif loaded');
