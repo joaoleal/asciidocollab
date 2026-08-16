@@ -347,6 +347,87 @@ else
   esac
 fi
 
+# docker/Dockerfile names workspace packages as literal paths, and NOTHING else in the repository
+# reads it: the image build is Job 10, which is opt-in behind RUN_DOCKER=1 locally and unconditional
+# in CI. So a package that is renamed or retired leaves the Dockerfile pointing at a directory that no
+# longer exists, every local job stays green, and the break surfaces only on the pull request.
+#
+# That is not hypothetical. Branch 045 retired `packages/collaboration` in its first commit and left
+# `COPY packages/collaboration/package.json` in the manifests stage. Eight local gate jobs passed, the
+# branch was pushed, and CI failed in 23 seconds with `"/packages/collaboration/package.json": not
+# found` — a defect that needed no Docker at all to find, only something willing to read the file.
+#
+# Checked in BOTH directions, because they fail differently:
+#
+#   named but absent  — the case above. A stale path breaks the build at the first `COPY`.
+#   present but uncopied — a NEW workspace package whose manifest never reaches the manifests stage.
+#                          `pnpm install --frozen-lockfile` then runs against an incomplete workspace,
+#                          which fails later, further from its cause, and only inside a container.
+#
+# Deliberately a text scan and not a Dockerfile parser: the property is "every workspace path this
+# file mentions is real", and a mention is a mention wherever it appears — the manifests `COPY` lines,
+# the artifacts stage's `for p in …` list, a `--filter`, a comment that has gone stale. A parser would
+# see the COPY lines only, and the artifacts list is exactly where the same rename left a second dead
+# reference.
+step "Every workspace path named in docker/Dockerfile exists …"
+node - "$ROOT" <<'DOCKERFILE_PATHS' || exit 1
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+const root = process.argv[2];
+
+/** Every workspace package directory, as the `group/name` path the Dockerfile would write. */
+function workspacePackages() {
+  const found = new Set();
+  for (const group of ['apps', 'packages']) {
+    let entries = [];
+    try {
+      entries = readdirSync(join(root, group));
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      try {
+        statSync(join(root, group, name, 'package.json'));
+        found.add(`${group}/${name}`);
+      } catch {
+        /* a directory that is not a package */
+      }
+    }
+  }
+  return found;
+}
+
+const dockerfile = join(root, 'docker', 'Dockerfile');
+const text = readFileSync(dockerfile, 'utf8');
+const packages = workspacePackages();
+
+// Every `apps/<name>` or `packages/<name>` the file mentions, wherever it appears.
+const named = new Set([...text.matchAll(/\b(apps|packages)\/([\w.-]+)/g)].map((m) => `${m[1]}/${m[2]}`));
+
+const stale = [...named].filter((path) => !packages.has(path)).sort();
+
+// The manifests stage's own copies, which is the half that has to be complete rather than merely real.
+const copied = new Set(
+  [...text.matchAll(/^COPY\s+(apps|packages)\/([\w.-]+)\/package\.json\s/gm)].map((m) => `${m[1]}/${m[2]}`),
+);
+const uncopied = [...packages].filter((path) => !copied.has(path)).sort();
+
+if (stale.length > 0 || uncopied.length > 0) {
+  for (const path of stale) {
+    console.error(`[ci-quality] docker/Dockerfile names ${path}, which is not a workspace package.`);
+  }
+  for (const path of uncopied) {
+    console.error(`[ci-quality] ${path} is a workspace package with no manifest COPY in docker/Dockerfile.`);
+  }
+  console.error('[ci-quality] The image build (Job 10) is the only other thing that reads this file, and it is');
+  console.error('[ci-quality] opt-in locally — so this is the step that has to catch a renamed or retired package.');
+  process.exit(1);
+}
+
+console.log(`[ci-quality] docker/Dockerfile: ${named.size} workspace path(s) named, all real; ${packages.size} package(s), all copied.`);
+DOCKERFILE_PATHS
+
 # Development applies the schema with `db push`; production runs `migrate deploy`.
 # This catches a schema change that never got a migration — which would pass every
 # other gate and then simply not reach production. Needs a database, so it skips
