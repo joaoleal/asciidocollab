@@ -1,0 +1,18 @@
+{
+  "name": "inline-marks",
+  "description": "The anchor for the marks the renderer paints AROUND a run of inline text rather than in it: a codespan's tint, a key cap's box and the air the theme puts between two of them, a highlight, a superscript and a subscript's displacement, a footnote marker's colour, and the attribution under a quotation. Every one of them is drawn by the text formatter from the text fragment's own extent, which is a different thing from the line box a browser would paint over — and every one of them was wrong while the typographic anchors passed.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "marks-theme.yml",
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "marks-theme.yml"
+    }
+  }
+}

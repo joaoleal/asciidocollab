@@ -1,0 +1,13 @@
+= Inline Marks
+:experimental:
+
+A paragraph carrying a `codespan` chip, a #highlighted phrase#, the formula for water H~2~O, the
+mass-energy relation E = mc^2^, and a note of its own.footnote:[The note itself, set at the
+footnote size the theme gives it.]
+
+Press kbd:[Ctrl+F] to search the open file.
+
+[quote, Donald Knuth, The Art of Computer Programming]
+____
+Premature optimization is the root of all evil.
+____

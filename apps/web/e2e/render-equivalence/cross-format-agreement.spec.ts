@@ -170,7 +170,11 @@ test.describe('cross-format agreement between the two preview formats', () => {
       '<div class="quoteblock"><blockquote><div class="paragraph"><p>Quoted.</p></div></blockquote>' +
       '<div class="attribution">&#8212; A. Author<br><cite>A Source</cite></div></div>' +
       '<div id="footnotes"><hr>' +
-      '<div class="footnote" id="_footnotedef_1"><a href="#_footnoteref_1">1</a>. The footnote.</div>' +
+      // The separator in the span the web render names it in — the shape the app actually emits, so
+      // the reconciliation is exercised against the markup it has to reconcile rather than against
+      // the bare text node Asciidoctor writes before the render's own pass reaches it.
+      '<div class="footnote" id="_footnotedef_1"><a href="#_footnoteref_1">1</a>' +
+      '<span class="footnote-separator">. </span>The footnote.</div>' +
       '</div>';
 
     // The same content as the page format's text layer carries it: bullets and checkboxes drawn as
@@ -216,6 +220,15 @@ test.describe('cross-format agreement between the two preview formats', () => {
       ['a changed callout number beside the code', webSide.replace('data-value="1"></i><b>(1)</b>', 'data-value="2"></i><b>(2)</b>')],
       ['a changed callout number in the callout list', webSide.replace('data-value="1"></i><b>1</b>', 'data-value="3"></i><b>3</b>')],
       ['a changed footnote number', webSide.replace('<a href="#_footnoteref_1">1</a>', '<a href="#_footnoteref_1">2</a>')],
+      // What is passed over is the SEPARATOR, not whatever the render puts in a span next to a
+      // back-link: an entry whose words moved inside that span loses them from the comparison.
+      [
+        "a footnote separator that swallowed the entry's text",
+        webSide.replace(
+          '<span class="footnote-separator">. </span>The footnote.',
+          '<span class="footnote-separator">. The footnote.</span>',
+        ),
+      ],
       // Neither format writes the word NOTE anywhere while `icons` is in effect, so without the
       // admonition reconciliation both sides reduce to nothing here and every admonition in the
       // corpus reads the same as every other.

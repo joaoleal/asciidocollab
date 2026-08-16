@@ -2,6 +2,59 @@ import { defineConfig, devices } from '@playwright/test';
 
 const WEB_URL = process.env.NEXT_PUBLIC_WEB_URL ?? 'http://localhost:3000';
 
+// ─── Spec groups, named once ─────────────────────────────────────────────────
+// `testDir: './e2e'` means the default `chromium` project claims EVERY spec under e2e/ that its
+// `testIgnore` does not remove. So for each spec that belongs somewhere else, the same list has to
+// appear TWICE — once as the owning project's `testMatch`, once as a `chromium` `testIgnore` entry —
+// and the two are only in agreement while someone keeps them in agreement. They twice were not:
+// naming pdf-parity's specs file by file left the render-equivalence suite running here as well as
+// under its own config, and then left 13 print-fidelity spec files plus internal-link-targets doing
+// the same (153 tests, executed a second time inside `chromium` at a 45 s budget against a live app
+// stack they make no use of, contending with the collab/preview suites the worker cap protects).
+//
+// Both escapes are the same defect, not two: a list duplicated by hand drifts the moment a file is
+// added. Declaring each group ONCE here and spreading it into both places makes the two structurally
+// identical rather than coincidentally equal — a spec added to a group below is routed and excluded
+// in one edit. The two stack-free suites are matched BY DIRECTORY for the same reason: a fourteenth
+// print-fidelity spec must be covered without anyone remembering this file exists.
+const SETUP_SPEC = '**/auth-first-run.spec.ts';
+const EMAIL_GATE_SPEC = '**/email-verification-gate.spec.ts';
+const OPEN_REG_TOGGLE_SPEC = '**/open-registration-toggle.spec.ts';
+
+// Run under their own stack-free configs (playwright.pdf-parity.config.ts,
+// playwright.render-equivalence.config.ts): they drive the wasm engine / render worker + shims
+// directly and must not depend on the `setup` project or a live web server. pdf-parity additionally
+// holds the PARITY_EMIT-gated reference emitter, a dev tool rather than a check.
+//
+// The 45 s budget here was not merely generous-in-the-wrong-place. render-equivalence's
+// web-format-reference.spec.ts BUILDS A DOCKER IMAGE in `beforeAll`, and a `beforeAll` is bounded by
+// the per-test timeout — a cold reference build cannot finish inside 45 s, so that gate's only
+// possible outcomes here were "passes because the image was already cached" or "times out". Their
+// own configs declare what they actually need (240 s, `workers: 1`, no stack).
+const STACK_FREE_SUITES = ['**/pdf-parity/**', '**/render-equivalence/**'];
+
+// The heavy in-browser PDF specs: each spins up a tens-of-MiB wasm engine, so running them alongside
+// the rest under the shared worker cap thrashes the box and the large same-origin blob fetch aborts.
+// They stay against the live stack, just serialized into their own project below.
+const PDF_ENGINE_SPECS = [
+  '**/pdf-preview-responsive.spec.ts',
+  '**/pdf-image-embed.spec.ts',
+  // Exports a real PDF per assertion, so it boots the same engine — and additionally shares one
+  // administrator drop folder across its tests, which only a single worker can be trusted with.
+  // Left in the default project it failed all three retries under gate load while passing alone,
+  // which is precisely the starvation the `chromium-pdf` project exists to prevent.
+  '**/pdf-extensions.spec.ts',
+];
+
+// The preview TIMING specs, for the same reason and in their own project below: they measure how
+// long a refresh takes, so sharing the box with two other browser workers measures contention and
+// reports it as the preview being slow.
+const PREVIEW_TIMING_SPECS = [
+  '**/preview-adaptive-delay.spec.ts',
+  '**/preview-refresh-guarantee.spec.ts',
+  '**/preview-file-switch.spec.ts',
+];
+
 export default defineConfig({
   testDir: './e2e',
   // Per-test budget. Kept generous so a COLD first render — the AsciiDoc→HTML web worker and Yjs
@@ -51,7 +104,7 @@ export default defineConfig({
     // they start with a known-good user in the database.
     {
       name: 'setup',
-      testMatch: '**/auth-first-run.spec.ts',
+      testMatch: SETUP_SPEC,
     },
 
     // Phase 2a: Email-verification tests enable/disable openRegistration to create
@@ -60,7 +113,7 @@ export default defineConfig({
     {
       name: 'email-gate',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: '**/email-verification-gate.spec.ts',
+      testMatch: EMAIL_GATE_SPEC,
       dependencies: ['setup'],
     },
 
@@ -70,7 +123,7 @@ export default defineConfig({
     {
       name: 'open-reg-toggle',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: '**/open-registration-toggle.spec.ts',
+      testMatch: OPEN_REG_TOGGLE_SPEC,
       dependencies: ['email-gate'],
     },
 
@@ -79,28 +132,17 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      // Every entry is a group declared at the top of this file, spread rather than retyped: the
+      // project that OWNS each group below reads from the same constant, so the two cannot disagree.
+      // The stack-free suites are excluded outright; the engine and timing groups are only moved to
+      // their own serialized projects — still run, just not here.
       testIgnore: [
-        '**/auth-first-run.spec.ts',
-        '**/email-verification-gate.spec.ts',
-        '**/open-registration-toggle.spec.ts',
-        // Run under their own stack-free config (playwright.pdf-parity.config.ts): they drive the wasm
-        // engine + shims directly and must not depend on the `setup` project or a live web server. The
-        // emit spec additionally shells out to Docker (PARITY_EMIT-gated) and is a dev tool, not a check.
-        '**/pdf-parity-render.spec.ts',
-        '**/emit-reference-inputs.spec.ts',
-        // The heavy in-browser PDF preview spec runs in its own single-worker project (below): it spins
-        // up a tens-of-MiB wasm engine, so running it alongside the rest under the shared worker cap
-        // thrashes the box and the large same-origin blob fetch aborts. It stays against the live stack,
-        // just serialized — NOT excluded from the run.
-        '**/pdf-preview-responsive.spec.ts',
-        '**/pdf-image-embed.spec.ts',
-        '**/pdf-extensions.spec.ts',
-        // The preview TIMING specs, for the same reason and in their own project below: they measure
-        // how long a refresh takes, so sharing the box with two other browser workers measures
-        // contention and reports it as the preview being slow.
-        '**/preview-adaptive-delay.spec.ts',
-        '**/preview-refresh-guarantee.spec.ts',
-        '**/preview-file-switch.spec.ts',
+        SETUP_SPEC,
+        EMAIL_GATE_SPEC,
+        OPEN_REG_TOGGLE_SPEC,
+        ...STACK_FREE_SUITES,
+        ...PDF_ENGINE_SPECS,
+        ...PREVIEW_TIMING_SPECS,
       ],
       dependencies: ['setup'],
     },
@@ -113,15 +155,7 @@ export default defineConfig({
     {
       name: 'chromium-pdf',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: [
-        '**/pdf-preview-responsive.spec.ts',
-        '**/pdf-image-embed.spec.ts',
-        // Exports a real PDF per assertion, so it boots the same engine — and additionally shares one
-        // administrator drop folder across its tests, which only a single worker can be trusted with.
-        // Left in the default project it failed all three retries under gate load while passing alone,
-        // which is precisely the starvation this project exists to prevent.
-        '**/pdf-extensions.spec.ts',
-      ],
+      testMatch: PDF_ENGINE_SPECS,
       workers: 1,
       fullyParallel: false,
       // Under the gate (CI=1) this project runs AFTER `chromium`, not concurrently with it. `workers:
@@ -158,11 +192,7 @@ export default defineConfig({
     {
       name: 'chromium-timing',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: [
-        '**/preview-adaptive-delay.spec.ts',
-        '**/preview-refresh-guarantee.spec.ts',
-        '**/preview-file-switch.spec.ts',
-      ],
+      testMatch: PREVIEW_TIMING_SPECS,
       workers: 1,
       fullyParallel: false,
       // One retry here, not the suite's two. These eleven tests carry the largest per-test budgets in

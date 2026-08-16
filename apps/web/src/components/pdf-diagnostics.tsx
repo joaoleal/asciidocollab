@@ -1,15 +1,41 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type {
-  RenderDiagnostic,
-  DiagnosticSeverity,
-} from "@asciidocollab/asciidoc-pdf";
 import { cn } from "@/lib/utilities";
 
+/**
+ * What this panel needs of a diagnostic, and nothing more.
+ *
+ * Two modules produce per-resource diagnostics — the PDF renderer and the Print preview's theme
+ * resolver — and they live in packages that may not depend on each other, so their diagnostic types
+ * cannot be unified. Stating the structural minimum here is what lets one surface report both
+ * without this component depending on either concrete type: each satisfies these fields, and neither
+ * is imported.
+ */
+
+/** How severe a diagnostic is; errors are listed before warnings. */
+export type DiagnosticSeverity = "error" | "warning";
+
 /** A source location the editor can jump to when a diagnostic carries one. */
-type DiagnosticLocation = NonNullable<RenderDiagnostic["location"]>;
+export interface DiagnosticLocation {
+  /** Project-relative path of the document the problem is in. */
+  readonly path: string;
+  /** 1-based line, when the problem has one. */
+  readonly line?: number;
+}
+
+/** One reported problem, in the shape both producers satisfy. */
+export interface ReportedDiagnostic {
+  /** How severe it is. */
+  readonly severity: DiagnosticSeverity;
+  /** What went wrong, in the words shown to the author. */
+  readonly message: string;
+  /** What it concerns — a file, an image, a font — used as the row's label. */
+  readonly resource: string;
+  /** Where in a document it is, when that is known. */
+  readonly location?: DiagnosticLocation;
+}
 
 /** The default header/intro/aria copy — the PDF export surface this panel was first built for. */
 const PDF_DIAGNOSTICS_COPY = {
@@ -21,7 +47,7 @@ const PDF_DIAGNOSTICS_COPY = {
 /** Bindings for the per-resource render-diagnostics surface (PDF export or on-screen preview). */
 export interface PdfDiagnosticsProperties {
   /** Non-fatal warnings and per-resource errors gathered while producing the output. */
-  diagnostics: readonly RenderDiagnostic[];
+  diagnostics: readonly ReportedDiagnostic[];
   /**
    * Invoked with a diagnostic's source location so the editor can reveal it.
    *
@@ -62,6 +88,16 @@ const SEVERITY_LABEL: Record<DiagnosticSeverity, string> = {
   warning: "Warning",
 };
 
+/**
+ * The most rows this panel builds, whatever it is handed.
+ *
+ * A producer can hand over a list as long as its input: a theme document naming one setting per line
+ * produced one diagnostic per line, tens of thousands of them, and every one became a DOM node —
+ * expanded by default, re-sorted on each render, beside a preview that re-renders as the author
+ * types. What is past the bound is counted rather than dropped silently; the row below says so.
+ */
+const MAX_LISTED = 50;
+
 function severityRank(severity: DiagnosticSeverity): number {
   return SEVERITY_ORDER.indexOf(severity);
 }
@@ -78,7 +114,7 @@ function countLabel(count: number, noun: string): string {
 }
 
 /** A short "N errors, M warnings" summary for the collapsed header (omits any zero group). */
-function summarize(diagnostics: readonly RenderDiagnostic[]): string {
+function summarize(diagnostics: readonly ReportedDiagnostic[]): string {
   const errors = diagnostics.filter((d) => d.severity === "error").length;
   const warnings = diagnostics.length - errors;
   const parts: string[] = [];
@@ -105,11 +141,19 @@ export function PdfDiagnostics({
   const [collapsed, setCollapsed] = useState(false);
   const bodyId = useId();
 
+  // Sorted once per list rather than once per render: this panel sits beside a live preview, so it
+  // re-renders on things that have nothing to do with its own contents.
+  const ordered = useMemo(
+    () =>
+      diagnostics
+        .toSorted((a, b) => severityRank(a.severity) - severityRank(b.severity))
+        .slice(0, MAX_LISTED),
+    [diagnostics]
+  );
+  const withheld = Math.max(0, diagnostics.length - MAX_LISTED);
+
   if (diagnostics.length === 0) return null;
 
-  const ordered = diagnostics.toSorted(
-    (a, b) => severityRank(a.severity) - severityRank(b.severity)
-  );
   const ChevronIcon = collapsed ? ChevronRight : ChevronDown;
 
   return (
@@ -145,7 +189,7 @@ export function PdfDiagnostics({
               const { location } = diagnostic;
               return (
                 <li
-                  key={`${diagnostic.code}-${diagnostic.resource}-${index}`}
+                  key={`${diagnostic.severity}-${diagnostic.resource}-${index}`}
                   className={cn(
                     "flex flex-col gap-1 rounded-md border p-2",
                     styles.row
@@ -177,6 +221,11 @@ export function PdfDiagnostics({
                 </li>
               );
             })}
+            {withheld === 0 ? null : (
+              <li className="rounded-md border border-border p-2 text-xs text-muted-foreground">
+                {`${countLabel(withheld, "further item")} not listed.`}
+              </li>
+            )}
           </ul>
         </div>
       )}

@@ -3,7 +3,10 @@
 // (asciidoc-preview.css) wins on equal specificity for the few rules we deliberately override.
 import '../styles/asciidoctor-style.generated.css';
 import '../styles/asciidoc-preview.css';
-import { useEffect, useRef, useState } from 'react';
+// Last, and scoped to its own style token: the PDF-look style states the whole page itself rather
+// than adjusting the brand style, so nothing above it applies when it is the selected style.
+import '../styles/print-preview.css';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utilities';
@@ -16,6 +19,11 @@ import { RenderStatsOverlay, type RenderStatRow } from '@/components/preview/ren
 import type { RenderTimings } from '@/workers/render-protocol';
 import { PreviewStyleControl, type PreviewStyleValue } from '@/components/preview-style-control';
 import { PreviewModeToggle, type PreviewMode } from '@/components/preview-mode-toggle';
+import { PreviewZoomControl, usePreviewZoom } from '@/components/preview-zoom-control';
+import { usePrintAppearance } from '@/hooks/use-print-appearance';
+import { usePrintFonts } from '@/hooks/use-print-fonts';
+import { appearanceToCssProperties, pointsToPixels } from '@/lib/print-preview/appearance-to-css';
+import { toDiagnosticPropertiesList } from '@/lib/print-preview/to-diagnostic-properties';
 import { ShowIncludesControl } from '@/components/show-includes-control';
 import { API_BASE_URL } from '@/lib/api/base-url';
 import { isSelectionDragClick } from '@/lib/preview-selection';
@@ -44,6 +52,12 @@ function webPreviewStatRows(timings: RenderTimings | null | undefined): readonly
     { label: 'post-process', value: timings.postProcessMs, unit: 'ms', depth: 1 },
   ];
 }
+
+/** The scroll viewport's own inset, subtracted when working out how much width a page may occupy. */
+const PRINT_PAGE_PADDING = 16;
+
+/** Sub-pixel measurement jitter to discard, so a resize does not re-render for a fraction of a pixel. */
+const PRINT_MEASURE_EPSILON = 0.5;
 
 /** The diagram render-warning code shown as an error (a genuine draw failure); the rest are warnings. */
 const DIAGRAM_ERROR_CODE: DiagnosticCode = 'malformed-diagram';
@@ -166,6 +180,44 @@ interface AsciiDocPreviewProperties {
    * @param style - The newly selected style token.
    */
   onPreviewStyleChange?: (style: PreviewStyleValue) => void;
+  /**
+   * The project's PDF theme document, as the export would resolve it. Read only by the Print style,
+   * which dresses the page in it; the other two styles ignore it entirely.
+   */
+  themeText?: string;
+  /** That theme document's project-relative path, used to attribute a diagnostic to a file. */
+  themePath?: string;
+  /**
+   * Schedule background fetches for the project asset paths the Print style's fonts need. The
+   * application's existing asset mechanism, passed in rather than rebuilt here.
+   *
+   * @param paths - Project-relative asset paths.
+   */
+  ensureAssets?: (paths: readonly string[]) => void;
+  /**
+   * The bytes of one fetched project asset, or undefined when it has not arrived.
+   *
+   * @param path - The project-relative asset path.
+   * @returns The asset's bytes, if held.
+   */
+  getAssetBytes?: (path: string) => Uint8Array | undefined;
+  /** Bumps whenever an asset fetch settles, so a font waiting on its bytes is retried. */
+  assetVersion?: number;
+  /**
+   * Whether every one of these asset paths has been answered, with bytes or with a failure.
+   *
+   * @param paths - Project-relative asset paths.
+   * @returns Whether all of them have settled.
+   */
+  assetsSettled?: (paths: readonly string[]) => boolean;
+  /**
+   * Reveal a diagnostic's source location in the editor.
+   *
+   * @param location - Where the problem is.
+   * @param location.path - The project-relative document it is in.
+   * @param location.line - The 1-based line, when the problem has one.
+   */
+  onSelectDiagnosticLocation?: (location: { path: string; line?: number }) => void;
   /** When false (default), included bodies are hidden behind placeholders. Passed to the preview hook. */
   showIncludedFiles?: boolean;
   /**
@@ -217,6 +269,13 @@ export function AsciiDocPreview({
   onToggleScrollSync,
   previewStyle = 'asciidocollab',
   onPreviewStyleChange,
+  themeText,
+  themePath,
+  ensureAssets,
+  getAssetBytes,
+  assetVersion,
+  assetsSettled,
+  onSelectDiagnosticLocation,
   showIncludedFiles = false,
   onOpenInclude,
   onNavigateToSource,
@@ -257,6 +316,116 @@ export function AsciiDocPreview({
   // draw failure). Surfaced in the shared diagnostics panel so a diagram that fails to generate is
   // reported with what + where, exactly like the PDF export — not swallowed by a console log.
   const [diagramDiagnostics, setDiagramDiagnostics] = useState<readonly RenderDiagnostic[]>([]);
+
+  // ── The Print style's page frame ───────────────────────────────────────────────────────────────
+  //
+  // The page is a fixed-width column at the theme's own page size, scaled to fit the pane. Scaling
+  // rather than reflowing is what makes the preview's line breaks the PDF's line breaks: the column
+  // is laid out once at its intrinsic size, and the zoom only changes how large that layout is drawn.
+  //
+  // Nothing here paginates. The column is one continuous flow with no page breaks, no running header
+  // or footer and no page number — the preview shows a page's appearance, not a paginated document.
+  const isPrintStyle = previewStyle === 'print';
+  const printAppearance = usePrintAppearance({
+    enabled: isPrintStyle,
+    projectId,
+    ...(themeText === undefined ? {} : { themeText }),
+    ...(themePath === undefined ? {} : { themePath }),
+  });
+  const printFonts = usePrintFonts({
+    enabled: isPrintStyle,
+    fonts: printAppearance.appearance.fonts,
+    ...(themePath === undefined ? {} : { themePath }),
+    ...(ensureAssets === undefined ? {} : { ensureAssets }),
+    ...(getAssetBytes === undefined ? {} : { getAssetBytes }),
+    ...(assetVersion === undefined ? {} : { assetVersion }),
+    ...(assetsSettled === undefined ? {} : { assetsSettled }),
+  });
+  // The page's own values, projected once the fonts are known: every line-height among them is a
+  // length built from the FACE's built-in height, so the projection cannot happen before the metrics
+  // of the faces the appearance names have been resolved.
+  const printCssProperties = useMemo(
+    () =>
+      isPrintStyle
+        ? appearanceToCssProperties(printAppearance.appearance, printFonts.faceBox)
+        : undefined,
+    [isPrintStyle, printAppearance.appearance, printFonts.faceBox],
+  );
+  // Everything the Print style has to say about the appearance it is showing: a theme it could not
+  // read, a value it had to reject, a typeface it had to approximate. One surface, the PDF's own.
+  const printDiagnostics = useMemo(
+    () =>
+      isPrintStyle
+        ? toDiagnosticPropertiesList([...printAppearance.diagnostics, ...printFonts.diagnostics])
+        : [],
+    [isPrintStyle, printAppearance.diagnostics, printFonts.diagnostics],
+  );
+  const printPageWidth = pointsToPixels(printAppearance.appearance.page.widthPt);
+  // The scaler's own (unscaled) height, measured; `0` until the first render has been laid out.
+  const [printPageHeight, setPrintPageHeight] = useState(0);
+  // The width a page may occupy inside the scroll viewport; `0` until the first measurement.
+  const [printViewportWidth, setPrintViewportWidth] = useState(0);
+  const printPageReference = useRef<HTMLDivElement | null>(null);
+
+  // Fit-to-width never exceeds 100%: a pane wider than the page leaves the page at its own width
+  // rather than blowing it up to fill the pane, which is what keeps a page looking like a page.
+  const printFitScale =
+    printViewportWidth > 0 && printPageWidth > 0
+      ? Math.min(1, printViewportWidth / printPageWidth)
+      : undefined;
+  const printZoom = usePreviewZoom(isPrintStyle ? printFitScale : undefined, 1);
+  const printScale = printZoom.targetScale;
+
+  // Watch the scroll viewport and the laid-out page, and keep both measurements in state: the first
+  // decides the fit, the second gives the scaled column a box of the right size to scroll inside.
+  // Both are rAF-guarded so a resize drag coalesces into one update per frame.
+  useEffect(() => {
+    if (!isPrintStyle) return;
+    const viewport = previewRef.current;
+    if (viewport === null) return;
+
+    let frame = 0;
+    const measure = (): void => {
+      const available = Math.max(0, viewport.clientWidth - PRINT_PAGE_PADDING * 2);
+      setPrintViewportWidth((previous) =>
+        Math.abs(available - previous) < PRINT_MEASURE_EPSILON ? previous : available,
+      );
+      const page = printPageReference.current;
+      if (page !== null) {
+        const height = page.offsetHeight;
+        setPrintPageHeight((previous) =>
+          Math.abs(height - previous) < PRINT_MEASURE_EPSILON ? previous : height,
+        );
+      }
+    };
+    const schedule = (): void => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+
+    measure();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(viewport);
+    if (printPageReference.current !== null) observer.observe(printPageReference.current);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+    // NOT `renderNonce`. The page's height is the document's height and the document changes with
+    // every keystroke, so this used to be rebuilt per render to re-measure — which tore down the
+    // observer, built another, re-observed both boxes (an observation reports itself, so that is a
+    // second measurement of its own) and forced a layout read out of the effect that ran straight
+    // after the DOM patch. All of it for a measurement the observer was about to make anyway: the
+    // observed box IS the page, and a render that changes the page's height changes the box the
+    // observer is watching. One that does not change it needs no measurement.
+    //
+    // `isEnabled` is here for the only thing that can put a DIFFERENT page element under the ref: it
+    // is what mounts and unmounts the page frame (a file this panel cannot preview shows a notice
+    // instead), so an effect that missed it would be left observing an element no longer in the
+    // document. The style is not such a thing — both wrappers are mounted under every style, which is
+    // what stops a style switch throwing away the rendered document — but this effect measures
+    // nothing outside Print, so it still turns on and off with it.
+  }, [isPrintStyle, previewRef, isEnabled]);
 
   // Keep a stable ref to the latest onOpenInclude callback so the delegated listener closure never
   // captures a stale function reference (avoids re-attaching the listener just because the callback
@@ -421,6 +590,9 @@ export function AsciiDocPreview({
           <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Preview</span>
         )}
         <div className="flex items-center gap-1">
+          {/* The zoom control appears only for the style that presents a page to zoom, and offers the
+              same default, presets and limits the PDF preview offers — one model drives both. */}
+          {isPrintStyle && <PreviewZoomControl zoom={printZoom} testIdPrefix="print" />}
           {onPreviewStyleChange && (
             <PreviewStyleControl value={previewStyle} onChange={onPreviewStyleChange} compact />
           )}
@@ -503,6 +675,23 @@ export function AsciiDocPreview({
         </div>
       )}
 
+      {/* The Print style's own appearance problems, on the SAME surface the PDF export reports its
+          problems on — and deliberately here, outside the scroll container: a surface that appeared
+          inside the page column would displace and resize the very page it is reporting about. */}
+      {printDiagnostics.length > 0 && (
+        <div className="px-3 py-1.5 border-b shrink-0">
+          <PdfDiagnostics
+            diagnostics={printDiagnostics}
+            title="Appearance diagnostics"
+            ariaLabel="Print preview appearance diagnostics"
+            intro="The document is shown. Some of the theme could not be applied exactly."
+            {...(onSelectDiagnosticLocation === undefined
+              ? {}
+              : { onSelectLocation: onSelectDiagnosticLocation })}
+          />
+        </div>
+      )}
+
       {/* Per-diagram render diagnostics, surfaced in the same collapsible panel the PDF export uses so a
           diagram that could not be drawn is reported with what + where instead of failing silently. */}
       {diagramDiagnostics.length > 0 && (
@@ -520,30 +709,96 @@ export function AsciiDocPreview({
           styles stay scoped to the document, and this chrome cannot be mistaken for part of it. */}
       <RenderStatsOverlay title="Web preview" rows={webPreviewStatRows(timings)} />
 
-      <div ref={previewRef} className="flex-1 overflow-auto p-4" data-testid="preview-scroll-container">
+      <div
+        ref={previewRef}
+        // The Print backdrop is the PDF panel's own: the same muted wash behind the same white sheet,
+        // so the two previews read as two views of one document rather than two different surfaces.
+        //
+        // `scrollbar-gutter: stable` is not cosmetic, and it is here rather than in
+        // `print-preview.css` because this element is OUTSIDE `.asciidoc-preview-content` — every rule
+        // in that sheet is confined to the container asked for the Print style, which this is an
+        // ancestor of.
+        //
+        // What it prevents is a loop with no fixed point. Under Print the fit scale is measured from
+        // this element's `clientWidth`, and the scaled page's box is `pageHeight × scale` — so where a
+        // scrollbar takes layout space, its appearance narrows the pane, which shrinks the scale,
+        // which shortens the box, which can take the content back under the pane's height and remove
+        // the scrollbar again. Simulated against the panel's own arithmetic: a 700px pane showing a
+        // 1000px column is 873.6px tall without the bar and 854.7px with it, so every pane height in
+        // [855, 873] alternates for ever, one flip per animation frame — a band of `pageHeight ×
+        // scrollbarWidth / pageWidth` ≈ 1.9% of the document's height, reachable whenever the whole
+        // scaled document is about as tall as the pane. Reserving the gutter takes `clientWidth` out
+        // of the loop: the measurement no longer depends on what the measurement causes.
+        className={cn(
+          'flex-1 overflow-auto p-4',
+          isPrintStyle && 'bg-muted/30 [scrollbar-gutter:stable]',
+        )}
+        data-testid="preview-scroll-container"
+      >
         {/* Reserved for a file this panel genuinely cannot render — that is what `isEnabled` states.
             It used to be shown for an idle panel as well, which made every switch between two
             perfectly previewable files announce that the preview was unavailable: the panel was
             remounted on each switch, and a freshly mounted panel is idle until its first render lands.
             Being between two renders is not the same as having nothing to render. */}
         {isEnabled ? (
-          // Deliberately childless, and deliberately mounted before there is anything to show. Its
-          // contents belong to the preview hook, which patches each render into it directly: React
-          // must not be given a say in what is inside it, or it would reconcile away the diagrams and
-          // typeset expressions the client put there. Mounting it up front is what gives the very
-          // first render something to be committed INTO — gate it on having rendered something and it
-          // could never render anything.
+          // The two wrappers are here under EVERY style, carrying nothing at all unless Print is the
+          // selected one. Rendering them conditionally would remount the output element on each style
+          // switch, and the output element's contents belong to the preview hook rather than to React
+          // — a remount would throw away the rendered document and leave the pane blank until the next
+          // render happened to arrive, which for a document nobody is typing in is never.
           //
-          // `aria-busy` covers the whole render, not just the moment it lands: a reader on a screen
-          // reader is told the region is being updated for as long as that is true, instead of being
-          // read a document that is about to change under them.
+          // Outer: the scaled page's box, so the pane scrolls by what is actually on screen.
+          // Inner: the page at its intrinsic size, scaled about its top-left corner.
           <div
-            ref={outputRef}
-            data-testid="asciidoc-output"
-            className="asciidoc-preview-content"
-            data-preview-style={previewStyle}
-            aria-busy={state === 'pending' || state === 'rendering'}
-          />
+            data-testid="print-page-viewport"
+            // `rounded-sm shadow-sm` is what the PDF preview draws around each of its pages, and it
+            // is here rather than on the scaled column so the sheet's edge stays the same weight at
+            // every zoom instead of thickening with the page.
+            className={cn(isPrintStyle && 'mx-auto rounded-sm shadow-sm')}
+            style={
+              isPrintStyle
+                ? {
+                    width: printPageWidth * printScale,
+                    ...(printPageHeight > 0 ? { height: printPageHeight * printScale } : {}),
+                  }
+                : undefined
+            }
+          >
+            <div
+              ref={printPageReference}
+              style={
+                isPrintStyle
+                  ? {
+                      width: printPageWidth,
+                      transform: `scale(${printScale})`,
+                      transformOrigin: 'top left',
+                    }
+                  : undefined
+              }
+            >
+              {/* Deliberately childless, and deliberately mounted before there is anything to show. Its
+                  contents belong to the preview hook, which patches each render into it directly: React
+                  must not be given a say in what is inside it, or it would reconcile away the diagrams and
+                  typeset expressions the client put there. Mounting it up front is what gives the very
+                  first render something to be committed INTO — gate it on having rendered something and it
+                  could never render anything.
+
+                  `aria-busy` covers the whole render, not just the moment it lands: a reader on a screen
+                  reader is told the region is being updated for as long as that is true, instead of being
+                  read a document that is about to change under them. */}
+              <div
+                ref={outputRef}
+                data-testid="asciidoc-output"
+                className="asciidoc-preview-content"
+                data-preview-style={previewStyle}
+                aria-busy={state === 'pending' || state === 'rendering'}
+                // The theme's resolved values, and only under the Print style. Every one of them has
+                // been parsed to a typed value and formatted by something that can produce one shape,
+                // so no theme text reaches the page as CSS.
+                style={printCssProperties}
+              />
+            </div>
+          </div>
         ) : (
           <p className="text-muted-foreground text-sm">Preview not available for this file type</p>
         )}

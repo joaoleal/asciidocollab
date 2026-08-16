@@ -1,0 +1,1073 @@
+#!/usr/bin/env node
+/**
+ * Write the Print style's syntax-highlighting rules from the renderer's own palette.
+ *
+ * The export highlights with rouge (`SOURCE_HIGHLIGHTER_ROUGE` in
+ * `packages/asciidoc-pdf/src/convert/invoke.ts`); the Print preview highlights with highlight.js
+ * (`src/workers/asciidoc-render.worker.ts`). Two highlighters, two vocabularies, and the preview's
+ * whole claim is that it shows the PDF's appearance — so the preview's class names have to be painted
+ * the colours the renderer's token names are inked.
+ *
+ * The rules used to be a hand-picked set of `.hljs-*` colours: plausible, eyeballed, and wrong in ways
+ * nobody could check, because nothing in the repository connected them to the theme they were supposed
+ * to be quoting. They are DERIVED here instead, from two things this file does not get to choose — the
+ * renderer's palette (`packages/asciidoc-pdf/assets/rouge/palette.json`, read out of the vendored gem
+ * by the package that owns it) and the highlighter's class vocabulary (`lib/hljs-grammars.mjs`, read
+ * out of the installed package, which is also where the worker's on-demand grammar map comes from, so
+ * the classes these rules cover and the grammars the preview can load cannot drift apart). The only
+ * thing decided here is the join between them, {@link MAPPING}, and every entry carries the reason it
+ * says what it says. No colour is ever invented: every value emitted is one the theme states, or the
+ * theme's own base.
+ *
+ * ## Which palette, and the known gap
+ *
+ * `asciidoctor_pdf_default`, because that is what the export gets — but it is not a constant.
+ * `asciidoctor-pdf/lib/asciidoctor/pdf/converter.rb:1193` passes the document's `rouge-style`
+ * attribute to the formatter, and `rouge-style` is not in `PINNED_ATTRIBUTE_KEYS`
+ * (`packages/shared/src/render-config/config.ts`), so a project's custom attributes or a document
+ * header can select another palette. The preview has no way to see that attribute today: a document
+ * setting `rouge-style` in its header still previews with the DEFAULT palette. That is a known gap,
+ * recorded here because this is where a second palette would be selected from.
+ *
+ * ## What a mapping entry may and may not name
+ *
+ * An entry names the rouge tokens for the concept the highlight.js class denotes. Rouge's taxonomy is
+ * a tree whose themes style INTERIOR nodes ({@link styleOf} walks it the way `Theme.get_own_style`
+ * does), so an entry names concepts rather than leaves — `Literal.String` covers
+ * `Literal.String.Double` and every other flavour without listing any.
+ *
+ * It names more than one token ONLY where rouge genuinely draws a distinction inside what highlight.js
+ * calls one thing — never where the two merely read the same word differently. Rouge's Ruby lexer
+ * calls `require` a `Name.Builtin` while highlight.js lists it among the keywords, and no palette can
+ * reconcile a disagreement about what a word IS; folding those in would drag almost every class up to
+ * a common ancestor of nothing and leave the preview a wash of body text. See {@link JOINS} for the
+ * one entry that does name more than one, and what it resolves to.
+ *
+ * And it names a token only where some rouge LEXER actually assigns that token to what the class
+ * marks. Rouge has a `Name.Property`, but neither grammar that emits `hljs-property` has a rouge
+ * counterpart that reaches it — both lex `obj.prop` as an ordinary `Name.Other` — so naming the
+ * prettier token would colour something the page never colours. A token in the taxonomy is not
+ * evidence that the renderer ever inks it.
+ *
+ * The divergences those rules leave behind are real, and are measured against a rendered PDF by
+ * `e2e/pdf-parity/print-fidelity/print-highlighting.spec.ts`, which carries the inventory.
+ *
+ * ## Usage
+ *
+ *   node scripts/build-print-highlight-css.mjs            # rewrite the generated region
+ *   node scripts/build-print-highlight-css.mjs --check     # verify it, change nothing
+ *
+ * The region of `src/styles/print-preview.css` between {@link BEGIN} and {@link END} is rewritten
+ * wholesale on every run — never hand-edit inside it. `--check` runs in the cheap `quality` CI job,
+ * which has neither the gems nor the wasm engine and reads only the committed `palette.json`, so a
+ * hand-edit or a highlight.js bump that changes the class vocabulary fails there.
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { readGrammars, WEB_ROOT } from './lib/hljs-grammars.mjs';
+
+const STYLESHEET = resolve(WEB_ROOT, 'src/styles/print-preview.css');
+const PALETTE = resolve(WEB_ROOT, '../../packages/asciidoc-pdf/assets/rouge/palette.json');
+
+/** The container the Print style confines every rule to. */
+const SCOPE = '.asciidoc-preview-content[data-preview-style="print"]';
+
+/** The markers delimiting the generated region of the stylesheet. */
+const BEGIN = '/* >>> generated by scripts/build-print-highlight-css.mjs — do not edit by hand */';
+const END = '/* <<< end generated */';
+
+/**
+ * The appearance of code the palette says nothing about.
+ *
+ * A token the palette leaves unstyled is not "black": rouge sets no colour and the renderer draws it
+ * in the code block's own colour, which is a THEME value. So this is the same custom-property chain
+ * `.hljs`'s own block uses, and a project theme that recolours code moves the preview's unstyled
+ * tokens with it — by construction rather than by coincidence.
+ */
+const BASE_COLOUR = 'var(--print-code-font-color, var(--print-base-font-color, #333333))';
+/** The weight and slant a fragment keeps when the palette asks for neither. */
+const BASE_WEIGHT = 'var(--print-code-font-weight, 400)';
+const BASE_STYLE = 'var(--print-code-font-style, normal)';
+
+/**
+ * The join: one entry per highlight.js scope, naming the rouge token(s) it stands for.
+ *
+ * `tokens: []` means highlight.js's class has no counterpart in rouge's taxonomy at all — it is a
+ * container the grammar wraps around a region whose parts carry their own scopes — so the region is
+ * painted the code colour. Those entries matter as much as the coloured ones: `hljs-subst` sits
+ * INSIDE `hljs-string`, and without a rule the code inside a Ruby interpolation inherits the string's
+ * red while the page draws it in ordinary code colour.
+ *
+ * Ordered as the vocabulary sorts, so the generated stylesheet reads in a fixed order.
+ */
+const MAPPING = [
+  {
+    scope: 'addition',
+    tokens: ['Generic.Inserted'],
+    why: "a diff's added line; rouge's own token for one, background included",
+  },
+  {
+    scope: 'attr',
+    tokens: ['Name.Attribute'],
+    why: 'the name half of a key/value pair, which is what rouge calls an attribute',
+    // Rouge's lexers file this three ways — `Name.Label` in JSON, `Name.Attribute` in YAML,
+    // `Name.Property` in INI — which is a disagreement between LEXERS, not a distinction rouge's
+    // taxonomy draws, so only the taxonomy's own answer is named. All three carry #336699 in this
+    // palette in any case; naming all three would only make their differing weights cancel out.
+  },
+  {
+    scope: 'attribute',
+    tokens: ['Name.Label'],
+    why: "a CSS property name — the token rouge's CSS lexer emits, and the one the theme comments on",
+  },
+  { scope: 'built_in', tokens: ['Name.Builtin'], why: 'a name the language itself provides' },
+  {
+    scope: 'bullet',
+    tokens: ['Punctuation'],
+    why: "a list marker, which rouge lexes as punctuation (and as `Punctuation.Indicator` in YAML, which inherits it)",
+  },
+  {
+    scope: 'char.escape',
+    tokens: ['Literal.String.Escape'],
+    why: 'an escape sequence inside a literal',
+  },
+  {
+    scope: 'character',
+    tokens: ['Literal.String.Char'],
+    why: "a character literal (`\\newline`), which rouge's Clojure lexer — Clojure's grammar is the only one that emits this class — inks with the token of the same name",
+  },
+  {
+    scope: 'class',
+    tokens: [],
+    why: 'a wrapper the older grammars put around a whole class declaration; its keyword and its name carry their own scopes',
+  },
+  {
+    scope: 'class.title',
+    tokens: [],
+    why: "the class name in a `new` expression, and the one class in this vocabulary written the wrong way round: Processing's grammar spells `class.title` where every other grammar spells the same idea `title.class`, so it reaches the page as `.hljs-class .title_` rather than as a variant of the title rules below. Processing is the only grammar that emits it, and rouge has no Processing lexer at all — the export prints such a listing plain — so there is no token to name and the code colour is the only answer that is not invented",
+  },
+  {
+    scope: 'code',
+    tokens: ['Literal.String.Backtick'],
+    why: "inline or fenced code inside markup, which rouge's markdown lexer emits as a backtick string",
+  },
+  { scope: 'comment', tokens: ['Comment'], why: 'a comment in any of its forms' },
+  {
+    scope: 'deletion',
+    tokens: ['Generic.Deleted'],
+    why: "a diff's removed line; rouge's own token for one, background included",
+  },
+  {
+    scope: 'doctag',
+    tokens: ['Comment.Doc'],
+    why: 'documentation markup inside a comment — a comment still, which is why it inherits the comment colour rather than standing out',
+  },
+  { scope: 'emphasis', tokens: ['Generic.Emph'], why: 'emphasised text in markup' },
+  {
+    scope: 'function',
+    tokens: [],
+    why: 'a wrapper around a whole function declaration; its keyword, name and parameters carry their own scopes',
+  },
+  {
+    scope: 'keyword',
+    tokens: ['Keyword'],
+    why: "a language keyword; rouge's `Keyword.Declaration` and `Keyword.Namespace` are unstyled and inherit it",
+    // Not `Keyword.Pseudo`: that is where rouge's Ruby lexer files `include`, which highlight.js
+    // lists among the keywords — a disagreement about the word, not a distinction inside the concept.
+  },
+  {
+    scope: 'link',
+    tokens: ['Literal.String.Other'],
+    why: "a URL in markup, which rouge's markdown lexer emits as an `other` string",
+  },
+  {
+    scope: 'literal',
+    tokens: ['Keyword.Constant'],
+    why: "a built-in value (`true`, `null`); rouge's taxonomy has a token for exactly that, and it inherits `Keyword`",
+    // Rouge's lexers scatter these: Ruby's `true` is a `Keyword.Pseudo`, Python's `None` a
+    // `Name.Builtin.Pseudo`, Bash's `true` a `Name.Builtin`. Those are three lexers filing the same
+    // concept in three places rather than a distinction rouge draws, so the taxonomy's own token is
+    // named and the rest are divergences the fidelity check inventories.
+  },
+  {
+    scope: 'meta',
+    tokens: ['Comment.Preproc'],
+    why: "both an annotation and a preprocessor directive, which rouge holds far apart (#cc0000 bold against #555555). Their common ancestor is nothing, so this used to fall back to the code colour — a THIRD appearance, matching neither, and the one thing the two candidates agreed on is that the fragment is coloured at all. It is the plurality instead, counted the way `title.class` is",
+    // This is a real taxonomy split, not a lexing accident: `@Override` and `#[derive]` are
+    // `Name.Decorator`, `#include` and `!important` are `Comment.Preproc`, and highlight.js's own
+    // reference lists annotations and preprocessor directives under this one class. So the two are
+    // irreconcilable, and the count below decides which of them the class is painted — not whether
+    // the class denotes one idea.
+    measured:
+      '43,032 characters of real third-party source in the six shipped grammars that emit this class: Comment.Preproc 34,130 (79.3%, and the majority in C, CSS and TypeScript), Name.Decorator 8,257 (19.2%, the majority in Python and Rust), Comment 593 (1.4%, a shell shebang), and the code colour this rule used to carry 45 (0.1%). Counted with the vendored rouge and again with the reference toolchain\'s, which agree to the character',
+  },
+  {
+    scope: 'meta.prompt',
+    tokens: ['Generic.Prompt'],
+    why: "a REPL prompt, which rouge names outright",
+  },
+  { scope: 'name', tokens: ['Name.Tag'], why: 'the element name of an XML/HTML tag' },
+  {
+    scope: 'number',
+    tokens: ['Literal.Number'],
+    why: 'a numeric literal; every flavour rouge distinguishes is unstyled and inherits this',
+  },
+  {
+    scope: 'operator',
+    tokens: ['Operator'],
+    why: 'an operator, which this palette leaves at the code colour',
+    // Deliberately not `Operator.Word` (#008800): highlight.js puts `and`/`in`/`not` under `keyword`,
+    // not here, so naming the word form would colour the symbols it never applies to.
+  },
+  {
+    scope: 'params',
+    tokens: [],
+    why: "a wrapper around a parameter list; rouge styles the names and punctuation inside it individually, and leaves both at the code colour",
+  },
+  {
+    scope: 'property',
+    tokens: ['Name.Other'],
+    why: "an object property. Rouge HAS a `Name.Property`, and neither of the two grammars that emit this class (JavaScript, TypeScript) has a rouge counterpart that reaches it — rouge's JavaScript lexer calls `obj.prop` an ordinary `Name.Other`, which this palette leaves at the code colour. Naming the prettier token would colour something the page never colours",
+  },
+  { scope: 'punctuation', tokens: ['Punctuation'], why: 'punctuation, which this palette leaves at the code colour' },
+  {
+    scope: 'quote',
+    tokens: ['Generic.Traceback'],
+    why: "a block quotation in markup — rouge's markdown lexer really does emit `Generic.Traceback` for one, and matching the renderer is the point",
+  },
+  {
+    scope: 'regex',
+    tokens: ['Literal.String.Regex'],
+    why: "a regular-expression literal — the same idea `regexp` below denotes, spelled the other way by the two grammars that emit it, and so the same rouge token",
+    // Rouge's Elixir lexer inks a `~r` sigil `Literal.String.Regex`. Its Clojure lexer has no rule for
+    // `#"…"` at all and reads it as the `#` operator followed by an ordinary string — one lexer
+    // reading the text differently, not a distinction rouge's taxonomy draws inside the concept.
+  },
+  {
+    scope: 'regexp',
+    tokens: ['Literal.String.Regex'],
+    why: 'a regular expression literal',
+    // Rouge additionally paints the escapes INSIDE a regex as `Literal.String.Escape`; highlight.js
+    // marks the literal as one span. That is a difference of extent, not of kind, so it is a
+    // divergence the fidelity check inventories rather than a second token to name here.
+  },
+  {
+    scope: 'rest_arg',
+    tokens: [],
+    why: "a rest parameter (`...rest`), which ActionScript's grammar — the only one that emits this class — wraps in a single span. Rouge has no token for the idea and its ActionScript lexer does not draw one: it inks the dots as punctuation and the name as an ordinary `Name.Other`, and this palette leaves both at the code colour",
+  },
+  {
+    scope: 'section',
+    tokens: ['Generic.Subheading'],
+    why: "a heading. Rouge splits headings by LEVEL — `Generic.Heading` (#333333) for the top one, `Generic.Subheading` (#666666) for the rest — and highlight.js writes them all the same way. Their common ancestor `Generic` is unstyled, so the code colour would be a third appearance rather than a weaker one; the sub-heading is what a document is mostly made of",
+    measured:
+      '200 real markdown documents: Generic.Subheading 47,828 chars (67.2%), Generic.Heading 9,292 (13.1%), the remainder inline code and links inside headings that rouge lexes as something else',
+  },
+  {
+    scope: 'selector-attr',
+    tokens: ['Name.Tag'],
+    why: "the attribute name inside a CSS attribute selector; rouge's CSS lexer runs it through the same identifier rule as an element selector",
+  },
+  { scope: 'selector-class', tokens: ['Name.Class'], why: 'a CSS class selector' },
+  {
+    scope: 'selector-id',
+    tokens: ['Name.Function'],
+    why: "a CSS id selector — rouge's CSS lexer emits `Name.Function` for `#id`, which is surprising and is nonetheless what the page is inked with",
+  },
+  { scope: 'selector-pseudo', tokens: ['Name.Decorator'], why: 'a CSS pseudo-class or pseudo-element' },
+  { scope: 'selector-tag', tokens: ['Name.Tag'], why: 'a CSS element selector' },
+  {
+    scope: 'string',
+    tokens: ['Literal.String'],
+    why: 'a string literal; every flavour rouge distinguishes but does not style inherits this',
+  },
+  { scope: 'strong', tokens: ['Generic.Strong'], why: 'strongly emphasised text in markup' },
+  {
+    scope: 'subst',
+    tokens: [],
+    why: "the parsed section inside a literal string. Rouge colours only the `#{` and `}` delimiters (`Literal.String.Interpol`) and lexes what is between them as ordinary code, so the code colour is right for the bulk of what this span covers — and stating it is what stops the interpolation inheriting the enclosing string's red",
+  },
+  { scope: 'symbol', tokens: ['Literal.String.Symbol'], why: 'an interned symbolic constant' },
+  {
+    scope: 'tag',
+    tokens: ['Name.Tag'],
+    why: "an XML/HTML tag; the text this span carries directly is the angle brackets, which rouge also calls `Name.Tag`",
+  },
+  {
+    scope: 'template-tag',
+    tokens: ['Comment.Preproc'],
+    why: "the delimiters of a template statement (`{% … %}`). Rouge's Jinja lexer inks them `Comment.Preproc`, and Jinja is the lexer two of the four grammars that emit this class actually reach",
+    measured:
+      "the four grammars that emit it: `django` is one of rouge Jinja's own aliases and `Twig < Jinja` is its subclass, so both reach the Comment.Preproc rule; rouge's Handlebars lexer inks `{{`/`}}` as `Keyword` instead, a lexer reading the same delimiters differently; and rouge has no Dust lexer at all, so the export prints a Dust template plain",
+  },
+  {
+    scope: 'template-variable',
+    tokens: ['Literal.String'],
+    why: "a placeholder inside a template string; rouge lexes it as part of the scalar it sits in rather than as anything of its own",
+    // The template grammars emit this for a whole `{{ … }}` expression as well, where rouge's Jinja
+    // lexer inks the braces `Comment.Preproc` and the name inside them as a variable. That is a
+    // difference of EXTENT between two spans, like the regex/escape case above, rather than a second
+    // token this class stands for.
+  },
+  {
+    scope: 'title',
+    tokens: [],
+    why: "highlight.js's own reference reads 'name of a class or a function', and rouge holds those two apart (#bb0066 against #0066bb) — but the reference describes what the class was FOR, not what the surviving grammars put in it. The bare class is a legacy of the grammars written before the `title.function`/`title.class` split, and what still reaches it is the tag of a C `struct`/`union`/`enum` and the name of a shell function; rouge's C lexer calls the first an ordinary `Name` and its shell lexer leaves the second as `Text`, both of which this palette leaves at the code colour. So there is no token to name — and this rule used to inherit BOLD from a join of the two tokens the reference named, drawing every one of those characters in a weight the page never sets",
+    measured:
+      "3,297 characters of real third-party source in the two shipped grammars that emit it: C 2,893 (99.8% `Name`, the remainder a `struct` tag rouge reads as a keyword) and shell 404 (100% `Text`). Neither `Name.Class` nor `Name.Function` — the two the join used to average — accounts for a single character",
+  },
+  {
+    scope: 'title.class',
+    tokens: ['Name.Constant'],
+    why: "a CamelCase name. Highlight.js's Ruby grammar emits this class from four rules — the name in `class`/`module`, the superclass, the receiver of `.new`, and ANY CamelCase identifier anywhere — and the scope map gives a declaration and a reference the same class list, so the two are not distinguishable from the markup. Rouge splits them: a declaration is `Name.Class`/`Name.Namespace` (#bb0066 bold), a reference is `Name.Constant` (#003366 bold). Both are bold, their common ancestor `Name` is unstyled, and references are what source code is overwhelmingly made of",
+    measured:
+      '316 real third-party Ruby files (the vendored asciidoctor-pdf and rouge gems, 45,563 lines): Name.Constant 24,619 chars (77.0%), Name.Namespace 3,725 (11.7%), Name.Class 1,709 (5.3%), the remainder CamelCase inside strings and regexes. Naming the declaration tokens instead would be right on 17.0% of them; falling back to the unstyled ancestor would be right on none',
+  },
+  {
+    scope: 'title.class.inherited',
+    tokens: ['Name.Constant'],
+    why: 'a superclass name, which rouge treats as the constant reference it is',
+    measured: 'the same corpus: Name.Constant 1,808 chars (99.7%), the remainder the `::` between namespace segments',
+  },
+  { scope: 'title.function', tokens: ['Name.Function'], why: 'the name in a function or method declaration' },
+  { scope: 'title.function.invoke', tokens: ['Name.Function'], why: 'a called function name' },
+  {
+    scope: 'type',
+    tokens: ['Keyword.Type'],
+    why: "a type name; rouge's taxonomy names this outright",
+    // Rust's `f64`/`String`/`Vec` reach rouge as `Name.Builtin` instead — the Rust lexer's filing of
+    // its built-in types, not a distinction rouge draws inside the concept.
+  },
+  {
+    scope: 'variable',
+    tokens: ['Name.Variable.Instance', 'Name.Variable.Global'],
+    why: 'a variable. Rouge separates instance (#3333bb) from global (#dd7700) and highlight.js writes both the same way, so the preview paints their parent `Name.Variable` (#336699) and is less specific than the page rather than wrong about which is which',
+  },
+  { scope: 'variable.constant', tokens: ['Name.Constant'], why: 'a constant, which rouge names outright' },
+  {
+    scope: 'variable.language',
+    tokens: [],
+    why: "`this`, `self`, `super`. Rouge has no token for the idea: its Ruby and JavaScript lexers call them keywords, its Python lexer an ordinary name, its PHP lexer a variable. With nothing in the taxonomy to name, the code colour is the honest answer — and stating it is what stops them inheriting the `variable` rule above",
+  },
+];
+
+/**
+ * Every class the shipped highlighter can emit.
+ *
+ * Read out of `highlight.js` rather than listed, because a list would be a claim about a package this
+ * file does not control: a version bump that adds a class must fail loudly, not go unnoticed behind
+ * rules that no longer cover what the preview produces.
+ *
+ * EVERY installed grammar, not the 36 in `highlight.js/lib/common`: the worker fetches the grammar for
+ * whatever language a document declares (`src/workers/hljs-languages.generated.ts`), so a vocabulary
+ * derived from the bundled set would leave the classes of the other 156 with no rule at all. Both sets
+ * come from one reading of the package — see `lib/hljs-grammars.mjs`, which also explains why the
+ * grammars are loaded rather than scanned as text.
+ *
+ * @returns The classes, sorted.
+ */
+function readHljsVocabulary() {
+  const scopes = new Set();
+  for (const grammar of readGrammars()) {
+    for (const scope of grammar.scopes) scopes.add(scope);
+  }
+  return [...scopes].toSorted();
+}
+
+/**
+ * The CSS class list highlight.js writes for a scope, as its own renderer writes it.
+ *
+ * Mirrors `scopeToCSSClass` in `highlight.js/lib/core.js`: the first segment is prefixed, and each
+ * segment after it is suffixed with as many underscores as its depth — `title.class.inherited`
+ * becomes `hljs-title class_ inherited__`.
+ *
+ * @param scope - A highlight.js scope name.
+ * @returns The selector that matches an element carrying that scope.
+ */
+function selectorFor(scope) {
+  const [first, ...rest] = scope.split('.');
+  return [`hljs-${first}`, ...rest.map((part, index) => `${part}${'_'.repeat(index + 1)}`)]
+    .map((className) => `.${className}`)
+    .join('');
+}
+
+/**
+ * One token's style, resolved the way rouge resolves it.
+ *
+ * `Rouge::Theme.get_own_style` walks a token's ancestor chain from the most specific end and returns
+ * the first ancestor the theme names; a token no ancestor names takes the theme's base style, which
+ * this palette declares empty. The chain is the qualified name with segments dropped from the right,
+ * which is exactly rouge's `token_chain`.
+ *
+ * @param token - A token's qualified name.
+ * @param styles - The theme's own styles, keyed by qualified name.
+ * @returns The resolved style; empty when nothing in the chain is styled.
+ */
+function styleOf(token, styles) {
+  const segments = token.split('.');
+  for (let length = segments.length; length > 0; length -= 1) {
+    const candidate = segments.slice(0, length).join('.');
+    if (Object.hasOwn(styles, candidate)) return styles[candidate];
+  }
+  return {};
+}
+
+/**
+ * What the one entry naming more than one rouge token resolves to, and the note that records it.
+ *
+ * The rule it is the answer to: resolve property by PROPERTY, because agreement is a per-property
+ * fact — take what every candidate agrees on, and where they disagree fall back to their nearest
+ * common ancestor's style, which is less specific than the page rather than a different opinion from
+ * it. Stated rather than computed, because applying it is deterministic and its whole output across
+ * the mapping is this one value. {@link renderRegion} refuses a multi-token entry with no record here
+ * (and a record for an entry that is not multi-token), so a second entry cannot silently take a wrong
+ * style — it fails until someone works out and writes down its answer.
+ *
+ *   - `variable` — `Name.Variable.Instance` (#3333bb) against `Name.Variable.Global` (#dd7700). They
+ *     meet at `Name.Variable`, which IS styled (#336699), so the class is painted the parent: plainly
+ *     less specific than the page rather than two-thirds wrong.
+ *
+ * That ancestor being STYLED is what makes the join legitimate here, and it is why this table has one
+ * entry rather than the three it used to. Where candidates disagree and their ancestor is unstyled,
+ * the code colour is a THIRD appearance matching neither, discarding the one thing they agreed on —
+ * that the fragment is coloured at all. Both of the entries that were in that position have been
+ * counted over real source and now name ONE token instead, whichever rouge's lexers assign most often
+ * to what the class marks, recorded in their `measured` field: `meta` (which asked for exactly that
+ * corpus) and `title.class`. `title` was the third, and the count found neither of its candidates in
+ * the languages that still emit it — so it names no token at all.
+ */
+const JOINS = {
+  variable: { style: { fg: '#336699' }, note: ' (fg from Name.Variable)' },
+};
+
+/**
+ * The CSS declarations for one resolved style.
+ *
+ * ALL FOUR properties are stated on every rule, never only the ones the palette sets. The renderer's
+ * fragments are a FLAT list — each carries its whole appearance and inherits nothing from the fragment
+ * around it — while the preview's spans NEST, so a span stating only what it changed would pick up the
+ * enclosing span's colour for everything else. That is precisely how the code inside a Ruby
+ * interpolation came to be drawn in the string's red.
+ *
+ * Weight and slant are all-or-nothing together, which is not obvious and is not a choice made here.
+ * `create_fragment` in the gem's Prawn formatter builds a fragment's `:styles` SET from the style rule
+ * — `[:bold]`, `[:italic]`, or both — and Prawn resolves the face from that set alone, REPLACING the
+ * enclosing face rather than adding to it. So a token the palette makes bold is drawn bold and UPRIGHT
+ * even under a theme whose code font is italic, while a token the palette says nothing about keeps the
+ * theme's weight and slant both. A reference render under exactly that theme settled it: every bold
+ * token came back in the upright bold face.
+ *
+ * @param style - The joined style.
+ * @returns The declarations, in a fixed order.
+ */
+function declarationsFor(style) {
+  const replacesTheFace = style.bold === true || style.italic === true || style.underline === true;
+  return [
+    `color: ${style.fg ?? BASE_COLOUR};`,
+    `background-color: ${style.bg ?? 'transparent'};`,
+    `font-weight: ${replacesTheFace ? (style.bold === true ? '700' : '400') : BASE_WEIGHT};`,
+    `font-style: ${replacesTheFace ? (style.italic === true ? 'italic' : 'normal') : BASE_STYLE};`,
+    ...(style.underline === true ? ['text-decoration: underline;'] : []),
+  ];
+}
+
+/**
+ * One piece of prose on its way into a CSS comment, checked for what it must not be able to do.
+ *
+ * A value carrying a comment delimiter would close its comment early and spill the rest of the
+ * sentence into the stylesheet as declarations — a broken page produced by a passing generator.
+ * Refused rather than escaped: prose that needs a comment delimiter in it wants rewording.
+ *
+ * @param value - The text, or undefined for a field that was not set.
+ * @param what - What it is, for the message.
+ * @returns The value, unchanged.
+ */
+function commentSafe(value, what) {
+  if (value !== undefined && /\/\*|\*\//.test(value)) {
+    throw new Error(`${what} carries a CSS comment delimiter, which would break the generated region: ${value}`);
+  }
+  return value;
+}
+
+/**
+ * One language name on its way into an attribute selector, checked for what it must not be able to do.
+ *
+ * The names below land inside `[class~="…"]`, so a name carrying a quote or a backslash would end the
+ * string early and turn the rest of the list into something other than a list of names — and `:not()`
+ * is NOT forgiving, so the whole rule would then match nothing and the neutralisation would silently
+ * stop happening. Refused rather than escaped, like {@link commentSafe} and like `safeName` in
+ * `build-hljs-language-map.mjs`, whose test this mirrors.
+ *
+ * Widened against that one by exactly one character: rouge really registers six names carrying a
+ * COMMA (`rs,ignore`, `rust,no_run`, and four more of the same shape), and a comma inside a quoted
+ * attribute value is ordinary text. Nothing else is admitted.
+ *
+ * @param value - The language name.
+ * @param what - What it is, for the message.
+ * @returns The value, unchanged.
+ */
+function selectorSafeName(value, what) {
+  if (!/^[\w+#,.-]+$/.test(value)) {
+    throw new Error(`${what} is not a plain name and will not be written into a selector: ${value}`);
+  }
+  return value;
+}
+
+/**
+ * Every name a document may declare that the EXPORT finds a lexer for, spelled exactly as rouge
+ * registers it.
+ *
+ * A mapping entry can only say what colour a class is. It cannot answer the question before it —
+ * whether the page is coloured at all — and the two highlighters do not cover the same languages.
+ * `converter.rb:1210` asks `::Rouge::Lexer.find srclang` for the language attribute exactly as the
+ * author wrote it and falls through to `Rouge::Lexers::PlainText` when there is none, so such a
+ * listing is printed in ONE colour, while the worker, which fetches a grammar for any of
+ * highlight.js's 192, would colour it.
+ *
+ * Before on-demand loading the two agreed by accident — the preview carried only 36 grammars, so
+ * neither side coloured the rest. Closing the gap in one direction would have opened it in the other:
+ * the same fidelity defect wearing the opposite sign. So the Print style, and only the Print style,
+ * puts a listing the export prints plain back at the code colour. It belongs in the STYLE rather than
+ * in the worker because one rendered document serves all three preview styles at once.
+ *
+ * ## Why this is stated as what the export DOES colour, rather than as what it does not
+ *
+ * Because `Rouge::Lexer.find` is `registry[name.to_s]` (`rouge-4.7.0/lib/rouge/lexer.rb:37`) — a
+ * plain hash lookup, with no downcasing anywhere on the path: Asciidoctor's parser stores the
+ * author's own spelling as the `language` attribute (`parser.rb:825`) and the converter passes it
+ * straight in. `hljs.getLanguage` downcases. So `[source,Ruby]` is coloured by the preview and
+ * printed plain by the page, for every one of the 108 grammars rouge does cover, in every spelling
+ * carrying a capital — and no list of the languages the export does NOT colour can name those,
+ * because there are as many of them as there are ways to capitalise a word.
+ *
+ * The complement can be named, and it is the registry itself. Rouge's own keys are NOT uniformly
+ * lower case — `Dockerfile`, `LaTeX`, `R` and six more are registered with capitals, alongside their
+ * lower-case forms — so this is a case-SENSITIVE list and the selectors built from it carry no `i`
+ * flag. That is not a detail: matching case-insensitively would neutralise `[source,R]`, which the
+ * export really does colour.
+ *
+ * Confirmed against the reference toolchain rather than reasoned about: `[source,ruby]` renders with
+ * six palette colours in its content stream and `[source,Ruby]` with none, while `[source,R]` and
+ * `[source,r]` both render coloured.
+ *
+ * Read rather than listed — the registry comes from `palette.json`, emitted by the package that owns
+ * the gem — so a lexer added or renamed on a bump moves this list with it.
+ *
+ * @param palette - The committed palette document.
+ * @returns Every name the export lexes, sorted, exactly as registered.
+ */
+function colouredByTheExport(palette) {
+  if (!Array.isArray(palette.lexers)) {
+    throw new Error(
+      'The committed palette carries no `lexers` inventory.\n' +
+        'Run: pnpm --filter @asciidocollab/asciidoc-pdf generate:rouge-palette',
+    );
+  }
+  // An empty list would be written as `:not()`, which is not a selector: the browser drops the whole
+  // rule and every unlexed listing goes back to being coloured, with nothing anywhere saying so.
+  if (palette.lexers.length === 0) {
+    throw new Error("The committed palette's `lexers` inventory is empty, which cannot be right.");
+  }
+  return [...new Set(palette.lexers)].toSorted();
+}
+
+/**
+ * How much of the highlighter's reach the export cannot follow under ANY spelling.
+ *
+ * A derived figure rather than a rule: the rule above is the registry, which already covers this set
+ * by omission. It is counted here so the generated stylesheet can state the size of the gap it is
+ * closing, and so a bump that closes or widens it is visible in the diff rather than only in a
+ * behaviour nobody looks at.
+ *
+ * Compared case-insensitively on purpose, which makes this the STRONGEST reading of "the export never
+ * colours it": a grammar counted here names no language rouge has a lexer for under any casing at
+ * all. Aliases count on both sides — `django` and `twig` are ALIASES of rouge's Jinja lexer, so the
+ * export colours both, and a comparison of canonical names alone would have overstated the gap.
+ *
+ * @param palette - The committed palette document.
+ * @returns How many grammars, and how many of their spellings, rouge has no lexer for.
+ */
+function neverColouredByTheExport(palette) {
+  const lexers = new Set(palette.lexers.map((name) => name.toLowerCase()));
+  const spellings = new Set();
+  let grammars = 0;
+  for (const grammar of readGrammars()) {
+    const names = [grammar.name, ...grammar.aliases];
+    if (names.some((name) => lexers.has(name.toLowerCase()))) continue;
+    grammars += 1;
+    // Every spelling, because the class Asciidoctor writes is the one the AUTHOR wrote.
+    for (const name of names) spellings.add(name);
+  }
+  return { grammars, spellings: spellings.size };
+}
+
+/**
+ * How much of the export's reach the PREVIEW cannot follow — the gap pointing the other way.
+ *
+ * Every name rouge registers that no shipped grammar answers to under any casing. These are the
+ * listings the page colours and the preview can only GUESS at, and they are why the guess needs a
+ * rule of its own: the neutraliser above excludes them by name, because the export really does lex
+ * them, so nothing in that rule can reach a guessed block carrying one of these names.
+ *
+ * Derived from the same two inventories as {@link neverColouredByTheExport}, so a grammar or lexer
+ * added on a bump moves the figure without anyone restating it.
+ *
+ * @param palette - The committed palette document.
+ * @returns How many registry names the preview has no grammar for, and how many names the registry holds.
+ */
+function neverLexedByThePreview(palette) {
+  const spellings = new Set();
+  for (const grammar of readGrammars()) {
+    for (const name of [grammar.name, ...grammar.aliases]) spellings.add(name.toLowerCase());
+  }
+  const registry = [...new Set(palette.lexers)];
+  return {
+    unreachable: registry.filter((name) => !spellings.has(name.toLowerCase())).length,
+    registry: registry.length,
+  };
+}
+
+/**
+ * The attribute the render worker marks a GUESSED listing with, read out of the worker itself.
+ *
+ * Read rather than restated, because the two ends have to agree on the spelling and nothing else
+ * would notice if they stopped: a stylesheet keyed on an attribute nothing emits neutralises nothing,
+ * silently, and the Print style would go back to showing colour the page does not have.
+ *
+ * @returns The attribute name, without brackets.
+ */
+function guessedMarkerAttribute() {
+  const worker = resolve(WEB_ROOT, 'src/workers/asciidoc-render.worker.ts');
+  const source = readFileSync(worker, 'utf8');
+  const declaration = /const GUESSED_MARKUP_MARKER = '([a-z][\w-]*)';/.exec(source);
+  if (declaration === null) {
+    throw new Error(
+      `${worker} does not declare GUESSED_MARKUP_MARKER as a literal string.\n` +
+        'The Print style keys its rule on that attribute and reads the name from there.',
+    );
+  }
+  return declaration[1];
+}
+
+/**
+ * The end of a bracketed or parenthesised run that begins at the first character of `text`.
+ *
+ * Quote-aware, because an attribute selector's value is a CSS string and may contain anything —
+ * including the closing bracket this is looking for.
+ *
+ * @param text - The remainder of a selector, beginning with the opening character.
+ * @param open - The opening character.
+ * @param close - The closing character.
+ * @returns The index of the matching closing character.
+ */
+function closingIndex(text, open, close) {
+  let depth = 0;
+  let quote = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote !== null) {
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === open) depth += 1;
+    else if (character === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  throw new Error(`Unbalanced ${open}${close} in a generated selector: ${text}`);
+}
+
+/**
+ * Split a selector list on the commas that separate SELECTORS.
+ *
+ * @param list - The inside of a selector list.
+ * @returns Each selector in it, trimmed.
+ */
+function splitSelectorList(list) {
+  const parts = [];
+  let depth = 0;
+  let quote = null;
+  let current = '';
+  for (let index = 0; index < list.length; index += 1) {
+    const character = list[index];
+    if (quote !== null) {
+      current += character;
+      if (character === '\\') {
+        current += list[index + 1] ?? '';
+        index += 1;
+      } else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === '(' || character === '[') depth += 1;
+    else if (character === ')' || character === ']') depth -= 1;
+    else if (character === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current.trim());
+  return parts.filter((part) => part.length > 0);
+}
+
+/**
+ * The specificity of one selector, counted the way the cascade counts it.
+ *
+ * Written for exactly the shapes this generator emits, and STRICT about everything else: a construct
+ * it cannot account for throws rather than scoring zero, because a silently-zero term is how an
+ * assertion about specificity turns into one that always passes. `:is()` and `:not()` take the
+ * specificity of their most specific argument (Selectors 4, §17); `:where()` takes none.
+ *
+ * @param selector - A selector this file emits.
+ * @returns `[ids, classes, elements]`, which compares lexicographically.
+ */
+function specificityOf(selector) {
+  const score = [0, 0, 0];
+  let rest = selector.trim();
+  while (rest.length > 0) {
+    // Combinators, and the whitespace this file wraps long selectors across, contribute nothing.
+    const combinator = /^[\s>+~]+/.exec(rest);
+    if (combinator !== null) {
+      rest = rest.slice(combinator[0].length);
+      continue;
+    }
+    const functional = /^:(is|not|where)\(/i.exec(rest);
+    if (functional !== null) {
+      const end = closingIndex(rest.slice(functional[0].length - 1), '(', ')') + functional[0].length - 1;
+      const inner = rest.slice(functional[0].length, end);
+      if (functional[1].toLowerCase() !== 'where') {
+        const best = splitSelectorList(inner)
+          .map((argument) => specificityOf(argument))
+          .reduce((a, b) => (compareSpecificity(b, a) > 0 ? b : a), [0, 0, 0]);
+        for (let index = 0; index < 3; index += 1) score[index] += best[index];
+      }
+      rest = rest.slice(end + 1);
+      continue;
+    }
+    const simple = /^(?:#[\w-]+|\.[\w-]+|\[|[a-zA-Z][\w-]*|\*)/.exec(rest);
+    if (simple === null) throw new Error(`Unreadable simple selector in a generated rule: ${rest}`);
+    if (simple[0] === '[') {
+      score[1] += 1;
+      rest = rest.slice(closingIndex(rest, '[', ']') + 1);
+      continue;
+    }
+    if (simple[0].startsWith('#')) score[0] += 1;
+    else if (simple[0].startsWith('.')) score[1] += 1;
+    else if (simple[0] !== '*') score[2] += 1;
+    rest = rest.slice(simple[0].length);
+  }
+  return score;
+}
+
+/**
+ * Compare two specificities.
+ *
+ * @param a - One specificity.
+ * @param b - The other.
+ * @returns Positive when `a` wins, negative when `b` does, zero when the cascade would fall back to
+ *   source order.
+ */
+function compareSpecificity(a, b) {
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
+
+/**
+ * The rule that puts a listing the export prints plain back at the code colour.
+ *
+ * ## Why it is shaped like this, and not as a list of the languages to grey out
+ *
+ * It has to BEAT every per-token rule above it, and no selector written once can promise that. A
+ * token rule carries one class per scope SEGMENT — `title.class.inherited` is
+ * `.hljs-title.class_.inherited__`, three classes — so its specificity grows with the depth of the
+ * highlighter's vocabulary, while a fixed neutralising selector's does not. At depth three the token
+ * rule is (0,5,0) and the descendant selector this used to be was (0,4,2): the superclass name in a
+ * Wren, Axapta or Processing listing came out in #003366 bold while every other token beside it was
+ * correctly greyed, because the one- and two-segment scopes still lost. Exactly one class leaked, and
+ * it leaked silently.
+ *
+ * So the neutraliser is built OUT OF the token selectors it must beat. `:is()` carries the
+ * specificity of its most specific argument, so `span:is(<every token selector>)` is worth exactly
+ * the strongest token rule's class count, and the `code[class*="language-"]:not(…)` in front of it
+ * adds two more classes and two more elements. It is therefore strictly more specific than any token
+ * rule by CONSTRUCTION, whatever depth the vocabulary grows to, rather than by a margin that happened
+ * to hold when it was written. {@link renderRegion} asserts it anyway, from the emitted text.
+ *
+ * The `:not()` is the case question, and the reason the list inside it is what the export DOES lex:
+ * see {@link colouredByTheExport}.
+ *
+ * @param palette - The committed palette document.
+ * @param tokenSelectors - The selector of every token rule, as {@link selectorFor} writes it.
+ * @returns The selector, wrapped across lines.
+ */
+function neutralisingSelector(palette, tokenSelectors) {
+  const lexers = colouredByTheExport(palette).map(
+    (name) => `    [class~="language-${selectorSafeName(name, 'a rouge lexer name')}"]`,
+  );
+  return (
+    `${SCOPE}\n` +
+    `  code[class*="language-"]:not(\n${lexers.join(',\n')}\n  )\n` +
+    `  span:is(\n${tokenSelectors.map((selector) => `    ${selector}`).join(',\n')}\n  )`
+  );
+}
+
+/**
+ * The rule that puts a GUESSED listing back at the code colour.
+ *
+ * The preview colours a listing whose declared language no shipped grammar answers to by asking
+ * highlight.js to detect the language; rouge does no such thing, so the page prints that listing in
+ * one colour. Under this style the guess is therefore a difference from the page — and a confident
+ * one, which is worse than no colour at all: a block of `include::` directives came back with
+ * `include` in green and its numbers in bold blue because the detector recognised something in some
+ * other language. The other two styles present the document rather than the page and keep it.
+ *
+ * Keyed on the ATTRIBUTE the worker marks the guess with, and that is forced rather than chosen. The
+ * neutraliser above excludes every name the export lexes, so a guessed listing declaring one of those
+ * names — and there are enough of them to matter, see {@link neverLexedByThePreview} — is outside
+ * that rule by construction, and no CLASS added to the block could bring it back in.
+ *
+ * Same shape as the neutraliser for the same reason: built out of the token selectors it must beat,
+ * so it stays more specific than any of them however deep the vocabulary grows. {@link renderRegion}
+ * asserts it from the emitted text.
+ *
+ * @param marker - The attribute the worker marks a guessed block with.
+ * @param tokenSelectors - The selector of every token rule, as {@link selectorFor} writes it.
+ * @returns The selector, wrapped across lines.
+ */
+function guessedSelector(marker, tokenSelectors) {
+  return (
+    `${SCOPE}\n` +
+    `  code[${selectorSafeName(marker, "the worker's guessed-markup marker")}]\n` +
+    `  span:is(\n${tokenSelectors.map((selector) => `    ${selector}`).join(',\n')}\n  )`
+  );
+}
+
+/**
+ * Render the generated region.
+ *
+ * @param palette - The committed palette document.
+ * @param vocabulary - Every scope the shipped highlighter can emit.
+ * @returns The CSS between the markers, marker lines excluded.
+ */
+function renderRegion(palette, vocabulary) {
+  const themeName = palette.fallbackTheme;
+  const theme = palette.themes[themeName];
+  if (theme === undefined) throw new Error(`The palette carries no theme named ${themeName}.`);
+  const { styles } = theme;
+
+  const mapped = new Map(MAPPING.map((entry) => [entry.scope, entry]));
+  const missing = vocabulary.filter((scope) => !mapped.has(scope));
+  if (missing.length > 0) {
+    throw new Error(
+      `highlight.js can emit ${missing.length} scope(s) this mapping does not cover: ${missing.join(', ')}.\n` +
+        'Add an entry to MAPPING in scripts/build-print-highlight-css.mjs, with the reason it says what it says.',
+    );
+  }
+  const surplus = MAPPING.map((entry) => entry.scope).filter((scope) => !vocabulary.includes(scope));
+  if (surplus.length > 0) {
+    throw new Error(
+      `The mapping covers ${surplus.length} scope(s) the shipped highlight.js cannot emit: ${surplus.join(', ')}.\n` +
+        'Remove them, or the stylesheet carries rules that match nothing.',
+    );
+  }
+
+  const known = new Set(palette.tokens);
+  const lines = [
+    `/* Derived from ${commentSafe(theme.source, `the palette's source for ${themeName}`)}`,
+    `   — ${commentSafe(theme.why, `the palette's note about ${themeName}`)}.`,
+    '',
+    '   Each rule names the rouge token(s) the highlight.js class stands for. A class that covers more',
+    "   than one is painted their nearest common ancestor's style wherever they disagree — less specific",
+    '   than the page, never a different opinion from it — and where that ancestor carries no style, the',
+    "   token rouge's own lexers assign most often to what the class marks, counted over real source and",
+    '   recorded with the rule. A rule at the code colour is a class no rouge lexer inks at all. The',
+    '   reasoning for each is in the generator; the divergences the two highlighters cannot resolve are',
+    '   inventoried in e2e/pdf-parity/print-fidelity/print-highlighting.spec.ts. */',
+  ];
+
+  for (const entry of MAPPING) {
+    for (const token of entry.tokens) {
+      if (!known.has(token)) throw new Error(`The mapping names ${token}, which rouge does not declare.`);
+    }
+    // A class covering several tokens has to be resolved by hand; see JOINS. Both directions are
+    // errors so neither list can be edited without the other.
+    const join = Object.hasOwn(JOINS, entry.scope) ? JOINS[entry.scope] : undefined;
+    if (entry.tokens.length > 1 && join === undefined) {
+      throw new Error(
+        `${entry.scope} names ${entry.tokens.length} rouge tokens and JOINS records no result for it. ` +
+          'Work out what the tokens agree on, and what a disagreement falls back to, and add it there.',
+      );
+    }
+    if (entry.tokens.length <= 1 && join !== undefined) {
+      throw new Error(`JOINS records a result for ${entry.scope}, which names fewer than two rouge tokens.`);
+    }
+    const style = join?.style ?? (entry.tokens.length === 1 ? styleOf(entry.tokens[0], styles) : {});
+    const named = entry.tokens.length === 0 ? 'no rouge token' : entry.tokens.join(' + ');
+    const note = join?.note ?? '';
+    lines.push(
+      '',
+      `/* ${commentSafe(entry.scope, 'a mapping scope')} -> ${named}${note}: ` +
+        `${commentSafe(entry.why, `the reason given for ${entry.scope}`)}.`,
+      // The counts travel WITH the rule. A choice made on evidence and recorded only in the
+      // generator is a choice a reader of the stylesheet has to take on trust.
+      ...(entry.measured === undefined
+        ? []
+        : [`   Measured over ${commentSafe(entry.measured, `the corpus recorded for ${entry.scope}`)}.`]),
+      '   */',
+      `${SCOPE} ${selectorFor(entry.scope)} {`,
+      ...declarationsFor(style).map((declaration) => `  ${declaration}`),
+      '}',
+    );
+  }
+
+  const tokenSelectors = MAPPING.map((entry) => selectorFor(entry.scope));
+  const neutraliser = neutralisingSelector(palette, tokenSelectors);
+  const guessed = guessedSelector(guessedMarkerAttribute(), tokenSelectors);
+  // Asserted from the EMITTED TEXT, not from the reasoning that produced it: the whole defect this
+  // shape exists to remove was a rule that read as if it neutralised a listing and did not. Both
+  // rules are held to it — they answer two different questions ("the export has no lexer for this
+  // name" and "the preview had no grammar and guessed"), and a listing can arrive at either.
+  const strongest = MAPPING.map((entry) => ({
+    scope: entry.scope,
+    specificity: specificityOf(`${SCOPE} ${selectorFor(entry.scope)}`),
+  })).reduce((a, b) => (compareSpecificity(b.specificity, a.specificity) > 0 ? b : a));
+  for (const [what, selector] of [
+    ['puts an unlexed listing back at the code colour', neutraliser],
+    ['puts a GUESSED listing back at the code colour', guessed],
+  ]) {
+    const specificity = specificityOf(selector);
+    if (compareSpecificity(specificity, strongest.specificity) <= 0) {
+      throw new Error(
+        `The rule that ${what} is (${specificity.join(',')}), ` +
+          `which does not beat the ${strongest.scope} rule at (${strongest.specificity.join(',')}). ` +
+          'A token rule that wins draws a fragment the export prints plain.',
+      );
+    }
+  }
+
+  const gap = neverColouredByTheExport(palette);
+  lines.push(
+    '',
+    '/* The listings the export prints in one colour.',
+    '',
+    '   Asciidoctor-PDF asks rouge for a lexer for the language the author declared and prints the',
+    '   listing as plain text when there is none, so for these the page carries no palette at all. The',
+    "   preview's highlighter would colour them, which under this style is a difference from the page in",
+    '   the one direction this style exists to remove — so their tokens are put back at the code colour.',
+    '   The other preview styles make no such claim and keep their colour.',
+    '',
+    `   Two things reach this rule. ${gap.grammars} of the shipped grammars (${gap.spellings} spellings) name a language`,
+    '   rouge has no lexer for under any casing. And every language it DOES lex, written with a capital:',
+    "   `Rouge::Lexer.find` is a plain registry lookup with no downcasing on the path, while the",
+    '   highlighter downcases, so `[source,Ruby]` is coloured by one and printed plain by the other.',
+    '',
+    "   Which is why the list is the registry itself — every name the export lexes, spelled as rouge",
+    '   registers it, from the palette beside these colours — and why it carries no `i` flag: rouge',
+    '   registers `Dockerfile`, `LaTeX` and `R` with capitals as well as without, and matching loosely',
+    '   would grey out a listing the page really does colour.',
+    '',
+    '   The `:is()` is not decoration. A token rule carries one class per scope segment, so its',
+    '   specificity grows with the vocabulary; naming the token selectors here makes this rule worth',
+    "   the strongest of them plus the `code`/`:not()` in front, so it cannot be outweighed by a scope",
+    '   nested one level deeper than anything shipping today. The generator asserts it. */',
+    neutraliser,
+    '{',
+    // The same declarations a token the palette says nothing about gets, from the same function:
+    // "the export does not colour this" and "the palette does not colour this" are the same
+    // appearance, and writing it twice is how the two would drift apart.
+    ...declarationsFor({}).map((declaration) => `  ${declaration}`),
+    '}',
+  );
+
+  const unreachable = neverLexedByThePreview(palette);
+  lines.push(
+    '',
+    '/* The listings the preview had to guess at.',
+    '',
+    '   A language no shipped grammar answers to is still coloured: highlight.js is asked to DETECT the',
+    '   language, which is what the preview did for every such listing before the on-demand grammars',
+    '   arrived. Rouge does not guess — it prints a listing it has no lexer for as plain text — so under',
+    '   this style a guess is a difference from the page, and a confident one: a block of `include::`',
+    '   directives came back with `include` in green and its numbers in bold blue, because the detector',
+    '   recognised something in some other language. The other two styles present the document rather',
+    '   than the page, and keep the guess.',
+    '',
+    '   Keyed on the attribute the render worker marks a guess with, read out of the worker so the two',
+    '   ends cannot drift apart. An attribute rather than a class because the rule above excludes every',
+    `   name the export lexes: ${unreachable.unreachable} of the ${unreachable.registry} names in rouge's registry have no grammar`,
+    '   here at all, and a guessed listing declaring one of those is outside that rule by construction —',
+    '   no class added to the block could bring it back into a `:not([class~="language-…"])`.',
+    '',
+    '   Specificity is built the same way, out of the token selectors it must beat, and asserted the',
+    '   same way. */',
+    guessed,
+    '{',
+    ...declarationsFor({}).map((declaration) => `  ${declaration}`),
+    '}',
+  );
+
+  const region = lines.join('\n');
+  // A region that carried a marker of its own would make the next run's `indexOf`/`lastIndexOf` pair
+  // disagree about where the generated text ends, and there is no legitimate reason for one to
+  // appear: the markers are the stylesheet's, not the region's.
+  for (const marker of [BEGIN, END]) {
+    if (region.includes(marker)) {
+      throw new Error(`The generated region reproduces a region marker: ${marker}`);
+    }
+  }
+  return region;
+}
+
+function main() {
+  const check = process.argv.includes('--check');
+  const palette = JSON.parse(readFileSync(PALETTE, 'utf8'));
+  const region = renderRegion(palette, readHljsVocabulary());
+
+  const stylesheet = readFileSync(STYLESHEET, 'utf8');
+  const begin = stylesheet.indexOf(BEGIN);
+  const end = stylesheet.indexOf(END);
+  if (begin < 0 || end < 0 || end < begin) {
+    throw new Error(`${STYLESHEET} carries no generated region. Expected the marker lines:\n${BEGIN}\n${END}`);
+  }
+  // Exactly one region, not merely a first one. A second pair — a stale copy left by a bad merge, a
+  // region duplicated by a paste — is rewritten by neither the writer nor `--check`, which would go
+  // on passing while the stylesheet carried highlighting rules from a palette nobody is checking.
+  for (const [marker, first] of [
+    [BEGIN, begin],
+    [END, end],
+  ]) {
+    if (stylesheet.lastIndexOf(marker) !== first) {
+      throw new Error(
+        `${STYLESHEET} carries more than one generated region: the marker\n${marker}\nappears more than once. ` +
+          'Delete the stale copy — only the first would ever be rewritten.',
+      );
+    }
+  }
+  const updated = `${stylesheet.slice(0, begin + BEGIN.length)}\n${region}\n${stylesheet.slice(end)}`;
+
+  if (check) {
+    if (updated !== stylesheet) {
+      console.error(
+        "The Print style's syntax-highlighting rules do not match the renderer's palette.\n\n" +
+          'Run: pnpm --filter @asciidocollab/web run generate:print-highlight-css',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`The Print style's ${MAPPING.length} highlighting rules match ${palette.themes[palette.fallbackTheme].source}.`);
+    return;
+  }
+
+  writeFileSync(STYLESHEET, updated);
+  console.log(`Wrote ${MAPPING.length} highlighting rules into ${STYLESHEET}.`);
+}
+
+main();

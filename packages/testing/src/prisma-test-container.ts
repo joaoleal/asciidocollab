@@ -72,8 +72,8 @@ function isTransientStartFailure(error: unknown): boolean {
  * covers a local run as well as CI.
  *
  * @returns A TestContainer with the running container and connected Prisma client.
- * @throws The last error from `.start()` if every attempt failed, or immediately for a failure that
- *   retrying cannot fix.
+ * @throws {Error} The last error from `.start()` if every attempt failed, or immediately for a
+ *   failure that retrying cannot fix.
  */
 export async function startTestContainer(): Promise<TestContainer> {
   const image = new GenericContainer('postgres:16-alpine')

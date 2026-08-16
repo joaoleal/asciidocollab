@@ -132,6 +132,17 @@ const consumers = new Set<RenderWorkerHandlers>();
  */
 let nextRenderId = 1;
 
+/**
+ * The identity the next share goes out under, unique across every consumer for the life of the page.
+ *
+ * Separate from {@link nextRenderId} because it counts something else: that one names a RENDER, this
+ * one names the stream a render belongs to. The worker needs both and neither answers for the other —
+ * see {@link RenderRequest.consumerId}. Never reused, including by a consumer that acquires a share
+ * after another has released one: a stream's renders must not be ordered against a departed
+ * consumer's.
+ */
+let nextConsumerId = 1;
+
 /** A render the live worker has been handed and has not yet answered, and the consumer waiting on it. */
 interface OutstandingRender {
   /** The consumer that posted it, which is the one its reply belongs to. */
@@ -293,6 +304,8 @@ export function acquireRenderWorker(handlers: RenderWorkerHandlers): RenderWorke
   }
   consumerCount += 1;
   consumers.add(handlers);
+  const consumerId = nextConsumerId;
+  nextConsumerId += 1;
 
   if (holderState === 'failed') {
     // The engine is down pending a deliberate retry, and this consumer was not around to hear it.
@@ -308,14 +321,18 @@ export function acquireRenderWorker(handlers: RenderWorkerHandlers): RenderWorke
 
   return {
     post: (request: RenderRequest) => {
-      lastRequest = request;
+      // Stamped here rather than at the point of posting, so the request REMEMBERED for a rebuild
+      // replay carries the same identity it went out under. Replayed unstamped it would arrive as a
+      // stream of its own, and the consumer's own newer renders would no longer supersede it.
+      const stamped: RenderRequest = { ...request, consumerId };
+      lastRequest = stamped;
       lastRequestOwner = handlers;
       const engine = worker;
       // With no engine there is nothing to wait on, so nothing goes on the queue — an entry no reply
       // will ever claim would sit there waiting to absorb a later reply that is not it. The request is
       // still remembered above, because a retry replays it.
       if (engine === null) return;
-      postToWorker(engine, request, handlers);
+      postToWorker(engine, stamped, handlers);
     },
     release: () => {
       if (!held) return;

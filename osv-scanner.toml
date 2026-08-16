@@ -1,14 +1,20 @@
-# OSV-Scanner filter — read by CI's "Security scan" job (see .github/workflows/ci.yml,
-# `osv-scanner scan --lockfile=pnpm-lock.yaml`; auto-discovered because it sits beside the lockfile).
-# Only add entries here for advisories with NO available remediation; everything fixable is patched
-# in pnpm-workspace.yaml `overrides` instead. Keep this in sync with `auditConfig.ignoreGhsas` there.
-
-[[IgnoredVulns]]
-id = "GHSA-mh99-v99m-4gvg"
-# brace-expansion DoS/OOM (CVSS 7.5). Flagged on the 1.1.16 and 2.1.2 pins. Its ONLY patched release
-# is 5.0.8, whose CommonJS export changed from a callable function to `{ expand }` — incompatible with
-# minimatch@3.1.5 (`require('brace-expansion')(pattern)`) which eslint and jest still pull, and with the
-# other minimatch majors that request brace-expansion ^2.0.1. No 1.x/2.x backport exists, so there is no
-# remediation path. The v3–v5 line IS bumped to the patched 5.0.8 via the override; only the un-fixable
-# minimatch majors remain. Drop this once the ecosystem's minimatch chain ships a compatible release.
-reason = "brace-expansion DoS: only fix (5.0.8) has a breaking export change incompatible with minimatch@3.x (eslint/jest); no 1.x/2.x backport exists."
+# OSV-Scanner filter — read by CI's "Security scan" job (see .github/workflows/ci.yml and
+# scripts/ci/security.sh, `osv-scanner scan --lockfile=pnpm-lock.yaml`; auto-discovered because it
+# sits beside the lockfile).
+#
+# Only add entries here for advisories with NO available remediation. Everything fixable is patched
+# by bumping the parent that declares the vulnerable range, or — when the parent pins an exact
+# vulnerable version and cannot be bumped — by an entry in pnpm-workspace.yaml `overrides`.
+#
+# Every entry MUST carry the evidence that no remediation exists, and MUST be re-checked. An
+# `[[IgnoredVulns]]` that has outlived its cause is worse than no filter at all: it is a rule nobody
+# reads that will one day match a real advisory. scripts/ci/security.sh now fails the gate when
+# osv-scanner reports an entry here as unused, so a stale suppression cannot sit unnoticed.
+#
+# Currently EMPTY, deliberately. The one entry this file used to carry, GHSA-mh99-v99m-4gvg
+# (brace-expansion DoS/OOM, CVSS 7.5), was suppressed because its only patched release at the time
+# was 5.0.8, whose CommonJS export changed from a callable function to `{ expand }` — incompatible
+# with the minimatch@3.x that eslint and jest pull. That is no longer true: upstream backported the
+# fix to both older lines, and this lockfile now resolves brace-expansion 1.1.18, 2.1.4 and 5.0.9,
+# all of which are outside the advisory's affected ranges (<1.1.12, 2.0.0–2.0.1, 3.0.0, 4.0.0).
+# osv-scanner reported the entry as unused, and it was removed.

@@ -1,0 +1,21 @@
+{
+  "name": "table-cells",
+  "description": "The anchor for what happens INSIDE a table: where a cell's text sits horizontally and vertically, the face a literal cell is set in, the band the renderer paints across a footer row, and the widths the columns are allotted. Every one of them is decided per cell or per column rather than by the table's frame, which is why the frame anchor beside it passed while all four were wrong — a cell's text sat at its left padding edge whatever the column specifier said, a literal cell fell back to the reader's system monospace, a footer row had no fill at all, and eight columns of equal weight came out with one of them 58% wide and the rest starved.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "table-theme.yml",
+    "fontPaths": [],
+    "attributes": {
+      "icons": "font"
+    }
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "table-theme.yml",
+      "icons": "font"
+    }
+  }
+}

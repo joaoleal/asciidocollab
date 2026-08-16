@@ -110,14 +110,15 @@ const FIRST_PROBE_WORD = 'refreshprobealpha';
 const SECOND_PROBE_WORD = 'refreshprobebeta';
 
 /**
- * Size of the deliberately slow document, as a number of source blocks written in a language the
- * highlighter does not know.
+ * Size of the deliberately slow document, as a number of source blocks.
  *
  * Sheer length is a poor way to make a render slow: fifteen thousand lines of prose convert in a
  * fraction of a second, and a document large enough to be slow that way produces so much HTML that
- * applying it is what dominates. Syntax highlighting is where the time actually goes, and an
- * unrecognised language costs the most — every known grammar is tried in turn to detect it. Enough
- * such blocks therefore render for seconds while staying small enough to type in comfortably.
+ * applying it is what dominates. Syntax highlighting is where the time actually goes — every other
+ * stage was measured and none of them approaches it. Conversion of a 1 MiB document is around 20 ms;
+ * tables, admonitions, cross-references, attribute expansion, `ifeval` and a three-thousand-file
+ * include tree are all in the same band. The highlighter is the only stage whose cost is measured in
+ * hundreds of milliseconds, so the document is built out of what makes it work hardest.
  *
  * The size is calibrated against the engine, not fixed for good: the test asserts up front that one
  * render of this document really does outlast the cap, and says so when it stops doing so. That guard
@@ -125,24 +126,70 @@ const SECOND_PROBE_WORD = 'refreshprobebeta';
  * which would have left the test passing while exercising none of the overlap it exists to rule out.
  * Re-calibrate whenever it fires again; never relax the guard.
  *
+ * It fired a second time, and the recalibration changed the document's SHAPE rather than its size,
+ * because what used to make it slow no longer exists. The blocks used to declare a language the
+ * highlighter had never heard of, and the cost was auto-detection: every installed grammar tried in
+ * turn. The render worker no longer guesses at an unknown language — it leaves the block alone, the
+ * way the exporters' own highlighter does for a lexer it lacks — so those blocks became free and the
+ * same 400-block document fell from roughly three seconds to 21 ms.
+ *
+ * What replaces it is a grammar the highlighter really has, given input that is expensive to SCAN and
+ * yields almost nothing to mark up: a deeply nested parenthesis expression in Ruby. Measured at
+ * 0.75 ms per KiB of source, linear in length over an eightfold range (no backtracking blow-up — the
+ * cost is honest scanning), while the HTML it produces is only 1.02x the source, because the scan
+ * ends up emitting hardly any token spans.
+ *
+ * That last ratio is the reason for this shape rather than a bigger version of the old one. Every
+ * other way of buying highlighter time buys output with it: colouring ordinary code in Ruby, YAML or
+ * Lisp emits a span per token and inflates the HTML two- to eightfold, so reaching the cap that way
+ * needs 7 MiB or more of markup per refresh — and then applying it is what dominates, the typing
+ * stalls, and the overlap this test exists to rule out can no longer be observed. Cost without output
+ * is what the document needs, and paren-dense text in a real grammar is where it is found.
+ *
  * Two dimensions, and the difference between them is the whole reason this document is shaped the way
- * it is. Detection cost tracks the VOLUME OF CODE, while what makes the document unpleasant to type
+ * it is. Highlighting cost tracks the VOLUME OF CODE, while what makes the document unpleasant to type
  * into is its NUMBER OF LINES — so cost is bought with long lines rather than with more of them.
  * Simply enlarging the block count to reach the cap was tried and does not work: at 1,200 blocks the
  * render outlasts the cap but the editor stalls for over a second mid-burst, and a burst with a pause
- * that long in it proves nothing about sustained typing. At the density below the document renders for
- * roughly three seconds while staying near its original length.
+ * that long in it proves nothing about sustained typing.
+ *
+ * The volume it now takes does not fit in one file, and that is a hard limit rather than a preference:
+ * the content endpoint refuses a body over a mebibyte, which is why the previous version of this
+ * document sat at 922 KiB — right under it. So the document is a BOOK: a main file that includes its
+ * parts, each part comfortably inside the limit, previewed with include bodies shown. That is the
+ * shape a document this size really has, and it moves the volume off the surface being typed into
+ * entirely — the editor holds the main file's handful of lines, so the "unpleasant to type into"
+ * dimension stops competing with the cost one. At the size below the assembled document is measured
+ * at roughly 2.7 seconds against the 2-second cap, from a browser, by the guard below.
  */
-const SLOW_DOCUMENT_BLOCKS = 400;
+const SLOW_DOCUMENT_PARTS = 5;
+/**
+ * Source blocks per included part.
+ *
+ * Two ceilings meet here. Each part is one PUT to the content endpoint, whose body limit is a
+ * mebibyte — at this count a part is about 826 KiB, a fifth under it. And the assembled total is what
+ * has to outlast the cap: 400 blocks measured 2,173 ms in a browser against the 2,000 ms cap, close
+ * enough that a slightly quicker machine would trip the guard for no reason, so the count is set
+ * where the margin is about a quarter rather than a twelfth.
+ */
+const SLOW_DOCUMENT_BLOCKS_PER_PART = 100;
+/** Blocks in the assembled document — what the render actually costs. */
+const SLOW_DOCUMENT_BLOCKS = SLOW_DOCUMENT_PARTS * SLOW_DOCUMENT_BLOCKS_PER_PART;
 /** Lines of code per block in the slow document. */
 const SLOW_DOCUMENT_BLOCK_LINES = 8;
 /**
  * How many times each code line's statement is repeated to form the line. This is the dimension that
  * carries the render cost, because it lengthens lines without adding any.
  */
-const SLOW_DOCUMENT_LINE_REPEATS = 4;
-/** A language the syntax highlighter has no grammar for, so it must detect one. */
-const SLOW_DOCUMENT_LANGUAGE = 'pseudocode';
+const SLOW_DOCUMENT_LINE_REPEATS = 20;
+/** A language the syntax highlighter HAS a grammar for, so every block is really scanned. */
+const SLOW_DOCUMENT_LANGUAGE = 'ruby';
+/**
+ * The expression each code line is built from: nested parentheses, which the grammar has to consider
+ * against every construct it knows and which resolve to almost no tokens. See the note above on why
+ * the cost has to come without matching output.
+ */
+const SLOW_DOCUMENT_STATEMENT = '((((((((((a)(b))((c)(d))))((((e)(f))((g)(h)))))))))';
 
 /** Budgets for the page-formatted preview, whose first render must compile and boot the wasm engine. */
 const FIRST_PAGE_RENDER_TIMEOUT_MS = 120_000;
@@ -175,25 +222,48 @@ interface Recording {
   readonly keystrokes: readonly number[];
 }
 
+/** The file name of one included part of the slow document. */
+function slowDocumentPartName(part: number): string {
+  return `slow-part-${part}.adoc`;
+}
+
 /**
- * Build a document that takes seconds to render, and whose rendered output is nonetheless small
- * enough that putting it on screen costs almost nothing.
+ * One included part of the slow document: the source blocks that carry the render cost.
  *
- * That separation is the point: the renderer must be the slow part, not the act of displaying what it
- * produced, or the typing itself would be what stalls and the burst would no longer be continuous.
+ * Its rendered output is nonetheless nearly the same size as its source, which is the point: the
+ * renderer must be the slow part, not the act of displaying what it produced, or the typing itself
+ * would be what stalls and the burst would no longer be continuous.
  *
- * @param blockCount - How many source blocks to emit.
- * @returns The AsciiDoc source, ending in the line markers are appended to.
+ * @param part - Which part this is, so no two parts are byte-identical.
+ * @returns The part's AsciiDoc source.
  */
-function slowDocument(blockCount: number): string {
-  const lines = ['= Slow Document', ''];
-  for (let index = 1; index <= blockCount; index += 1) {
+function slowDocumentPart(part: number): string {
+  const lines: string[] = [];
+  for (let index = 1; index <= SLOW_DOCUMENT_BLOCKS_PER_PART; index += 1) {
     lines.push(`[source,${SLOW_DOCUMENT_LANGUAGE}]`, '----');
     for (let line = 0; line < SLOW_DOCUMENT_BLOCK_LINES; line += 1) {
-      const statement = `set value${line} to compute(${index}, ${line}) then keep each item where it is truthy`;
-      lines.push(Array.from({ length: SLOW_DOCUMENT_LINE_REPEATS }, () => statement).join(' and then '));
+      // The leading triple keeps every line distinct, so nothing downstream can answer for one line by
+      // remembering another; the repeated expression after it is what carries the cost.
+      const repeated = Array.from({ length: SLOW_DOCUMENT_LINE_REPEATS }, () => SLOW_DOCUMENT_STATEMENT);
+      lines.push(`(item ${part} ${index} ${line}) ${repeated.join(' ')}`);
     }
     lines.push('----', '');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The main file of the slow document: a title, the includes, and the line markers are appended to.
+ *
+ * Small on purpose. It is the file the editor holds open and the burst types into, so everything that
+ * makes the RENDER expensive lives in the parts it includes rather than in the text being edited.
+ *
+ * @returns The main file's AsciiDoc source.
+ */
+function slowDocumentMain(): string {
+  const lines = ['= Slow Document', ''];
+  for (let part = 1; part <= SLOW_DOCUMENT_PARTS; part += 1) {
+    lines.push(`include::${slowDocumentPartName(part)}[]`, '');
   }
   lines.push('Markers land here.');
   return lines.join('\n');
@@ -676,7 +746,10 @@ test.describe('preview refresh during sustained typing', () => {
   });
 
   test('a slow document refreshes one render at a time and keeps refreshing', async ({ page }) => {
-    const fileId = await createAdocFile(page, projectId, 'slow.adoc', slowDocument(SLOW_DOCUMENT_BLOCKS));
+    for (let part = 1; part <= SLOW_DOCUMENT_PARTS; part += 1) {
+      await createAdocFile(page, projectId, slowDocumentPartName(part), slowDocumentPart(part));
+    }
+    const fileId = await createAdocFile(page, projectId, 'slow.adoc', slowDocumentMain());
     await setMainFile(page, projectId, fileId);
     await openProject(page, projectId);
     await openFile(page, 'slow.adoc', /Slow Document/);
@@ -684,6 +757,13 @@ test.describe('preview refresh during sustained typing', () => {
 
     await page.getByRole('button', { name: /expand preview/i }).click();
     await expect(page.getByTestId('asciidoc-output')).toContainText('Markers land here.', {
+      timeout: SLOW_FIRST_RENDER_TIMEOUT_MS,
+    });
+    // Show the included bodies. Hidden, each include is one placeholder block and the preview renders
+    // the main file's five lines — nothing this test is about. The volume that makes a render outlast
+    // the cap is in the parts, so it only reaches the renderer once they are being rendered.
+    await page.getByTestId('show-includes-toggle').click();
+    await expect(page.getByTestId('asciidoc-output')).toContainText('(item 1 1 0)', {
       timeout: SLOW_FIRST_RENDER_TIMEOUT_MS,
     });
     await expect(page.locator('[aria-label="up to date"]')).toBeVisible({ timeout: SLOW_FIRST_RENDER_TIMEOUT_MS });

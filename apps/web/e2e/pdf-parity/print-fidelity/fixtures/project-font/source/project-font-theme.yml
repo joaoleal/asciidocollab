@@ -1,0 +1,22 @@
+# The project-supplied-font anchor: the body face is a file this project ships, not one the renderer
+# or the browser already has. It is the case where a family NAME proves nothing - only the file does,
+# and the preview and the export have to be reading the same one.
+#
+# The faces sit beside this theme rather than in a fonts/ directory, because a catalogue path is
+# resolved relative to the theme document by the application and relative to `pdf-fontsdir` by the
+# command-line toolchain. Same directory is the one arrangement where those two rules agree, so the
+# fixture compares two renders of the same file rather than two renders that found different ones.
+extends: default
+font:
+  catalog:
+    merge: true
+    Project Mono:
+      normal: project-mono-regular.ttf
+      bold: project-mono-bold.ttf
+      italic: project-mono-italic.ttf
+      bold_italic: project-mono-bold-italic.ttf
+base:
+  font-family: Project Mono
+  font-size: 10
+heading:
+  font-family: Project Mono

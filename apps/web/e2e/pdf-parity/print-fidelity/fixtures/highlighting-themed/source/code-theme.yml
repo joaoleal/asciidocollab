@@ -1,0 +1,10 @@
+# A theme whose only job is to move the code block's OWN typography, so the two kinds of colour in a
+# highlighted block can be told apart: a token the renderer's palette names must keep the palette's
+# colour whatever this says, and a token it says nothing about must follow this instead.
+extends: default
+base:
+  font-color: '1F2933'
+code:
+  font-color: '1A4D2E'
+  font-style: italic
+  background-color: 'F4F7F4'

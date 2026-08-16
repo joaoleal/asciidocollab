@@ -14,9 +14,12 @@
  *   citations   the reference-list entries, order and (numeric styles) assigned numbers
  *   ink         rasterized ink-map footprint/position + text labels (math, diagrams)
  *
- * The suite self-gates: absent wasm or absent reference PDF ⇒ a clean skip.
+ * The suite self-gates on the ENGINE only: absent wasm ⇒ a clean skip, because a developer who has
+ * not built a 70 MiB wasm module has not broken anything. An absent reference PDF is not the same
+ * situation and is not treated the same way — see {@link committedReferencePdfs}.
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
@@ -53,6 +56,42 @@ const MATHJAX_FONTS_DIR = path.join(WEB_ROOT, 'node_modules', '@mathjax');
 
 const enginePresent = existsSync(WASM_PATH);
 const parityCases = loadParityCases(FIXTURES_DIR);
+
+/**
+ * Every reference PDF the repository is committed to, as absolute paths.
+ *
+ * This is what tells a reference that was LOST apart from one that was never generated, and the two
+ * must not be handled alike: a fixture whose reference disappears has to fail, while the `example`
+ * fixture — a committed TEMPLATE, manifest and source only, whose own description says to add a
+ * reference in order to activate it — has to stay inert. Both look identical on disk, which is why
+ * the question is put to git instead: git records which references this tree is supposed to contain.
+ * Measured here: 25 tracked reference PDFs across 22 fixtures, and none under `example/`.
+ *
+ * A hard-coded list of template fixture names would answer the same question today, but it answers it
+ * by describing the corpus rather than by consulting it — it would have to be edited in step with
+ * every fixture added, and the failure mode of forgetting is a fixture that silently stops comparing,
+ * which is the very defect this gate exists to close.
+ *
+ * generate-reference.mjs:339-346 draws the same line for `--all` (it regenerates the corpus and
+ * refuses to enrol a fixture that has no reference yet, naming `example` in its comment), but it
+ * draws it from what is on disk — and on disk is precisely the signal that has gone missing here.
+ */
+function committedReferencePdfs(fixturesDirectory: string): ReadonlySet<string> {
+  // Pathspec `.` with `cwd` at the fixtures root, so the listed paths are fixture-relative and need
+  // no assumption about where the repository root sits relative to the web package.
+  const listed = execFileSync('git', ['ls-files', '-z', '--', '.'], {
+    cwd: fixturesDirectory,
+    encoding: 'utf8',
+  });
+  return new Set(
+    listed
+      .split('\0')
+      .filter((entry) => entry.endsWith('.pdf'))
+      .map((entry) => path.join(fixturesDirectory, entry)),
+  );
+}
+
+const committedReferences = committedReferencePdfs(FIXTURES_DIR);
 
 /**
  * Build the fixture's snapshot: its source tree plus the render fields its manifest declares.
@@ -183,19 +222,46 @@ test.describe('PDF reference parity (render vs external build)', () => {
     await mathjaxFontsServer?.stop();
   });
 
-  // A fixture with no committed reference PDF contributes no case at all, so an empty list means the
-  // references have not been generated — which must fail loudly rather than reporting a green run over
-  // nothing. Principle XV is not satisfied by a suite that silently compares zero documents.
+  // Counted over cases that can actually COMPARE something rather than over fixtures that have a
+  // manifest — the distinction this test used to get wrong. `loadParityCases` yields a case for every
+  // manifest it finds (harness/manifest.ts:206-261) whether or not the reference exists, so counting
+  // cases counted directories: with every reference on the corpus deleted this assertion still passed
+  // 26 while the suite compared nothing at all. An empty list means the references have not been
+  // generated, and a suite that silently compares zero documents is evidence of nothing.
   test('the fixture set yields comparison cases', () => {
-    expect(parityCases.length, 'fixtures with committed reference PDFs').toBeGreaterThan(0);
+    const comparable = parityCases.filter((entry) => existsSync(entry.referencePath));
+    expect(comparable.length, 'fixtures whose reference PDF is on disk').toBeGreaterThan(0);
+  });
+
+  // The corpus-wide half of the same gate, which names every loss at once instead of leaving them to
+  // be found one failing case at a time. A reference PDF that vanishes must not quietly remove a
+  // comparison: before this, `existsSync` below turned it into a skip, and a skip inside a green run
+  // is how the suite would go on reporting success having compared one document fewer than it did
+  // yesterday. `example` is exempt by construction, not by name — see {@link committedReferencePdfs}.
+  test('no fixture has lost its committed reference PDF', () => {
+    const lost = parityCases
+      .filter((entry) => committedReferences.has(entry.referencePath) && !existsSync(entry.referencePath))
+      .map((entry) => `${entry.fixture} (${path.relative(FIXTURES_DIR, entry.referencePath)})`);
+    expect(lost, 'reference PDFs committed to git but missing from the working tree').toEqual([]);
   });
 
   for (const parityCase of parityCases) {
     test(`${parityCase.id} matches the reference build`, async ({ page }) => {
+      // Absent AND untracked ⇒ a fixture that never had a reference: the declared template, inert on
+      // purpose. Absent but TRACKED ⇒ a reference this repository is committed to has gone missing,
+      // which is a defect in the corpus and is asserted rather than skipped past.
+      const referenceLabel = path.relative(FIXTURES_DIR, parityCase.referencePath);
+      const referencePresent = existsSync(parityCase.referencePath);
       test.skip(
-        !existsSync(parityCase.referencePath),
-        `${path.relative(FIXTURES_DIR, parityCase.referencePath)} not committed yet.`,
+        !referencePresent && !committedReferences.has(parityCase.referencePath),
+        `${referenceLabel} not committed yet; this fixture stays inert until a reference is generated for it.`,
       );
+      expect(
+        referencePresent,
+        `${referenceLabel} is committed to git but missing from the working tree — the reference was ` +
+          `lost, not never generated. Restore it (git checkout) rather than regenerating it.`,
+      ).toBe(true);
+
       test.skip(
         parityCase.needsBrowser && !existsSync(MERMAID_BUNDLE),
         'mermaid bundle not installed.',
@@ -252,8 +318,10 @@ test.describe('PDF reference parity (render vs external build)', () => {
 
   // Determinism is asserted separately from parity because it is a different property: parity says
   // our output matches the reference, determinism says our output does not depend on anything that
-  // varies between runs (FR-020, SC-007, Principle XII). A renderer can be reproducibly WRONG, and a
-  // renderer that matches the reference once but not twice would pass every test above.
+  // varies between runs — rendering the same theme and the same document twice must give the same
+  // result every time, with nothing carried in from wall-clock time, ambient machine state, locale or
+  // iteration order. A renderer can be reproducibly WRONG, and a renderer that matches the reference
+  // once but not twice would pass every test above.
   //
   // One fixture carries it rather than all of them: the property is of the engine, not of any
   // document, so paying the cost of a second full render on eleven fixtures buys nothing. The theme
@@ -262,7 +330,9 @@ test.describe('PDF reference parity (render vs external build)', () => {
   const determinismCase = parityCases.find((entry) => entry.fixture === 'theme-editing');
 
   test('the same theme and document render identically twice', async ({ page }) => {
-    test.skip(determinismCase === undefined, 'theme-editing fixture has no committed reference yet.');
+    // Guards the fixture directory being gone, not its reference being absent: this test renders
+    // twice and compares the two renders to each other, so it never reads a reference PDF at all.
+    test.skip(determinismCase === undefined, 'theme-editing fixture is not present.');
     if (determinismCase === undefined) return;
 
     const shims = determinismCase.needsBrowser

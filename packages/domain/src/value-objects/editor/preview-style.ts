@@ -1,16 +1,13 @@
+import { PREVIEW_STYLE_VALUES, isPreviewStyleValue } from '@asciidocollab/primitives';
+import type { PreviewStyleValue } from '@asciidocollab/primitives';
 import type { Result } from '../../types/result';
 import { ValidationError } from '../../errors/common/validation-error';
 import { DEFAULT_PREVIEW_STYLE } from '../../constants/editor-preferences';
 
-/** The set of supported preview style token values (lowercase, as stored/transported). */
-export type PreviewStyleValue = 'asciidocollab' | 'asciidoctor';
-
-const VALID_STYLES: readonly string[] = ['asciidocollab', 'asciidoctor'] satisfies PreviewStyleValue[];
-
-/** Returns true when `value` is a recognised PreviewStyleValue token. */
-export function isPreviewStyleValue(value: string): value is PreviewStyleValue {
-  return VALID_STYLES.includes(value);
-}
+// Re-exported so existing domain consumers keep their import path; the definition lives in the
+// zero-dependency leaf that the browser ring can also reach.
+export { isPreviewStyleValue } from '@asciidocollab/primitives';
+export type { PreviewStyleValue } from '@asciidocollab/primitives';
 
 /** Validated value object representing a per-user preview rendering style. */
 export class PreviewStyle {
@@ -28,7 +25,7 @@ export class PreviewStyle {
     }
     return {
       success: false,
-      error: new ValidationError(`Invalid preview style: "${raw}". Must be one of: ${VALID_STYLES.join(', ')}`),
+      error: new ValidationError(`Invalid preview style: "${raw}". Must be one of: ${PREVIEW_STYLE_VALUES.join(', ')}`),
     };
   }
 

@@ -1,0 +1,38 @@
+# The theme for the inline-marks anchor. Every value here exists to make one of the marks the
+# renderer draws AROUND a run of text measurable against the preview's own.
+#
+# What it deliberately does NOT set is `quote.font_color`: the renderer leaves the colour in force
+# standing for a category that names none, so a quotation is inked in body text's colour, and a
+# preview that substitutes a grey of its own has to show up as a difference here.
+extends: default
+base:
+  font-color: 23303B
+  font-size: 10.5
+  # Left rather than the default justify, so a line's width is the text's own and a measurement of
+  # one mark's position is not also a measurement of how the line was stretched.
+  text-align: left
+link:
+  font-color: 0B7285
+codespan:
+  font-color: 9B2C64
+  background-color: F4F6F8
+  border-offset: 1.5
+  border-radius: 2
+kbd:
+  background-color: EFEFEF
+  border-color: BBBBBB
+  border-width: 0.5
+  border-offset: 2
+  border-radius: 2
+mark:
+  background-color: FFF3A0
+  border-offset: 1.5
+quote:
+  border-color: 1A4E8A
+  border-left-width: 3
+  font-size: 10.5
+  cite:
+    font-color: 5C6672
+    font-size: 9
+footnotes:
+  font-color: 445566

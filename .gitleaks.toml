@@ -6,6 +6,29 @@ title = "asciidocollab gitleaks config"
 [extend]
 useDefault = true
 
+# CONTENT ONLY — no `paths`, deliberately.
+#
+# A gitleaks v8 allowlist combines its conditions with OR unless `condition = "AND"` is set, so the
+# `paths` list this block used to carry did not narrow the content exemption below; it stood on its
+# own. Any finding whose PATH matched was dropped whatever it contained, which exempted every
+# `*.test.ts`, every `tests/` and `test/` directory at any depth, every `*.sh` under any directory
+# named `scripts`, and `.github/workflows/ci.yml` itself from secret scanning entirely.
+#
+# Measured rather than reasoned about, on gitleaks 8.30.1 (the workflow installs the latest v8
+# release): a scratch repository with one randomly generated AWS key written into eleven paths, the
+# same bytes in every file. With no config, all eleven were reported. With this file as it stood, six
+# vanished — `.github/workflows/ci.yml`, `b.test.ts`, `pkg/test/a.ts`, `pkg/tests/a.ts`,
+# `scripts/c.sh`, `nested/scripts/e.sh` — while `scripts/c.ts`, `apps/web/scripts/d.ts`,
+# `.github/workflows/other.yml`, `src/prod.ts` and `tests/a.ts` were still reported. Identical
+# content, different verdicts: path alone was deciding, and it matched none of the regexes below.
+#
+# Dropping `paths` is preferred over `condition = "AND"` because the exemption these three literals
+# need is not tied to a location. They are deterministic throwaway values for booting an isolated
+# local/CI stack, and they appear in compose files and env templates as well as in tests and shell
+# scripts; an AND over a path list would have to enumerate every such place and would silently start
+# reporting them the day one moved. Matching the VALUE is exactly as narrow as the exemption is.
+#
+# Do not add `paths` back. A directory is not evidence about what is in a file.
 [allowlist]
 description = "Committed test/CI fixtures — not real secrets."
 regexTarget = "match"
@@ -14,10 +37,33 @@ regexes = [
   '''Y2ktdGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVzISE=''',
   '''ci-test-encryption-key-32bytes!!''',
   '''ci-test-session-secret-for-e2e-tests''',
-]
-paths = [
-  '''.*\.test\.ts$''',
-  '''.*/tests?/.*''',
-  '''scripts/.*\.sh$''',
-  '''\.github/workflows/ci\.yml$''',
+  # The session-encryption suites' placeholder key, `0123456789abcdef` repeated to 16, 64 and 66
+  # characters (and once to 64 with a final `g`, which is the deliberately-invalid-hex negative case).
+  # It is a counting sequence, not entropy, and it lives in the git HISTORY of
+  # apps/api/tests/session-encryption.test.ts and
+  # packages/infrastructure/tests/services/session-encryption.test.ts — the working tree has since
+  # moved to `AAAA…=`, so there is no file to change even in principle.
+  #
+  # 36 findings, all of it, appeared the moment the `paths` exemption above was removed: they had been
+  # suppressed for being under a `tests/` directory rather than for being harmless. Allowlisting the
+  # VALUE is what the rest of this block already does, and it says something true about the string.
+  # It is not a way of exempting the directory again.
+  '''0123456789abcdef''',
+  # Two Asciidoctor-PDF theme key NAMES, not values of anything. `generic-api-key` fires on the
+  # `key: '<literal>'` shape, and these two names are long enough (21 and 24 characters of mixed
+  # alphanumerics and underscores) to clear its entropy floor at 3.69 and 3.72. Every other theme key
+  # in the same table is shorter or less varied and is not reported — these are the only two, checked
+  # by running the scan.
+  #
+  # They live in packages/shared/tests/print-appearance/claimed-keys.test.ts, where the table asserts
+  # which theme keys the renderer honours, and in the git history from commit 731bbf2 onwards. The
+  # names come from the gem's own theme vocabulary (heading.h6.margin-top / .margin-bottom), so they
+  # are as public as a CSS property name.
+  #
+  # Listed as two exact literals rather than a pattern over the table's shape: a regex broad enough to
+  # cover "any snake_case identifier assigned to a `key` property" would suppress a real key committed
+  # in that shape anywhere in the repository. If a future theme key trips the rule, add it here by
+  # name — the list staying explicit is the point.
+  '''heading_h6_margin_top''',
+  '''heading_h6_margin_bottom''',
 ]

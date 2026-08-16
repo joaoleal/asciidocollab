@@ -1,0 +1,15 @@
+{
+  "name": "inline-context",
+  "description": "The anchor for what an inline construct takes from the block around it. A codespan names a font of its own, so prawn re-selects the face for it and the block's ambient slant and weight never reach it — while emphasis markup around it does, because that arrives as fragment styles. The document puts a codespan in an italic caption, in a bold header column, in a bold heading, and inside `_em_` and `*strong*`, so the reference draws all four answers.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {}
+  }
+}

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  qs@6.15.1: 6.15.3
+
 importers:
 
   .:
@@ -77,6 +80,9 @@ importers:
       '@asciidocollab/infrastructure':
         specifier: workspace:*
         version: link:../../packages/infrastructure
+      '@asciidocollab/primitives':
+        specifier: workspace:*
+        version: link:../../packages/primitives
       '@asciidocollab/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -247,6 +253,9 @@ importers:
       '@asciidocollab/asciidoc-pdf':
         specifier: workspace:*
         version: link:../../packages/asciidoc-pdf
+      '@asciidocollab/primitives':
+        specifier: workspace:*
+        version: link:../../packages/primitives
       '@asciidocollab/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -546,8 +555,9 @@ importers:
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
-
-  packages/collaboration: {}
+      fonteditor-core:
+        specifier: ^2.6.3
+        version: 2.6.3
 
   packages/db:
     dependencies:
@@ -558,6 +568,9 @@ importers:
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
+      pg:
+        specifier: ^8.22.0
+        version: 8.22.0
       prisma:
         specifier: ^7.9.1
         version: 7.9.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@6.0.3)
@@ -570,6 +583,9 @@ importers:
       '@asciidocollab/asciidoc-core':
         specifier: workspace:*
         version: link:../asciidoc-core
+      '@asciidocollab/primitives':
+        specifier: workspace:*
+        version: link:../primitives
     devDependencies:
       '@types/node':
         specifier: ^24.13.3
@@ -636,11 +652,23 @@ importers:
         specifier: ^29.4.12
         version: 29.4.12(@babel/core@7.29.7)(@jest/transform@30.4.1)(@jest/types@30.4.1)(babel-jest@30.4.1(@babel/core@7.29.7))(jest-util@30.4.1)(jest@30.4.2(@types/node@24.13.3))(typescript@6.0.3)
 
+  packages/primitives:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
+
   packages/shared:
     dependencies:
       '@asciidocollab/asciidoc-core':
         specifier: workspace:*
         version: link:../asciidoc-core
+      '@asciidocollab/primitives':
+        specifier: workspace:*
+        version: link:../primitives
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -648,9 +676,6 @@ importers:
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
-      yaml:
-        specifier: ^2.9.0
-        version: 2.9.0
 
   packages/testing:
     dependencies:
@@ -6757,10 +6782,6 @@ packages:
 
   pure-rand@7.0.1:
     resolution: {integrity: sha512-oTUZM/NAZS8p7ANR3SHh30kXB+zK2r2BPcEn/awJIbOvq82WoMN4p62AWWp3Hhw50G0xMsw1mhIBLqHw64EcNQ==}
-
-  qs@6.15.1:
-    resolution: {integrity: sha512-6YHEFRL9mfgcAvql/XhwTvf5jKcOiiupt2FiJxHkiX1z4j7WL8J/jRHYLluORvc1XxB5rV20KoeK00gVJamspg==}
-    engines: {node: '>=0.6'}
 
   qs@6.15.3:
     resolution: {integrity: sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A==}
@@ -14799,10 +14820,6 @@ snapshots:
 
   pure-rand@7.0.1: {}
 
-  qs@6.15.1:
-    dependencies:
-      side-channel: 1.1.1
-
   qs@6.15.3:
     dependencies:
       es-define-property: 1.0.1
@@ -15775,7 +15792,7 @@ snapshots:
     dependencies:
       des.js: 1.1.0
       js-md4: 0.3.2
-      qs: 6.15.1
+      qs: 6.15.3
       tunnel: 0.0.6
       underscore: 1.13.8
 

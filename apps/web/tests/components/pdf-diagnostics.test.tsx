@@ -120,6 +120,25 @@ describe('PdfDiagnostics', () => {
     expect(screen.getByText(/remote image was skipped/i)).toBeInTheDocument();
   });
 
+  test('builds a bounded number of rows and says how many it withheld', () => {
+    // A producer can hand this a list as long as its own input: one theme setting per line became
+    // one diagnostic per line, and a 512 KB theme document holds forty thousand of them. Every one
+    // was a DOM node, expanded by default, re-sorted on every render of a panel that sits beside a
+    // live preview. The header still counts them all — what is not shown is said, not dropped.
+    const many = Array.from({ length: 4000 }, (_unused, index) => ({
+      ...warning,
+      message: `Problem number ${index}.`,
+    }));
+    render(<PdfDiagnostics diagnostics={[errorWithLocation, ...many]} />);
+
+    const rows = screen.getAllByRole('listitem');
+    expect(rows.length).toBeLessThanOrEqual(51);
+    expect(screen.getByText('3951 further items not listed.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /pdf diagnostics/i })
+    ).toHaveTextContent('1 error, 4000 warnings');
+  });
+
   test('caps the body height and scrolls a long list', () => {
     render(<PdfDiagnostics diagnostics={[warning, errorWithLocation]} />);
     const list = screen.getByRole('list');

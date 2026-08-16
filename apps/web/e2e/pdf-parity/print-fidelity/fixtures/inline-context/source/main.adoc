@@ -1,0 +1,31 @@
+= Inline Context
+
+Every construct below puts a codespan somewhere that already has a slant or a weight of its own, so
+the reference says which of the two the page really draws.
+
+.A caption is set in italic, and the `codespan` inside it is not
+[cols="1,1m",options="header"]
+|===
+| Action | Key
+
+| Delete the line | Ctrl+D
+| Insert `code` here | Ctrl+E
+|===
+
+The style operators a column spec can carry, in a header column the renderer sets bold:
+
+[cols="1h,3",options="header"]
+|===
+| Operator | Meaning
+
+| `d` | Default paragraph text
+| `m` | Monospace
+|===
+
+A paragraph carrying _emphasis around `slanted` text_ and *strong around `weighty` text*, which is
+the other half of the rule: what the markup contributes travels into the fragment, and what the block
+sets around it does not.
+
+== A heading with `nonbold` in it
+
+The closing paragraph, so the heading above is not the last thing on the page.

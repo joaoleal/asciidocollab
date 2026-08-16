@@ -1,0 +1,70 @@
+= Table Cells
+
+== Alignment
+
+Rows one and two are reference rows, left- then right-aligned throughout; row three is tall and row
+four is flat, which are the two cases a vertical alignment has to be right in.
+
+[cols="1,1,1,1,1"]
+|===
+|leftA |leftB |leftC |leftD |leftE
+
+>|rightA >|rightB >|rightC >|rightD >|rightE
+
+|cinder marble ripple candle timber pebble willow socket ribbon garden hollow minnow
+^|centred
+>|righted
+.^|middled
+.>|bottomed
+
+|flatA .^|flatB .>|flatC |flatD |flatE
+|===
+
+== Cell styles
+
+[cols="1a,1d,1e,1h,1l,1m,1s,1v"]
+|===
+|asciidoc cell
+|default cell
+|emphasis cell
+|header cell
+|literal cell
+|mono cell
+|strong cell
+|verse cell
+|===
+
+== An AsciiDoc cell keeps the page's alignment
+
+[cols="1a,1"]
+|===
+|An AsciiDoc cell holds a whole document of its own, and a left-aligned one is inked at the page's
+own alignment rather than flush left, which this theme justifies.
+
+|A plain cell holds a run of text, and a left-aligned one is inked flush left however the page is
+set, so its lines end wherever the words do.
+|===
+
+== A footer row
+
+[%header%footer,cols="1,1,1"]
+|===
+|Head one |Head two |Head three
+|Body one |Body two |Body three
+|Foot one |Foot two |Foot three
+|===
+
+== Sized by content
+
+[%autowidth]
+|===
+|short |a much longer cell than the other one
+|xx |yy
+|===
+
+== Sized by weight
+
+|===
+|alpha |beta |gamma
+|one |two |three
+|===

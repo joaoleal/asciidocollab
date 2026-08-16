@@ -34,6 +34,16 @@ const TIMER_KEY = 'previewRefreshTiming';
 const SMALL_DOCUMENT_LINES = 100;
 const LARGE_DOCUMENT_LINES = 15_000;
 
+/**
+ * How long the engine requests must stay unchanged before the page's own warm-ups count as settled.
+ *
+ * Sized against what it has to separate rather than by feel: the two mount-time warm-ups fetch the
+ * same 71 MB file, so the second starts once the first is off the connection — a gap measured in
+ * hundreds of milliseconds on a loaded runner, not seconds. Three seconds of silence is comfortably
+ * past that, and the wait ends as soon as the silence is reached rather than sleeping for it.
+ */
+const WARMUP_QUIET_MS = 3000;
+
 /** The target for a short document: the refresh must land within this of the last keystroke. */
 const SMALL_DOCUMENT_TARGET_MS = 200;
 
@@ -258,6 +268,17 @@ function report(line: string): void {
   process.stdout.write(`\n  ${line}\n`);
 }
 
+/**
+ * Switch the preview to the Print style and wait until the page it presents is on screen.
+ *
+ * @param page - The page with the preview open.
+ */
+async function selectPrintStyle(page: Page): Promise<void> {
+  await page.getByTestId('preview-style-print').click();
+  await expect(page.getByTestId('asciidoc-output')).toHaveAttribute('data-preview-style', 'print');
+  await expect(page.getByTestId('print-page-viewport')).toBeVisible();
+}
+
 test.describe('preview refresh delay after the last keystroke', () => {
   // Wide per-test budget, and serial. These are timing measurements: run beside two other browser
   // workers they would measure contention for this machine and report it as the preview being slow,
@@ -368,5 +389,149 @@ test.describe('preview refresh delay after the last keystroke', () => {
         `${LARGE_DOCUMENT_BASELINE_MS} ms. The longest delay the schedule may choose is ` +
         `${PREVIEW_DEBOUNCE_MS} ms, the same fixed delay this document waited before`,
     ).toBeLessThanOrEqual(LARGE_DOCUMENT_BASELINE_MS);
+  });
+
+  // The Print style is held to the SAME figures, deliberately measured the same way on the same
+  // documents with the same sample count. Its whole design rests on the preview's appearance being
+  // decided by reading a theme rather than by running the renderer — no wasm VM, no PDF — and the
+  // only honest way to say that is to measure it against the budget the other styles already meet.
+  //
+  // Raising a threshold to make these pass would be the regression, not the pass.
+  test('a short document refreshes just as promptly under the Print style', async ({ page }) => {
+    const name = `print-${SMALL_DOCUMENT_LINES}.adoc`;
+    await createAdocFile(
+      page,
+      projectId,
+      name,
+      sizedDocument(SMALL_DOCUMENT_LINES, `size-${SMALL_DOCUMENT_LINES}`),
+    );
+    await openProject(page, projectId);
+    await openFile(page, name, /Sized Document/);
+    await expect(editorContent(page)).toHaveAttribute('contenteditable', 'true', { timeout: 30_000 });
+
+    await expandPreview(page);
+    await expect(page.locator(OUTPUT_SELECTOR)).toContainText(`A ${SMALL_DOCUMENT_LINES}-line document.`, {
+      timeout: 60_000,
+    });
+    await selectPrintStyle(page);
+    await expect(page.locator('[aria-label="up to date"]')).toBeVisible({ timeout: 60_000 });
+
+    const samples = await refreshSamples(page, `print-${SMALL_DOCUMENT_LINES}`);
+    const measured = medianMs(samples);
+    report(
+      `refresh after last keystroke, ${SMALL_DOCUMENT_LINES} lines, Print style: ${samples.join(', ')} ` +
+        `ms → median ${measured} ms (target ≤ ${SMALL_DOCUMENT_TARGET_MS} ms, the same target the ` +
+        `other styles meet)`,
+    );
+
+    expectSamplesHoldTogether(samples, SMALL_DOCUMENT_LINES);
+    expect(
+      measured,
+      `the median refresh landed ${measured} ms after the last keystroke under the Print style, ` +
+        `against the ${SMALL_DOCUMENT_TARGET_MS} ms target the other two styles are held to. ` +
+        `Resolving a theme is a YAML parse and about a hundred key reads, memoised on the theme's ` +
+        `own text — if this is over, something on the keystroke path is doing more than that`,
+    ).toBeLessThanOrEqual(SMALL_DOCUMENT_TARGET_MS);
+  });
+
+  test('a very large document refreshes no later under the Print style', async ({ page }) => {
+    const name = `print-${LARGE_DOCUMENT_LINES}.adoc`;
+    await createAdocFile(
+      page,
+      projectId,
+      name,
+      sizedDocument(LARGE_DOCUMENT_LINES, `size-${LARGE_DOCUMENT_LINES}`),
+    );
+    await openProject(page, projectId);
+    await openFile(page, name, /Sized Document/);
+    await expect(editorContent(page)).toHaveAttribute('contenteditable', 'true', { timeout: 60_000 });
+
+    await expandPreview(page);
+    await expect(page.locator(OUTPUT_SELECTOR)).toContainText(`A ${LARGE_DOCUMENT_LINES}-line document.`, {
+      timeout: 120_000,
+    });
+    await selectPrintStyle(page);
+    await expect(page.locator('[aria-label="up to date"]')).toBeVisible({ timeout: 120_000 });
+
+    const samples = await refreshSamples(page, `print-${LARGE_DOCUMENT_LINES}`);
+    const measured = medianMs(samples);
+    report(
+      `refresh after last keystroke, ${LARGE_DOCUMENT_LINES} lines, Print style: ${samples.join(', ')} ` +
+        `ms → median ${measured} ms (recorded ${LARGE_DOCUMENT_BASELINE_MS} ms for the other styles)`,
+    );
+
+    expectSamplesHoldTogether(samples, LARGE_DOCUMENT_LINES);
+    expect(
+      measured,
+      `the median refresh landed ${measured} ms after the last keystroke under the Print style, ` +
+        `against the ${LARGE_DOCUMENT_BASELINE_MS} ms recorded for the same document in the other styles`,
+    ).toBeLessThanOrEqual(LARGE_DOCUMENT_BASELINE_MS);
+  });
+
+  test('nothing on the Print style’s path boots a render engine of its own', async ({ page }) => {
+    // The claim behind the budget above: the appearance is READ from a theme, never rendered. A wasm
+    // engine fetched on this path would be the one cost no amount of memoisation could hide, and it
+    // would show up here as a request rather than as a slow sample.
+    //
+    // Recorded from before the page exists, because the project editor boots engines of its own that
+    // have nothing to do with this: `usePdfExport` and `usePdfPreview` are both called unconditionally
+    // (project-editor-layout.tsx:744 and :1048) and each creates a worker on mount and warms it, so
+    // every project page fetches the 71 MB engine twice before any style is chosen. Listening only
+    // from just before the style is selected caught whichever of those two was still starting — the
+    // second is queued behind the first — and reported a mount-time warm-up as something the Print
+    // path had done. It passed on a fast machine and failed on a CI runner, which is the signature of
+    // a window that opens too late rather than of a page that behaves differently.
+    const engineRequests: string[] = [];
+    page.on('request', (request) => {
+      if (/\.wasm(\?|$)/.test(request.url())) engineRequests.push(request.url());
+    });
+
+    const name = `print-engine-${SMALL_DOCUMENT_LINES}.adoc`;
+    await createAdocFile(
+      page,
+      projectId,
+      name,
+      sizedDocument(SMALL_DOCUMENT_LINES, `size-${SMALL_DOCUMENT_LINES}`),
+    );
+    await openProject(page, projectId);
+    await openFile(page, name, /Sized Document/);
+    await expandPreview(page);
+    await expect(page.locator(OUTPUT_SELECTOR)).toContainText(`A ${SMALL_DOCUMENT_LINES}-line document.`, {
+      timeout: 60_000,
+    });
+
+    // Wait for the page's own warm-ups to go quiet, so what follows is attributable to the style and
+    // to nothing else. The signal is the absence of a NEW engine request for a while, which is the
+    // only thing that says the mount-time boots have all started — a fixed sleep would be the same
+    // guess that made this fail.
+    let lastCount = -1;
+    let lastChangeAt = Date.now();
+    await expect
+      .poll(
+        () => {
+          if (engineRequests.length !== lastCount) {
+            lastCount = engineRequests.length;
+            lastChangeAt = Date.now();
+          }
+          return Date.now() - lastChangeAt;
+        },
+        { timeout: 120_000, intervals: [250] },
+      )
+      .toBeGreaterThanOrEqual(WARMUP_QUIET_MS);
+
+    // The readiness signal has to have had something to wait for. Without this the whole test passes
+    // trivially on a page that fetched no engine at all — a build with the engine missing, a warm-up
+    // that silently stopped being posted — and would go on reporting that the Print style boots
+    // nothing while proving only that nothing boots anything.
+    expect(
+      engineRequests.length,
+      'the project page boots its own engines at mount, which is what this test has to see settle first',
+    ).toBeGreaterThan(0);
+
+    const beforePrint = engineRequests.length;
+    await selectPrintStyle(page);
+    await timeOneRefresh(page, 'PRINT-NO-ENGINE');
+    const causedByPrint = engineRequests.slice(beforePrint);
+    expect(causedByPrint, `the Print style fetched ${causedByPrint.join(', ')}`).toEqual([]);
   });
 });

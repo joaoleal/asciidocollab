@@ -5,10 +5,34 @@
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./assets/fonts/manifest.json": "./assets/fonts/manifest.json",
+    "./assets/fonts/*": "./assets/fonts/*",
+    "./assets/base14-fonts/manifest.json": "./assets/base14-fonts/manifest.json",
+    "./assets/base14-fonts/*": "./assets/base14-fonts/*",
+    "./assets/admonition-icons/manifest.json": "./assets/admonition-icons/manifest.json",
+    "./assets/admonition-icons/*": "./assets/admonition-icons/*"
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
   "scripts": {
     "build": "tsc",
     "build:wasm": "bash ruby/build-wasm.sh",
-    "test": "jest --passWithNoTests",
+    "generate:catalogue-fonts": "node scripts/generate-catalogue-fonts.mjs",
+    "check:catalogue-fonts": "node scripts/generate-catalogue-fonts.mjs --check",
+    "generate:base14-fonts": "node scripts/generate-base14-fonts.mjs",
+    "check:base14-fonts": "node scripts/generate-base14-fonts.mjs --check",
+    "generate:admonition-icons": "node scripts/generate-admonition-icons.mjs",
+    "check:admonition-icons": "node scripts/generate-admonition-icons.mjs --check",
+    "generate:rouge-palette": "node scripts/generate-rouge-palette.mjs",
+    "check:rouge-palette": "node scripts/generate-rouge-palette.mjs --check",
+    "test": "jest",
     "test:ci": "jest --coverage --coverageReporters=text lcov",
     "test:integration": "node tests/integration/engine-smoke.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json"
@@ -20,6 +44,7 @@
   },
   "devDependencies": {
     "@asciidocollab/shared": "workspace:*",
-    "@types/node": "^24.13.3"
+    "@types/node": "^24.13.3",
+    "fonteditor-core": "^2.6.3"
   }
 }

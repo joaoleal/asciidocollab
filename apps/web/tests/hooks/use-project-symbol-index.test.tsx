@@ -221,6 +221,40 @@ describe('useProjectSymbolIndex', () => {
     expect(refetched).toContain('a'); // the invalidated file is re-read
   });
 
+  test('the first build announces the include contents it fetched', async () => {
+    // The preview posts its render as soon as the panel opens, well before the include tree's contents
+    // arrive — so the document it renders holds the open file alone and every include line comes back
+    // as "Unresolved directive". The arrival has to be announced, or that notice stays on screen until
+    // some unrelated signal (toggling included files, a keystroke) happens to re-post a render.
+    const { result } = renderHook(() =>
+      useProjectSymbolIndex({ projectId: 'p1', rootFileId: 'main', openFileId: 'main', liveContent: CONTENT.main }),
+    );
+
+    await waitFor(() => expect(result.current.reachableDocVersion).toBeGreaterThan(0));
+    // What was announced is a snapshot that can actually resolve the includes.
+    expect(Object.keys(result.current.getFiles())).toEqual(
+      expect.arrayContaining(['main.adoc', 'a.adoc', 'b.adoc']),
+    );
+  });
+
+  test('a rebuild that fetches nothing new stays quiet', async () => {
+    // A build also runs shortly after every edit settles. Announcing an unchanged snapshot there would
+    // re-post a render of the same document on every pause in typing.
+    const { result, rerender } = renderHook(
+      ({ live }: { live: string }) =>
+        useProjectSymbolIndex({ projectId: 'p1', rootFileId: 'main', openFileId: 'main', liveContent: live }),
+      { initialProps: { live: CONTENT.main } },
+    );
+    await waitFor(() => expect(result.current.reachableDocVersion).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const settled = result.current.reachableDocVersion;
+
+    rerender({ live: `${CONTENT.main}\nA new paragraph.\n` });
+    await new Promise((resolve) => setTimeout(resolve, 400)); // past the debounced rebuild
+
+    expect(result.current.reachableDocVersion).toBe(settled);
+  });
+
   test('a content-changed frame for a reachable non-open file re-reads it and bumps reachableDocVersion', async () => {
     const { result } = renderHook(() =>
       useProjectSymbolIndex({ projectId: 'p1', rootFileId: 'main', openFileId: 'main', liveContent: CONTENT.main }),

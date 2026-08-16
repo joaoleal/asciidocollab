@@ -25,8 +25,27 @@ gem "asciidoctor-pdf", "2.3.24"
 # to, and the one the wasm engine loads. Installing it unpinned put TWO copies in the image.
 gem "prawn-svg", "0.34.2"
 
-# Source-block highlighting.
-gem "rouge", "5.0.0"
+# Source-block highlighting. MUST stay in lockstep with the wasm engine's rouge
+# (packages/asciidoc-pdf/ruby/Gemfile), for the same reason asciidoctor-pdf must: parity compares the
+# two toolchains, so a rouge only ONE side has is measured as a fidelity defect in the app.
+#
+# It was 5.0.0 here while the engine shipped 4.7.0, and the two disagree about exactly one thing in
+# this corpus — rouge 5's Python overhaul (rouge-ruby/rouge#2271) lexes the module in `from X import`
+# as `Name::Namespace`, which `asciidoctor_pdf_default` inks #bb0066 bold, where 4.7.0 emits a bare
+# `Name` the theme leaves at the code colour. So the `highlighting` and `highlighting-themed`
+# references were drawing a word in a colour and weight the shipped app cannot produce, and the Print
+# fidelity oracle was scoring the preview against it.
+#
+# The convergence has to be DOWNWARD, and this is the constraint that decides it: rouge >= 5.0
+# declares a runtime dependency on the `strscan` GEM (`~> 3.1`), and Ruby 3.3's built-in strscan is
+# 3.0.9, so bundler must vendor strscan 3.1.8 — which ships a C extension (`ext/strscan/extconf.rb`).
+# The wasm engine's closure may contain no native extension (WASI has no host extension loading), and
+# `packages/asciidoc-pdf/ruby/build-wasm.sh` fails closed on exactly that. Verified by resolving the
+# engine's Gemfile against `rouge "~> 5.0"`: strscan 3.1.8 enters the closure and trips the gate.
+# So rouge cannot cross 5.0 on the engine side, and this side must not cross it alone.
+#
+# 4.7.0 is the newest 4.x, and unlike 5.x it has no runtime dependencies at all.
+gem "rouge", "4.7.0"
 
 # Citations and diagrams, for the two fixtures whose references cannot be built without them. Kept in
 # the same closure rather than a second image so there is ONE reference toolchain: a second image is

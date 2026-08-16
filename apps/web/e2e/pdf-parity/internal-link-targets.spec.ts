@@ -12,6 +12,7 @@
  * Runs stack-free and engine-free: it only reads files that are in the repository.
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
@@ -24,10 +25,61 @@ function referencePath(fixture: string, file = 'reference.pdf'): string {
   return path.join(FIXTURES_DIR, fixture, file);
 }
 
-/** Read a reference PDF, skipping the test cleanly when the fixture is not present. */
+/**
+ * Every reference PDF git is tracking under the fixtures tree, by absolute path.
+ *
+ * The same derivation `pdf-parity-render.spec.ts` uses, and imported from git rather than hard-coded
+ * for the same reason: what the repository is COMMITTED to is a fact about the index, not a list a
+ * spec restates and then forgets to update.
+ */
+function committedReferencePdfs(): ReadonlySet<string> {
+  const listed = execFileSync('git', ['ls-files', '-z', '--', '.'], {
+    cwd: FIXTURES_DIR,
+    encoding: 'utf8',
+  });
+  return new Set(
+    listed
+      .split('\0')
+      .filter((entry) => entry.endsWith('.pdf'))
+      .map((entry) => path.join(FIXTURES_DIR, entry)),
+  );
+}
+
+const committedReferences = committedReferencePdfs();
+
+/**
+ * Read a fixture's committed reference PDF.
+ *
+ * It ASSERTS the reference is there; it does not skip. This used to be
+ * `test.skip(!existsSync(file), …)`, which contradicted the policy stated at the top of
+ * playwright.pdf-parity.config.ts — the suite self-gates on the wasm engine, but "does NOT extend
+ * that leniency to a missing reference PDF, since a skip there is a comparison silently deleted" —
+ * and contradicted the hardening already applied to `pdf-parity-render.spec.ts`, whose twin
+ * assertions this spec's were left behind by.
+ *
+ * The failure mode was concrete: deleting a fixture directory wholesale removes it from
+ * `parityCases`, so the render suite loses that comparison, AND turned all three assertions here into
+ * a green skip. Nothing anywhere then said the document had stopped being checked.
+ *
+ * The one legitimate absence — a fixture declared but never given a reference, the inert template —
+ * is untracked by definition, so it is distinguished the way the render spec distinguishes it: by
+ * asking git, not by name. An untracked reference is still a hard failure HERE, because unlike the
+ * render suite this spec names its fixtures explicitly: it was written against `theme-editing`,
+ * `extension-narrow-contents` and `code`, all of which are committed. A named fixture that has no
+ * committed reference is a spec pointing at something that does not exist.
+ */
 function readReference(fixture: string): Uint8Array {
   const file = referencePath(fixture);
-  test.skip(!existsSync(file), `reference PDF missing for fixture ${fixture}`);
+  const label = path.relative(FIXTURES_DIR, file);
+  expect(
+    existsSync(file),
+    committedReferences.has(file)
+      ? `${label} is committed to git but missing from the working tree — the reference was lost, ` +
+          'not never generated. Restore it (git checkout) rather than regenerating it.'
+      : `${label} is not there. This spec names its fixtures, so a missing reference is a broken ` +
+          'expectation and not a fixture that has yet to be generated — regenerate the corpus ' +
+          '(e2e/pdf-parity/tools/build-references.mjs) or update the fixture this test names.',
+  ).toBe(true);
   return new Uint8Array(readFileSync(file));
 }
 

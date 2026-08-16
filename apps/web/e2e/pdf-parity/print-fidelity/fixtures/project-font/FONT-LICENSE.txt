@@ -1,0 +1,18 @@
+The four project-supplied faces under source/ (project-mono-regular.ttf,
+project-mono-bold.ttf, project-mono-italic.ttf, project-mono-bold-italic.ttf)
+are subsets of Liberation Mono 2.1.5, redistributed under the SIL Open Font
+License, Version 1.1.
+
+  Digitized data copyright (c) 2010 Google Corporation.
+  Copyright (c) 2012 Red Hat, Inc.
+  Liberation is a trademark of Red Hat, Inc.
+  Licensed under the SIL Open Font License, Version 1.1
+  http://scripts.sil.org/OFL
+
+They are renamed only in the FILE name and in the theme's own font catalogue,
+which is the point of the fixture: the theme calls the family "Project Mono"
+while the file goes on calling itself "Liberation Mono". The name tables are
+untouched, so the export embeds the face under the name the file carries.
+
+They are subset to the characters source/main.adoc sets (U+0020-U+007E plus the
+punctuation Asciidoctor substitutes in) to keep four faces to ~14 kB each.

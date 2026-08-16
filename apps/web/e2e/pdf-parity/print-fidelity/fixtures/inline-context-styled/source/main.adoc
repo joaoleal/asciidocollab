@@ -1,0 +1,21 @@
+= Styled Inline Context
+
+The theme sets the codespan bold and gives it a chip, so this document says which of the two the
+renderer forces and which it still leaves to the markup around the construct.
+
+.A caption in italic, with a `codespan` the theme sets bold
+[cols="1,1m",options="header"]
+|===
+| Action | Key
+
+| Delete the line | Ctrl+D
+|===
+
+[cols="1h,3",options="header"]
+|===
+| Operator | Meaning
+
+| `d` | Default paragraph text
+|===
+
+A paragraph carrying _emphasis around `slanted` text_ and, outside it, plain `upright` text.

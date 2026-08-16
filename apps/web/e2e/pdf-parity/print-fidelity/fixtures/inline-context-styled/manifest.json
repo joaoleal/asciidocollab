@@ -1,0 +1,18 @@
+{
+  "name": "inline-context-styled",
+  "description": "The same question as `inline-context`, asked of a theme that names ONE axis of the codespan's font style. `to_styles` turns `bold` into a one-element set and `update_fragment` merges it, so the renderer forces the weight everywhere and still takes the slant from the markup — while the `:monospaced` column branch, which reads only the codespan's family, size and colour, takes neither. The theme also gives the codespan a chip, so the raster says which constructs the renderer paints one behind.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "codespan-theme.yml",
+    "fontPaths": [],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "codespan-theme.yml"
+    }
+  }
+}

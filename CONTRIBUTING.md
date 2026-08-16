@@ -52,7 +52,7 @@ See the [README](README.md) for full prerequisites and configuration instruction
 pnpm --filter @asciidocollab/domain test
 
 # All packages
-pnpm -r test --passWithNoTests
+pnpm -r test
 ```
 
 ### Lint and type-check

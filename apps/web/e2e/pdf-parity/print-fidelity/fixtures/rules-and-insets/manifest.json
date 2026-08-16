@@ -1,0 +1,21 @@
+{
+  "name": "rules-and-insets",
+  "description": "The anchor for the marks the renderer strokes rather than sets, and the insets it pads a block with: a table whose frame colour differs from its grid at the same width, the rule under a header row at a width no whole pixel can express, an admonition's column rule and its two-sided content inset, a monospaced column beside a plain one, and a sidebar's bottom padding. Every one of them was wrong while the typographic anchors passed, because none of them is typography.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "rules-theme.yml",
+    "fontPaths": [],
+    "attributes": {
+      "icons": "font"
+    }
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "rules-theme.yml",
+      "icons": "font"
+    }
+  }
+}

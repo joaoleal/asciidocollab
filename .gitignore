@@ -67,6 +67,11 @@ apps/web/public/workers/
 .e2e-storage-*/
 # Isolated e2e PDF converter-extension drop folder, written into by pdf-extensions.spec.ts
 .e2e-pdf-extensions/
+# Left behind by checkouts predating the machine-scoped stack lock. The lock no
+# longer lives here: it guards one Compose project per Docker daemon, so keying
+# it to a working copy let a second clone or worktree walk straight past it.
+# See scripts/lib/e2e-lock.sh.
+.e2e-local.lock
 
 # Generated spell-check dictionary assets (copied from dictionary-en at build)
 apps/web/public/dictionaries/

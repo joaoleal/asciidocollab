@@ -71,7 +71,7 @@ DEPENDENCIES
   js (~> 2.7)
   prawn-svg
   prawn-templates (~> 0.1)
-  rouge (~> 4.5)
+  rouge (= 4.7.0)
   text-hyphen (~> 1.5)
 
 CHECKSUMS

@@ -1,0 +1,55 @@
+= Description Lists
+
+== Behind a list
+
+alpha:: the first description
+beta:: the second description
+
+closes-simple
+
+== A list inside a description
+
+zeta:: the description that carries a list
+* the first nested item
+* the second nested item
+
+closes-nested
+
+== Several blocks
+
+epsilon:: the fifth description
++
+the block that ends the description
+
+closes-compound
+
+== Terms of one item
+
+iota::
+kappa:: the description both terms share
+
+closes-shared
+
+== Horizontal
+
+[horizontal]
+lambda:: the horizontal description, long enough that it has to break somewhere, which is what says how wide the description column was allowed to be
+mu:: shorter
+nu:: shorter still
+
+closes-horizontal
+
+== Terms outgrowing half the measure
+
+[horizontal]
+a term long enough that no half of the measure could ever hold it and the renderer has to cap the column it is set in:: the description beside the capped column
+xi:: brief
+
+closes-capped
+
+== Before a heading
+
+gamma:: the third description
+delta:: the fourth description
+
+=== closes-heading

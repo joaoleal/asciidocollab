@@ -1,15 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { ArrowUpDown, ChevronRight, Loader2, ZoomIn, ZoomOut } from "lucide-react";
-import {
-  AnnotationLayer,
-  getDocument,
-  GlobalWorkerOptions,
+import { ArrowUpDown, ChevronRight, Loader2 } from "lucide-react";
+// TYPES ONLY. The runtime module is loaded on first paint — see `loadPdfjs` for why it must not be a
+// top-level value import.
+import type {
+  PDFDocumentLoadingTask,
+  PDFDocumentProxy,
+  RenderTask,
   TextLayer,
-  type PDFDocumentLoadingTask,
-  type PDFDocumentProxy,
-  type RenderTask,
 } from "pdfjs-dist";
 import type {
   PdfSourceMap,
@@ -22,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { PdfDiagnostics } from "@/components/pdf-diagnostics";
 import { RenderStatsOverlay, type RenderStatRow } from "@/components/preview/render-stats-overlay";
 import { PreviewModeToggle, type PreviewMode } from "@/components/preview-mode-toggle";
+import { PreviewZoomControl, usePreviewZoom } from "@/components/preview-zoom-control";
 import type { ScrollRequest } from "@/hooks/use-asciidoc-preview";
 import { assembledEntryAtPdfPosition } from "@/lib/pdf/pdf-click-to-source";
 import { isSelectionDragClick } from "@/lib/preview-selection";
@@ -44,19 +44,46 @@ type DiagnosticLocation = NonNullable<RenderDiagnostic["location"]>;
 const PDF_WORKER_SOURCE = "/vendor/pdfjs/pdf.worker.min.mjs";
 
 /**
+ * The loaded pdf.js module, or `null` until something has asked for it.
+ *
+ * Pdf.js is imported LAZILY, and every use of it in this file goes through {@link loadPdfjs}, because
+ * the library cannot be evaluated outside a browser at all: `pdfjs-dist@6.2.108` runs
+ * `const SCALE_MATRIX = new DOMMatrix()` at module scope in `src/display/canvas.js`, and `DOMMatrix`
+ * is not a Node global. The package offers no `node` export condition — its only entry is the browser
+ * build (`build/pdf.mjs`) — so there is no server-safe way to name it in a static import.
+ *
+ * The `"use client"` directive at the top of this file does NOT prevent that. It marks where the
+ * component's interactivity runs; Next.js still evaluates client modules in Node to server-render the
+ * page. A top-level `import { getDocument } from "pdfjs-dist"` therefore took down every page that
+ * reaches this panel — the project editor and the theme editor — with a full-screen
+ * `DOMMatrix is not defined` overlay in dev, before any of it reached a browser.
+ *
+ * Keeping the lazy import HERE rather than making each consumer load the panel through
+ * `next/dynamic(..., { ssr: false })` is deliberate: the dependency that cannot survive the server is
+ * this module's, so this module is where it is contained. A consumer-side fix has to be repeated,
+ * correctly, by everyone who ever renders the panel, and the third consumer to forget re-breaks the
+ * pages that already worked.
+ *
+ * Cached as the PROMISE, not the module, so that concurrent paints (a zoom and a fresh document
+ * arriving together) share one load rather than racing two.
+ */
+let pdfjsModule: Promise<typeof import("pdfjs-dist")> | null = null;
+
+/**
+ * Load pdf.js, once per page.
+ *
+ * @returns The pdf.js module namespace, resolved from the shared in-flight or completed load.
+ */
+function loadPdfjs(): Promise<typeof import("pdfjs-dist")> {
+  pdfjsModule ??= import("pdfjs-dist");
+  return pdfjsModule;
+}
+
+/**
  * Fallback render scale used only before the panel's width has been measured (1 = intrinsic 72dpi
  * point size). Once a width is known the pages fit to it, or to the user's explicit zoom factor.
  */
 const FALLBACK_SCALE = 1.5;
-
-/** Smallest zoom factor the control allows (a quarter of the intrinsic point size). */
-const MIN_ZOOM = 0.25;
-
-/** Largest zoom factor the control allows (four times the intrinsic point size). */
-const MAX_ZOOM = 4;
-
-/** Multiplicative step each zoom-in/zoom-out press applies to the current scale. */
-const ZOOM_STEP = 1.25;
 
 /**
  * Horizontal padding, in CSS pixels, the pages container reserves on each side (mirrors its `p-4`
@@ -138,28 +165,6 @@ const SYNC_TOP_FRACTION = 0.18;
 const SYNC_TOP_MARGIN = 12;
 
 
-/**
- * The zoom control's state: `fit` scales each page to the panel's current width, while `custom` pins
- * every page to an explicit factor of its intrinsic point size.
- */
-type ZoomState = { mode: "fit" } | { mode: "custom"; scale: number };
-
-/** Sentinel `<select>` value the preset control uses for fit-to-width mode. */
-const FIT_PRESET_VALUE = "fit";
-
-/**
- * The zoom presets offered by the header selector, in display order. `fit` maps to fit-to-width mode;
- * each numeric preset pins a `custom` scale factor. The `<option>` value is the stringified factor so
- * the selected preset round-trips through the native control without a lookup table.
- */
-const ZOOM_PRESETS: readonly { value: string; label: string; scale: number }[] = [
-  { value: "0.75", label: "75%", scale: 0.75 },
-  { value: "1", label: "100%", scale: 1 },
-  { value: "1.25", label: "125%", scale: 1.25 },
-  { value: "1.5", label: "150%", scale: 1.5 },
-  { value: "2", label: "200%", scale: 2 },
-];
-
 /** Human-readable copy per render phase, keyed to the protocol so it cannot drift. */
 const PHASE_LABELS: Record<RenderPhase, string> = {
   "vm-init": "Starting the preview engine…",
@@ -177,10 +182,14 @@ const PENDING_LABEL = "Preparing the preview…";
 /** Idle empty-state copy shown before any PDF exists. */
 const EMPTY_LABEL = "The PDF preview will appear here as you edit.";
 
-/** Configure the pdf.js worker once, without clobbering a source the host app already set. */
-function ensurePdfWorkerConfigured(): void {
-  if (GlobalWorkerOptions.workerSrc === "") {
-    GlobalWorkerOptions.workerSrc = PDF_WORKER_SOURCE;
+/**
+ * Configure the pdf.js worker once, without clobbering a source the host app already set.
+ *
+ * @param pdfjs - The loaded pdf.js module, since it is no longer available at module scope.
+ */
+function ensurePdfWorkerConfigured(pdfjs: typeof import("pdfjs-dist")): void {
+  if (pdfjs.GlobalWorkerOptions.workerSrc === "") {
+    pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER_SOURCE;
   }
 }
 
@@ -466,8 +475,6 @@ export function PdfPreviewPanel({
   // The space (in CSS pixels) a page may occupy inside the scroll viewport, measured by a
   // ResizeObserver; `0` until the first measurement, which falls back to the fixed scale.
   const [containerWidth, setContainerWidth] = useState(0);
-  // The active zoom: fit-to-width by default, or an explicit factor once the user zooms.
-  const [zoom, setZoom] = useState<ZoomState>({ mode: "fit" });
   // A page's intrinsic (scale 1) width from the loaded document, used to turn fit-to-width into a
   // scale factor; `0` until the first page is measured.
   const [basePageWidth, setBasePageWidth] = useState(0);
@@ -488,10 +495,11 @@ export function PdfPreviewPanel({
   // The scale the user is currently asking for (fit-to-width or an explicit factor), known
   // synchronously so the header readout and the CSS transform can respond without a render round-trip.
   const isFitMeasured = containerWidth > 0 && basePageWidth > 0;
-  const fitScale = isFitMeasured
-    ? clamp(containerWidth / basePageWidth, MIN_ZOOM, MAX_ZOOM)
-    : FALLBACK_SCALE;
-  const targetScale = zoom.mode === "custom" ? zoom.scale : fitScale;
+  const zoomModel = usePreviewZoom(
+    isFitMeasured ? containerWidth / basePageWidth : undefined,
+    FALLBACK_SCALE,
+  );
+  const targetScale = zoomModel.targetScale;
   targetScaleReference.current = targetScale;
 
   // Instant feedback: whenever the target scale diverges from the scale the visible pages were painted
@@ -579,8 +587,6 @@ export function PdfPreviewPanel({
     const data = documentBytesReference.current;
     if (data === null || pagesContainer === null) return;
 
-    ensurePdfWorkerConfigured();
-
     // Every page renders at the debounced committed scale, so one CSS transform ratio describes the
     // whole stack while a re-render is pending.
     const scale = committedScale;
@@ -605,6 +611,15 @@ export function PdfPreviewPanel({
     let firstPageWidth = 0;
 
     const paint = async (): Promise<void> => {
+      // pdf.js itself, which only exists once a browser has evaluated it (see `loadPdfjs`). After the
+      // first paint this resolves from the cached promise within a microtask, so the extra await costs
+      // nothing on the repaints that happen per zoom step and per document.
+      const pdfjs = await loadPdfjs();
+      // The effect may already have been torn down while the module was loading; nothing below has
+      // registered anything with the cleanup yet, so returning here is the whole of the unwind.
+      if (cancelled) return;
+      ensurePdfWorkerConfigured(pdfjs);
+
       // A COPY, because pdf.js takes ownership of what it is given: the array's buffer is transferred
       // to its worker and left detached here. Handed the panel's own bytes, the first paint emptied
       // them — and every paint after that got a zero-length document.
@@ -618,7 +633,7 @@ export function PdfPreviewPanel({
       //
       // It also quietly retired the unchanged-document check: `sameBytes` compared every new render
       // against an emptied array, never matched, and repainted the whole stack each time.
-      loadingTask = getDocument({ data: new Uint8Array(data) });
+      loadingTask = pdfjs.getDocument({ data: new Uint8Array(data) });
       const pdfDocument = await loadingTask.promise;
       if (cancelled) return;
       setPageCount(pdfDocument.numPages);
@@ -740,7 +755,7 @@ export function PdfPreviewPanel({
         if (cancelled) return;
 
         // Selectable text overlay: pdf.js lays transparent, positioned glyph spans over the canvas.
-        const textLayer = new TextLayer({
+        const textLayer = new pdfjs.TextLayer({
           textContentSource: page.streamTextContent(),
           container: textDiv,
           viewport,
@@ -754,7 +769,7 @@ export function PdfPreviewPanel({
         if (cancelled) return;
         // pdfjs-dist 6 moved `linkService` onto the constructor and added `commentManager` /
         // `annotationStorage`; the preview supplies neither editing nor comments, so both are null.
-        const annotationLayer = new AnnotationLayer({
+        const annotationLayer = new pdfjs.AnnotationLayer({
           div: annotationDiv,
           page,
           viewport,
@@ -973,48 +988,6 @@ export function PdfPreviewPanel({
   // panel still working on something.
   const showEmptyState = pdf === null && !isRendering && error === undefined;
 
-  // The readout follows the target scale the user is asking for so it updates instantly on zoom/resize,
-  // ahead of the debounced crisp re-render. Before a fit measurement lands it reads "Fit".
-  const isFit = zoom.mode === "fit";
-  const livePercentLabel = `${Math.round(targetScale * 100)}%`;
-  const canZoomIn = targetScale < MAX_ZOOM;
-  const canZoomOut = targetScale > MIN_ZOOM;
-
-  // The Fit option shows the resulting live percentage once measured, e.g. "Fit (92%)". A custom scale
-  // that matches a preset selects it; any other custom scale (from the +/- steps) surfaces as a
-  // transient option so the native control always reflects the real state.
-  const fitOptionLabel = isFit && isFitMeasured ? `Fit (${livePercentLabel})` : "Fit";
-  const matchedPreset =
-    zoom.mode === "custom"
-      ? ZOOM_PRESETS.find((preset) => Math.abs(preset.scale - zoom.scale) < 1e-6)
-      : undefined;
-  const presetValue = isFit ? FIT_PRESET_VALUE : (matchedPreset?.value ?? "custom");
-
-  /**
-   * Apply a preset selection: the fit sentinel returns to width-fitting, a numeric preset pins that
-   * scale, and the reflective "custom" entry (a non-preset scale from the steppers) is a no-op.
-   *
-   * @param value - The selected `<option>` value.
-   */
-  const selectPreset = (value: string): void => {
-    if (value === FIT_PRESET_VALUE) {
-      setZoom({ mode: "fit" });
-      return;
-    }
-    if (value === "custom") return;
-    setZoom({ mode: "custom", scale: clamp(Number(value), MIN_ZOOM, MAX_ZOOM) });
-  };
-
-  /** Switch to an explicit zoom one step above the scale currently on screen, clamped to the range. */
-  const zoomIn = (): void => {
-    setZoom({ mode: "custom", scale: clamp(targetScale * ZOOM_STEP, MIN_ZOOM, MAX_ZOOM) });
-  };
-
-  /** Switch to an explicit zoom one step below the scale currently on screen, clamped to the range. */
-  const zoomOut = (): void => {
-    setZoom({ mode: "custom", scale: clamp(targetScale / ZOOM_STEP, MIN_ZOOM, MAX_ZOOM) });
-  };
-
   /**
    * Scroll the page named in the jump field into view, clamped to the document's range; ignore an empty
    * or non-numeric entry. The field is cleared afterwards so it always invites a fresh destination.
@@ -1129,53 +1102,7 @@ export function PdfPreviewPanel({
               />
             </div>
           )}
-          {/* Zoom control: a preset selector is the primary affordance; +/- fine-tune around it. */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={zoomOut}
-            disabled={!canZoomOut}
-            className="h-6 w-6 text-muted-foreground"
-            aria-label="zoom out"
-            title="Zoom out"
-            data-testid="pdf-zoom-out"
-          >
-            <ZoomOut className="h-4 w-4" />
-          </Button>
-          <select
-            value={presetValue}
-            onChange={(event) => selectPreset(event.target.value)}
-            aria-label="zoom level"
-            title="Zoom level"
-            data-testid="pdf-zoom-preset"
-            // Snug fixed width sized for the widest label ("Fit (100%)"), right-aligned, so the control
-            // stays compact next to the steppers and never shifts as the selection/percentage changes.
-            className="h-6 min-w-[5.5rem] whitespace-nowrap rounded-md border border-border bg-transparent px-1 text-right text-xs tabular-nums text-muted-foreground"
-          >
-            <option value={FIT_PRESET_VALUE} data-testid="pdf-zoom-fit">
-              {fitOptionLabel}
-            </option>
-            {ZOOM_PRESETS.map((preset) => (
-              <option key={preset.value} value={preset.value}>
-                {preset.label}
-              </option>
-            ))}
-            {presetValue === "custom" && <option value="custom">{livePercentLabel}</option>}
-          </select>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={zoomIn}
-            disabled={!canZoomIn}
-            className="h-6 w-6 text-muted-foreground"
-            aria-label="zoom in"
-            title="Zoom in"
-            data-testid="pdf-zoom-in"
-          >
-            <ZoomIn className="h-4 w-4" />
-          </Button>
+          <PreviewZoomControl zoom={zoomModel} testIdPrefix="pdf" />
           {onToggleScrollSync && (
             <Button
               type="button"

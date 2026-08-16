@@ -1,0 +1,91 @@
+# A theme that changes something in every construct the Print style claims to reproduce, so a value
+# the preview drops shows up as a difference rather than as a coincidence: nothing here is the
+# renderer's own default.
+extends: default
+base:
+  font-color: '1F2933'
+  font-size: 11
+  line-height: 1.45
+  border-color: 'B9C2CC'
+  border-width: 0.75
+  border-radius: 3
+heading:
+  font-color: '8B0000'
+  h2:
+    font-size: 22
+    margin-top: 18
+    margin-bottom: 8
+  h3:
+    font-size: 17
+    font-style: bold_italic
+link:
+  font-color: '0B5FFF'
+codespan:
+  font-color: 'B12146'
+  background-color: 'F3F3F7'
+code:
+  font-size: 9
+  font-color: '2A2A2A'
+  background-color: 'E8EEF7'
+  border-color: '9FB3C8'
+  border-width: 1
+  border-radius: 2
+  padding: 9
+list:
+  marker-font-color: '8B0000'
+quote:
+  font-color: '4A5568'
+  background-color: 'F7F8FA'
+  border-color: '8B0000'
+  border-left-width: 4
+  padding: [8, 14, 8, 14]
+sidebar:
+  background-color: 'FFF6E5'
+  border-color: 'D9A441'
+  border-width: 1
+  border-radius: 4
+  padding: 12
+  title:
+    font-color: '8B4A00'
+    font-size: 13
+example:
+  background-color: 'FFFFFF'
+  border-color: '8B0000'
+  border-width: 1
+  border-radius: 2
+  padding: 12
+admonition:
+  background-color: 'F4F7FB'
+  column-rule-color: '8B0000'
+  column-rule-width: 1.5
+  padding: [8, 10, 8, 10]
+  label:
+    font-style: bold
+    text-transform: uppercase
+table:
+  background-color: 'FFFFFF'
+  border-color: '33475B'
+  border-width: 1
+  grid-color: 'C7D0DA'
+  grid-width: 0.5
+  cell-padding: 5
+  head:
+    background-color: 'DDE6F0'
+    font-style: bold
+    border-bottom-width: 1.5
+  body:
+    stripe-background-color: 'F2F6FA'
+caption:
+  font-color: '5A6472'
+  font-size: 9
+  font-style: italic
+  text-align: center
+  margin-inside: 3
+  margin-outside: 5
+thematic-break:
+  border-color: '8B0000'
+  border-style: dashed
+  border-width: 1
+  padding: [10, 0, 10, 0]
+page:
+  background-color: 'FFFDF7'

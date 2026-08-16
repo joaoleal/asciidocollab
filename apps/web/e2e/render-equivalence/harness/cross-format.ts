@@ -194,7 +194,16 @@ export function extractWebFormatDocument(html: string): CrossFormatDocument {
     if (backLink === null) continue;
     alreadyAccountedFor.add(backLink);
     const trailing = backLink.nextSibling;
+    // The separator is the other half of the marker either way — the two forms differ only in whether
+    // a stylesheet can reach it. Asciidoctor writes it as a bare text node; the web render then names
+    // it in a span of its own, precisely so the Print style can present the marker the way the page
+    // format does. Both are accounted for here, because the marker is emitted whole below; a
+    // separator wrapped in a span and left unaccounted for would arrive as an extra `.` in the text
+    // and read as a disagreement between the two formats about the document's words.
     if (trailing instanceof Text) markerPunctuation.add(trailing);
+    else if (trailing instanceof Element && trailing.classList.contains('footnote-separator')) {
+      alreadyAccountedFor.add(trailing);
+    }
   }
 
   const walk = (node: Node): void => {

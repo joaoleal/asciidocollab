@@ -41,6 +41,10 @@ beforeEach(() => {
   jest.useFakeTimers();
   mockFetch.mockReset();
   mockLocalStorage.clear();
+  // A page session of this tab's own: the record of what the account has not been told (see
+  // `readUnsaved`) lives in sessionStorage and outlives a mount on purpose, so each test has to start
+  // from a tab that owes nothing rather than from whatever the test before it left armed.
+  sessionStorage.clear();
   // Use a never-resolving fetch by default so the server response can never
   // overwrite localStorage-derived state during synchronous assertions.
   mockFetch.mockReturnValue(new Promise(() => {}));

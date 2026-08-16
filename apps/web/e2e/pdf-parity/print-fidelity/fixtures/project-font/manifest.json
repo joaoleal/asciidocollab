@@ -1,0 +1,23 @@
+{
+  "name": "project-font",
+  "description": "The anchor document set in a typeface the PROJECT ships rather than one the renderer or the browser already has. A family name proves nothing here - only the file does, and the preview and the export have to be reading the same one. The four faces are Liberation Mono (SIL OFL 1.1, see FONT-LICENSE.txt), subset to the characters this document sets and served under the theme's own 'Project Mono' name: nameID 1 'Liberation Mono', nameID 6 'LiberationMono', 1229/2048 = 0.600 em advances. They were byte copies of the catalogue's own M+ 1mn until this was noticed - same nameIDs, same 500/1000 advances, folded to the same stem by normaliseFamily - which left the one anchor for a project-supplied face unable to tell that face from the one the renderer already bundles. The theme also leaves codespans and code blocks on the catalogue's M+ 1mn, so a single page carries both files and the twenty per cent between them is what makes the face comparison able to fail.",
+  "mainFile": "main.adoc",
+  "scale": 2,
+  "referencePdf": "reference.pdf",
+  "render": {
+    "themePath": "project-font-theme.yml",
+    "fontPaths": [
+      "project-mono-regular.ttf",
+      "project-mono-bold.ttf",
+      "project-mono-italic.ttf",
+      "project-mono-bold-italic.ttf"
+    ],
+    "attributes": {}
+  },
+  "projectConfig": {
+    "mainFile": "main.adoc",
+    "attributes": {
+      "pdf-theme": "project-font-theme.yml"
+    }
+  }
+}

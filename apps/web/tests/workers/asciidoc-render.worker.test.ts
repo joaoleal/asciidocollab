@@ -45,6 +45,10 @@ import {
   withAppRenderDefaults,
 } from '@/lib/asciidoc/render-app-defaults';
 import type { RenderRequest } from '@/workers/render-protocol';
+// Type-only, so the import is erased and does not defeat the `jest.doMock` the security tests install
+// over this same module.
+import type { OnDemandGrammar } from '@/workers/hljs-languages.generated';
+import type { LanguageFn } from 'highlight.js';
 
 // The engine exposes `load` as a module function, not a processor factory, and it resolves a promise.
 jest.mock('asciidoctor', () => ({ __esModule: true, load: mockLoad }));
@@ -342,6 +346,100 @@ describe('asciidoc-render.worker', () => {
     expect(html).not.toContain('width="');
   });
 
+  // (e4) a monospaced table COLUMN is named, so a stylesheet can tell it from an inline codespan. The
+  // PDF export draws the two differently — a monospaced cell takes the codespan's typeface and nothing
+  // else, while a codespan is also given a box behind it — and Asciidoctor's HTML says the same thing
+  // for both. The whole cell's text is only available here, which is why the distinction is drawn here.
+  it('names a monospaced table cell, and leaves a codespan sharing its cell alone', async () => {
+    mockConvert.mockResolvedValueOnce(
+      '<table class="tableblock"><tbody>' +
+        // A monospaced column's cell: the `<code>` is the whole cell.
+        '<tr><td class="tableblock halign-left"><p class="tableblock"><code>Ctrl+F</code></p></td>' +
+        // A monospaced column's cell carrying a codespan of its own, which nests.
+        '<td class="tableblock"><p class="tableblock"><code><code>x</code> and y</code></p></td></tr>' +
+        // A plain cell whose codespan shares it with text: not monospaced, and the export chips it.
+        '<tr><td class="tableblock"><p class="tableblock">Insert <code>code</code></p></td>' +
+        // A plain cell with a codespan that does not reach the end of it.
+        '<td class="tableblock"><p class="tableblock"><code>code</code> first</p></td></tr>' +
+        '</tbody></table>',
+    );
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 32, content: '|===\n|a |b\n|===' });
+
+    const { html } = postMessageMock.mock.calls[0][0];
+    expect(html).toContain('<p class="tableblock monospaced"><code>Ctrl+F</code></p>');
+    // The nested codespan is inside the cell's own `<code>`, so the cell is still the monospaced one.
+    expect(html).toContain('<p class="tableblock monospaced"><code><code>x</code> and y</code></p>');
+    // Neither plain cell is named: in one the codespan starts after text, in the other it ends before
+    // the cell does. A selector cannot see either, which is the whole reason this runs here.
+    expect(html).toContain('<p class="tableblock">Insert <code>code</code></p>');
+    expect(html).toContain('<p class="tableblock"><code>code</code> first</p>');
+    expect(html.match(/monospaced/g)?.length).toBe(2);
+  });
+
+  // The naming rule under NESTED cell paragraphs, which is the shape the pass is matched against and
+  // the one it used to be cubic on. Asserted exactly, because the rewrite from a per-candidate walk to
+  // one stack-matched pass is only worth having if it decides every one of these the same way:
+  // an inner paragraph that is the whole of its enclosing cell is named too, an open with no close is
+  // named nowhere, and a stray `</code>` closes the open before it and not the one it is nested in.
+  it('names every cell of a nested run of cell paragraphs, and none of an unbalanced one', async () => {
+    const open = '<p class="tableblock"><code>';
+    mockConvert.mockResolvedValueOnce(
+      // Three cell paragraphs nested inside one another: each one's own `<code>` is closed by the
+      // `</code>` that its own `</p>` follows, so all three are cells.
+      `${open.repeat(3)}${'</code></p>'.repeat(3)}` +
+        // A cell paragraph whose `<code>` never closes: nothing to name, and nothing after it either.
+        `${open}unclosed</p>` +
+        // A stray close ahead of a cell paragraph must not be taken as that cell's own.
+        `</code>${open}ok</code></p>`,
+    );
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 33, content: '|===\n|a\n|===' });
+
+    const { html } = postMessageMock.mock.calls[0][0];
+    expect(html).toBe(
+      '<p class="tableblock monospaced"><code>'.repeat(3) +
+        '</code></p>'.repeat(3) +
+        '<p class="tableblock"><code>unclosed</p>' +
+        '</code><p class="tableblock monospaced"><code>ok</code></p>',
+    );
+  });
+
+  // The same shape at document scale, as a COST bound rather than an example.
+  //
+  // A time assertion is the honest form here because the defect is a time property: the pass ran a
+  // fresh walk per candidate and each of that walk's steps searched forward for a `<code` that was no
+  // longer ahead, which scans to the end of the document. On this input — `<p class="tableblock">
+  // <code>` × N then `</code></p>` × N, which `asciidoctor` emits byte for byte from a `++++`
+  // passthrough block — that is cubic: 19 KB took 0.5 s, 38 KB 4.1 s and the 76 KB below 31.8 s, while
+  // the parse and convert that produced the HTML together took 3.6 ms. The preview renders the
+  // collaboratively synced document on a per-keystroke debounce, so one co-editor's paste wedged every
+  // other editor's worker, in all three preview styles.
+  //
+  // The budget is deliberately three orders of magnitude above the cost: the pass now takes about a
+  // millisecond here, so a runner would have to be a thousand times slower than a developer's machine
+  // to fail this — while the behaviour it forbids overruns it by more than 30×, and overruns Jest's own
+  // per-test timeout as well. A ratio between two sizes would be the more precise instrument and is
+  // the more fragile one, because at these speeds both readings are noise.
+  it('post-processes a deeply nested run of cell paragraphs in linear time', async () => {
+    const nesting = 2000;
+    const html = '<p class="tableblock"><code>'.repeat(nesting) + '</code></p>'.repeat(nesting);
+    expect(html.length).toBeGreaterThan(76 * 1024);
+    mockConvert.mockResolvedValueOnce(html);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+
+    const startedAt = performance.now();
+    await sendMessage({ requestId: 34, content: 'passthrough' });
+    const elapsed = performance.now() - startedAt;
+
+    // The work was really done, not skipped: every one of the nested paragraphs is a cell.
+    expect(postMessageMock.mock.calls[0][0].html.match(/monospaced/g)).toHaveLength(nesting);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   // (e) include:: directives are not resolved when no files/mainPath are supplied (open-file render)
   it('includes include:: directive as literal text when no assembly inputs are given', async () => {
     const htmlWithInclude = '<p>include::some-file.adoc[]</p>';
@@ -507,8 +605,170 @@ describe('asciidoc-render.worker', () => {
     expect(result.html).toContain('hljs-string');
   });
 
-  // (n) source blocks with an unknown language fall back to auto-detection
-  it('auto-detects highlighting for an unknown language', async () => {
+  // (m2) a listing carrying callouts is highlighted too, with its markers left where they were
+  it('highlights a source block that carries callout markers, and keeps them in place', async () => {
+    // Asciidoctor puts the markers INSIDE the code element. A body pattern that assumed code holds
+    // no markup matched nothing here, so a listing with callouts — the ordinary shape of an annotated
+    // example — came back with no highlighting at all while the same code without them was coloured.
+    const codeHtml =
+      '<div class="listingblock"><div class="content">' +
+      '<pre class="highlight"><code class="language-javascript" data-lang="javascript">' +
+      'const doc = new Doc(); <i class="conum" data-value="1"></i><b>(1)</b>\n' +
+      'const text = &quot;index.adoc&quot;; <i class="conum" data-value="2"></i><b>(2)</b>' +
+      '</code></pre></div></div>';
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 32, content: 'code' });
+
+    const html = postMessageMock.mock.calls[0][0].html;
+    expect(html).toContain('class="highlight hljs"');
+    expect(html).toContain('hljs-keyword');
+    expect(html).toContain('hljs-string');
+    // Both markers survive, and neither is swallowed into a token: the marker for the second line
+    // follows that line's string rather than sitting inside it.
+    expect(html).toContain('<i class="conum" data-value="1"></i><b>(1)</b>');
+    expect(html).toContain('<i class="conum" data-value="2"></i><b>(2)</b>');
+    // The marker text is not highlighted as part of the program.
+    expect(html).not.toContain('<b>(<span');
+  });
+
+  it('leaves a callout-bearing block alone when the code also holds markup it cannot lift', async () => {
+    // `subs="+macros"` turns a bare URL inside a listing into an anchor, so a block can hold BOTH a
+    // link and a callout. The separation guard used to inspect only the text after the last marker,
+    // which left every segment before one unguarded: its tags were decoded into the code text,
+    // highlighted as program source and re-escaped, so the reader saw a raw `<a href=…>` as literal
+    // text in their own document. An unrecognised body must come back exactly as it arrived.
+    const linked =
+      'puts <a href="https://example.com" class="bare">https://example.com</a> ' +
+      '<i class="conum" data-value="1"></i><b>(1)</b>';
+    const codeHtml =
+      '<div class="listingblock"><div class="content">' +
+      '<pre class="highlight"><code class="language-ruby" data-lang="ruby">' +
+      linked +
+      '</code></pre></div></div>';
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 33, content: 'code' });
+
+    const html = postMessageMock.mock.calls[0][0].html;
+    expect(html).toContain(linked);
+    // Untouched means untouched: not highlighted, and above all not with the anchor turned into text.
+    expect(html).not.toContain('hljs');
+    expect(html).not.toContain('&lt;a href=');
+  });
+
+  it('highlights a listing whose callouts are drawn as images', async () => {
+    // `convert_inline_callout` has three forms, not two: a font icon with its plain-text twin
+    // (`icons=font`), the plain-text marker alone (no icons), and — for `icons` set to anything else
+    // — an `<img>` pointing at the numbered callout icon. Only the first two were recognised while
+    // the comment beside the pattern claimed both forms were covered, so a project rendering
+    // callouts as images had every annotated listing come back with no highlighting at all.
+    const codeHtml =
+      '<div class="listingblock"><div class="content">' +
+      '<pre class="highlight"><code class="language-javascript" data-lang="javascript">' +
+      'const doc = new Doc(); <img src="./images/icons/callouts/1.png" alt="1">' +
+      '</code></pre></div></div>';
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 36, content: 'code' });
+
+    const html = postMessageMock.mock.calls[0][0].html;
+    expect(html).toContain('class="highlight hljs"');
+    expect(html).toContain('hljs-keyword');
+    // The marker survives exactly as the converter wrote it, and is not highlighted as program text.
+    expect(html).toContain('<img src="./images/icons/callouts/1.png" alt="1">');
+    expect(html).not.toContain('&lt;img');
+  });
+
+  // (m3) a footnote entry's separator is named so a stylesheet can present the marker its own way
+  it('names the separator after a footnote entry number', async () => {
+    // Asciidoctor writes the "." after the back-link as a bare text node, which no selector can
+    // reach — so a style that sets its markers off differently (the PDF brackets them) had no way to
+    // suppress it and showed both. The span leaves the styles that keep the full stop unchanged.
+    const footnoteHtml =
+      '<div id="footnotes">\n<hr>\n' +
+      '<div class="footnote" id="_footnotedef_1">\n<a href="#_footnoteref_1">1</a>. A remark.\n</div>\n' +
+      '</div>';
+    mockConvert.mockResolvedValueOnce(footnoteHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 33, content: 'text footnote:[A remark.]' });
+
+    const html = postMessageMock.mock.calls[0][0].html;
+    expect(html).toContain('<a href="#_footnoteref_1">1</a><span class="footnote-separator">. </span>');
+    // The footnote's own text is untouched — only the marker's separator is wrapped.
+    expect(html).toContain('A remark.');
+  });
+
+  // (m4) the sign between two key caps is named, for the same reason and with the same shape
+  it('names the sign between the key caps of a chord', async () => {
+    // Asciidoctor's HTML backend joins the caps with a bare `+`; the PDF renderer joins them with the
+    // theme's own separator, whose default carries a narrow no-break space either side of the sign.
+    // That air is most of the gap a reader sees between two caps, and a style could reach neither it
+    // nor the sign while the sign was a text node. It cannot go on the caps themselves: a cap's box
+    // is tinted, and the tint would run out under the separator.
+    const chordHtml =
+      '<div class="paragraph"><p>Press ' +
+      '<span class="keyseq"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd></span>' +
+      ' then <kbd>Esc</kbd>.</p></div>';
+    mockConvert.mockResolvedValueOnce(chordHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 34, content: 'kbd:[Ctrl+Shift+P]' });
+
+    const html = postMessageMock.mock.calls[0][0].html;
+    // Both signs of a three-key chord, not just the first: the scan has to resume inside the run it
+    // just rewrote or every chord past two keys keeps its second sign bare.
+    expect(html).toContain(
+      '<kbd>Ctrl</kbd><span class="keyseq-separator">+</span><kbd>Shift</kbd>' +
+        '<span class="keyseq-separator">+</span><kbd>P</kbd>',
+    );
+    // A lone cap has nothing between it and anything else, and the text around the chord is prose.
+    expect(html).toContain(' then <kbd>Esc</kbd>.');
+  });
+
+  it('leaves the prose between two independent key references as prose', async () => {
+    // Asciidoctor wraps a CHORD in `<span class="keyseq">` and emits a bare `<kbd>` for a single
+    // key, so the span is the only thing in the output that says two caps are one keystroke. Keyed
+    // on the caps alone, a sentence mentioning two keys had the words between them tagged as a
+    // separator and given the theme's air on either side. Nothing suppresses `.keyseq-separator`
+    // today, which is why the visible cost was small — a rule that did would have deleted the
+    // author's words. (The existing chord test could not catch this: its `</span>` supplies a `<`
+    // that blocks the match by accident.)
+    const proseHtml =
+      '<div class="paragraph"><p>Press <kbd>Ctrl</kbd> and then <kbd>Alt</kbd> to switch.</p></div>';
+    mockConvert.mockResolvedValueOnce(proseHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 35, content: 'kbd:[Ctrl] and then kbd:[Alt]' });
+
+    const html = postMessageMock.mock.calls[0][0].html;
+    expect(html).toContain('<kbd>Ctrl</kbd> and then <kbd>Alt</kbd>');
+    expect(html).not.toContain('keyseq-separator');
+  });
+
+  // (n) a language with no grammar is GUESSED at, and the guess says so.
+  //
+  // DELIBERATE BEHAVIOUR CHANGE, not a loosened assertion. This test used to hold the opposite —
+  // "left plain, never guessed at" — because guessing produced confidently wrong colour (a block of
+  // `include::` directives came back with `include` as a keyword and its numbers as literals, in a
+  // language it was never written in) and because the PDF, whose highlighter falls back to plain text
+  // for a lexer it lacks, printed that same block in one colour.
+  //
+  // Both of those remain true, and neither is a statement about the WEB styles. The rule was written
+  // for Print fidelity and applied to all three preview styles, because one rendered document serves
+  // all three at once — so the two styles that only claim to present the document lost colour they
+  // had always had, for a reason that has nothing to do with them. The split belongs where the styles
+  // are, and that is where it now is: the guess is marked, and the generated region of
+  // `print-preview.css` puts a marked block's tokens back at the code colour under Print alone.
+  //
+  // It has to be an attribute rather than a class: the rule beside it excludes the languages the
+  // export DOES lex by class name, and 222 of the 392 names in rouge's registry have no grammar here
+  // — a guessed block declaring one of those could never be reached by a class.
+  it('guesses at a source block whose declared language has no grammar, and marks the guess', async () => {
     const codeHtml =
       '<pre class="highlight"><code class="language-totally-unknown" data-lang="totally-unknown">' +
       'const x = 1;' +
@@ -521,6 +781,366 @@ describe('asciidoc-render.worker', () => {
     const result = postMessageMock.mock.calls[0][0];
     expect(result.ok).toBe(true);
     expect(result.html).toContain('class="highlight hljs"');
+    // The declared name is re-emitted untouched — it is the author's, and the detector's opinion of
+    // what the code looks like is not a correction of it — and the marker is what says the colour was
+    // detected rather than read off the grammar the block names.
+    expect(result.html).toContain(
+      '<code class="language-totally-unknown" data-lang="totally-unknown" data-hljs-guessed>',
+    );
+    // Coloured, by whatever the detector made of it — the point is that colour is emitted at all, not
+    // which language it decided on, which is exactly the judgement the Print style declines.
+    expect(result.html).toMatch(/<span class="hljs-[\w-]+">/);
+  });
+
+  // (n1b) and a block whose language IS answered for carries no such marker: the two must be
+  // distinguishable, or the Print style would decline colour that came from the right grammar.
+  it('does not mark a block highlighted from the grammar it declared', async () => {
+    const codeHtml =
+      '<pre class="highlight"><code class="language-ruby" data-lang="ruby">def x; end</code></pre>';
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 32, content: 'code' });
+
+    const { html } = postMessageMock.mock.calls[0][0];
+    expect(html).toContain('class="highlight hljs"');
+    expect(html).toContain('hljs-keyword');
+    expect(html).not.toContain('data-hljs-guessed');
+  });
+
+  // (n2) a language `highlight.js/lib/common` does not carry is fetched rather than left plain.
+  //
+  // The export highlights with rouge, which has a lexer for Dockerfile; the preview carried 36 of the
+  // package's 192 grammars and left it alone. That is a Print-parity gap in the exact direction that
+  // style promises not to have, and closing it must not weaken the rule above: a language NO grammar
+  // answers to is still left plain, which is what (n) holds.
+  it('fetches a grammar for a language the bundled set does not carry', async () => {
+    const codeHtml =
+      '<pre class="highlight"><code class="language-dockerfile" data-lang="dockerfile">' +
+      'FROM node:20' +
+      '</code></pre>';
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 61, content: '[,dockerfile]\n----\nFROM node:20\n----' });
+
+    const result = postMessageMock.mock.calls[0][0];
+    expect(result.ok).toBe(true);
+    expect(result.html).toContain('class="highlight hljs"');
+    expect(result.html).toContain('hljs-keyword');
+  });
+
+  // (n3) an overtaken render does not spend a round trip on a grammar, and does not paint with one.
+  //
+  // The reply is one the holder drops on arrival, so the fetch would buy nothing; and a grammar that
+  // arrived after a newer render had already answered must not reach the older render's output. The
+  // block is left plain — what this worker did for every unbundled language until now, never
+  // something wrong — and the newer render colours it.
+  it('skips on-demand grammars for a render another has already overtaken', async () => {
+    const codeHtml =
+      '<pre class="highlight"><code class="language-dockerfile" data-lang="dockerfile">' +
+      'FROM node:20' +
+      '</code></pre>';
+    mockConvert.mockResolvedValue(codeHtml);
+    mockFindBy.mockReturnValue([]);
+    require('@/workers/asciidoc-render.worker');
+
+    // Posted without awaiting the first, which is what a second keystroke does: the handler is
+    // asynchronous, so the newer request arrives while the older one is still in flight.
+    const overtaken = onMessageHandler!({ data: { requestId: 62, content: 'a' } } as MessageEvent);
+    const newest = onMessageHandler!({ data: { requestId: 63, content: 'b' } } as MessageEvent);
+    await Promise.all([overtaken, newest]);
+
+    const [first, second] = postMessageMock.mock.calls.map((call) => call[0]);
+    const overtakenResult = [first, second].find((result) => result.requestId === 62);
+    const newestResult = [first, second].find((result) => result.requestId === 63);
+    expect(overtakenResult.html).not.toContain('hljs-keyword');
+    expect(overtakenResult.html).toContain(codeHtml);
+    expect(newestResult.html).toContain('hljs-keyword');
+  });
+
+  // (n3b) one consumer's render does not overtake another's.
+  //
+  // "Overtaken" used to mean "any newer render, from anyone", because nothing on the wire said whose
+  // a render was — so with two previews mounted, either one's keystroke silenced the other's grammar
+  // fetches. The silenced consumer then ACCEPTED the reply, because its own `requestId` still
+  // matched, and its listing came back uncoloured with nothing to say why until something else made
+  // that panel render again. `consumerId` is what makes the question answerable, and this is the
+  // difference it makes: the same two renders that must supersede each other in (n3) must not here.
+  it('does not treat another consumer\'s render as overtaking this one', async () => {
+    const codeHtml =
+      '<pre class="highlight"><code class="language-dockerfile" data-lang="dockerfile">' +
+      'FROM node:20' +
+      '</code></pre>';
+    mockConvert.mockResolvedValue(codeHtml);
+    mockFindBy.mockReturnValue([]);
+    require('@/workers/asciidoc-render.worker');
+
+    // Two panels, each rendering its own document, each numbering its own requests from 1 — which is
+    // exactly why `requestId` cannot tell them apart and `consumerId` has to.
+    const first = onMessageHandler!({ data: { requestId: 1, consumerId: 7, content: 'a' } } as MessageEvent);
+    const second = onMessageHandler!({ data: { requestId: 1, consumerId: 9, content: 'b' } } as MessageEvent);
+    await Promise.all([first, second]);
+
+    const replies = postMessageMock.mock.calls.map((call) => call[0]);
+    expect(replies).toHaveLength(2);
+    // BOTH are coloured. Neither is a stale render of the other's document.
+    for (const reply of replies) expect(reply.html).toContain('hljs-keyword');
+  });
+
+  // (n4) two renders that overlap at a grammar fetch must not scan each other's documents.
+  //
+  // The block scanner's pattern carries its scan position on the regex object, and highlighting now
+  // suspends inside its own loop. With one shared pattern, a render that resumes while another is
+  // parked continues from — and leaves behind — a position taken in a DIFFERENT document, and the
+  // parked one then scans its own from there. It skips whatever lies before it, silently.
+  //
+  // The overlap is arranged rather than hoped for: the older render is held inside the fetch until the
+  // newer one has been posted, which is the only way it is still the newest when it enters the loop.
+  // Its document ends with a block whose close never comes — an author mid-keystroke — so its scan
+  // stops with its position left mid-document rather than reset by a failed match.
+  it('highlights every block of the newest render while an older one is mid-fetch', async () => {
+    let release: (() => void) | null = null;
+    const held = new Promise<{ default: unknown }>((resolve) => {
+      release = () => {
+        resolve({ default: require('highlight.js/lib/languages/nginx') });
+      };
+    });
+    jest.doMock('@/workers/hljs-languages.generated', () => ({
+      __esModule: true,
+      ON_DEMAND_GRAMMARS: new Map([['held', { name: 'held', spellings: ['held'], load: () => held }]]),
+    }));
+
+    const older =
+      '<pre class="highlight"><code class="language-held" data-lang="held">server { listen 80; }</code></pre>' +
+      '<pre class="highlight"><code class="language-held" data-lang="held">server { listen 8080;';
+    const newer =
+      '<pre class="highlight"><code class="language-held" data-lang="held">server { listen 443; }</code></pre>' +
+      '<pre class="highlight"><code class="language-held" data-lang="held">server { listen 8443; }</code></pre>';
+    mockConvert.mockResolvedValueOnce(older).mockResolvedValueOnce(newer);
+    mockFindBy.mockReturnValue([]);
+    require('@/workers/asciidoc-render.worker');
+
+    const overtaken = onMessageHandler!({ data: { requestId: 64, content: 'a' } } as MessageEvent);
+    // Everything already queued runs, which parks the first render inside the fetch it is still
+    // entitled to make.
+    await new Promise((resolve) => setImmediate(resolve));
+    const newest = onMessageHandler!({ data: { requestId: 65, content: 'b' } } as MessageEvent);
+    await new Promise((resolve) => setImmediate(resolve));
+    release!();
+    await Promise.all([overtaken, newest]);
+
+    const newestResult = postMessageMock.mock.calls
+      .map((call) => call[0])
+      .find((result) => result.requestId === 65);
+    // Both of its blocks, not just the one the other render's scan position happened to leave visible.
+    expect(newestResult.html.match(/class="highlight hljs"/g)).toHaveLength(2);
+    expect(newestResult.html).toContain('<span class="hljs-number">8443</span>');
+
+    jest.dontMock('@/workers/hljs-languages.generated');
+  });
+
+  // (n4b) the grammars ONE render needs are fetched together, not one after the other.
+  //
+  // The fetch used to be awaited inside the walk over the blocks, so a document's grammars were
+  // strictly sequential: a paper with forty listings in forty unbundled languages paid forty round
+  // trips end to end before a single line of HTML went back, and the panel shows nothing until it
+  // does. The languages are known before any of them is fetched — the whole document has already
+  // been scanned — so there is nothing to serialise them for.
+  //
+  // Both loads are held open, which is what makes the difference observable: with them batched, both
+  // have been ASKED for while neither has answered. Sequentially only the first would have been.
+  it('fetches the grammars one document needs together rather than one after another', async () => {
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    /**
+     * A grammar that records when it is asked for and answers only when the test says so.
+     *
+     * @param name - The name the map is keyed by and the grammar is registered under.
+     * @param definition - The highlight.js grammar to answer with.
+     * @returns The map entry.
+     */
+    const heldGrammar = (name: string, definition: LanguageFn): OnDemandGrammar => ({
+      name,
+      spellings: [name],
+      load: () => {
+        started.push(name);
+        return new Promise<{ default: LanguageFn }>((resolve) => {
+          releases.push(() => resolve({ default: definition }));
+        });
+      },
+    });
+    jest.doMock('@/workers/hljs-languages.generated', () => ({
+      __esModule: true,
+      ON_DEMAND_GRAMMARS: new Map<string, OnDemandGrammar>([
+        ['alpha', heldGrammar('alpha', require('highlight.js/lib/languages/nginx'))],
+        ['beta', heldGrammar('beta', require('highlight.js/lib/languages/dockerfile'))],
+      ]),
+    }));
+
+    const codeHtml =
+      '<pre class="highlight"><code class="language-alpha" data-lang="alpha">server { listen 80; }</code></pre>' +
+      '<pre class="highlight"><code class="language-beta" data-lang="beta">FROM node:20</code></pre>';
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+
+    const render = onMessageHandler!({ data: { requestId: 69, content: 'a' } } as MessageEvent);
+    // Everything already queued runs, which is as far as the render gets while both fetches are held.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(started).toEqual(['alpha', 'beta']);
+
+    for (const release of releases) release();
+    await render;
+
+    const { html } = postMessageMock.mock.calls[0][0];
+    // And both are painted with the grammar that was fetched for them.
+    expect(html.match(/class="highlight hljs"/g)).toHaveLength(2);
+    expect(html).toContain('<span class="hljs-number">80</span>');
+    expect(html).toContain('<span class="hljs-keyword">FROM</span>');
+
+    jest.dontMock('@/workers/hljs-languages.generated');
+  });
+
+  // (n5) a language whose name carries a dot is highlighted like any other.
+  //
+  // Asciidoctor writes the declared name into `class="language-…"` verbatim — it imposes no character
+  // set on it at all — and four of the spellings the generated map carries are dotted:
+  // `cmake.in`, `html.hbs`, `html.handlebars` and `pf.conf`. They are highlight.js's own spellings,
+  // derived from the installed package, so a document naming one is naming a grammar the preview HAS.
+  // The block scanner's pattern nonetheless bounded the name to `[\w+#-]+`, which has no dot in it, so
+  // the opening tag did not match and every one of those four came back with no colour — while the
+  // export's highlighter coloured them. Pinned per spelling rather than in one block, so a regression
+  // says WHICH one broke.
+  it.each([
+    ['cmake.in', 'set(CMAKE_BUILD_TYPE Release)', 'hljs-keyword'],
+    ['html.hbs', '{{#if user}}Hi{{/if}}', 'hljs-template-tag'],
+    ['html.handlebars', '{{#if user}}Hi{{/if}}', 'hljs-template-tag'],
+    ['pf.conf', 'block in all', 'hljs-built_in'],
+  ])('highlights a source block whose language is spelled with a dot (%s)', async (language, code, token) => {
+    const codeHtml =
+      `<pre class="highlight"><code class="language-${language}" data-lang="${language}">${code}</code></pre>`;
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 66, content: `[source,${language}]\n----\n${code}\n----` });
+
+    const result = postMessageMock.mock.calls[0][0];
+    expect(result.ok).toBe(true);
+    expect(result.html).toContain('class="highlight hljs"');
+    expect(result.html).toContain(token);
+    // The name is re-emitted exactly as the converter wrote it — dot included, nothing dropped.
+    expect(result.html).toContain(`<code class="language-${language}" data-lang="${language}">`);
+  });
+
+  // (n6) the language name is text out of the document, and widening the pattern widens what that text
+  // can be. What it must NOT widen is what the text can reach: one lookup in a real `Map`.
+  //
+  // An object literal keyed by spelling would answer `__proto__`, `constructor` and `toString` with
+  // something inherited, and that something would then be asked for a `load()` — a document choosing
+  // what the worker fetches. The generated registry is a `Map` precisely so a name a document invented
+  // can only miss. This holds that property against the wider pattern, and holds it for a dotted
+  // hostile name too, which the narrow pattern never even carried this far.
+  it('lets a hostile language name reach nothing but a map lookup', async () => {
+    const load = jest.fn<Promise<{ default: LanguageFn }>, []>();
+    const grammars = new Map<string, OnDemandGrammar>([
+      ['cmake.in', { name: 'cmake', spellings: ['cmake', 'cmake.in'], load }],
+    ]);
+    const lookup = jest.spyOn(grammars, 'get');
+    jest.doMock('@/workers/hljs-languages.generated', () => ({
+      __esModule: true,
+      ON_DEMAND_GRAMMARS: grammars,
+    }));
+
+    const hostile = [
+      '__proto__',
+      'constructor',
+      'toString',
+      'hasOwnProperty',
+      'valueOf',
+      '__proto__.polluted',
+      'cmake.in.__proto__',
+    ];
+    const codeHtml = hostile
+      .map((name) => `<pre class="highlight"><code class="language-${name}" data-lang="${name}">x</code></pre>`)
+      .join('');
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 67, content: 'code' });
+
+    const result = postMessageMock.mock.calls[0][0];
+    // Every one of them was asked — the pattern does match them, dots and all — and every ask missed.
+    // Asked in lower case, because that is how the generated map is keyed; that fold is the only thing
+    // done to the name between the pattern and the lookup.
+    expect(lookup.mock.calls.map(([name]) => name)).toEqual(hostile.map((name) => name.toLowerCase()));
+    expect(lookup.mock.results.map((call) => call.value)).toEqual(hostile.map(() => undefined));
+    // Nothing was fetched: a miss is a miss, whatever the name inherited from.
+    expect(load).not.toHaveBeenCalled();
+    // Each block is then GUESSED at, like any other language nothing answers to, and says so. (This
+    // tail used to assert the markup came back byte for byte, which was true only while a language
+    // with no grammar was left plain; the guess is deliberately back for the two styles that present
+    // the document rather than the page — see the test above. What matters here is unchanged and is
+    // asserted above: the name reached one `Map` lookup and nothing else.)
+    expect(result.html.match(/data-hljs-guessed/g)).toHaveLength(hostile.length);
+    // And the name is re-emitted exactly as the converter wrote it, marker appended after it.
+    expect(result.html).toContain('<code class="language-__proto__" data-lang="__proto__" data-hljs-guessed>');
+
+    jest.dontMock('@/workers/hljs-languages.generated');
+  });
+
+  // (n7) and what the pattern must still REFUSE, now that it admits a dot.
+  //
+  // Asciidoctor puts the name into the class attribute unescaped, so `[source,"a\"b"]` really does emit
+  // `class="language-a"b"` — the name can carry a quote, an angle bracket, a space, a slash or an
+  // ampersand, every one of which is meaningful either in the attribute the worker re-emits or in the
+  // `[class~="language-…"]` selectors the Print style neutralises an unlexed language with. A space is
+  // the sharpest of them: `class="language-foo bar"` is TWO class tokens, so it answers to
+  // `[class~="language-foo"]` — a listing taking another language's rule — while
+  // `[class~="language-foo bar"]` matches nothing the spec allows. None of the six is in any of
+  // highlight.js's 371 spellings, so admitting them would buy no colour at all and cost the guarantee
+  // that what the worker writes back into `class="language-…"` stays inside that attribute and names
+  // exactly one thing. At most the sanctioned prefix before such a character reaches the lookup, and it
+  // misses.
+  it('never carries an unsanctioned character in a language name past the block scanner', async () => {
+    const load = jest.fn<Promise<{ default: LanguageFn }>, []>();
+    const grammars = new Map<string, OnDemandGrammar>([
+      ['cmake.in', { name: 'cmake', spellings: ['cmake', 'cmake.in'], load }],
+    ]);
+    const lookup = jest.spyOn(grammars, 'get');
+    jest.doMock('@/workers/hljs-languages.generated', () => ({
+      __esModule: true,
+      ON_DEMAND_GRAMMARS: grammars,
+    }));
+
+    const codeHtml = ['a"b', 'un.known"x', 'a<b>c', 'foo bar', '../../etc/passwd', 'ruby&sql']
+      .map((name) => `<pre class="highlight"><code class="language-${name}" data-lang="${name}">x</code></pre>`)
+      .join('');
+    mockConvert.mockResolvedValueOnce(codeHtml);
+    mockFindBy.mockReturnValueOnce([]);
+    require('@/workers/asciidoc-render.worker');
+    await sendMessage({ requestId: 68, content: 'code' });
+
+    const result = postMessageMock.mock.calls[0][0];
+    // `a"b` and `un.known"x` end at the quote — the sanctioned run before it is all that gets through,
+    // and `un.known` is the one the narrow pattern could not even carry this far. The other four match
+    // nothing at all: the character that stops them is the first one after `language-`'s sanctioned run,
+    // and there is no quote for the pattern to close on.
+    expect(lookup.mock.calls.map(([name]) => name)).toEqual(['a', 'un.known']);
+    expect(load).not.toHaveBeenCalled();
+    // The four that match nothing are returned byte for byte, untouched.
+    for (const name of ['a<b>c', 'foo bar', '../../etc/passwd', 'ruby&sql']) {
+      expect(result.html).toContain(`<code class="language-${name}" data-lang="${name}">x</code>`);
+    }
+    // The two that match a prefix miss the lookup and are guessed at, like any other unanswered
+    // language. The marker is appended at the END of the tag rather than after the class, which is
+    // what keeps it out of the wreckage the ENGINE made of this tag: `class="language-a"b"` is
+    // already broken where the author's quote ended the attribute, and everything up to the `>` is
+    // re-emitted exactly as it arrived.
+    expect(result.html).toContain('<code class="language-a"b" data-lang="a"b" data-hljs-guessed>');
+    expect(result.html.match(/data-hljs-guessed/g)).toHaveLength(2);
+
+    jest.dontMock('@/workers/hljs-languages.generated');
   });
 
   // (p) HTML entities in code are unescaped in the correct order: a literal
@@ -596,6 +1216,10 @@ describe('asciidoc-render.worker', () => {
         getLanguage: jest.fn().mockReturnValue({ name: 'javascript' }),
         highlight: jest.fn().mockImplementation(() => { throw new Error('hljs internal error'); }),
         highlightAuto: jest.fn(),
+        // The worker reads the bundled set at module load, to fix what a guess may be detected from.
+        // A double that omits it throws on import rather than in the assertion, and the throw leaves
+        // this mock installed for every test after it.
+        listLanguages: jest.fn().mockReturnValue(['javascript']),
       },
     }));
 

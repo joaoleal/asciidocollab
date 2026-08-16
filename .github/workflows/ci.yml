@@ -26,13 +26,23 @@ env:
 # hangs — a Playwright run that never returns, a container that never becomes ready — otherwise sits
 # there burning a runner and holding the queue for the rest of the day, and is killed at the end with
 # no report to show for it. The budgets are sized off observed green runs (quality ~4m, unit ~4m,
-# integration ~2m, pdf-parity ~3m, docker ~4m, e2e ~10m) with room for the slower paths that failures
+# integration ~2m, pdf-parity ~3m, render-equivalence ~5m, docker ~4m, e2e ~10m) with room for the
+# slower paths that failures
 # legitimately take, so a timeout means "this is not coming back" rather than "this was busy".
+#
+# The pdf-parity figure is the one that has been re-measured since: the suite is now 201 tests in 16
+# files (26 reference-parity renders plus 166 print-fidelity assertions), and the Playwright phase
+# alone runs in 67 s of wall clock on a warm engine with one worker. The ~3m above is the whole job —
+# install, workspace build and engine restore included — and the 20-minute budget is unchanged, but
+# the run is no longer bounded ONLY by that budget: apps/web/playwright.pdf-parity.config.ts now
+# carries a 10-minute `globalTimeout` sized from that measurement.
 #
 # A timeout here is the OUTER bound and a blunt one: the runner kills the job, so nothing after the
 # failing step runs and no artifact is uploaded. Where a tool can bound itself and still report — the
-# e2e job's Playwright `globalTimeout` — that limit is set lower on purpose, so the self-imposed stop
-# wins and leaves an HTML report behind to explain what was still running.
+# Playwright `globalTimeout` in each of the three configs — that limit is set lower on purpose, so the
+# self-imposed stop wins and leaves an HTML report behind to explain what was still running. All three
+# stack-free/stack-backed configs now carry one; the two standalone ones did not, which meant a
+# 20-minute (pdf-parity) or 25-minute (render-equivalence) runner kill was their only ceiling.
 jobs:
   # ── Fast feedback: lint, type-check, architecture guard ────────────────────
   quality:
@@ -119,6 +129,7 @@ jobs:
           name: coverage-report
           path: |
             packages/asciidoc-core/coverage/
+            packages/primitives/coverage/
             packages/shared/coverage/
             packages/domain/coverage/
             apps/api/coverage/
@@ -188,8 +199,16 @@ jobs:
       #   1. this run's pdf-wasm artifact, when a wasm-input change rebuilt the engine;
       #   2. otherwise the cache pdf-wasm populated on an earlier build (same gem closure).
       # If neither exists yet (cold cache, no wasm change), the specs skip exactly as before — no fail.
+      #
+      # Gated on pdf-wasm's ENGINE OUTPUT rather than on its result, and that distinction is the whole
+      # point of the output existing. That job does two unrelated things: it builds the engine, and it
+      # then holds the vendored gems against the committed artifacts derived from them. A drift check
+      # failing makes `result` FAILURE even though the engine was built, uploaded and cached — so a
+      # pull request that hand-edits `palette.json` used to leave this step skipped and every live-PDF
+      # spec silently unrun, on top of the drift failure it deserved. The output is set immediately
+      # after the upload, so it says exactly "an engine from this run is downloadable" and nothing else.
       - name: Download the PDF wasm engine (when pdf-wasm built it this run)
-        if: needs.pdf-wasm.result == 'success'
+        if: needs.pdf-wasm.outputs.engine == 'built'
         uses: actions/download-artifact@v7
         with:
           name: asciidoctor-pdf-wasm
@@ -198,7 +217,8 @@ jobs:
       # Only when pdf-wasm was SKIPPED (no wasm-input change) — deliberately NOT on 'failure': if the
       # build failed we must not run the live-PDF specs against a stale cached engine (a green e2e
       # would mask the broken build). On failure this step is skipped, the engine is absent, and the
-      # specs skip exactly as they do on a cold cache.
+      # specs skip exactly as they do on a cold cache. A job that BUILT the engine and then failed a
+      # drift check is not that case — the step above has already downloaded this run's own engine.
       - name: Restore the PDF wasm engine from cache (when pdf-wasm was skipped)
         if: needs.pdf-wasm.result == 'skipped'
         uses: actions/cache/restore@v6
@@ -386,9 +406,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Same two sources, same precedence, as the e2e job — see the comments there.
+      # Same two sources, same precedence, and the same engine-output gate as the e2e job — see the
+      # comments there for why this asks what pdf-wasm PRODUCED rather than how it ended.
       - name: Download the PDF wasm engine (when pdf-wasm built it this run)
-        if: needs.pdf-wasm.result == 'success'
+        if: needs.pdf-wasm.outputs.engine == 'built'
         uses: actions/download-artifact@v7
         with:
           name: asciidoctor-pdf-wasm
@@ -410,16 +431,30 @@ jobs:
         run: pnpm --filter @asciidocollab/web exec playwright install --with-deps chromium
 
       # FAIL, do not skip. `changes` guarantees pdf-wasm runs whenever no cached engine survives, so
-      # reaching this point without an engine means the build failed or was cancelled — a real defect,
+      # reaching this point without an engine means the BUILD failed or was cancelled — a real defect,
       # not a cold cache. Skipping here instead would report a green "PDF reference parity" job that
       # compared zero PDFs, which is worse than no job at all: it looks like coverage and is not.
+      #
+      # The message names both facts it is diagnosed from, because they are no longer the same fact: a
+      # pdf-wasm that failed one of its drift checks has `result: failure` and `engine: built`, and in
+      # that case the engine IS here and this step passes. Only `engine:` empty on a job that ran means
+      # the compile itself did not get that far.
+      #
+      # Both facts arrive through the environment rather than expanded into the script: a job output
+      # is a value a workflow can be made to carry, and interpolating one into a `run:` block is the
+      # template-injection shape zizmor rejects (the workflow-hardening step in the `security` job).
       - name: Check the wasm engine is present
+        env:
+          PDF_WASM_RESULT: ${{ needs.pdf-wasm.result }}
+          PDF_WASM_ENGINE: ${{ needs.pdf-wasm.outputs.engine }}
         run: |
           set -euo pipefail
           if [ ! -f packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm ]; then
             echo "::error::No wasm engine available, so nothing can be compared against the reference PDFs."
-            echo "The engine is built by the 'pdf-wasm' job (result: ${{ needs.pdf-wasm.result }}) and"
-            echo "restored here from its artifact or cache. Check that job — this is not a cold cache."
+            echo "The engine is built by the 'pdf-wasm' job (result: ${PDF_WASM_RESULT}, engine:"
+            echo "'${PDF_WASM_ENGINE}') and restored here from its artifact or cache. An empty engine"
+            echo "output means the build itself never produced one — check that job's compile step."
+            echo "This is not a cold cache."
             exit 1
           fi
 
@@ -435,9 +470,100 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # ── Render equivalence (the WEB-format preview's gates) ────────────────────
+  # The PDF-parity job above is evidence about the OTHER rendering path. It drives Asciidoctor
+  # vendored into ruby.wasm; the editor preview is the `asciidoctor` npm package running in a web
+  # worker. The two share no code, so a green parity job says nothing whatsoever about the preview.
+  # These four specs are that path's own gates (see apps/web/e2e/render-equivalence/README.md).
+  #
+  # They ran before this job existed — but in the WRONG place. Living under apps/web/e2e/, they were
+  # swept into the e2e job's `chromium` project, whose `testIgnore` excluded pdf-parity's specs file by
+  # file and so never covered this directory. That meant 34 tests against a live app stack they make
+  # no use of, three workers deep, under a 45 s per-test budget — while the canonical reference gate
+  # builds a Docker image inside a `beforeAll`, which that budget bounds. Its only outcomes there were
+  # "the image happened to be cached" or "timed out". apps/web/playwright.render-equivalence.config.ts
+  # declares what they actually need (240 s, workers: 1, no stack) and nothing invoked it.
+  #
+  # Needs NO app stack and NO database, so it runs in parallel with e2e, exactly like pdf-parity — and
+  # takes the same two engine-restore paths, for the same reason: the cross-format gate self-skips
+  # without an engine, and a skipped comparison reported green is the failure mode these jobs exist to
+  # prevent. scripts/ci/render-equivalence.sh fails hard rather than skipping.
+  render-equivalence:
+    name: Render equivalence (web-format preview)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [unit, pdf-wasm]
+    if: ${{ always() && needs.unit.result == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the PDF wasm engine (when pdf-wasm built it this run)
+        if: needs.pdf-wasm.outputs.engine == 'built'
+        uses: actions/download-artifact@v7
+        with:
+          name: asciidoctor-pdf-wasm
+          path: packages/asciidoc-pdf/ruby/
+
+      - name: Restore the PDF wasm engine from cache (when pdf-wasm was skipped)
+        if: needs.pdf-wasm.result == 'skipped'
+        uses: actions/cache/restore@v6
+        with:
+          path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
+          key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
+
+      # Every spec here compares inside a real browser page (the normalisation and the cross-format
+      # reconciliation run through `page.evaluate`), so a browser is a prerequisite, not a detail.
+      - name: Install Playwright browsers
+        run: pnpm --filter @asciidocollab/web exec playwright install --with-deps chromium
+
+      # Same reasoning, and the same diagnosis, as the pdf-parity job's engine check — see the long
+      # comment there. Both facts arrive through the environment rather than being interpolated into
+      # the script, which is the template-injection shape zizmor rejects.
+      - name: Check the wasm engine is present
+        env:
+          PDF_WASM_RESULT: ${{ needs.pdf-wasm.result }}
+          PDF_WASM_ENGINE: ${{ needs.pdf-wasm.outputs.engine }}
+        run: |
+          set -euo pipefail
+          if [ ! -f packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm ]; then
+            echo "::error::No wasm engine available, so the cross-format gate would compare nothing."
+            echo "The engine is built by the 'pdf-wasm' job (result: ${PDF_WASM_RESULT}, engine:"
+            echo "'${PDF_WASM_ENGINE}') and restored here from its artifact or cache. An empty engine"
+            echo "output means the build itself never produced one — check that job's compile step."
+            echo "This is not a cold cache."
+            exit 1
+          fi
+
+      - name: Run the render-equivalence suite
+        run: ./scripts/ci/render-equivalence.sh
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report-render-equivalence
+          path: apps/web/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # ── Detect whether the wasm engine inputs changed ──────────────────────────
-  # The CRuby→wasm compile below is heavy (~15-25 min), so it must NOT run on every push/PR. This
-  # job reports whether the pinned gem closure or the build script changed; pdf-wasm is gated on it.
+  # The CRuby→wasm compile below is heavy (~15-25 min), so it must NOT run on every push/PR. This job
+  # reports whether the pinned gem closure or the build script changed, and — separately — whether the
+  # committed artifacts generated FROM those gems or the generators that write them changed; pdf-wasm
+  # is gated on both, because it is the only job that holds the gems the drift checks compare against.
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
@@ -448,6 +574,7 @@ jobs:
       contents: read
     outputs:
       wasm: ${{ steps.filter.outputs.wasm }}
+      pdf-artifacts: ${{ steps.filter.outputs.pdf-artifacts }}
       engine-cached: ${{ steps.engine-cache.outputs.cache-hit }}
 
     steps:
@@ -459,8 +586,57 @@ jobs:
           # commit is unreachable and we fail safe to "changed", running the heavy wasm build anyway.
           fetch-depth: 0
 
-      # Native path filter (no third-party action): diff the wasm inputs against the event's base.
-      - name: Detect changed wasm inputs
+      # Native path filter (no third-party action): diff each set of inputs against the event's base.
+      #
+      # TWO sets, because two unrelated things happen in the job this gates and they are not caused by
+      # the same changes:
+      #
+      #   - `wasm` — the engine's own inputs (the pinned gem closure and the build script). This gates
+      #     the ~15-25 minute CRuby→wasm compile, which is why the filter exists at all.
+      #   - `pdf-artifacts` — the COMMITTED output of the generators that read those gems
+      #     (`packages/asciidoc-pdf/assets`: the catalogue fonts, the base-14 stand-ins, the admonition
+      #     icons and the rouge palette; `packages/shared/src/**/*.generated.ts`: the theme-key
+      #     catalogue, the seed theme, the page-size table and the loader's deprecated spellings)
+      #     together with the generators themselves AND with every non-gem input they read
+      #     (`packages/asciidoc-pdf/vendor`: the TeX Gyre OTFs and the Foxit CFFs the committed base-14
+      #     WOFF2 are converted from), AND with `scripts/ci/artifacts.sh`, which is the script that
+      #     RUNS the checks: a change to the runner is as capable of disabling them as a change to a
+      #     generator, and a filter that ignored it would let that change land without them running
+      #     once. This gates the drift-check step at the end of that job.
+      #
+      #     `pnpm-lock.yaml` is in this set because it is a real input to two of those generators, not
+      #     merely to the workspace around them: `generate-catalogue-fonts.mjs` and
+      #     `generate-admonition-icons.mjs` both convert with `fonteditor-core` (a caret range), so a
+      #     lockfile bump to a new patch can change the emitted WOFF2 bytes. Without it, a bump landing
+      #     on a warm engine cache (`wasm=false`, `pdf-artifacts=false`, `engine-cached=true`) skips
+      #     pdf-wasm entirely and the committed fonts quietly stop matching what the generator writes —
+      #     the drift check exists for exactly that and would never have run.
+      #
+      # The second set is the fix for a hole that made those checks close to decorative. They ran only
+      # when a WASM input changed, and a pull request that edits `assets/rouge/palette.json`, a
+      # committed font metric, or one of the generators touches no wasm input at all — so the job did
+      # not run, so the only checks that can catch a corrupted or hand-edited artifact were skipped on
+      # exactly the pull requests able to corrupt one. Reproduced before fixing: changing a single
+      # colour in `palette.json` and regenerating left the `quality` job green (its check compares the
+      # stylesheet against the palette, and both had moved together) while every string in the Print
+      # preview came out in the new colour and the PDF went on drawing the old one.
+      #
+      # `vendor` was then missing from that same set for the same reason it was written in the first
+      # place, and the omission is why the list above now enumerates what each pathspec is FOR rather
+      # than naming a directory and trusting a reader to know what is under it. The base-14 stand-ins
+      # are the one generated artifact whose source is neither a gem nor a dependency: they are
+      # converted from OTF and CFF files committed under `packages/asciidoc-pdf/vendor/base14`. A pull
+      # request bumping one of those and nothing else left every clause of this filter false, so
+      # pdf-wasm never ran, so `check:base14-fonts` never ran — and `tests/fonts/base14-fonts.test.ts`
+      # could not catch it either, because it reads the committed `assets/` and never `vendor/`. The
+      # committed face silently stopped being derivable from its own committed source.
+      #
+      # Two fixes, because a path filter is the weaker half of the pair: `vendor` is listed below, AND
+      # each face's manifest entry now records a content hash of the file it was converted from, which
+      # that test verifies against the vendored bytes. The filter decides whether the drift check runs
+      # in this job; the hash makes a changed source detectable from the committed artifacts alone, in
+      # every job that runs the package's tests.
+      - name: Detect changed inputs
         id: filter
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -468,30 +644,49 @@ jobs:
         run: |
           set -euo pipefail
           # Missing/zero/unreachable base (first push of a branch, force-push, shallow clone) → fail
-          # safe: assume the inputs changed so the engine is always rebuilt when we can't be sure.
+          # safe for BOTH sets: assume they changed, so the engine is rebuilt and the artifacts are
+          # checked whenever we cannot be sure.
           if [ -z "${BASE_SHA:-}" ] \
              || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ] \
              || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            echo "base commit unavailable — assuming wasm inputs changed"
-            echo "wasm=true" >> "$GITHUB_OUTPUT"
+            echo "base commit unavailable — assuming every input changed"
+            { echo "wasm=true"; echo "pdf-artifacts=true"; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # A directory pathspec matches every file under it recursively. If the diff itself errors
+          # A directory pathspec matches every file under it recursively. If a diff itself errors
           # (unexpected repo state the base-reachability check above didn't catch), fail safe to
-          # "changed" rather than letting `set -e` abort the step and silently skip the build.
-          if ! changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
-            packages/asciidoc-pdf/ruby scripts/ci/wasm.sh)"; then
-            echo "git diff failed — assuming wasm inputs changed"
-            echo "wasm=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ -n "$changed" ]; then
-            echo "wasm inputs changed:"; echo "$changed" | sed 's/^/  /'
-            echo "wasm=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "no wasm input changes"
-            echo "wasm=false" >> "$GITHUB_OUTPUT"
-          fi
+          # "changed" rather than letting `set -e` abort the step and silently skip the work.
+          #
+          # `changed` is declared before the assignment on purpose: `local changed="$(…)"` would report
+          # the exit status of `local`, never the command substitution's, and the failure branch below
+          # would then be unreachable.
+          detect() {
+            local name="$1"
+            shift
+            local changed
+            changed=""
+            if ! changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- "$@")"; then
+              echo "git diff failed for $name — assuming those inputs changed"
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+              return 0
+            fi
+            if [ -n "$changed" ]; then
+              echo "$name inputs changed:"; echo "$changed" | sed 's/^/  /'
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "no $name input changes"
+              echo "$name=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          detect wasm packages/asciidoc-pdf/ruby scripts/ci/wasm.sh
+          detect pdf-artifacts \
+            packages/asciidoc-pdf/assets \
+            packages/asciidoc-pdf/vendor \
+            packages/asciidoc-pdf/scripts \
+            packages/shared/scripts/generate-theme-descriptors.mjs \
+            'packages/shared/src/*/*.generated.ts' \
+            scripts/ci/artifacts.sh \
+            pnpm-lock.yaml
 
       # "Inputs unchanged" is NOT sufficient to skip the engine build, because the cached engine can
       # disappear on its own: GitHub evicts cache entries after 7 days idle and when the repo passes
@@ -509,18 +704,49 @@ jobs:
           key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
 
   # ── Build the client-side Asciidoctor-PDF WebAssembly engine ───────────────
-  # Runs ONLY when the wasm inputs changed (see `changes`). The engine is gitignored and re-synced
+  # Runs only when the wasm inputs changed, when a committed gem-derived artifact or its generator
+  # changed, or when no built engine survives in the cache (see `changes`). The engine is re-synced
   # from the pinned Gemfile.lock via the ruby.wasm toolchain (rbwasm) running directly on the runner —
   # no container. setup-ruby provides Ruby 3.3; scripts/ci/wasm.sh (the same script `pnpm wasm` runs
-  # locally) installs the pinned rbwasm and builds. No node/pnpm needed.
+  # locally) installs the pinned rbwasm and builds. Node/pnpm are set up only at the very end, for the
+  # four drift checks — the only things that need both the gem and the workspace.
   pdf-wasm:
     name: PDF wasm engine build
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [quality, changes]
-    # Build when the inputs changed OR when no cached engine survives (eviction) — see the probe in
-    # `changes`. The second condition is what stops a silently-empty parity suite becoming permanent.
-    if: ${{ needs.changes.outputs.wasm == 'true' || needs.changes.outputs.engine-cached != 'true' }}
+    # What this job PRODUCED, as opposed to how it ended. `result` folds the engine build together
+    # with the drift checks that follow it, and the two consumers below need only the first of those:
+    # a palette that no longer matches the gem must fail this job loudly and must not also leave e2e
+    # and pdf-parity without an engine that built perfectly well. Set immediately after the upload, so
+    # it is only ever `built` when there is something to download.
+    outputs:
+      engine: ${{ steps.engine.outputs.engine }}
+    # Build when the engine's inputs changed OR when no cached engine survives (eviction) — see the
+    # probe in `changes`. The second condition is what stops a silently-empty parity suite becoming
+    # permanent.
+    #
+    # The third is not about the engine at all: the four drift checks at the end of this job are the
+    # only thing in CI holding the vendored gems against the committed artifacts generated from them,
+    # and they have to run when an ARTIFACT or a GENERATOR changes — which is a different set of paths
+    # from the engine's (see `changes`). Vendoring the gems means running the build, so an
+    # artifact-only pull request pays for a compile it does not need. That is deliberate and it is the
+    # cheap end of this job: the rbwasm cache is keyed on the engine's inputs, which such a pull
+    # request leaves alone, so the CRuby compile is restored rather than repeated.
+    #
+    # `!cancelled()` rather than the implicit `success()` GitHub wraps a bare `if` in, because that
+    # implicit wrapper made a `changes` FAILURE skip this job outright — whatever the three clauses
+    # below said. The three are computed from that job's outputs, which are empty when it fails, so
+    # they already fail safe to "build"; the wrapper was throwing the answer away before they were
+    # read. Dropping it also drops the "every need succeeded" gate, so `quality` is restated
+    # explicitly: a branch that cannot lint or type-check still must not spend 25 minutes here.
+    if: >-
+      ${{ !cancelled()
+          && needs.quality.result == 'success'
+          && (needs.changes.result != 'success'
+              || needs.changes.outputs.wasm == 'true'
+              || needs.changes.outputs.pdf-artifacts == 'true'
+              || needs.changes.outputs.engine-cached != 'true') }}
 
     steps:
       - uses: actions/checkout@v5
@@ -566,16 +792,83 @@ jobs:
           name: asciidoctor-pdf-wasm
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
           retention-days: 7
+          # The one way `engine == 'built'` could be true with nothing to download. The step below
+          # records that this run published an engine, and it records it on the strength of this
+          # upload having run — but by default `upload-artifact` only WARNS when the path matched
+          # nothing, so a `wasm.sh` that exited 0 without producing the file left every downstream job
+          # told an engine was ready and then failing to fetch it. Failing here instead names the
+          # build as the thing that went wrong.
+          if-no-files-found: error
 
       # Persist the engine under a stable cache so the e2e job can restore it on runs where pdf-wasm
       # itself doesn't run (no wasm-input change). Runs only on success (a failed build skips this
       # step), so a broken engine is never cached. The key covers EVERY input the engine is a pure
       # function of — matching the e2e restore key — so a restored engine is never stale.
       - name: Cache the built engine for the e2e job
+        # Gated on the same probe the job's own `if` reads, exactly as the rbwasm save above is gated
+        # on its restore: `cache/save` cannot overwrite an existing key, and since this job also runs
+        # for a change to a committed gem-derived ARTIFACT, there is now a path where the key is
+        # already warm when we get here — an artifact-only pull request that touches no wasm input.
+        # `cache/save` warns rather than fails on a key it already holds, so this was noise and not
+        # breakage; it is gated anyway so the warning means something when it does appear. When
+        # `changes` fails its outputs are empty, which reads as "not cached" and saves, as before.
+        if: ${{ success() && needs.changes.outputs.engine-cached != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm
           key: pdf-engine-${{ runner.os }}-${{ hashFiles('packages/asciidoc-pdf/ruby/Gemfile', 'packages/asciidoc-pdf/ruby/Gemfile.lock', 'packages/asciidoc-pdf/ruby/build-wasm.sh', 'scripts/ci/wasm.sh') }}
+
+      # The line between "the engine is ready" and everything after it. Downstream jobs restore this
+      # run's engine when — and only when — this step ran, which is after the artifact exists and
+      # before any drift check can fail the job. Without it those jobs read `result`, which a drift
+      # failure sets to `failure`, and a hand-edited palette left the parity suite claiming a build
+      # failure that never happened while e2e dropped every live-PDF spec without a word.
+      - name: Record that this run published an engine
+        id: engine
+        run: echo "engine=built" >> "$GITHUB_OUTPUT"
+
+      # LAST, deliberately: the committed catalogue fonts are a conversion of the gem's own typefaces,
+      # and this is the only job holding the gem to compare them against. Committed assets that no
+      # longer match the gem they claim to come from would leave the Print preview drawing a page with
+      # different metrics from the export's — the one thing that style promises not to do. It runs
+      # after the engine has been uploaded and cached so a font drift fails this job without also
+      # denying every downstream job the engine it needs.
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ONE step calling ONE script, rather than five `run:` lines restating five commands. Those five
+      # lines existed here and NOWHERE else — no script under scripts/ci/ invoked any of them at any
+      # opt-in level — which broke the rule this workflow states about itself elsewhere: scripts/ci/*.sh
+      # is the single source of truth for what a job does, so a green local gate means a green CI job.
+      # It was not true. Hand-editing `packages/asciidoc-pdf/assets/rouge/palette.json` and running
+      # `RUN_WASM=1 RUN_DOCKER=1 pnpm gate` passed every local job and then failed this one.
+      #
+      # scripts/ci/artifacts.sh now holds the list, the per-check reasoning, and the strict/lenient
+      # contract; scripts/ci/gate.sh runs it as Job 9 whenever the vendored gem tree is present — which
+      # is not gated on RUN_WASM, since none of the five needs the compiled engine, only the gem
+      # sources. `CI=1` here makes it strict: the gems and the host Ruby must both be present, and a
+      # check that cannot run is a failure rather than a skip.
+      #
+      # Two things it must keep having: the vendored gem tree the build above produced (all five checks
+      # read it), and the Ruby that `ruby/setup-ruby` put on PATH at the top of this job —
+      # `check:rouge-palette` REQUIREs the vendored rouge and asks it for its own taxonomy, lexer
+      # registry and theme styles (scripts/rouge-palette-dump.rb) rather than parsing its source, so
+      # the gems alone are not enough. Moving this step to a job without Ruby would break it.
+      #
+      # The Print stylesheet generated FROM that palette is checked in the `quality` job instead
+      # (scripts/ci/quality.sh): it needs neither gem nor wasm — only the committed palette.json and
+      # the installed highlight.js — and the drift it catches (a hand-edit inside the generated
+      # region, or a highlight.js bump that changes the class vocabulary) happens on pull requests
+      # that touch no wasm input at all, which is exactly when this job does not run.
+      - name: Check the committed gem-derived artifacts against the gems
+        run: ./scripts/ci/artifacts.sh
 
   # ── Production image build ─────────────────────────────────────────────────
   # docker/Dockerfile builds the four runtime images the production stack ships, from a context that
@@ -683,7 +976,61 @@ jobs:
           # expression read as "zero advisories" — a scanner that never ran reporting a clean bill of
           # health. So the output is validated before any conclusion is drawn from it.
           osv-scanner scan --lockfile=pnpm-lock.yaml --format=json > osv.json || true
-          osv-scanner scan --lockfile=pnpm-lock.yaml || true   # human-readable table in the log
+          osv-scanner scan --lockfile=pnpm-lock.yaml > osv-table.txt 2>&1 || true   # human-readable
+          cat osv-table.txt
+
+          # Positive control for the phrase the next check greps for. That check reads presentation
+          # text out of someone else's tool, and the install step above resolves `latest`, so the
+          # binary changes without notice. Reworded upstream, the grep matches nothing — and a blind
+          # gate then looks exactly like a clean tree. Nothing distinguishes them.
+          #
+          # So make the installed binary say it where the answer is known: a throwaway lockfile with
+          # one package plus a config holding one unmatchable advisory id MUST be reported as an
+          # unused ignore. `--offline` against six lines of YAML, ~30 ms, no network, independent of
+          # this repo's real scan. If the phrase does not come back the vocabulary moved and the
+          # check below verifies nothing, so fail here rather than pass quietly.
+          # Mirrors scripts/ci/security.sh so a local run and this job reach the same verdict.
+          PROBE=$(mktemp -d)
+          printf '[[IgnoredVulns]]\nid = "GHSA-0000-0000-0000"\nreason = "positive control"\n' \
+            > "$PROBE/osv-scanner.toml"
+          cat > "$PROBE/pnpm-lock.yaml" <<'PROBE_LOCK'
+          lockfileVersion: '9.0'
+          importers:
+            .:
+              dependencies:
+                is-number:
+                  specifier: 7.0.0
+                  version: 7.0.0
+          packages:
+            is-number@7.0.0:
+              resolution: {integrity: sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng==}
+          snapshots:
+            is-number@7.0.0: {}
+          PROBE_LOCK
+          # Offline the vulnerability DB cannot load and the scanner exits non-zero; irrelevant, the
+          # config report is emitted regardless and is the only thing asserted here.
+          PROBE_OUT=$(osv-scanner scan --config="$PROBE/osv-scanner.toml" \
+            --lockfile="$PROBE/pnpm-lock.yaml" --offline 2>&1 || true)
+          rm -rf "$PROBE"
+          if ! printf '%s' "$PROBE_OUT" | grep -q "unused ignores"; then
+            echo "::error::osv-scanner no longer reports an unmatchable suppression as an 'unused ignore'."
+            echo "The check below greps for that phrase, so it can no longer detect a stale entry in"
+            echo "osv-scanner.toml. Update BOTH this step and scripts/ci/security.sh. Probe output:"
+            printf '%s\n' "$PROBE_OUT"
+            exit 1
+          fi
+          echo "osv-scanner still reports unused ignores (positive control)."
+
+          # A suppression that has outlived its cause is a rule nobody reads which will one day match
+          # a real advisory. osv-scanner already names the ones that matched nothing; until now that
+          # line scrolled past in a green log, and GHSA-mh99-v99m-4gvg sat in osv-scanner.toml being
+          # reported as unused for as long as anyone had looked. Gate on it — pruning is the fix.
+          # Mirrors scripts/ci/security.sh so a local run and this job reach the same verdict.
+          if grep -q "unused ignores" osv-table.txt; then
+            echo "::error::osv-scanner.toml carries suppression(s) that match nothing — remove them."
+            grep -A5 "unused ignores" osv-table.txt
+            exit 1
+          fi
 
           if [ ! -s osv.json ] || ! jq -e 'type == "object"' osv.json >/dev/null 2>&1; then
             echo "::error::OSV-Scanner produced no parsable JSON — treating this as a scan failure."
@@ -701,6 +1048,18 @@ jobs:
 
           HIGH=$(jq "$SEVERITIES | map(select($NUMERIC) | tonumber) | map(select(. >= 7.0)) | length" osv.json)
           echo "High+ (CVSS >= 7.0) advisories: $HIGH"
+
+          # Counted and surfaced, NOT gated — the threshold stays at High+ to match `pnpm audit
+          # --audit-level=high`. But a Medium is not nothing: qs 6.15.1 (GHSA-q8mj-m7cp-5q26, CVSS
+          # 6.3) sat in this lockfile with a one-patch fix available and every run was green, the
+          # finding printed in a table nobody read. An annotation is what makes it land.
+          MEDIUM=$(jq "$SEVERITIES | map(select($NUMERIC) | tonumber) | map(select(. >= 4.0 and . < 7.0)) | length" osv.json)
+          if [ "$MEDIUM" -gt 0 ]; then
+            echo "::warning::$MEDIUM Medium (4.0 <= CVSS < 7.0) advisory group(s) — not gated. Check"
+            echo "the table above for a populated FIXED VERSION column: a Medium with a fix is a bump,"
+            echo "not a finding to live with. Remediate by bumping the parent, or with an entry in"
+            echo "pnpm-workspace.yaml 'overrides' when the parent pins the vulnerable version exactly."
+          fi
 
           # Anything skipped by the numeric filter is reported rather than silently dropped: a
           # non-numeric severity may well be a High, and a quiet omission would hide it.

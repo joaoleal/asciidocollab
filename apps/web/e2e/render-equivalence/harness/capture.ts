@@ -130,7 +130,7 @@ let post: PostMessage | null = null;
 let lastResult: RenderResult | null = null;
 
 /**
- * Load the render worker with the globals it expects, once per process.
+ * Load the render worker with the globals it expects, once per copy of this module.
  *
  * The worker is a module that assigns `onmessage` and calls `postMessage` at global scope, so it is
  * loaded LATE, after those globals exist — a static import is hoisted above every statement here and
@@ -159,7 +159,22 @@ function loadWorker(): PostMessage {
     configurable: true,
   });
 
-  createRequire(__filename)('../../../src/workers/asciidoc-render.worker');
+  // Evicted from the module cache before it is required, so the module BODY runs every time and
+  // assigns `onmessage` through the accessor installed above.
+  //
+  // Without this the harness fails intermittently, and only ever on the first document of a file. The
+  // runner gives each spec FILE a fresh registry for the files under its own test directory but not
+  // for the rest of the tree, so a second render-equivalence file in the same worker process gets a
+  // fresh copy of THIS module — `post` back to null — while the worker module is still cached from the
+  // first file. Requiring it then re-executes nothing, no `onmessage` is assigned, and the registration
+  // check below fires. Whether that happens depends on how the runner distributed the files, which is
+  // why it looked like a flake. Re-executing is also what the harness wants on its own terms: the
+  // worker keeps module-level state (its render ordinal, its registered grammars), and each file's
+  // renders should start from the same place rather than from wherever the previous file left it.
+  const requireWorker = createRequire(__filename);
+  const workerModule = requireWorker.resolve('../../../src/workers/asciidoc-render.worker');
+  delete requireWorker.cache[workerModule];
+  requireWorker(workerModule);
   // Read through a call rather than the variable. Both `handler` and `lastResult` are written from
   // inside a property descriptor the worker triggers, which the compiler cannot see: reading them
   // directly, it narrows each to the `null` it was last assigned here and rejects every later use.

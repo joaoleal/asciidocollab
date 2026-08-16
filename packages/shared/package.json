@@ -9,15 +9,17 @@
     "build": "tsc",
     "test": "jest",
     "generate:theme-descriptors": "node scripts/generate-theme-descriptors.mjs",
+    "check:theme-descriptors": "node scripts/generate-theme-descriptors.mjs --check",
     "prebuild": "node scripts/generate-theme-descriptors.mjs --if-available",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json"
   },
   "dependencies": {
     "@asciidocollab/asciidoc-core": "workspace:*",
+    "@asciidocollab/primitives": "workspace:*",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
-    "yaml": "^2.9.0"
+    "@types/node": "^24.13.3"
   }
 }

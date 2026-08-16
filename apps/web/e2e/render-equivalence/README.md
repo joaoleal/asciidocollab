@@ -182,6 +182,18 @@ in a routine run is not. **If a fixture is missing, it cannot be re-derived from
 has to come from a reverted checkout of the engine as it was, which in practice means the coverage is
 gone.
 
+> **Two fixtures have been deliberately re-captured, and no longer carry the property above.**
+> `source-blocks.html` and `tables-lists.html` were regenerated during the Print-preview work
+> (feature 045). Two intended engine changes had made them stale: a callout-bearing Ruby listing that
+> should have been syntax-highlighted and was not, and a footnote separator that had to be wrapped in
+> `<span class="footnote-separator">` so a stylesheet could reach it — a bare text node cannot be
+> selected. Both files were diffed hunk by hunk before and after, and the deltas are exactly those two
+> changes and nothing else. For these two documents the "before" property is spent: they are now a
+> regression gate against the *current* engine rather than a record of the previous one. The other
+> fixtures are untouched and still carry it.
+
+
+
 Two properties of the capture are worth knowing before reading a fixture:
 
 - It goes through the **real render worker**, not raw Asciidoctor conversion. What the app displays is

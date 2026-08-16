@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import type { PreviewStyleValue } from '@asciidocollab/primitives';
 import { grammarDialectSchema } from '../grammar/grammar-config';
 
 /** Upper bound on a single free-form custom-attribute name/value, and on the number of them. */
@@ -46,8 +47,12 @@ export const PDF_PAGE_SIZES = ['A3', 'A4', 'A5', 'LETTER', 'LEGAL', 'LEDGER', 'T
 export const HTML_EXPORT_PACKAGINGS = ['single-file', 'zip'] as const;
 /**
  * The visual style an HTML export is dressed in: the app's own stylesheet, or the vendored
- * Asciidoctor default. Deliberately the same two values the live preview offers, so a project pinning
- * a style names the same thing a reader sees on screen.
+ * Asciidoctor default.
+ *
+ * These were once exactly the styles the live preview offered, so a project pinning a style named the
+ * same thing a reader saw on screen. The preview has since gained the Print style, which has no HTML
+ * export counterpart — it reproduces a page the export does not paginate. The two lists are therefore
+ * no longer identical, and {@link htmlExportStyleFor} is the one place that reconciles them.
  */
 export const HTML_EXPORT_STYLES = ['asciidocollab', 'asciidoctor'] as const;
 /** The palette baked into an HTML export; `auto` emits both under `prefers-color-scheme`. */
@@ -59,6 +64,20 @@ export type HtmlExportPackaging = (typeof HTML_EXPORT_PACKAGINGS)[number];
 export type HtmlExportStyle = (typeof HTML_EXPORT_STYLES)[number];
 /** The palette baked into an HTML export. */
 export type HtmlExportTheme = (typeof HTML_EXPORT_THEMES)[number];
+
+/**
+ * The export style that corresponds to a reader's preview style.
+ *
+ * Every preview style but Print names an export style directly. Print does not: it dresses the
+ * preview as a page, which an unpaginated HTML export cannot be, so a reader with Print selected
+ * exports in the application's own styling rather than in nothing at all.
+ *
+ * @param previewStyle - The reader's current preview style token.
+ * @returns The export style to dress the download in.
+ */
+export function htmlExportStyleFor(previewStyle: PreviewStyleValue): HtmlExportStyle {
+  return previewStyle === 'asciidoctor' ? 'asciidoctor' : 'asciidocollab';
+}
 
 /**
  * The packaging used when a project has expressed no preference: one self-contained file. Chosen as

@@ -1,0 +1,94 @@
+= Anchor Document
+Ada Lovelace
+v2.1, 2026-01-15
+
+A paragraph of body text, long enough that it must break across more than one line so that the
+position of the break can be compared between the preview and the rendered page, which is the whole
+point of setting it in the same typeface at the same size.
+
+== First Section
+
+Body text with a link to https://example.com[an external site] and a cross-reference to
+<<second-section,the second section>>. It also carries `inline code` and *strong* and _emphasised_
+words.
+
+.An unordered list
+* first item
+* second item
+** a nested item
+
+.An ordered list
+. first step
+. second step
+
+.A description list
+Term one:: Its meaning.
+Term two:: Another meaning.
+
+.A source block with callouts
+[source,ruby]
+----
+require 'asciidoctor-pdf' # <1>
+Asciidoctor.convert_file 'doc.adoc', backend: 'pdf' # <2>
+----
+<1> Load the converter.
+<2> Convert the document.
+
+....
+A literal block, set verbatim.
+....
+
+[quote, Ada Lovelace, Notes on the Analytical Engine]
+____
+The Analytical Engine weaves algebraic patterns, just as the Jacquard loom weaves flowers and leaves.
+____
+
+[verse, Anonymous]
+____
+A verse block
+  keeps its own line breaks
+    and its own indentation.
+____
+
+.A sidebar
+****
+A sidebar block, set apart from the body text around it.
+****
+
+.An example block
+====
+An example block, framed by the theme.
+====
+
+NOTE: A note admonition.
+
+TIP: A tip admonition.
+
+IMPORTANT: An important admonition.
+
+WARNING: A warning admonition.
+
+CAUTION: A caution admonition.
+
+.A table with a header row
+[cols="2,1,1",options="header",stripes=even]
+|===
+| Construct | Count | Note
+
+| Paragraphs | 12 | body
+| Lists | 3 | ordered, unordered, description
+| Tables | 1 | this one
+| Blocks | 6 | code, quote, verse, sidebar, example, literal
+|===
+
+.A figure caption
+image::figure.svg[A figure,300,120]
+
+A sentence carrying a footnote.footnote:[The footnote's own text, set at the theme's footnote size.]
+
+'''
+
+[[second-section]]
+== Second Section
+
+The closing paragraph, after the thematic break above.

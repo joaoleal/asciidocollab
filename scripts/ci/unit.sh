@@ -19,6 +19,9 @@ pnpm -r build
 step "Asciidoc-core unit tests with coverage …"
 (cd packages/asciidoc-core && npx jest --coverage --coverageReporters=text lcov)
 
+step "Primitives unit tests with coverage …"
+(cd packages/primitives && npx jest --coverage --coverageReporters=text lcov)
+
 step "Shared unit tests with coverage …"
 (cd packages/shared && npx jest --coverage --coverageReporters=text lcov)
 

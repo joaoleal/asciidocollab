@@ -14,6 +14,7 @@ import { useProjectSymbolIndex } from '@/hooks/use-project-symbol-index';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
+import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
 import { ImagePreview } from '@/components/image-preview';
 import { isImageFile } from '@/lib/codemirror/asciidoc-image-extensions';
 import { isThemeFilePath } from '@asciidocollab/shared';
@@ -83,8 +84,10 @@ const NO_EXTENSION_IDS: readonly string[] = [];
 import {
   resolveRenderAttributes,
   SOFT_DEFAULT_SUFFIX,
+  stripSoftDefault,
   DEFAULT_HTML_EXPORT_PACKAGING,
   DEFAULT_HTML_EXPORT_THEME,
+  htmlExportStyleFor,
 } from '@asciidocollab/shared';
 import type { ProjectSnapshot, RenderDiagnostic } from '@asciidocollab/asciidoc-pdf';
 
@@ -803,7 +806,7 @@ export function ProjectEditorLayout({
   // editor's text cache. The cache fetches them once each and feeds them into the render snapshot as
   // `kind: 'binary'` files so the engine embeds the picture instead of its not-found placeholder.
   const assetCache = useProjectAssetCache(projectId);
-  const { getAssets, ensureAssets, loadAssets, assetsSettled, assetVersion } = assetCache;
+  const { getAssets, getAssetBytes, ensureAssets, loadAssets, assetsSettled, assetVersion } = assetCache;
 
   // The theme and `.bib` contents, which the include-graph cache above can never reach. Without this
   // the snapshot has no theme content, and theme DISCOVERY — which filters the snapshot's own text
@@ -812,6 +815,37 @@ export function ProjectEditorLayout({
     projectId,
     renameRefreshNonce,
     changedFileNodeId,
+  );
+
+  // The theme document the Print preview dresses its page in: the export's own choice, resolved by
+  // the export's own function from the same merged file snapshot the export builds from. Computed
+  // only while that style is selected — the other two ignore it, and reading the file maps for
+  // nothing on every render of a document being typed is exactly the cost this feature must not add.
+  //
+  // The version counters are what make this live: the maps are mutable behind stable callbacks, so a
+  // collaborator's theme edit (auxiliaryVersion, driven by the UNFILTERED content-changed stream — a
+  // theme is never include-reachable) and the author's own edit to an open theme (liveOverlayContent)
+  // each have to be named here or the page would keep the theme it first saw.
+  const printTheme = useMemo<ProjectTheme>(
+    () =>
+      previewStyle === 'print'
+        ? resolveProjectTheme({
+            files: { ...getAuxiliaryFiles(), ...getProjectFiles() },
+            // Stripped of its soft-default marker, exactly as the export's snapshot builder strips
+            // it: every project attribute carries `@` so a document header can override it, and the
+            // marker is not part of the path.
+            declaredThemePath: stripSoftDefault(projectRenderAttributes.attributes['pdf-theme'] ?? ''),
+          })
+        : {},
+    [
+      previewStyle,
+      getAuxiliaryFiles,
+      getProjectFiles,
+      auxiliaryVersion,
+      reachableDocVersion,
+      liveOverlayContent,
+      projectRenderAttributes,
+    ],
   );
 
   // Shared snapshot builder: the single seam that captures the editor's project state into an
@@ -924,7 +958,7 @@ export function ProjectEditorLayout({
       files: getProjectFiles(),
       projectAttributes: projectRenderAttributes.attributes,
       packaging: htmlExport?.packaging ?? DEFAULT_HTML_EXPORT_PACKAGING,
-      style: htmlExport?.style ?? previewStyle,
+      style: htmlExport?.style ?? htmlExportStyleFor(previewStyle),
       theme: htmlExport?.theme ?? DEFAULT_HTML_EXPORT_THEME,
     });
   }, [
@@ -1479,6 +1513,15 @@ export function ProjectEditorLayout({
                     onToggleScrollSync={() => setScrollSyncEnabled(!scrollSyncEnabled)}
                     previewStyle={previewStyle}
                     onPreviewStyleChange={setPreviewStyle}
+                    themeText={printTheme.themeText}
+                    themePath={printTheme.themePath}
+                    // The Print style's fonts come from the project through the SAME asset mechanism
+                    // every image and theme font already travels — passed in, never rebuilt.
+                    ensureAssets={ensureAssets}
+                    getAssetBytes={getAssetBytes}
+                    assetVersion={assetVersion}
+                    assetsSettled={assetsSettled}
+                    onSelectDiagnosticLocation={handleDiagnosticLocation}
                     showIncludedFiles={showIncludedFiles}
                     onOpenInclude={handleNavigateToFile}
                     onNavigateToSource={handlePreviewSourceNavigate}

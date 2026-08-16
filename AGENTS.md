@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
-Active feature plan: specs/043-preview-responsiveness/plan.md
+Active feature plan: specs/045-pdf-style-preview/plan.md
 <!-- SPECKIT END -->
 
 ## Hard Constraints (MUST NOT)
@@ -175,23 +175,32 @@ Run tests for **every package touched**. Do not stop at typecheck.
 
 MUST NOT run `npx jest` from the repo root without `--filter` — it picks up configs from all workspace packages and produces misleading results.
 
-### Pre-merge gate (all five jobs must pass with zero failures)
+### Pre-merge gate (all ten jobs must pass with zero failures)
 
 Run the whole gate locally with one command:
 
 ```bash
-pnpm gate    # = scripts/ci/gate.sh — runs all five jobs below, stops on first failure
+pnpm gate    # = scripts/ci/gate.sh — runs all ten jobs below, stops on first failure
 ```
 
 `pnpm gate` uses the **isolated** e2e job (`scripts/ci/e2e-local.sh`), so it is safe to run while `scripts/dev.sh` is up — it never clashes on the dev ports or touches the dev database. **When asked to "run all quality gates with e2e", use `pnpm gate` (or `scripts/ci/e2e-local.sh` for the e2e job) — never `scripts/ci/e2e.sh` while a dev stack is running** (see below). The individual jobs (all under `scripts/ci/`):
 
 ```bash
-./scripts/ci/quality.sh      # Job 1: build · lint · types · architecture · audit · migration drift
-./scripts/ci/unit.sh         # Job 2: unit tests + coverage — shared, domain, api, collab, web (needs Job 1)
-./scripts/ci/integration.sh  # Job 3: integration tests via Testcontainers (needs Job 1)
-./scripts/ci/security.sh     # Job 4: security scan — Semgrep · zizmor · gitleaks · OSV-Scanner (High+) · knip
-./scripts/ci/e2e-local.sh    # Job 5: E2E on an isolated stack (needs Jobs 2+3, requires Docker)
+./scripts/ci/quality.sh             # Job 1: build · lint · types · architecture · audit · migration drift
+./scripts/ci/unit.sh                # Job 2: unit tests + coverage — shared, domain, api, collab, web (needs Job 1)
+./scripts/ci/integration.sh         # Job 3: integration tests via Testcontainers (needs Job 1)
+./scripts/ci/security.sh            # Job 4: security scan — Semgrep · zizmor · gitleaks · OSV-Scanner (High+) · knip
+./scripts/ci/e2e-local.sh           # Job 5: E2E on an isolated stack (needs Jobs 2+3, requires Docker)
+./scripts/ci/pdf-parity.sh          # Job 6: PDF output vs the canonical toolchain (needs poppler + the built wasm engine)
+./scripts/ci/render-equivalence.sh  # Job 7: web-format preview vs the canonical toolchain (needs Docker + the built wasm engine)
+./scripts/ci/wasm.sh                # Job 8: the client-side PDF wasm engine build — OPT-IN locally (RUN_WASM=1)
+./scripts/ci/artifacts.sh           # Job 9: gem-derived committed artifacts (fonts · icons · rouge palette · theme descriptors)
+./scripts/ci/docker.sh              # Job 10: the production images — OPT-IN locally (RUN_DOCKER=1)
 ```
+
+Jobs 6-10 are conditional, and the condition differs between here and CI. Locally, `pnpm gate` **skips** 6, 7 and 9 when their prerequisites are absent (poppler-utils / Docker / `packages/asciidoc-pdf/ruby/asciidoctor-pdf.wasm` / the vendored gem tree under `packages/asciidoc-pdf/ruby/.wasm-build/`) and skips 8 and 10 unless `RUN_WASM=1` / `RUN_DOCKER=1` — the wasm compile is ~15-25 min and the four image targets rebuild the whole workspace, so a routine gate stays fast. **CI is not lenient**: it provisions the prerequisites and runs 6, 7 and 10 unconditionally (8 and 9 run inside the `pdf-wasm` job, which fires when `packages/asciidoc-pdf/ruby/**` or any gem-derived artifact changes). A local skip is therefore not a pass — it is a check that did not happen, and the same script will run for real on the pull request.
+
+Job 9 is cheap (~6 s) and is **not** behind `RUN_WASM` — it needs the vendored gem *sources*, not the compiled engine, so it runs on every gate once the gem tree exists. Its one Ruby-dependent check (`check:rouge-palette`) is reported as **NOT RUN** rather than passed when no `ruby` is on PATH; `ARTIFACTS_STRICT=1` (or `CI=1`) makes that a hard failure, as it is in CI.
 
 **Directive — "run all quality gates" / "run the quality gates" ALWAYS includes Job 4 (the security scan above).** Lint + typecheck + tests are NOT the whole gate. Run the full sweep with `pnpm gate`, or Job 4 alone with `./scripts/ci/security.sh` (mirrors the CI `security` job in `.github/workflows/ci.yml`). Whether Job 5 / e2e is included follows the "with e2e" convention above.
 
@@ -201,7 +210,15 @@ pnpm gate    # = scripts/ci/gate.sh — runs all five jobs below, stops on first
 
 E2E tests are mandatory before merge — they are the only layer that catches missing route registrations and broken API contracts.
 
-**`scripts/ci/e2e-local.sh` (= `pnpm e2e:local`) vs `scripts/ci/e2e.sh`:** both run the *same* Playwright suite. `e2e-local.sh` spins up a throwaway Postgres + Mailpit from `docker/docker-compose.e2e.yml` on distinct ports (5433/1126/8126, API 4100, web 3100, collab-internal 4101) and tears down — it never touches your dev containers, ports, or data, so it coexists with a running `dev.sh`. `e2e.sh` is the **CI** form: it targets the dev stack (`docker/docker-compose.dev.yml`, ports 4000/3000) and runs `prisma db push --force-reset`, so running it locally while `dev.sh` is up would `EADDRINUSE` on 4000/3000 and wipe the dev database. `scripts/e2e-stack-up.sh` brings the isolated stack **up and leaves it running** for iterating on individual specs.
+**`scripts/ci/e2e-local.sh` (= `pnpm e2e:local`) vs `scripts/ci/e2e.sh`:** both run the *same* Playwright suite. `e2e-local.sh` spins up a throwaway Postgres + Mailpit from `docker/docker-compose.e2e.yml` on distinct ports (5433/1126/8126, API 4100, web 3100, collab-internal 4101) and tears down — it never touches your dev containers, ports, or data, so it coexists with a running `dev.sh`. `e2e.sh` is the **CI** form: it targets the dev stack (`docker/docker-compose.dev.yml`, ports 4000/3000) and runs `prisma db push --force-reset`, so running it locally while `dev.sh` is up would `EADDRINUSE` on 4000/3000 and wipe the dev database. `scripts/e2e-stack-up.sh` (and `scripts/e2e-stack-persist.sh`, which adds the collab server) brings the isolated stack **up and leaves it running** for iterating on individual specs.
+
+**Only one of these may run at a time, machine-wide.** `docker/docker-compose.e2e.yml` pins `name: asciidocollab-e2e` — one project per Docker daemon — and publishes fixed host ports, so the stack is a single shared resource no matter how many clones or worktrees you have. All three scripts take a machine-scoped lock (`${XDG_RUNTIME_DIR}/asciidocollab-e2e.lock`, falling back to `~/.cache/asciidocollab/`; `scripts/lib/e2e-lock.sh`) and stamp their identity onto the containers, so:
+
+- a second `e2e-local.sh` (from any checkout) **waits** for the first and prints a heartbeat;
+- `e2e-local.sh` / `pnpm gate` **refuses immediately**, naming the holder, while a persistent stack is up — it would otherwise begin by `docker compose down -v`-ing the stack you are iterating against. Stop it with Ctrl-C in that shell, or run your specs against the stack it already provides (that is what it is for);
+- a persistent script refuses while an `e2e-local` run holds the stack.
+
+Leftovers from a crashed run are not protected: if the owning process is gone, the next run destroys the containers as before.
 
 Local e2e gotchas: (1) the isolated scripts offset the collab-internal port to 4101 so they coexist with a dev API on 4001; override `ASCIIDOCOLLAB_COLLAB_INTERNAL_PORT` if 4101 is also taken; (2) dev and e2e share `apps/web/.next`, so a stale `.next` (a prior `next dev` build mixed with `next build`) can make the served HTML reference chunks that 404→500 and pages won't hydrate (e.g. the register button stays disabled) — `rm -rf apps/web/.next` before building if you hit this; (3) never `DROP SCHEMA` on the e2e DB while the API is running (it corrupts the Prisma pool) — reset the DB before the API starts.
 

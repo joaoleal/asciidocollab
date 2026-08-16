@@ -12,11 +12,22 @@
 # :3100. Because each run starts from a fresh, empty database, the suite only
 # needs a plain `prisma db push` (no destructive `--force-reset`).
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# `name:` makes this project unique per Docker DAEMON, and the host ports below
+# are fixed — so this stack is a single machine-wide resource, however many
+# checkouts or worktrees exist. Every script that brings it up stamps its own
+# identity into ASCIIDOCOLLAB_E2E_OWNER, which lands on the containers as a
+# label; a script about to run `down -v` reads that label back and refuses when
+# the owner process is still alive. See scripts/lib/e2e-lock.sh. Empty when
+# somebody ran `docker compose` by hand — such a stack counts as unowned debris
+# and is destroyed as before.
 name: asciidocollab-e2e
 
 services:
   postgres:
     image: postgres:18-alpine
+    labels:
+      com.asciidocollab.e2e.owner: "${ASCIIDOCOLLAB_E2E_OWNER:-}"
     environment:
       POSTGRES_USER: asciidocollab
       POSTGRES_PASSWORD: asciidocollab
@@ -33,6 +44,8 @@ services:
 
   mailpit:
     image: axllent/mailpit:latest
+    labels:
+      com.asciidocollab.e2e.owner: "${ASCIIDOCOLLAB_E2E_OWNER:-}"
     ports:
       - "1126:1025"   # SMTP
       - "8126:8025"   # Web UI

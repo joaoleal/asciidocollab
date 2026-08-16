@@ -147,7 +147,9 @@ test.describe('web-format render against the canonical reference build', () => {
       '<pre class="rouge highlight"><code data-lang="ruby">a = 1</code></pre></div></div>' +
       '<div class="imageblock"><div class="content"><img src="assets/x.png" alt="x"></div></div>' +
       '<div class="listingblock"><div class="content"><pre>graph TD;\n  A --&gt; B;</pre></div></div>' +
-      '<div class="paragraph"><p id="author-anchor">Prose.</p></div>';
+      '<div class="paragraph"><p id="author-anchor">Prose.</p></div>' +
+      '<div id="footnotes"><hr>' +
+      '<div class="footnote" id="_footnotedef_1"><a href="#_footnoteref_1">1</a>. The note itself.</div></div>';
     // The diagram is the second verbatim block of the reference side; its declared style does not
     // survive conversion, so it arrives beside the HTML.
     const referenceDiagramBlocks: readonly ReferenceDiagram[] = [{ blockIndex: 1, type: 'mermaid' }];
@@ -160,14 +162,17 @@ test.describe('web-format render against the canonical reference build', () => {
       '<div id="__src_image_5" data-source-line="5" class="imageblock"><div class="content">' +
       `<img src="${CAPTURE_IMAGES_DIR}/assets/x.png" alt="x"></div></div>` +
       '<div class="adc-diagram" data-diagram-engine="mermaid" data-source-line="7">graph TD;\n  A --&gt; B;</div>' +
-      '<div class="paragraph"><p id="author-anchor">Prose.</p></div>';
+      '<div class="paragraph"><p id="author-anchor">Prose.</p></div>' +
+      '<div id="footnotes"><hr>' +
+      '<div class="footnote" id="_footnotedef_1"><a href="#_footnoteref_1">1</a>' +
+      '<span class="footnote-separator">. </span>The note itself.</div></div>';
 
     // Each of these is a difference the app is ENTITLED to, and the reason the corresponding pass
     // exists. Together they are the whole of what the comparison forgives.
     const forgiven = new Map<string, string>([
       [
-        'everything the app adds at once — token spans, synthetic ids, provenance, the image endpoint ' +
-          'and the diagram placeholder',
+        'everything the app adds at once — token spans, synthetic ids, provenance, the image endpoint, ' +
+          'the diagram placeholder and the named footnote separator',
         appSide,
       ],
       ['the app naming its own highlighter', appSide.replace('highlight hljs', 'hljs highlight')],
@@ -196,6 +201,12 @@ test.describe('web-format render against the canonical reference build', () => {
       ['an unexpected extra class on a highlighted block', { markup: appSide.replace('highlight hljs', 'highlight hljs sneaky') }],
       ['a renamed author identifier', { markup: appSide.replace('id="author-anchor"', 'id="renamed-anchor"') }],
       ['a changed image target', { markup: appSide.replace('assets/x.png', 'assets/y.png') }],
+      // The separator's span is unwrapped, not deleted — so what it holds is still compared.
+      [
+        'a changed footnote separator',
+        { markup: appSide.replace('<span class="footnote-separator">. </span>', '<span class="footnote-separator">, </span>') },
+      ],
+      ['a renamed footnote back-link', { markup: appSide.replace('href="#_footnoteref_1"', 'href="#_footnoteref_2"') }],
       [
         'an image no longer served from the endpoint',
         {
