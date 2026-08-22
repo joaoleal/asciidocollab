@@ -131,13 +131,6 @@ describe('authApi behavior', () => {
     expect(fetchMock.mock.calls[0][1].method).toBe('POST');
   });
 
-  test('updateDisplayName sends PATCH to /auth/profile', async () => {
-    fetchMock.mockReturnValueOnce(mockOkResponse({ message: 'Updated' }));
-    await authApi.updateDisplayName('NewName');
-    expect(String(fetchMock.mock.calls[0][0])).toContain('/auth/profile');
-    expect(fetchMock.mock.calls[0][1].method).toBe('PATCH');
-  });
-
   test('requestEmailChange sends POST to /auth/email/change-request', async () => {
     fetchMock.mockReturnValueOnce(mockOkResponse({ message: 'Verification sent' }));
     await authApi.requestEmailChange('new@example.com');

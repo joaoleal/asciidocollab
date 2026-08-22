@@ -93,14 +93,6 @@ export const authApi = {
     });
   },
 
-  async updateDisplayName(displayName: string): Promise<{ /** Confirmation message from the server. */
-  message: string }> {
-    return apiRequest('/auth/profile', {
-      method: 'PATCH',
-      body: JSON.stringify({ displayName }),
-    });
-  },
-
   async updateProfile(data: UpdateProfileData): Promise<{ /** Confirmation message from the server. */ message: string }> {
     return apiRequest('/auth/me/profile', {
       method: 'PATCH',

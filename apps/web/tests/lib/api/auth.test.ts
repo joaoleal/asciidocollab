@@ -278,17 +278,6 @@ describe('authApi password endpoints', () => {
 });
 
 describe('authApi profile endpoints', () => {
-  test('updateDisplayName PATCHes the new name to /auth/profile', async () => {
-    okOnce({ message: 'Updated' });
-
-    await authApi.updateDisplayName('Renamed');
-
-    expect(requestUrl()).toBe(`${API_BASE_URL}/auth/profile`);
-    expect(requestInit().method).toBe('PATCH');
-    expect(requestInit().body).toBe(JSON.stringify({ displayName: 'Renamed' }));
-    expect(requestBody()).toEqual({ displayName: 'Renamed' });
-  });
-
   test('updateProfile PATCHes the whole payload to /auth/me/profile', async () => {
     okOnce({ message: 'Profile updated' });
 
