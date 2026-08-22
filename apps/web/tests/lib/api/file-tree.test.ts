@@ -34,6 +34,15 @@ function rejectingJson(status: number): void {
   mockFetch.mockResolvedValueOnce({ ok: false, status, json: () => Promise.reject(new Error('not json')) });
 }
 
+/**
+ * A failure whose body is the literal JSON `null`. This is well-formed JSON, so `response.json()`
+ * resolves and the `.catch` fallback never runs — `null` is handed straight to the error builder,
+ * which must read through it rather than dereference it.
+ */
+function nullJson(status: number): void {
+  mockFetch.mockResolvedValueOnce({ ok: false, status, json: () => Promise.resolve(null) });
+}
+
 beforeEach(() => {
   mockFetch.mockReset();
 });
@@ -97,6 +106,16 @@ describe('fetchProjectFileTree', () => {
       message: 'Failed to load files',
     });
   });
+
+  test('falls back when the error body is the literal JSON null', async () => {
+    nullJson(500);
+    await expect(fetchProjectFileTree('p1')).rejects.toMatchObject({
+      name: 'FileTreeApiError',
+      status: 500,
+      code: 'ERROR',
+      message: 'Failed to load files',
+    });
+  });
 });
 
 describe('createFolder', () => {
@@ -132,6 +151,18 @@ describe('createFolder', () => {
   test('falls back when the error body is not valid JSON', async () => {
     rejectingJson(500);
     await expect(createFolder('p1', 'parent-1', 'docs')).rejects.toMatchObject({ status: 500, code: 'ERROR' });
+  });
+
+  test('falls back when the error body is the literal JSON null', async () => {
+    nullJson(500);
+    const error = await createFolder('p1', 'parent-1', 'docs').catch((error_) => error_);
+    expect(error).toMatchObject({
+      name: 'FileTreeApiError',
+      status: 500,
+      code: 'ERROR',
+      message: 'Failed to create folder',
+    });
+    expect(error.existingFileNodeId).toBeUndefined();
   });
 });
 
@@ -179,6 +210,16 @@ describe('createFileNode', () => {
     rejectingJson(500);
     await expect(createFileNode('p1', 'parent-1', 'a.adoc')).rejects.toMatchObject({ status: 500, code: 'ERROR' });
   });
+
+  test('falls back when the error body is the literal JSON null', async () => {
+    nullJson(500);
+    await expect(createFileNode('p1', 'parent-1', 'a.adoc')).rejects.toMatchObject({
+      name: 'FileTreeApiError',
+      status: 500,
+      code: 'ERROR',
+      message: 'Failed to create file',
+    });
+  });
 });
 
 describe('renameFileNode', () => {
@@ -213,6 +254,16 @@ describe('renameFileNode', () => {
   test('falls back when the error body is not valid JSON', async () => {
     rejectingJson(500);
     await expect(renameFileNode('p1', 'n1', 'x')).rejects.toMatchObject({ status: 500, code: 'ERROR' });
+  });
+
+  test('falls back when the error body is the literal JSON null', async () => {
+    nullJson(500);
+    await expect(renameFileNode('p1', 'n1', 'x')).rejects.toMatchObject({
+      name: 'FileTreeApiError',
+      status: 500,
+      code: 'ERROR',
+      message: 'Failed to rename',
+    });
   });
 });
 
@@ -249,6 +300,16 @@ describe('moveFileNode', () => {
     rejectingJson(500);
     await expect(moveFileNode('p1', 'n1', 'p')).rejects.toMatchObject({ status: 500, code: 'ERROR' });
   });
+
+  test('falls back when the error body is the literal JSON null', async () => {
+    nullJson(500);
+    await expect(moveFileNode('p1', 'n1', 'p')).rejects.toMatchObject({
+      name: 'FileTreeApiError',
+      status: 500,
+      code: 'ERROR',
+      message: 'Failed to move',
+    });
+  });
 });
 
 describe('deleteFileNode', () => {
@@ -283,5 +344,15 @@ describe('deleteFileNode', () => {
   test('falls back when the error body is not valid JSON', async () => {
     rejectingJson(500);
     await expect(deleteFileNode('p1', 'n1')).rejects.toMatchObject({ status: 500, code: 'ERROR' });
+  });
+
+  test('falls back when the error body is the literal JSON null', async () => {
+    nullJson(500);
+    await expect(deleteFileNode('p1', 'n1')).rejects.toMatchObject({
+      name: 'FileTreeApiError',
+      status: 500,
+      code: 'ERROR',
+      message: 'Failed to delete',
+    });
   });
 });
