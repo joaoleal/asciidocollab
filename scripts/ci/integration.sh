@@ -19,6 +19,12 @@ step "Infrastructure integration tests …"
 # reaching jest as a test-path pattern), not a clean result. Without that, jest prints "No tests
 # found, exiting with code 0" and this gate goes green having tested nothing — which is exactly how
 # it once passed. Never add the flag back here or there.
-TESTCONTAINERS_RYUK_DISABLED=true pnpm --filter @asciidocollab/infrastructure test
+#
+# Run WITH --coverage. Without it, the 90% `coverageThreshold` in that package's jest.config.cjs is
+# dead configuration: this is the only job that runs the package at all, and it ran plain `jest`, so
+# the threshold was checked by nothing. (The unit job — scripts/ci/unit.sh — covers every OTHER
+# package but not this one.) Paired with the `collectCoverageFrom` added to that config, the number
+# is now measured over the whole of src and actually enforced.
+TESTCONTAINERS_RYUK_DISABLED=true pnpm --filter @asciidocollab/infrastructure exec jest --coverage --coverageReporters=text --coverageReporters=lcov
 
 ok "All integration tests passed."
