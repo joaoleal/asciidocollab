@@ -40,10 +40,18 @@ export class ConnectionLimitExtension implements Extension {
   private readonly logger: Logger;
   private readonly now: () => number;
   private readonly users = new Map<string, UserState>();
-  // Maps a per-connection socketId → userId. Hocuspocus does NOT preserve the onConnect-mutated
-  // `context` into onDisconnect (the same reason server.ts re-looks-up the documentId), so the
-  // releasing side cannot rely on context.userId; the socketId is present on both payloads.
-  private readonly socketUsers = new Map<string, string>();
+  // Maps a per-connection socketId → the user AND the room that socket actually reserved. Hocuspocus
+  // does NOT preserve the onConnect-mutated `context` into onDisconnect (the same reason server.ts
+  // re-looks-up the documentId), so the releasing side cannot rely on context.userId; the socketId is
+  // present on both payloads.
+  //
+  // The documentName is recorded for the same reason. `connections` and the room counters are
+  // incremented TOGETHER on every accepted connect, so they may only be decremented together.
+  // Releasing whatever room the disconnect payload happens to name breaks that pairing whenever the
+  // two disagree: the connection count drains while the room reference stays behind, and the entry —
+  // its rate-window timestamps and room slots with it — then lingers until restart. Releasing the
+  // room this socket reserved keeps the two counters in step by construction.
+  private readonly socketConnections = new Map<string, { userId: string; documentName: string }>();
 
   /** Creates the extension with the given per-user limits. */
   constructor(options: ConnectionLimitOptions) {
@@ -90,7 +98,7 @@ export class ConnectionLimitExtension implements Extension {
       this.users.set(userId, { connections, rooms, connectTimestamps: recentTimestamps });
       // Track the socket so onDisconnect can resolve the user and evict an otherwise-empty entry
       // (presence-only users never reach the connection/room cleanup path otherwise).
-      this.socketUsers.set(payload.socketId, userId);
+      this.socketConnections.set(payload.socketId, { userId, documentName });
       return;
     }
 
@@ -107,42 +115,62 @@ export class ConnectionLimitExtension implements Extension {
     recentTimestamps.push(now);
     rooms.set(documentName, (rooms.get(documentName) ?? 0) + 1);
     this.users.set(userId, { connections: connections + 1, rooms, connectTimestamps: recentTimestamps });
-    this.socketUsers.set(payload.socketId, userId);
+    this.socketConnections.set(payload.socketId, { userId, documentName });
   }
 
   /** Releases the connection's slot and room reference. */
   async onDisconnect(payload: onDisconnectPayload): Promise<void> {
     // Resolve the user from the socketId map (set on connect); fall back to context.userId only
     // for callers that still provide it. Without this the slot would never be released.
+    const reserved = this.socketConnections.get(payload.socketId);
     const contextUserId = payload.context?.userId;
     const userId =
-      this.socketUsers.get(payload.socketId) ??
+      reserved?.userId ??
       (typeof contextUserId === 'string' && contextUserId.length > 0 ? contextUserId : undefined);
     if (!userId) return;
-    this.socketUsers.delete(payload.socketId);
+    this.socketConnections.delete(payload.socketId);
     const state = this.users.get(userId);
     if (!state) return;
+
+    // Release what this socket RESERVED, not what the disconnect payload names. Falling back to the
+    // payload only covers a socket we never recorded (the context.userId path above), which is the
+    // one case that can still desynchronise the counters — the guard at the end of this method
+    // handles that remnant.
+    const documentName = reserved?.documentName ?? payload.documentName;
 
     // Feature 024: a presence connection was never counted against connections/rooms (see onConnect),
     // so do NOT decrement — just evict the entry if it now holds no document connections/rooms,
     // otherwise a presence-only user's record would linger until restart.
-    if (isPresenceRoom(payload.documentName)) {
-      if (state.connections === 0 && state.rooms.size === 0) {
-        this.users.delete(userId);
-      }
+    if (isPresenceRoom(documentName)) {
+      this.evictIfEmpty(userId, state);
       return;
     }
 
     state.connections = Math.max(0, state.connections - 1);
-    const roomCount = (state.rooms.get(payload.documentName) ?? 0) - 1;
+    const roomCount = (state.rooms.get(documentName) ?? 0) - 1;
     if (roomCount <= 0) {
-      state.rooms.delete(payload.documentName);
+      state.rooms.delete(documentName);
     } else {
-      state.rooms.set(payload.documentName, roomCount);
+      state.rooms.set(documentName, roomCount);
     }
 
-    if (state.connections === 0 && state.rooms.size === 0) {
-      this.users.delete(userId);
-    }
+    this.evictIfEmpty(userId, state);
+  }
+
+  /**
+   * Drops a user's entry once it holds nothing releasable, self-healing a desynchronised state.
+   *
+   * Every accepted connect increments `connections` and a room counter together, so the healthy
+   * invariant is `rooms.size > 0 ⟹ connections > 0`. If `connections` reaches zero with rooms still
+   * referenced, the two have drifted apart and nothing can ever release those rooms again — no
+   * socket remains to disconnect. Requiring BOTH counters to be zero (as this did) meant such an
+   * entry survived until process restart, holding its room slots against the user's own future
+   * connections and keeping its rate-window timestamps alive. Treat zero connections as the
+   * authority and discard the orphaned references.
+   */
+  private evictIfEmpty(userId: string, state: UserState): void {
+    if (state.connections !== 0) return;
+    state.rooms.clear();
+    this.users.delete(userId);
   }
 }

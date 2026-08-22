@@ -1,5 +1,6 @@
 // Tests for apps/web/src/lib/api/projects.ts
-import { setProjectMainFile, findSymbolUsages, renameSymbol } from '@/lib/api/projects';
+import { API_BASE_URL } from '@/lib/api/base-url';
+import { setProjectMainFile, findSymbolUsages, renameSymbol, projectsApi } from '@/lib/api/projects';
 
 const mockFetch = jest.fn();
 globalThis.fetch = mockFetch;
@@ -176,5 +177,174 @@ describe('findSymbolUsages fallback errors', () => {
       status: 502,
       code: 'REFACTORING_ERROR',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The exact request the client puts on the wire. These assert the WHOLE URL and
+// the WHOLE init object rather than a substring/field, because a substring match
+// still passes when the URL grows a suffix and a missing `method` silently
+// downgrades a POST to a GET.
+// ---------------------------------------------------------------------------
+
+/** Resolves to an ok response whose `.json()` yields `body`. */
+function okResponse(body: unknown) {
+  return { ok: true, status: 200, json: () => Promise.resolve(body) };
+}
+
+/** The `[url, init]` pair of the single fetch the call under test performed. */
+function singleFetchCall(): [string, RequestInit] {
+  expect(mockFetch).toHaveBeenCalledTimes(1);
+  return mockFetch.mock.calls[0] as [string, RequestInit];
+}
+
+const emptyPage = { data: [], pagination: { page: 1, limit: 10, total: 0, totalPages: 0 } };
+
+describe('projectsApi request shape', () => {
+  test('list() with no parameters hits the bare collection URL — no query suffix at all', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse(emptyPage));
+    await projectsApi.list();
+    const [url] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/api/projects`);
+  });
+
+  test('list() with parameters appends exactly one `?`-prefixed query string', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse(emptyPage));
+    await projectsApi.list({ page: 2, limit: 5, archived: true });
+    const [url] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/api/projects?page=2&limit=5&archived=true`);
+  });
+
+  test('create() POSTs the serialized payload to the exact collection URL', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse({ data: { id: 'p1' } }));
+    await projectsApi.create({ name: 'Test', description: 'desc', tags: ['a'] });
+    const [url, options] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/api/projects`);
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body as string)).toEqual({ name: 'Test', description: 'desc', tags: ['a'] });
+  });
+
+  test('archive() POSTs to the exact archive URL — a bodyless request still needs the POST verb', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse({ data: { id: 'p1', archivedAt: '2024-01-01T00:00:00Z' } }));
+    await projectsApi.archive('p1');
+    const [url, options] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/api/projects/p1/archive`);
+    expect(options.method).toBe('POST');
+  });
+
+  test('restore() POSTs to the exact restore URL — a bodyless request still needs the POST verb', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse({ data: { id: 'p1', archivedAt: null } }));
+    await projectsApi.restore('p1');
+    const [url, options] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/api/projects/p1/restore`);
+    expect(options.method).toBe('POST');
+  });
+});
+
+describe('setProjectMainFile request shape', () => {
+  test('declares the JSON content type so the API parses the body', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse({ data: { id: 'p1', mainFileNodeId: 'f1' } }));
+    await setProjectMainFile('p1', 'f1');
+    const [url, options] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/projects/p1/main-file`);
+    expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+});
+
+describe('setProjectMainFile with a null error body', () => {
+  test('falls back to the status-derived message and code when json() resolves null', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500, json: () => Promise.resolve(null) });
+    const error = (await setProjectMainFile('p1', 'f1').catch((error_: unknown) => error_)) as Error & {
+      status?: number;
+      code?: string;
+    };
+    expect(error.message).toBe('Set main file failed: 500');
+    expect(error.status).toBe(500);
+    expect(error.code).toBe('SET_MAIN_FILE_ERROR');
+  });
+
+  test('still reports the fallback code when json() resolves an error-less body', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 502, json: () => Promise.resolve({}) });
+    const error = (await setProjectMainFile('p1', 'f1').catch((error_: unknown) => error_)) as Error & {
+      code?: string;
+    };
+    expect(error.message).toBe('Set main file failed: 502');
+    expect(error.code).toBe('SET_MAIN_FILE_ERROR');
+  });
+
+  test('prefers the server-supplied message and code over the fallbacks', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ error: { message: 'not an adoc file', code: 'MainFileNotAsciiDoc' } }),
+    });
+    const error = (await setProjectMainFile('p1', 'f1').catch((error_: unknown) => error_)) as Error & {
+      code?: string;
+    };
+    expect(error.message).toBe('not an adoc file');
+    expect(error.code).toBe('MainFileNotAsciiDoc');
+  });
+});
+
+describe('findSymbolUsages request shape', () => {
+  test('omits the kind parameter entirely when no kind is given', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse({ data: { usages: [] } }));
+    await findSymbolUsages('p1', 'intro');
+    const [url] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/projects/p1/symbol-usages?name=intro`);
+  });
+
+  test('appends `&kind=` after the name when a kind is given', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse({ data: { usages: [] } }));
+    await findSymbolUsages('p1', 'intro', 'attribute');
+    const [url] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/projects/p1/symbol-usages?name=intro&kind=attribute`);
+  });
+});
+
+describe('refactoringError with a null error body', () => {
+  test('findSymbolUsages falls back when json() resolves null', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500, json: () => Promise.resolve(null) });
+    const error = (await findSymbolUsages('p1', 'x').catch((error_: unknown) => error_)) as Error & {
+      status?: number;
+      code?: string;
+    };
+    expect(error.message).toBe('Find usages failed: 500');
+    expect(error.status).toBe(500);
+    expect(error.code).toBe('REFACTORING_ERROR');
+  });
+
+  test('renameSymbol falls back when json() resolves null', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 503, json: () => Promise.resolve(null) });
+    const error = (await renameSymbol('p1', { symbolKind: 'anchor', oldName: 'a', newName: 'b' }).catch(
+      (error_: unknown) => error_,
+    )) as Error & { status?: number; code?: string };
+    expect(error.message).toBe('Rename failed: 503');
+    expect(error.status).toBe(503);
+    expect(error.code).toBe('REFACTORING_ERROR');
+  });
+
+  test('renameSymbol prefers the server-supplied message and code', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ error: { message: 'id already taken', code: 'SYMBOL_RENAME_CONFLICT' } }),
+    });
+    const error = (await renameSymbol('p1', { symbolKind: 'anchor', oldName: 'a', newName: 'b' }).catch(
+      (error_: unknown) => error_,
+    )) as Error & { code?: string };
+    expect(error.message).toBe('id already taken');
+    expect(error.code).toBe('SYMBOL_RENAME_CONFLICT');
+  });
+});
+
+describe('renameSymbol request shape', () => {
+  test('sends the session cookie and declares the JSON content type', async () => {
+    mockFetch.mockResolvedValueOnce(okResponse({ data: { rewrittenFiles: 0, updatedReferences: 0, warnings: [] } }));
+    await renameSymbol('p1', { symbolKind: 'anchor', oldName: 'a', newName: 'b' });
+    const [url, options] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/projects/p1/symbol-rename`);
+    expect(options.credentials).toBe('include');
+    expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
   });
 });

@@ -46,6 +46,33 @@ const PDF_ENGINE_SPECS = [
   '**/pdf-extensions.spec.ts',
 ];
 
+// The specs that read or write the EDITOR PREFERENCES, serialized into their own project below.
+//
+// Those preferences (`scrollSyncEnabled`, `softWrap`, `previewStyle`) are stored per ACCOUNT, and
+// every spec in this suite signs in as the same test administrator — so they are shared mutable state
+// between spec FILES, which the default project runs three at a time. Seeding a value before opening
+// the page and restoring it afterwards (`e2e/helpers/editor-preferences.ts`) is necessary but not
+// sufficient on its own: between one file's seed and its page reading the value back at mount there
+// are seconds of project/file setup, and another file clicking the Print style or the scroll-sync
+// toggle inside that window changes what the first one mounts under. That is not hypothetical — a
+// leaked `scrollSyncEnabled: true` is what made `project-preview.spec.ts`'s "off by default"
+// assertion fail on CI, and stickily: every retry re-read the same leaked value.
+//
+// One worker over the whole group is what actually removes it, because the hazard is two of THESE
+// files overlapping, not these files overlapping the rest of the suite. The group therefore runs
+// alongside `chromium` rather than after it; only its own members are serialized. `preview-
+// adaptive-delay.spec.ts` also picks a style and belongs to this group by that rule, but it is a
+// timing spec first — it stays in `chromium-timing`, which runs alone and, under CI, strictly after
+// this project (see `chromium-pdf`'s dependencies).
+const PREFERENCE_SPECS = [
+  '**/project-preview.spec.ts',
+  '**/print-preview.spec.ts',
+  '**/print-preview-theme.spec.ts',
+  '**/preview-no-horizontal-overflow.spec.ts',
+  '**/preview-morph-preservation.spec.ts',
+  '**/editor-line-wrap.spec.ts',
+];
+
 // The preview TIMING specs, for the same reason and in their own project below: they measure how
 // long a refresh takes, so sharing the box with two other browser workers measures contention and
 // reports it as the preview being slow.
@@ -143,7 +170,24 @@ export default defineConfig({
         ...STACK_FREE_SUITES,
         ...PDF_ENGINE_SPECS,
         ...PREVIEW_TIMING_SPECS,
+        ...PREFERENCE_SPECS,
       ],
+      dependencies: ['setup'],
+    },
+
+    // Phase 2c-bis: the specs that depend on the account's editor preferences, one at a time.
+    //
+    // `workers: 1` / `fullyParallel: false` is the whole point: these files share one account's
+    // preferences (see PREFERENCE_SPECS above), so only one of them may be in flight at a time. They
+    // still run CONCURRENTLY with `chromium` — no spec outside this group touches those preferences,
+    // so there is nothing to serialize against out there, and the phase costs no extra wall clock
+    // beyond its own members no longer sharing three workers.
+    {
+      name: 'chromium-prefs',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: PREFERENCE_SPECS,
+      workers: 1,
+      fullyParallel: false,
       dependencies: ['setup'],
     },
 
@@ -168,7 +212,10 @@ export default defineConfig({
       // rather than widening timeouts around it. Locally (CI unset) the dependency stays light so a
       // single `npx playwright test pdf-extensions.spec.ts` does not drag the whole `chromium` suite in
       // first — the box is not contended there, which is the only reason the overlap was ever safe.
-      dependencies: process.env.CI ? ['chromium'] : ['setup'],
+      // `chromium-prefs` is in the chain too, and not for contention: `preview-adaptive-delay.spec.ts`
+      // (in `chromium-timing`, below) selects the Print style, which is stored on the same shared
+      // account those specs depend on. Ordering the two phases is what keeps them from overlapping.
+      dependencies: process.env.CI ? ['chromium', 'chromium-prefs'] : ['setup'],
     },
 
     // Phase 2e: the preview TIMING specs, run last and alone.

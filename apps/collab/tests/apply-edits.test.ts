@@ -1,7 +1,7 @@
 import { Server, type Extension } from '@hocuspocus/server';
 import * as Y from 'yjs';
 import { Re2RegexEngine } from '@asciidocollab/infrastructure';
-import type { YjsStateStore } from '@asciidocollab/domain';
+import type { MatchBudget, RegexEngine, YjsStateStore } from '@asciidocollab/domain';
 import {
   applyReplacementsToYText,
   applyEditsToDocument,
@@ -181,6 +181,66 @@ describe('applyStructuredReplacementToDocument', () => {
       await server.destroy();
     }
   });
+
+  it('hands the engine a complete budget: 1,000,000 matches and a deadline 1s out', async () => {
+    // The budget is what stops an untrusted pattern from starving the transaction, and the engine is
+    // the only party that ever sees it — so it is asserted here, in full, where it is handed over.
+    const { server } = serverSeeded('foo foo');
+    const budgets: MatchBudget[] = [];
+    const capturingEngine: RegexEngine = {
+      compile: () => ({
+        success: true,
+        value: {
+          matches: (input: string, budget: MatchBudget) => {
+            budgets.push(budget);
+            return [{ from: input.indexOf('foo'), to: input.indexOf('foo') + 3, groups: ['foo'] }];
+          },
+        },
+      }),
+    };
+
+    try {
+      const before = Date.now();
+      const applied = await applyStructuredReplacementToDocument(server.hocuspocus, capturingEngine, {
+        projectId: PROJECT_ID,
+        yjsStateId: YJS_STATE_ID,
+        query: { text: 'foo', mode: 'regex', caseSensitive: true, wholeWord: false },
+        replacement: 'bar',
+        selections: [{ ordinal: 0, expectedText: 'foo' }],
+      });
+      const after = Date.now();
+
+      expect(applied).toBe(1);
+      expect(budgets).toHaveLength(1);
+      expect(Object.keys(budgets[0]).toSorted()).toEqual(['deadline', 'maxMatches']);
+      expect(budgets[0].maxMatches).toBe(1_000_000);
+      expect(budgets[0].deadline).toBeGreaterThanOrEqual(before + 1000);
+      expect(budgets[0].deadline).toBeLessThanOrEqual(after + 1000);
+    } finally {
+      await server.destroy();
+    }
+  });
+
+  it('is a silent no-op when the pattern does not compile — never a rejection or a partial splice', async () => {
+    // An invalid pattern is rejected upstream, so reaching here means the failure Result must be
+    // honoured rather than its (absent) value being handed to selectSpans.
+    const { server, stored } = serverSeeded('an ( unbalanced paren');
+    try {
+      const applied = await applyStructuredReplacementToDocument(server.hocuspocus, engine, {
+        projectId: PROJECT_ID,
+        yjsStateId: YJS_STATE_ID,
+        query: { text: '(unclosed', mode: 'regex', caseSensitive: true, wholeWord: false },
+        replacement: 'x',
+        selections: [{ ordinal: 0, expectedText: 'an' }],
+      });
+
+      expect(applied).toBe(0);
+      // Any writeback the disconnect forced must carry the untouched text.
+      if (stored.length > 0) expect(stored.at(-1)).toBe('an ( unbalanced paren');
+    } finally {
+      await server.destroy();
+    }
+  });
 });
 
 // A YjsStateStore stub that records whether load/save were called (a read must NOT write back).
@@ -239,6 +299,24 @@ describe('readDocumentContent', () => {
     expect(content).toBe(seed);
     expect(store.load).toHaveBeenCalledTimes(1);
     expect(store.save).not.toHaveBeenCalled(); // pure read — never persists (no writeback side effect)
+  });
+
+  it('destroys the throwaway document it decoded the dormant state into', async () => {
+    const seed = 'dormant text';
+    const state = encodeText(seed); // encoded BEFORE the spy, so only the read's own Y.Doc is counted
+    const hocuspocus = { documents: new Map() } as never;
+    const store = fakeStateStore(state);
+    const destroy = jest.spyOn(Y.Doc.prototype, 'destroy');
+
+    try {
+      const content = await readDocumentContent(hocuspocus, store, { projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID });
+
+      expect(content).toBe(seed);
+      // The scratch document is per-read: leaving it alive leaks a Y.Doc on every dormant read.
+      expect(destroy).toHaveBeenCalledTimes(1);
+    } finally {
+      destroy.mockRestore();
+    }
   });
 
   it('returns null when a dormant room has no persisted state (caller falls back to the file store)', async () => {

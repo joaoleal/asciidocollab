@@ -101,4 +101,85 @@ describe('PrismaAuthAttemptTelemetryRepository', () => {
     expect(page1.total).toBe(2);
     expect(page1.items).toHaveLength(1);
   });
+
+  it('findWithFilters restricts to a single ipAddress', async () => {
+    await repo.record({ eventType: AUTH_ATTEMPT_FAILED_SIGN_IN, identifier: 'a@x.com', ipAddress: '203.0.113.7', userAgent: 'agent', windowStart: WINDOW, now: WINDOW });
+    await repo.record({ eventType: AUTH_ATTEMPT_FAILED_SIGN_IN, identifier: 'a@x.com', ipAddress: '198.51.100.4', userAgent: null, windowStart: WINDOW, now: WINDOW });
+
+    const matched = await repo.findWithFilters({ ipAddress: '203.0.113.7' }, { page: 1, limit: 50 });
+    expect(matched.total).toBe(1);
+    expect(matched.items).toHaveLength(1);
+    expect(matched.items[0].ipAddress).toBe('203.0.113.7');
+    expect(matched.items[0].identifier).toBe('a@x.com');
+    expect(matched.items[0].userAgent).toBe('agent');
+    expect(matched.items[0].attemptCount).toBe(1);
+
+    // The filter is an exact match, not a prefix or substring one.
+    const prefixOnly = await repo.findWithFilters({ ipAddress: '203.0.113' }, { page: 1, limit: 50 });
+    expect(prefixOnly.total).toBe(0);
+    expect(prefixOnly.items).toEqual([]);
+  });
+
+  it('findWithFilters combines identifier and ipAddress conjunctively', async () => {
+    await repo.record({ eventType: AUTH_ATTEMPT_FAILED_SIGN_IN, identifier: 'a@x.com', ipAddress: '1.1.1.1', userAgent: null, windowStart: WINDOW, now: WINDOW });
+    await repo.record({ eventType: AUTH_ATTEMPT_FAILED_SIGN_IN, identifier: 'b@x.com', ipAddress: '2.2.2.2', userAgent: null, windowStart: WINDOW, now: WINDOW });
+
+    // Each half matches a different bucket, so an OR would return two.
+    const crossed = await repo.findWithFilters({ identifier: 'a@x.com', ipAddress: '2.2.2.2' }, { page: 1, limit: 50 });
+    expect(crossed.total).toBe(0);
+    expect(crossed.items).toEqual([]);
+  });
+
+  it('findWithFilters bounds the window inclusively by fromDate and toDate', async () => {
+    const EARLIER_WINDOW = new Date('2026-06-10T11:00:00.000Z');
+    for (const [index, window] of [EARLIER_WINDOW, WINDOW, LATER_WINDOW].entries()) {
+      await repo.record({ eventType: AUTH_ATTEMPT_FAILED_SIGN_IN, identifier: `u${index}@x.com`, ipAddress: '1.1.1.1', userAgent: null, windowStart: window, now: window });
+    }
+
+    // Both bounds: the boundary buckets themselves are included (gte/lte, not gt/lt).
+    const bounded = await repo.findWithFilters({ fromDate: WINDOW, toDate: LATER_WINDOW }, { page: 1, limit: 50 });
+    expect(bounded.total).toBe(2);
+    // Ordered by lastAttemptAt desc, so the later window comes first.
+    expect(bounded.items.map((item) => item.windowStart.getTime())).toEqual([
+      LATER_WINDOW.getTime(),
+      WINDOW.getTime(),
+    ]);
+
+    // Lower bound only.
+    const fromOnly = await repo.findWithFilters({ fromDate: LATER_WINDOW }, { page: 1, limit: 50 });
+    expect(fromOnly.total).toBe(1);
+    expect(fromOnly.items[0].windowStart.getTime()).toBe(LATER_WINDOW.getTime());
+
+    // Upper bound only.
+    const toOnly = await repo.findWithFilters({ toDate: EARLIER_WINDOW }, { page: 1, limit: 50 });
+    expect(toOnly.total).toBe(1);
+    expect(toOnly.items[0].windowStart.getTime()).toBe(EARLIER_WINDOW.getTime());
+
+    // No bound at all: the range clause is omitted rather than built empty, so nothing is filtered.
+    const unbounded = await repo.findWithFilters({}, { page: 1, limit: 50 });
+    expect(unbounded.total).toBe(3);
+    expect(unbounded.items).toHaveLength(3);
+  });
+
+  it('rejects a stored bucket whose eventType is outside the domain union', async () => {
+    // `eventType` is a plain text column, so a bad writer (or a future value rolled back) can leave
+    // an unmappable row. Mapping it must fail loudly rather than mislabel it as a sign-in failure.
+    await client.authAttemptTelemetry.create({
+      data: {
+        eventType: 'totally_bogus',
+        identifier: 'a@x.com',
+        ipAddress: '1.1.1.1',
+        userAgent: null,
+        windowStart: WINDOW,
+        attemptCount: 1,
+        firstAttemptAt: WINDOW,
+        lastAttemptAt: WINDOW,
+      },
+    });
+
+    await expect(repo.findAll()).rejects.toThrow('Unknown auth-attempt eventType: totally_bogus');
+    await expect(repo.findWithFilters({}, { page: 1, limit: 50 })).rejects.toThrow(
+      'Unknown auth-attempt eventType: totally_bogus',
+    );
+  });
 });

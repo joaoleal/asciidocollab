@@ -2,9 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
 import { createAdocFile, openProject, openFile, editorContent, expandPreview } from './helpers/editor';
-
-/** The API the account's editor preferences live behind. */
-const API_URL = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000';
+import { setEditorPreferences } from './helpers/editor-preferences';
 
 // The preview no longer publishes a render by replacing everything it had on screen. It patches the
 // tree it already has into the shape of the new one, which is what lets the expensive things the
@@ -254,30 +252,12 @@ async function caretAtEndOfEditedParagraph(page: Page): Promise<void> {
  * Turn off the preference that has the preview follow the editor's caret and scroll position.
  *
  * With it on, moving the caret smooth-scrolls the preview to the matching block — the preview being
- * ASKED to move, which would be indistinguishable here from a refresh moving it. The preference lives
- * on the account and is remembered between runs, so it is set through the API before the page is
- * opened rather than clicked in the interface: the panel reads it once at mount, and a click issued
- * before that read has landed is silently overwritten by the stored value moments later.
+ * ASKED to move, which would be indistinguishable here from a refresh moving it.
  *
  * @param page - The page whose signed-in account the preference belongs to.
  */
 async function disableScrollSync(page: Page): Promise<void> {
-  const current = await page.request.get(`${API_URL}/auth/me/editor-preferences`);
-  expect(current.ok(), 'the account must report its editor preferences').toBe(true);
-  const preferences: unknown = await current.json();
-  if (typeof preferences !== 'object' || preferences === null) {
-    throw new TypeError('the editor-preferences endpoint answered with something that is not an object');
-  }
-  // The other two are sent back exactly as stored: the endpoint requires them, and this must change
-  // nothing but the one preference it is here to change.
-  const saved = await page.request.put(`${API_URL}/auth/me/editor-preferences`, {
-    data: {
-      fontSize: Number(Reflect.get(preferences, 'fontSize')),
-      theme: String(Reflect.get(preferences, 'theme')),
-      scrollSyncEnabled: false,
-    },
-  });
-  expect(saved.ok(), 'the scroll-sync preference must be saved before the editor opens').toBe(true);
+  await setEditorPreferences(page, { scrollSyncEnabled: false });
 }
 
 /**

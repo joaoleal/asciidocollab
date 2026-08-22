@@ -10,7 +10,6 @@ jest.mock('next/navigation', () => ({
 const mockUpdateProfile = jest.fn().mockResolvedValue(undefined);
 jest.mock('@/lib/api', () => ({
   authApi: {
-    updateDisplayName: jest.fn(),
     updateProfile: (...arguments_: unknown[]) => mockUpdateProfile(...arguments_),
   },
   ApiError: class ApiError extends Error {},

@@ -220,6 +220,22 @@ E2E tests are mandatory before merge — they are the only layer that catches mi
 
 Leftovers from a crashed run are not protected: if the owning process is gone, the next run destroys the containers as before.
 
+**One account, three workers — editor preferences are shared state.** Every spec signs in as the same
+test administrator (`ensureTestUser`), so the preferences the API stores on that account
+(`scrollSyncEnabled`, `softWrap`, `previewStyle`) are visible to every other spec: a fresh browser
+context does not isolate them, because the panel reads them back from the server at mount. Three
+things keep that honest, and the third is the one that actually removes the race:
+
+1. a test that DEPENDS on a value seeds it (`setEditorPreferences`, `apps/web/e2e/helpers/editor-preferences.ts`) instead of trusting the default;
+2. a test that CHANGES one puts it back (`resetEditorPreferences` in an `afterEach`, after the project cleanup so a failed restore cannot strand a project);
+3. every such spec file is routed into the serialized `chromium-prefs` project (`PREFERENCE_SPECS` in `playwright.config.ts`), so no two of them are ever in flight at once.
+
+(1) and (2) alone are not enough: seconds pass between a seed and the page mounting that reads it, and
+another worker clicking a style or a toggle inside that window still decides what the first spec sees.
+A new spec that touches any of these preferences belongs in `PREFERENCE_SPECS`. Skipping (2) is how a
+"disabled by default" assertion in one file starts failing — permanently, retries included — because
+another file clicked a toggle.
+
 Local e2e gotchas: (1) the isolated scripts offset the collab-internal port to 4101 so they coexist with a dev API on 4001; override `ASCIIDOCOLLAB_COLLAB_INTERNAL_PORT` if 4101 is also taken; (2) dev and e2e share `apps/web/.next`, so a stale `.next` (a prior `next dev` build mixed with `next build`) can make the served HTML reference chunks that 404→500 and pages won't hydrate (e.g. the register button stays disabled) — `rm -rf apps/web/.next` before building if you hit this; (3) never `DROP SCHEMA` on the e2e DB while the API is running (it corrupts the Prisma pool) — reset the DB before the API starts.
 
 ### Quick local check — `apps/web` only

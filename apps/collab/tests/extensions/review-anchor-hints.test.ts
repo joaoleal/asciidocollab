@@ -339,4 +339,123 @@ describe('ReviewAnchorHintExtension.onStoreDocument', () => {
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(reviewCommentRepo.listByDocument).not.toHaveBeenCalled();
   });
+
+  it('leaves a presence room BEFORE parsing it — the skip is silent, not an absorbed failure', async () => {
+    // `presence/<projectId>` is not a `<projectId>/<yjsStateId>` room, so reaching parseRoomName
+    // with one throws. Asserting the warn count is 0 is what distinguishes "returned early" from
+    // "fell through and had the failure swallowed", which look identical from the repositories.
+    const reviewCommentRepo = makeReviewRepo([]);
+    const documentRepo = makeDocumentRepo();
+    const logger = makeLogger();
+    const extension = new ReviewAnchorHintExtension({
+      reviewCommentRepo,
+      documentRepo,
+      logger: logger as never,
+    });
+
+    await expect(
+      extension.onStoreDocument(storePayload(`presence/${PROJECT_ID}`, new Y.Doc())),
+    ).resolves.toBeUndefined();
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(documentRepo.findByYjsStateId).not.toHaveBeenCalled();
+  });
+
+  it('returns quietly for a missing document record instead of dereferencing it', async () => {
+    // Same distinction: without the `!record` guard the very next line reads `record.id` and the
+    // TypeError is absorbed by the catch, so only the absence of a log proves the guard is there.
+    const reviewCommentRepo = makeReviewRepo([]);
+    const logger = makeLogger();
+    const extension = new ReviewAnchorHintExtension({
+      reviewCommentRepo,
+      documentRepo: makeDocumentRepo(false),
+      logger: logger as never,
+    });
+
+    await expect(
+      extension.onStoreDocument(storePayload(DOCUMENT_NAME, makeDocument('alpha'))),
+    ).resolves.toBeUndefined();
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(reviewCommentRepo.listByDocument).not.toHaveBeenCalled();
+  });
+
+  it('logs the failing room and the error itself under the best-effort message', async () => {
+    const failure = new Error('db down');
+    const reviewCommentRepo = makeReviewRepo([]);
+    (reviewCommentRepo.listByDocument as jest.Mock).mockRejectedValue(failure);
+    const logger = makeLogger();
+    const extension = new ReviewAnchorHintExtension({
+      reviewCommentRepo,
+      documentRepo: makeDocumentRepo(),
+      logger: logger as never,
+    });
+
+    await extension.onStoreDocument(storePayload(DOCUMENT_NAME, makeDocument('alpha\nbeta')));
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    // The whole payload: an operator needs BOTH the cause and the room it happened in.
+    expect(logger.warn.mock.calls[0][0]).toEqual({ err: failure, documentName: DOCUMENT_NAME });
+    expect(logger.warn.mock.calls[0][1]).toBe(
+      'Failed to refresh review anchor line hints (best-effort); the cross-file panel order may lag',
+    );
+  });
+
+  it('skips an anchorless item without throwing — nothing is absorbed and logged', async () => {
+    // A reply has NO anchor object at all, and a root may have an anchor with no relative-position
+    // pair. Both are ordinary skips, so the pass must complete with an empty warn log; dereferencing
+    // either would only surface as a swallowed error.
+    const document = makeDocument('alpha\nbeta');
+    const hintless = rootItem('550e8400-e29b-41d4-a716-4466554400b7', null, 7);
+    const reviewCommentRepo = makeReviewRepo([replyItem('550e8400-e29b-41d4-a716-4466554400b8'), hintless]);
+    const logger = makeLogger();
+    const extension = new ReviewAnchorHintExtension({
+      reviewCommentRepo,
+      documentRepo: makeDocumentRepo(),
+      logger: logger as never,
+    });
+
+    await expect(
+      extension.onStoreDocument(storePayload(DOCUMENT_NAME, document)),
+    ).resolves.toBeUndefined();
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(reviewCommentRepo.update).not.toHaveBeenCalled();
+    expect(hintless.anchor?.lineHint).toBe(7);
+  });
+
+  it('counts exactly the hints it rewrote', async () => {
+    // `refreshHints` returns that count and `onStoreDocument` discards it, so the tally is only
+    // observable here. It is the number of `update` calls, which is why the assertion is on the
+    // exact value rather than on "some number changed".
+    const document = makeDocument('alpha\nbeta\ngamma\n');
+    const text = document.getText(CODEMIRROR_TEXT);
+    const alphaAnchor = captureRelativePositions(document, 0, 5);
+    const betaAnchor = captureRelativePositions(document, text.toString().indexOf('beta'), text.toString().indexOf('beta') + 4);
+    const gammaAnchor = captureRelativePositions(document, text.toString().indexOf('gamma'), text.toString().indexOf('gamma') + 5);
+
+    // One line inserted above everything: alpha 1 → 2, beta 2 → 3, gamma 3 → 4.
+    text.insert(0, 'new\n');
+
+    const driftedAlpha = rootItem('550e8400-e29b-41d4-a716-4466554400c1', alphaAnchor, 1);
+    const driftedBeta = rootItem('550e8400-e29b-41d4-a716-4466554400c2', betaAnchor, 2);
+    const current = rootItem('550e8400-e29b-41d4-a716-4466554400c3', gammaAnchor, 4);
+
+    const reviewCommentRepo = makeReviewRepo([driftedAlpha, driftedBeta, current]);
+    const extension = new ReviewAnchorHintExtension({
+      reviewCommentRepo,
+      documentRepo: makeDocumentRepo(),
+      logger: makeLogger() as never,
+    });
+
+    const refresh = (extension as unknown as {
+      refreshHints(projectId: ProjectId, documentId: DocumentId, ydoc: Y.Doc): Promise<number>;
+    }).refreshHints.bind(extension);
+
+    await expect(refresh(ProjectId.create(PROJECT_ID), DocumentId.create(DOCUMENT_ID), document)).resolves.toBe(2);
+    expect(reviewCommentRepo.update).toHaveBeenCalledTimes(2);
+    expect(driftedAlpha.anchor?.lineHint).toBe(2);
+    expect(driftedBeta.anchor?.lineHint).toBe(3);
+    expect(current.anchor?.lineHint).toBe(4);
+  });
 });

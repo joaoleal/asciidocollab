@@ -23,6 +23,17 @@ overrides:
   # at High+ (CVSS >= 7.0), so a Medium with a one-patch fix passes silently. Read the table, not
   # just the exit code.
   qs@6.15.1: 6.15.3
+  # deepmerge-ts 7.1.5 is affected by GHSA-ggr8-5vv4-36mx (High — stack exhaustion when merging
+  # recursive object graphs), fixed in 8.0.0. Same shape as the qs entry above: the only requester is
+  # @prisma/config 7.9.1 (via prisma), which declares `"deepmerge-ts": "7.1.5"` — an EXACT pin — and
+  # prisma 7.9.1 is the latest release, so neither `pnpm update` nor bumping the parent can move it.
+  # The reachable path is prisma's CLI-time merge of a local prisma.config.ts, not app runtime; the
+  # override is here because `pnpm audit --audit-level=high` (scripts/ci/quality.sh) fails on it and a
+  # High advisory should not be waived.
+  #
+  # Keyed on the exact spec, so it goes dead by itself the moment @prisma/config asks for anything
+  # else — remove it then, and re-check on every prisma bump.
+  deepmerge-ts@7.1.5: 8.0.2
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true

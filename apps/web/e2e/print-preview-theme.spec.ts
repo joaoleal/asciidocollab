@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject, createTestFile } from './helpers/test-project';
+import { resetEditorPreferences } from './helpers/editor-preferences';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -113,7 +114,11 @@ test.describe('the Print preview applies the project theme', () => {
   });
 
   test.afterEach(async ({ page }) => {
+    // Cleanup first, so a failing reset cannot strand the project (the reset asserts on its requests).
     if (projectId) await cleanupProject(page, projectId);
+    // The selected style is stored on the shared account: left on Print, every other preview spec
+    // would render its document as a scaled page.
+    await resetEditorPreferences(page);
   });
 
   test('the theme\'s page, colours and code background are all visibly applied', async ({ page }) => {
@@ -340,7 +345,9 @@ test.describe('the Print preview with no theme at all', () => {
   });
 
   test.afterEach(async ({ page }) => {
+    // As above: cleanup first, then hand the Print style back before the next spec's preview opens.
     if (projectId) await cleanupProject(page, projectId);
+    await resetEditorPreferences(page);
   });
 
   test("uses the export's default appearance and geometry, and reports nothing", async ({ page }) => {

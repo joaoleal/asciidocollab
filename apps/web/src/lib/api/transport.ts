@@ -48,9 +48,17 @@ export async function apiRequest<T>(
     },
   });
 
-  const data = await response.json();
-
   if (!response.ok) {
+    // Parse the error body DEFENSIVELY, and only after the `response.ok` check. An error response is
+    // not guaranteed to be JSON at all: a proxy or load balancer answering 502/504 sends an HTML
+    // page, and a bodyless 401/503 sends nothing. This parse used to run BEFORE the check and
+    // without a guard, so `response.json()` rejected with a raw SyntaxError and destroyed `status`
+    // and `code` — every `instanceof ApiError` branch in the app fell through precisely during an
+    // infrastructure outage, which is when the status matters most. Falling back to `undefined`
+    // keeps the chain below intact: it lands on the generic message and UNKNOWN_ERROR, with the
+    // real HTTP status still attached.
+    const data = await response.json().catch(() => undefined);
+
     // Our routes send `{ error: { code, message } }`, but a request rejected before our handler runs
     // (schema validation, rate limit, an unhandled 500) comes back in Fastify's native
     // `{ statusCode, error, message }` shape. Read both so the real cause surfaces instead of a
@@ -67,7 +75,10 @@ export async function apiRequest<T>(
     throw new ApiError(response.status, code, message, data?.error?.retryAfter);
   }
 
-  return data;
+  // Deliberately NOT guarded: a 2xx that is not JSON is a broken server contract, and swallowing it
+  // would hand the caller `undefined` in place of the payload it is typed to receive. The rejection
+  // is the correct signal here — unlike the error path above, there is no status/code to lose.
+  return await response.json();
 }
 
 /** Query parameters for paginated list endpoints. */

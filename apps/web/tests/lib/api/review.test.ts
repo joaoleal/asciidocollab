@@ -5,6 +5,7 @@ import {
   listProjectReviewItems,
   createReviewItem,
   replyToThread,
+  editReviewItem,
   resolveReviewItem,
   reactToItem,
   patchReviewItem,
@@ -16,7 +17,7 @@ import {
   bulkDeleteDocument,
   bulkDeleteProject,
 } from '@/lib/api/review';
-import { ApiError } from '@/lib/api/transport';
+import { ApiError, API_BASE_URL } from '@/lib/api/transport';
 import type { CreateReviewItemInput } from '@asciidocollab/shared';
 
 const mockFetch = jest.fn();
@@ -64,6 +65,22 @@ describe('listDocumentReviewItems', () => {
     await listDocumentReviewItems('proj-1', 'doc-1');
     expect(lastCall()[0]).not.toContain('includeResolved');
   });
+
+  test('requests the bare endpoint — no trailing query separator — when no filter applies', async () => {
+    // The whole URL, not just the absence of the parameter: an empty filter set must contribute
+    // nothing at all, so a stray suffix (a lone "?" or any other text) is a routing bug.
+    mockOk({ data: { threads: [] } });
+    await listDocumentReviewItems('proj-1', 'doc-1');
+    expect(lastCall()[0]).toBe(`${API_BASE_URL}/projects/proj-1/documents/doc-1/review-items`);
+  });
+
+  test('appends exactly one query parameter when resolved items are requested', async () => {
+    mockOk({ data: { threads: [] } });
+    await listDocumentReviewItems('proj-1', 'doc-1', { includeResolved: true });
+    expect(lastCall()[0]).toBe(
+      `${API_BASE_URL}/projects/proj-1/documents/doc-1/review-items?includeResolved=true`,
+    );
+  });
 });
 
 describe('listProjectReviewItems', () => {
@@ -83,6 +100,18 @@ describe('listProjectReviewItems', () => {
     expect(url).toContain('assigneeId=u9');
     expect(url).toContain('status=open');
     expect(url).toContain('documentId=doc-2');
+  });
+
+  test('requests the bare endpoint when no filter is set', async () => {
+    mockOk({ data: { items: [] } });
+    await listProjectReviewItems('proj-1');
+    expect(lastCall()[0]).toBe(`${API_BASE_URL}/projects/proj-1/review-items`);
+  });
+
+  test('drops the undefined filters and keeps only the one that was set', async () => {
+    mockOk({ data: { items: [] } });
+    await listProjectReviewItems('proj-1', { status: 'open' });
+    expect(lastCall()[0]).toBe(`${API_BASE_URL}/projects/proj-1/review-items?status=open`);
   });
 });
 
@@ -111,6 +140,33 @@ describe('replyToThread', () => {
   });
 });
 
+describe('editReviewItem', () => {
+  test('PATCHes the item with op=edit and the replacement body', async () => {
+    mockOk({ data: { id: 'root-1', body: 'edited', editedAt: '2026-03-01' } });
+    const item = await editReviewItem('proj-1', 'root-1', { body: 'edited' });
+    const [url, options] = lastCall();
+    expect(url).toBe(`${API_BASE_URL}/projects/proj-1/review-items/root-1`);
+    expect(options.method).toBe('PATCH');
+    // The discriminator is what routes the PATCH server-side: without `op: 'edit'` the request
+    // is either rejected or dispatched to a different handler.
+    expect(JSON.parse(options.body as string)).toEqual({ op: 'edit', body: 'edited' });
+    expect(item).toEqual({ id: 'root-1', body: 'edited', editedAt: '2026-03-01' });
+  });
+
+  test('propagates the API error when the caller is not the author', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      json: () => Promise.resolve({ error: { code: 'REVIEW_NOT_AUTHOR', message: 'not yours' } }),
+    });
+    await expect(editReviewItem('proj-1', 'root-1', { body: 'edited' })).rejects.toMatchObject({
+      code: 'REVIEW_NOT_AUTHOR',
+      status: 403,
+      message: 'not yours',
+    });
+  });
+});
+
 describe('resolveReviewItem', () => {
   test('POSTs to the resolve endpoint', async () => {
     mockOk({ data: { id: 'root-1', resolvedAt: '2026-01-01' } });
@@ -119,6 +175,18 @@ describe('resolveReviewItem', () => {
     expect(url).toContain('/projects/proj-1/review-items/root-1/resolve');
     expect(options.method).toBe('POST');
     expect(item).toEqual({ id: 'root-1', resolvedAt: '2026-01-01' });
+  });
+
+  test('sends reopen=false by default, so the plain call resolves rather than reopens', async () => {
+    mockOk({ data: { id: 'root-1', resolvedAt: '2026-01-01' } });
+    await resolveReviewItem('proj-1', 'root-1');
+    expect(JSON.parse(lastCall()[1].body as string)).toEqual({ reopen: false });
+  });
+
+  test('sends reopen=true when asked to reopen the thread', async () => {
+    mockOk({ data: { id: 'root-1', resolvedAt: null } });
+    await resolveReviewItem('proj-1', 'root-1', true);
+    expect(JSON.parse(lastCall()[1].body as string)).toEqual({ reopen: true });
   });
 });
 

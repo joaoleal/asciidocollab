@@ -14,6 +14,14 @@ const config = {
       tsconfig: 'tsconfig.eslint.json',
     }],
   },
+  // Without this, Istanbul builds the denominator from whatever a test happens to `require`, so a
+  // source file no test imports is ABSENT from the report rather than counted as 0% — and the
+  // threshold below then certifies a number that was never measured over this package's source.
+  // That is exactly what happened here: 13 files (699 lines, including the password hasher, the HIBP
+  // breach checker and the session store) sat outside the report entirely while it read green.
+  // Exclusion-based on purpose, so a newly-added file is counted by default; an allow-list would
+  // silently miss anything dropped in a location nobody remembered to list.
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/index.ts'],
   coverageThreshold: {
     global: {
       statements: 90,

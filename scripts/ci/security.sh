@@ -24,9 +24,44 @@ STRICT="${SECURITY_STRICT:-${CI:-}}"
 FAILED=0
 SKIPPED=0
 
-# run_scan <tool-binary> <install-hint> <command...>
+# run_scan <tool-binary> <version-probe-args> <findings-exit-codes> <install-hint> <command...>
+#
+# A scanner that CRASHED is not a scanner that found something, and this used to report both the same
+# way: every non-zero exit became "$bin reported findings". When the venv holding semgrep was left
+# pointing at a Python an OS upgrade had removed, the job printed `semgrep reported findings (exit 1)`
+# — which reads as a SAST hit in the tree — for a scan that never examined a single file. The gate
+# went red for the right overall reason and told a story that was false in both directions: there was
+# no finding, and there was no scan.
+#
+# Two things separate the cases, and neither is sufficient alone.
+#
+# 1. A VERSION PROBE before the scan. An installed-but-unrunnable binary fails it in milliseconds, and
+#    that is the one signal a crash-during-scan cannot fake. Unlike a missing tool this is NOT
+#    downgraded to a skip in either mode: a name on PATH that cannot start is a broken machine, and
+#    quietly turning it into a skip is precisely how a gate stops checking while still printing green.
+#    (gitleaks spells it `version`, the others `--version` — hence the parameter.)
+#
+# 2. The tool's OWN exit vocabulary, which is a SET per tool and is taken from each tool's docs, not
+#    from watching one run. Both readings that a single probe would have supported are wrong:
+#
+#      semgrep   docs.semgrep.dev/cli-reference, and semgrep/error.py:36-51 in the installed package:
+#                0 clean · 1 findings (with --error) · 2 fatal · 3 target parse · 4 rule parse ·
+#                5 unparsable YAML · 7 invalid rule · 8 unknown language · 13 invalid API key.
+#                Findings: {1}.
+#      zizmor    docs.zizmor.sh/usage: 0 clean · 1 error during audit · 2 argument parsing ·
+#                3 no inputs collected · and 11/12/13/14 for findings BY HIGHEST SEVERITY
+#                (informational/low/medium/high). Findings: {11,12,13,14} — pinning the 14 a probe
+#                happens to produce would report an informational or medium finding as a crash.
+#      gitleaks  Its README documents only: 0 no leaks · 1 "leaks or error encountered" · 126 unknown
+#                flag. Exit 1 is AMBIGUOUS BY DOCUMENTATION, so no mapping can separate a leak from a
+#                failure — which is why the invocation below passes the documented `--exit-code 42`
+#                to move findings off the shared code. 1 then means only what it always meant on its
+#                own: the tool failed. Findings: {42}.
+#
+#    Anything that is neither 0 nor one of this tool's findings codes is the scanner failing, and
+#    says so instead of blaming the tree.
 run_scan() {
-  local bin="$1" hint="$2"; shift 2
+  local bin="$1" probe_args="$2" findings_rcs="$3" hint="$4"; shift 4
   if ! command -v "$bin" >/dev/null 2>&1; then
     if [ -n "$STRICT" ]; then
       fail "$bin not installed (required in strict/CI mode). Install: $hint"
@@ -37,13 +72,48 @@ run_scan() {
     fi
     return 0
   fi
-  if "$@"; then
+  local probe_out
+  if ! probe_out="$("$bin" $probe_args 2>&1)"; then
+    fail "$bin is on PATH but cannot run: \`$bin $probe_args\` failed. It scanned NOTHING."
+    fail "This is a broken install, not a finding in the tree — do not read it as one."
+    fail "Reinstall it: $hint"
+    printf '%s\n' "$probe_out" | tail -5 >&2
+    FAILED=1
+    return 0
+  fi
+  "$@"
+  local rc=$?
+  if [ "$rc" = "0" ]; then
     ok "$bin passed."
+  elif [[ " $findings_rcs " == *" $rc "* ]]; then
+    fail "$bin reported findings (exit $rc)."
+    FAILED=1
   else
-    fail "$bin reported findings (exit $?)."
+    fail "$bin FAILED TO RUN (exit $rc; it reports findings with: $findings_rcs)."
+    fail "The scanner errored — bad config, unreadable target, or a broken install. Nothing was scanned,"
+    fail "so this is not a finding in the tree. Fix the tool, then re-run."
     FAILED=1
   fi
 }
+
+# ─── Positive control for the version probe ──────────────────────────────────────────────────────
+# The probe above is the only thing standing between a broken scanner and a "reported findings"
+# message, and it is invisible when it works: a healthy tool and an absent probe produce identical
+# output. So prove it still rejects the exact shape it was written for — a shim whose interpreter no
+# longer exists, which is what an OS Python upgrade leaves behind — on a target whose answer is known.
+# ~1 ms, no network. If a broken shim ever passes this, the probe has become decoration.
+PROBE_DIR="$(mktemp -d)"
+printf '#!/nonexistent/python3\nprint("unreachable")\n' > "$PROBE_DIR/broken-scanner"
+chmod +x "$PROBE_DIR/broken-scanner"
+if "$PROBE_DIR/broken-scanner" --version >/dev/null 2>&1; then
+  fail "The version probe accepted a shim whose interpreter does not exist."
+  fail "run_scan's broken-install detection cannot fire, so a crashed scanner would be reported as"
+  fail "\"reported findings\" again. Fix the probe before trusting any result below."
+  FAILED=1
+else
+  ok "Version probe still rejects an unrunnable binary (positive control)."
+fi
+rm -rf "$PROBE_DIR"
 
 # Semgrep — SAST (path traversal, weak crypto, missing sanitization, …). Registry packs + the
 # first-party rules in .semgrep.yml; path excludes in .semgrepignore. Identical to `pnpm semgrep`.
@@ -67,12 +137,12 @@ else
 fi
 
 step "Semgrep (SAST) …"
-run_scan semgrep "pipx install semgrep  (or: pip install semgrep)" \
+run_scan semgrep --version "1" "pipx install semgrep  (or: pip install semgrep)" \
   semgrep --config p/security-audit --config p/owasp-top-ten --config .semgrep.yml --error --quiet .
 
 # zizmor — GitHub Actions workflow hardening (unpinned-uses policy in zizmor.yml).
 step "zizmor (workflow hardening) …"
-run_scan zizmor "pipx install zizmor  (or: pip install zizmor)" \
+run_scan zizmor --version "11 12 13 14" "pipx install zizmor  (or: pip install zizmor)" \
   zizmor .github/workflows/
 
 # The allowlist's SHAPE, checked before the scan that trusts it.
@@ -104,8 +174,8 @@ fi
 
 # gitleaks — secret scan across full git history (allowlist in .gitleaks.toml).
 step "gitleaks (secret scan) …"
-run_scan gitleaks "https://github.com/gitleaks/gitleaks/releases (or: brew install gitleaks)" \
-  gitleaks git --redact --verbose
+run_scan gitleaks version 42 "https://github.com/gitleaks/gitleaks/releases (or: brew install gitleaks)" \
+  gitleaks git --redact --verbose --exit-code 42
 
 # OSV-Scanner — dependency CVEs. Gated at High+ (CVSS >= 7.0) to match `pnpm audit --audit-level=high`.
 step "OSV-Scanner (dependency CVEs, gate at High+) …"

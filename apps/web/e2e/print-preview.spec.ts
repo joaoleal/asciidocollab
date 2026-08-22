@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject, createTestFile } from './helpers/test-project';
+import { setEditorPreferences, resetEditorPreferences } from './helpers/editor-preferences';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -128,13 +129,21 @@ test.describe('the Print preview style', () => {
 
   test.beforeEach(async ({ page }) => {
     await signIn(page);
+    // Both preferences these tests act on are stored on the shared account: the selected style, and
+    // scroll sync. Start each test from the defaults so "the brand style is the active one" and "the
+    // toggle turns sync ON" are statements about the product rather than about run order.
+    await setEditorPreferences(page, { previewStyle: 'asciidocollab', scrollSyncEnabled: false });
     projectId = await createProject(page, `Print Preview ${Date.now()}`);
     const fileNodeId = await createTestFile(page, projectId, null, 'print.adoc');
     await writeFileContent(page, projectId, fileNodeId, SOURCE);
   });
 
   test.afterEach(async ({ page }) => {
+    // Cleanup first, so a failing reset cannot strand the project (the reset asserts on its requests).
     if (projectId) await cleanupProject(page, projectId);
+    // Picking the Print style stores it on the account, so every other preview spec would otherwise
+    // inherit a scaled page from this file. Same for the scroll-sync toggle one test clicks.
+    await resetEditorPreferences(page);
   });
 
   test('offers three styles and says which one is active', async ({ page }) => {

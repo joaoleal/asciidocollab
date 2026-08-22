@@ -3,6 +3,7 @@ import { PREVIEW_ADAPTIVE_MIN_MS, PREVIEW_DEBOUNCE_MS } from '@/lib/editor-confi
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
 import { createAdocFile, openProject, openFile, editorContent, expandPreview } from './helpers/editor';
+import { resetEditorPreferences } from './helpers/editor-preferences';
 
 // How long an author waits between stopping typing and seeing the preview catch up.
 //
@@ -297,7 +298,11 @@ test.describe('preview refresh delay after the last keystroke', () => {
   });
 
   test.afterEach(async ({ page }) => {
+    // Cleanup first, so a failing reset cannot strand the project (the reset asserts on its requests).
     if (projectId) await cleanupProject(page, projectId);
+    // One of these measurements is taken under the Print style, which is stored on the shared
+    // account — hand it back rather than leaving every later preview spec rendering a scaled page.
+    await resetEditorPreferences(page);
   });
 
   test('a short document refreshes within a fifth of a second of the last keystroke', async ({ page }) => {

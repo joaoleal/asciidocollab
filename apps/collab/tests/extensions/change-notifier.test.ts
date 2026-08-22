@@ -107,6 +107,100 @@ describe('ChangeNotifierExtension', () => {
     expect(mockLogger.warn).toHaveBeenCalled();
   });
 
+  it('sends the exact request init the API expects and logs nothing on a 2xx', async () => {
+    const fetchFunction = okFetch();
+    const extension = makeExtension(fetchFunction);
+
+    await extension.onChange(changePayload());
+    jest.advanceTimersByTime(100);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const [, init] = fetchFunction.mock.calls[0];
+    // The whole init, not just `method`: a dropped header or body would otherwise go unnoticed.
+    expect(init).toEqual({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID }),
+    });
+    // A 2xx is the silent path — warning on it would spam the log for every healthy edit.
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('logs the exact status payload and message on a non-2xx response', async () => {
+    const fetchFunction = jest.fn().mockResolvedValue({ ok: false, status: 503 } as Response);
+    const extension = makeExtension(fetchFunction);
+
+    await extension.onChange(changePayload());
+    jest.advanceTimersByTime(100);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      { status: 503, projectId: PROJECT_ID },
+      'content-changed notify returned non-2xx (best-effort)',
+    );
+  });
+
+  it('logs the exact error payload and message when the fetch itself rejects', async () => {
+    const failure = new Error('ECONNREFUSED');
+    const fetchFunction = jest.fn().mockRejectedValue(failure);
+    const extension = makeExtension(fetchFunction);
+
+    await extension.onChange(changePayload());
+    jest.advanceTimersByTime(100);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      { err: failure, projectId: PROJECT_ID },
+      'content-changed notify failed (best-effort)',
+    );
+  });
+
+  it('ignores a malformed room name that is neither a presence nor a content room', async () => {
+    const fetchFunction = okFetch();
+    const extension = makeExtension(fetchFunction);
+
+    // No slash → parseContentRoom returns null. Scheduling a timer for it would blow up on
+    // `room.projectId` when the timer fires, so the early return has to happen.
+    await extension.onChange(changePayload('malformed-room-name'));
+    jest.advanceTimersByTime(100);
+    await Promise.resolve();
+
+    expect(fetchFunction).not.toHaveBeenCalled();
+  });
+
+  it('clears the pending timer only when one already exists for the room', async () => {
+    const clearSpy = jest.spyOn(globalThis, 'clearTimeout');
+    try {
+      const extension = makeExtension(okFetch());
+
+      await extension.onChange(changePayload());
+      expect(clearSpy).not.toHaveBeenCalled(); // nothing pending yet
+
+      await extension.onChange(changePayload());
+      expect(clearSpy).toHaveBeenCalledTimes(1); // the first timer, replaced
+    } finally {
+      clearSpy.mockRestore();
+    }
+  });
+
+  it('tolerates a timer handle that has no unref (optional call)', async () => {
+    // Node's Timeout has unref(); a handle without it (a browser-style numeric id, or a shimmed
+    // timer) must not crash the change hook.
+    const setTimeoutSpy = jest.spyOn(globalThis, 'setTimeout').mockReturnValue({} as never);
+    try {
+      const extension = makeExtension(okFetch());
+      await expect(extension.onChange(changePayload())).resolves.toBeUndefined();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
   it('onDestroy cancels a pending notify', async () => {
     const fetchFunction = okFetch();
     const extension = makeExtension(fetchFunction);

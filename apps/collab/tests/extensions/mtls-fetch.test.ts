@@ -300,6 +300,180 @@ describe('createMtlsFetch', () => {
     expect(response.status).toBe(200);
   });
 
+  it('forwards plain-object headers verbatim', async () => {
+    const cert = Buffer.from('cert');
+    const key = Buffer.from('key');
+    const ca = Buffer.from('ca');
+
+    (mockHttps.Agent as unknown) = jest.fn().mockReturnValue({});
+    let capturedOptions: { headers?: Record<string, string> } | null = null;
+    (mockHttps.request as jest.Mock).mockImplementation((options: { headers?: Record<string, string> }, callback: (result: unknown) => void) => {
+      capturedOptions = options;
+      const request = makeFakeRequest();
+      setImmediate(() => {
+        const result = makeFakeResponse(200, Buffer.from('{}'));
+        callback(result);
+        result.emit('data', Buffer.from('{}'));
+        result.emit('end');
+      });
+      return request;
+    });
+
+    const fetchFunction = createMtlsFetch(cert, key, ca);
+    await fetchFunction('https://127.0.0.1:4001/internal/collab/auth', {
+      headers: { Cookie: 'session=abc', 'x-request-id': 'r-1' },
+    });
+
+    // The whole header bag: dropping the plain-object branch would leave it empty and the auth
+    // cookie would never reach the API.
+    expect(capturedOptions!.headers).toEqual({ Cookie: 'session=abc', 'x-request-id': 'r-1' });
+  });
+
+  it('upper-cases the requested method', async () => {
+    const cert = Buffer.from('cert');
+    const key = Buffer.from('key');
+    const ca = Buffer.from('ca');
+
+    (mockHttps.Agent as unknown) = jest.fn().mockReturnValue({});
+    let capturedOptions: { method?: string } | null = null;
+    (mockHttps.request as jest.Mock).mockImplementation((options: { method?: string }, callback: (result: unknown) => void) => {
+      capturedOptions = options;
+      const request = makeFakeRequest();
+      setImmediate(() => {
+        const result = makeFakeResponse(200, Buffer.from('{}'));
+        callback(result);
+        result.emit('data', Buffer.from('{}'));
+        result.emit('end');
+      });
+      return request;
+    });
+
+    const fetchFunction = createMtlsFetch(cert, key, ca);
+    await fetchFunction('https://127.0.0.1:4001/path', { method: 'post' });
+
+    expect(capturedOptions!.method).toBe('POST');
+  });
+
+  it('defaults the method to GET when the init omits it', async () => {
+    const cert = Buffer.from('cert');
+    const key = Buffer.from('key');
+    const ca = Buffer.from('ca');
+
+    (mockHttps.Agent as unknown) = jest.fn().mockReturnValue({});
+    let capturedOptions: { method?: string } | null = null;
+    (mockHttps.request as jest.Mock).mockImplementation((options: { method?: string }, callback: (result: unknown) => void) => {
+      capturedOptions = options;
+      const request = makeFakeRequest();
+      setImmediate(() => {
+        const result = makeFakeResponse(200, Buffer.from('{}'));
+        callback(result);
+        result.emit('data', Buffer.from('{}'));
+        result.emit('end');
+      });
+      return request;
+    });
+
+    const fetchFunction = createMtlsFetch(cert, key, ca);
+    await fetchFunction('https://127.0.0.1:4001/path');
+
+    expect(capturedOptions!.method).toBe('GET');
+  });
+
+  it('skips response headers whose value is undefined', async () => {
+    const cert = Buffer.from('cert');
+    const key = Buffer.from('key');
+    const ca = Buffer.from('ca');
+
+    (mockHttps.Agent as unknown) = jest.fn().mockReturnValue({});
+    (mockHttps.request as jest.Mock).mockImplementation((_options: unknown, callback: (result: unknown) => void) => {
+      const request = makeFakeRequest();
+      setImmediate(() => {
+        const fakeResponse = {
+          statusCode: 200,
+          headers: { 'x-present': 'yes', 'x-missing': undefined },
+          on(event: string, callback_: (...arguments_: unknown[]) => void) {
+            if (event === 'end') setImmediate(() => callback_());
+            if (event === 'data') setImmediate(() => callback_(Buffer.from('')));
+            return fakeResponse;
+          },
+        };
+        callback(fakeResponse);
+      });
+      return request;
+    });
+
+    const fetchFunction = createMtlsFetch(cert, key, ca);
+    const response = await fetchFunction('https://127.0.0.1:4001/path');
+
+    expect(response.headers.get('x-present')).toBe('yes');
+    // Forwarding it anyway would stringify undefined into the literal header value "undefined".
+    expect(response.headers.get('x-missing')).toBeNull();
+  });
+
+  it('preserves a non-200 response status', async () => {
+    const cert = Buffer.from('cert');
+    const key = Buffer.from('key');
+    const ca = Buffer.from('ca');
+
+    (mockHttps.Agent as unknown) = jest.fn().mockReturnValue({});
+    (mockHttps.request as jest.Mock).mockImplementation((_options: unknown, callback: (result: unknown) => void) => {
+      const request = makeFakeRequest();
+      setImmediate(() => {
+        const result = makeFakeResponse(503, Buffer.from('nope'));
+        callback(result);
+        result.emit('data', Buffer.from('nope'));
+        result.emit('end');
+      });
+      return request;
+    });
+
+    const fetchFunction = createMtlsFetch(cert, key, ca);
+    const response = await fetchFunction('https://127.0.0.1:4001/path');
+
+    expect(response.status).toBe(503);
+  });
+
+  it('rejects when the response stream emits an error', async () => {
+    const cert = Buffer.from('cert');
+    const key = Buffer.from('key');
+    const ca = Buffer.from('ca');
+
+    (mockHttps.Agent as unknown) = jest.fn().mockReturnValue({});
+    (mockHttps.request as jest.Mock).mockImplementation((_options: unknown, callback: (result: unknown) => void) => {
+      const request = makeFakeRequest();
+      setImmediate(() => {
+        const result = makeFakeResponse(200, Buffer.from(''));
+        callback(result);
+        result.emit('error', new Error('stream boom'));
+      });
+      return request;
+    });
+
+    const fetchFunction = createMtlsFetch(cert, key, ca);
+    await expect(fetchFunction('https://127.0.0.1:4001/path')).rejects.toThrow('stream boom');
+  });
+
+  it('rejects with a DOM-shaped AbortError when the signal fires', async () => {
+    const cert = Buffer.from('cert');
+    const key = Buffer.from('key');
+    const ca = Buffer.from('ca');
+
+    (mockHttps.Agent as unknown) = jest.fn().mockReturnValue({});
+    (mockHttps.request as jest.Mock).mockImplementation(() => makeFakeRequest());
+
+    const controller = new AbortController();
+    const fetchFunction = createMtlsFetch(cert, key, ca);
+    const fetchPromise = fetchFunction('https://127.0.0.1:4001/path', { signal: controller.signal });
+
+    controller.abort();
+
+    // Callers (AbortSignal.timeout in the storage probe, undici-style callers) branch on the
+    // `AbortError` name, so both the name and the message are part of the contract.
+    const error = (await fetchPromise.then(() => null, (error_: unknown) => error_)) as Error;
+    expect(error.name).toBe('AbortError');
+    expect(error.message).toBe('The operation was aborted');
+  });
+
   it('forwards Headers instance fields as plain header strings', async () => {
     const cert = Buffer.from('cert');
     const key = Buffer.from('key');

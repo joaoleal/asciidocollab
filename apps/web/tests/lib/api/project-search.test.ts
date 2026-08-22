@@ -59,6 +59,12 @@ describe('searchProjectContent', () => {
     expect('signal' in mockFetch.mock.calls[0]![1]).toBe(false);
   });
 
+  test('declares the JSON content type so the API parses the body', async () => {
+    mockFetch.mockResolvedValue(respond({ ok: true, body: { data: SEARCH_RESULT } }));
+    await searchProjectContent('proj-1', QUERY);
+    expect(mockFetch.mock.calls[0]![1].headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+
   test('surfaces the server’s code and message so an invalid pattern can be shown inline', async () => {
     mockFetch.mockResolvedValue(
       respond({
@@ -83,6 +89,24 @@ describe('searchProjectContent', () => {
     expect((error as ProjectSearchApiError).message).toContain('503');
   });
 
+  test('names the failed operation in the fallback message', async () => {
+    // The fallback is the only text the user sees when the server said nothing, so it has to say
+    // which call failed — "503" alone does not distinguish a failed search from a failed replace.
+    mockFetch.mockResolvedValue(respond({ ok: false, status: 503, body: {} }));
+    const error = await searchProjectContent('proj-1', QUERY).catch((error_: unknown) => error_);
+    expect((error as ProjectSearchApiError).message).toBe('Search failed: 503');
+  });
+
+  test('a JSON body of literal null still yields the fallback code and message', async () => {
+    // `response.json()` resolving to `null` is well-formed JSON, so the `.catch` fallback never runs
+    // and `null` reaches the error translator — which must not dereference it.
+    mockFetch.mockResolvedValue(respond({ ok: false, status: 500, body: null }));
+    const error = await searchProjectContent('proj-1', QUERY).catch((error_: unknown) => error_);
+    expect(error).toBeInstanceOf(ProjectSearchApiError);
+    expect((error as ProjectSearchApiError).code).toBe('SEARCH_ERROR');
+    expect((error as ProjectSearchApiError).message).toBe('Search failed: 500');
+  });
+
   test('a body that is not JSON still yields the status, not a parse error', async () => {
     // An HTML error page from a proxy would otherwise surface as "Unexpected token <", hiding the 502.
     mockFetch.mockResolvedValue(respond({ ok: false, status: 502, throwOnJson: true }));
@@ -100,6 +124,17 @@ describe('replaceProjectContent', () => {
     const [url, options] = mockFetch.mock.calls[0]!;
     expect(url).toContain('/projects/proj-1/replace');
     expect(options.body).toBe(JSON.stringify(REPLACE));
+  });
+
+  test('sends the replace as a credentialed JSON POST', async () => {
+    // Replace is a mutating, membership-gated call: without the method it would be a GET, and
+    // without the cookie the server would reject it as anonymous.
+    mockFetch.mockResolvedValue(respond({ ok: true, body: { data: REPLACE_RESULT } }));
+    await replaceProjectContent('proj-1', REPLACE);
+    const options = mockFetch.mock.calls[0]![1];
+    expect(options.method).toBe('POST');
+    expect(options.credentials).toBe('include');
+    expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
   });
 
   test('surfaces a rejected replacement template with its own code', async () => {
