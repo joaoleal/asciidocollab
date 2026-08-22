@@ -76,6 +76,11 @@ fi
 HOSTILE_LOCALE='cs_CZ.UTF-8'
 
 FAILED=0
+# A check that could not RUN is tracked apart from a check that ran and disagreed. They call for
+# opposite actions — fix your toolchain vs. regenerate a committed file — and the closing banner used
+# to give the regenerate instruction for both, telling anyone whose Ruby was broken to rewrite an
+# artifact that was never compared against anything.
+BLOCKED=0
 NOT_RUN=()
 
 # run_check <label> <pnpm-filter-package> <script-name>
@@ -124,8 +129,43 @@ run_check "Base-14 stand-ins vs prawn" @asciidocollab/asciidoc-pdf check:base14-
 # installed highlight.js — and the drift it catches (a hand-edit inside the generated region, or a
 # highlight.js bump that changes the class vocabulary) happens on pull requests that touch no wasm
 # input at all, which is exactly when this script does not run.
-if command -v ruby > /dev/null 2>&1; then
+# A Ruby that cannot load its own stdlib is not a stale artifact. `ruby` on PATH was the whole
+# precondition here, and it is not enough: the dump script opens with `require 'json'`, so an
+# interpreter whose stdlib is unreachable dies before reading one byte of the gems — and run_check,
+# which knows only that the command exited non-zero, announced "the committed artifact does not match
+# the vendored gems". That names the repository as wrong when the machine is, and it points whoever
+# reads it at regenerating a file that was correct all along.
+#
+# It is the in-repo toolchain's normal state, not a hypothetical: the ruby under
+# packages/asciidoc-pdf/ruby/build/**/opt/bin runs, reports its version, and still cannot `require
+# 'json'` until RUBYLIB names its stdlib. So probe for what the dump actually needs — the require
+# itself, on the interpreter that will run it — and treat a failure as the check NOT RUNNING.
+RUBY_STDLIB_PROBE_OK=0
+if command -v ruby > /dev/null 2>&1 && ruby -e "require 'json'" > /dev/null 2>&1; then
+  RUBY_STDLIB_PROBE_OK=1
+fi
+
+if [ "$RUBY_STDLIB_PROBE_OK" = "1" ]; then
   run_check "Rouge palette vs the gems" @asciidocollab/asciidoc-pdf check:rouge-palette
+elif command -v ruby > /dev/null 2>&1; then
+  # Present, runnable, and unusable — the case that used to be reported as drift.
+  IN_REPO_RUBY="$ROOT/packages/asciidoc-pdf/ruby/build/x86_64-pc-linux/baseruby-3.3/opt"
+  if [ -n "$STRICT" ]; then
+    fail "Rouge palette vs the gems: the \`ruby\` on PATH cannot load its own stdlib (\`require 'json'\`"
+    fail "fails), so the dump cannot run. This is NOT artifact drift — do not regenerate anything."
+    BLOCKED=1
+  else
+    warn "Rouge palette vs the gems: NOT RUN — the \`ruby\` on PATH cannot \`require 'json'\`."
+    warn "This is a broken toolchain, NOT drift: nothing was compared, and the committed palette may"
+    warn "be perfectly current. Do not regenerate it on the strength of this message."
+    NOT_RUN+=("check:rouge-palette (host Ruby cannot load its stdlib)")
+  fi
+  if [ -d "$IN_REPO_RUBY/lib/ruby/3.3.0" ]; then
+    warn "This repo's own Ruby 3.3 needs its load path spelled out — it ships without one:"
+    warn "  PATH=\"$IN_REPO_RUBY/bin:\$PATH\" \\"
+    warn "  RUBYLIB=\"$IN_REPO_RUBY/lib/ruby/3.3.0:$IN_REPO_RUBY/lib/ruby/3.3.0/x86_64-linux\" \\"
+    warn "  scripts/ci/artifacts.sh"
+  fi
 elif [ -n "$STRICT" ]; then
   fail "Rouge palette vs the gems: no \`ruby\` on PATH, and it is required in strict/CI mode."
   fail "CI puts it there with ruby/setup-ruby at the top of the pdf-wasm job."
@@ -150,6 +190,11 @@ echo
 if [ "$FAILED" != "0" ]; then
   fail "Committed gem-derived artifacts are out of date. Regenerate them with the command each check"
   fail "printed, and commit the result — do not hand-edit a generated file."
+  exit 1
+fi
+if [ "$BLOCKED" != "0" ]; then
+  fail "A drift check could not run (see above). Nothing was compared, so no artifact is implicated:"
+  fail "fix the toolchain and re-run. Do NOT regenerate a committed file on the strength of this."
   exit 1
 fi
 if [ ${#NOT_RUN[@]} -gt 0 ]; then

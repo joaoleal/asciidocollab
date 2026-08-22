@@ -951,8 +951,12 @@ jobs:
           GL=${GL#v}
           curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GL}/gitleaks_${GL}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks
 
+      # `--exit-code 42` keeps this identical to scripts/ci/security.sh, which needs leaks and tool
+      # failures to be distinguishable: gitleaks documents exit 1 as "leaks OR error encountered", so
+      # on the default code a crashed scan and a found secret are the same number. Either still fails
+      # this step; the flag is what lets a reader tell which one happened.
       - name: gitleaks (secret scan across full history)
-        run: gitleaks git --redact --verbose
+        run: gitleaks git --redact --verbose --exit-code 42
 
       - name: Install OSV-Scanner
         env:
