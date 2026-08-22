@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject, createTestFile } from './helpers/test-project';
+import { setEditorPreferences, resetEditorPreferences } from './helpers/editor-preferences';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -89,11 +90,18 @@ test.describe('HTML preview does not scroll sideways', () => {
 
   test.beforeEach(async ({ page }) => {
     await signIn(page);
+    // The `asciidocollab` case never clicks a style — it measures whatever the panel opens in — so
+    // the style has to be established rather than assumed: the shared account remembers whichever one
+    // another spec last picked.
+    await setEditorPreferences(page, { previewStyle: 'asciidocollab' });
     projectId = await createProject(page, `Preview Overflow ${Date.now()}`);
   });
 
   test.afterEach(async ({ page }) => {
+    // Cleanup first, so a failing reset cannot strand the project (the reset asserts on its requests).
     if (projectId) await cleanupProject(page, projectId);
+    // The `asciidoctor` case stores that style on the account; put the default back.
+    await resetEditorPreferences(page);
   });
 
   for (const style of ['asciidocollab', 'asciidoctor'] as const) {

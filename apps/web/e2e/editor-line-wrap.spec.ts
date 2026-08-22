@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject } from './helpers/test-project';
 import { createAdocFile, openProject, openFile } from './helpers/editor';
+import { setEditorPreferences, resetEditorPreferences } from './helpers/editor-preferences';
 
 // The soft-wrap toggle must be reachable from the editor next
 // to Font Size / Theme (≤2 interactions), change wrapping immediately,
@@ -20,11 +21,17 @@ test.describe('line-wrap toggle', () => {
 
   test.beforeEach(async ({ page }) => {
     await signIn(page);
+    // Soft wrap is stored on the shared test account, and this test both asserts it starts ON and
+    // then turns it OFF — so without seeding it, its own previous run is enough to fail it.
+    await setEditorPreferences(page, { softWrap: true });
     projectId = await createProject(page, `Line Wrap ${Date.now()}`);
   });
 
   test.afterEach(async ({ page }) => {
+    // Cleanup first, so a failing reset cannot strand the project (the reset asserts on its requests).
     if (projectId) await cleanupProject(page, projectId);
+    // Put wrapping back: every other editor spec opens into whatever this one left behind.
+    await resetEditorPreferences(page);
   });
 
   test('Soft Wrap is reachable in the settings panel and toggles wrapping, persisting across reload', async ({ page }) => {

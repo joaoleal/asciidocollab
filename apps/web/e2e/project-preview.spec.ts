@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { ensureTestUser } from './helpers/test-user';
 import { signIn, createProject, cleanupProject, createTestFile } from './helpers/test-project';
 import { waitCollabSynced } from './helpers/editor';
+import { setEditorPreferences, resetEditorPreferences } from './helpers/editor-preferences';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -32,11 +33,20 @@ test.describe('AsciiDoc live preview', () => {
 
   test.beforeEach(async ({ page }) => {
     await signIn(page);
+    // Scroll sync lives on the shared test account, so "off" is a state to establish rather than a
+    // given: another spec that turned it on and left it on would otherwise decide what the tests
+    // below see. Seeded here — before any editor is opened — for every test in the file, since two
+    // of them start by asserting the toggle reads off.
+    await setEditorPreferences(page, { scrollSyncEnabled: false });
     projectId = await createProject(page, `Preview Test ${Date.now()}`);
   });
 
   test.afterEach(async ({ page }) => {
+    // Cleanup first: the reset below asserts on its own requests, so a failure there must not be
+    // able to strand this test's project on the shared account.
     if (projectId) await cleanupProject(page, projectId);
+    // Two of these tests turn scroll sync on by clicking the toggle, which stores it on the account.
+    await resetEditorPreferences(page);
   });
 
   test('opening an AsciiDoc file and expanding the preview renders HTML output', async ({ page }) => {
@@ -107,7 +117,8 @@ test.describe('AsciiDoc live preview', () => {
     const toggle = page.getByTestId('scroll-sync-toggle');
     await expect(toggle).toBeVisible({ timeout: 5000 });
 
-    // Disabled by default
+    // Off to begin with: the product default, and the value `beforeEach` put on the account so that
+    // this reads what the panel does with the default rather than whatever the last spec left behind.
     await expect(toggle).toHaveAttribute('aria-pressed', 'false');
 
     // Enable
