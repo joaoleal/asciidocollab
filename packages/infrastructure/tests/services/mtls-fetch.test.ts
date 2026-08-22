@@ -5,11 +5,15 @@ jest.mock('node:https');
 
 const mockHttps = https as jest.Mocked<typeof https>;
 
-function makeFakeResponse(statusCode: number, body: Buffer) {
+function makeFakeResponse(
+  statusCode: number | undefined,
+  body: Buffer,
+  headers?: Record<string, string | string[] | undefined>,
+) {
   const listeners: Record<string, ((...arguments_: unknown[]) => void)[]> = {};
   const result = {
     statusCode,
-    headers: { 'content-type': 'application/json' },
+    headers: headers ?? { 'content-type': 'application/json' },
     on(event: string, callback: (...arguments_: unknown[]) => void) {
       (listeners[event] ??= []).push(callback);
       return result;
@@ -42,6 +46,35 @@ function makeFakeRequest(): FakeClientRequest {
     destroy: jest.fn(),
   };
   return request;
+}
+
+/**
+ * Installs an `https.request` mock that replies with `response` and records the options it was
+ * called with, so a test can assert the exact request line the adapter built. With no `response`
+ * the request never completes, leaving abort as the only possible outcome.
+ */
+function stubRequest(response?: ReturnType<typeof makeFakeResponse>): {
+  request: FakeClientRequest;
+  options: () => Record<string, unknown>;
+} {
+  (mockHttps.Agent as unknown) = jest.fn();
+  const request = makeFakeRequest();
+  (mockHttps.request as jest.Mock).mockImplementation(
+    (_options: unknown, callback: (response: unknown) => void) => {
+      if (response) {
+        setImmediate(() => {
+          callback(response);
+          if (response.body.length > 0) response.emit('data', response.body);
+          response.emit('end');
+        });
+      }
+      return request;
+    },
+  );
+  return {
+    request,
+    options: () => (mockHttps.request as jest.Mock).mock.calls[0][0] as Record<string, unknown>,
+  };
 }
 
 describe('createMtlsFetch (infrastructure)', () => {
@@ -99,5 +132,106 @@ describe('createMtlsFetch (infrastructure)', () => {
 
     const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
     await expect(fetchImpl('https://collab.internal/x')).rejects.toThrow('ECONNREFUSED');
+  });
+
+  it('accepts a URL instance and defaults the port to 443 and the method to GET', async () => {
+    const { request, options } = stubRequest(makeFakeResponse(201, Buffer.alloc(0)));
+
+    const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
+    const response = await fetchImpl(new URL('https://collab.internal/internal/health?deep=1'));
+
+    expect(response.status).toBe(201);
+    expect(options()).toMatchObject({
+      hostname: 'collab.internal',
+      port: 443,
+      path: '/internal/health?deep=1',
+      method: 'GET',
+      headers: {},
+    });
+    expect(request.write).not.toHaveBeenCalled();
+    expect(request.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a Request instance and uppercases an explicit lowercase method', async () => {
+    const { options } = stubRequest(makeFakeResponse(200, Buffer.from('ok')));
+
+    const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
+    const response = await fetchImpl(new Request('https://collab.internal:4003/internal/collab/x'), {
+      method: 'delete',
+    });
+
+    expect(await response.text()).toBe('ok');
+    expect(options()).toMatchObject({
+      hostname: 'collab.internal',
+      port: 4003,
+      path: '/internal/collab/x',
+      method: 'DELETE',
+    });
+  });
+
+  it('flattens a Headers instance into the outgoing header map', async () => {
+    const { options } = stubRequest(makeFakeResponse(200, Buffer.from('ok')));
+
+    const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
+    await fetchImpl('https://collab.internal/x', {
+      headers: new Headers({ 'x-trace': 'abc', 'content-type': 'text/plain' }),
+    });
+
+    expect(options().headers).toEqual({ 'x-trace': 'abc', 'content-type': 'text/plain' });
+  });
+
+  it('flattens an array of header tuples into the outgoing header map', async () => {
+    const { options } = stubRequest(makeFakeResponse(200, Buffer.from('ok')));
+
+    const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
+    await fetchImpl('https://collab.internal/x', {
+      headers: [
+        ['x-trace', 'abc'],
+        ['x-user', 'u-1'],
+      ],
+    });
+
+    expect(options().headers).toEqual({ 'x-trace': 'abc', 'x-user': 'u-1' });
+  });
+
+  it('does not write a non-string body', async () => {
+    const { request } = stubRequest(makeFakeResponse(200, Buffer.from('ok')));
+
+    const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
+    await fetchImpl('https://collab.internal/x', { method: 'POST', body: new Uint8Array([1, 2, 3]) });
+
+    expect(request.write).not.toHaveBeenCalled();
+    expect(request.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('joins multi-value response headers, skips undefined ones, and defaults a missing status to 200', async () => {
+    stubRequest(
+      makeFakeResponse(undefined, Buffer.from('body'), {
+        'set-cookie': ['a=1', 'b=2'],
+        'x-absent': undefined,
+        'content-type': 'text/plain',
+      }),
+    );
+
+    const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
+    const response = await fetchImpl('https://collab.internal/x');
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('set-cookie')).toBe('a=1, b=2');
+    expect(response.headers.has('x-absent')).toBe(false);
+    expect(response.headers.get('content-type')).toBe('text/plain');
+    expect(await response.text()).toBe('body');
+  });
+
+  it('destroys the request and rejects with an AbortError when the signal aborts', async () => {
+    const { request } = stubRequest(); // never replies — the abort is the only outcome
+    const controller = new AbortController();
+
+    const fetchImpl = createMtlsFetch(Buffer.from('c'), Buffer.from('k'), Buffer.from('a'));
+    const pending = fetchImpl('https://collab.internal/x', { signal: controller.signal });
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError', message: 'The operation was aborted' });
+    expect(request.destroy).toHaveBeenCalledTimes(1);
   });
 });

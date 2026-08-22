@@ -127,6 +127,66 @@ describe('FilesystemProjectFileStore', () => {
       // allowed it — in practice FilePath already blocks ../ sequences
       await expect(store.read(projectId, FilePath.create('/valid.txt'))).resolves.toBeNull();
     });
+
+    it('rejects a leading double slash, which FilePath accepts but resolves outside the project', async () => {
+      // FilePath's traversal check only looks for `.`/`..` segments, so `//etc/passwd` passes it.
+      // After the leading-slash strip it is still absolute, so path.resolve discards the project
+      // directory entirely — resolveSafe is the only thing standing between it and /etc/passwd.
+      const escaping = FilePath.create('//etc/passwd');
+      await expect(store.read(projectId, escaping)).rejects.toThrow('Path traversal detected: //etc/passwd');
+      await expect(store.write(projectId, escaping, content)).rejects.toThrow('Path traversal detected: //etc/passwd');
+      await expect(store.readStream(projectId, escaping)).rejects.toThrow('Path traversal detected: //etc/passwd');
+    });
+
+    it('allows the project root itself, which resolves to the project directory exactly', async () => {
+      // The `resolved !== projectDirectory` arm of the guard: '/' strips to '' and resolves back to
+      // the project directory, which is inside the project and must not be rejected.
+      await expect(store.createDirectory(projectId, FilePath.create('/'))).resolves.toBeUndefined();
+      await store.write(projectId, filePath, content);
+      expect(await store.read(projectId, filePath)).toEqual(content);
+    });
+  });
+
+  describe('non-ENOENT / non-EEXIST failures propagate instead of being swallowed', () => {
+    // A 300-byte basename exceeds Linux's 255-byte NAME_MAX, so every syscall on it fails with
+    // ENAMETOOLONG — a deterministic stand-in for "an I/O error that is not the expected one".
+    const tooLong = FilePath.create(`/${'a'.repeat(300)}.txt`);
+
+    beforeEach(async () => {
+      // The kernel resolves a path component at a time, so a missing parent directory would fail
+      // with ENOENT before the over-long basename is ever looked at. Materialise the project
+      // directory so ENAMETOOLONG is genuinely what comes back.
+      await store.createDirectory(projectId, FilePath.create('/'));
+    });
+
+    it('read rethrows rather than reporting the file as absent', async () => {
+      await expect(store.read(projectId, tooLong)).rejects.toMatchObject({ code: 'ENAMETOOLONG' });
+    });
+
+    it('readStream rethrows rather than reporting the file as absent', async () => {
+      await expect(store.readStream(projectId, tooLong)).rejects.toMatchObject({ code: 'ENAMETOOLONG' });
+    });
+
+    it('createExclusive rethrows rather than reporting a conflict', async () => {
+      await expect(store.createExclusive(projectId, tooLong, content)).rejects.toMatchObject({
+        code: 'ENAMETOOLONG',
+      });
+    });
+
+    it('move of a file rethrows a link failure that is not a destination conflict', async () => {
+      await store.write(projectId, filePath, content);
+      await expect(store.move(projectId, filePath, tooLong)).rejects.toMatchObject({ code: 'ENAMETOOLONG' });
+      // The source is left untouched: unlink only runs after a successful link.
+      expect(await store.read(projectId, filePath)).toEqual(content);
+    });
+
+    it('move of a directory rethrows a destination stat failure that is not ENOENT', async () => {
+      await store.write(projectId, FilePath.create('/dir/inner.txt'), content);
+      await expect(store.move(projectId, FilePath.create('/dir'), tooLong)).rejects.toMatchObject({
+        code: 'ENAMETOOLONG',
+      });
+      expect(await store.read(projectId, FilePath.create('/dir/inner.txt'))).toEqual(content);
+    });
   });
 
   describe('remove', () => {
