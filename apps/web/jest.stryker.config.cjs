@@ -119,11 +119,14 @@ const SANDBOX_UNSAFE_MAPPINGS = new Set([
 // `coverageAnalysis: "perTest"` needs the test environment to report per-test coverage back to
 // Stryker, which the stock `node`/`jsdom` environments do not do — Stryker aborts the dry run with
 // "You probably configured a test environment in jest that is not reporting code coverage".
-// Substituting the environment in the config only covers suites that state no preference: 38+ of
-// this package's `.test.ts` files opt into jsdom with a `/* @jest-environment jsdom */` docblock,
-// and jest resolves that name to the `jest-environment-jsdom` MODULE, bypassing the config. The
-// moduleNameMapper entry below redirects that resolution, so the docblock suites get the reporting
-// environment too — without editing 38 test files to name a mutation-testing-specific environment.
+// Substituting the environment in the config covers every suite that states no preference of its own,
+// which is what both runs below do.
+//
+// It does NOT cover a suite with an explicit `/* @jest-environment … */` docblock: jest resolves that
+// name through its own resolver, which neither `testEnvironment` nor the moduleNameMapper redirect in
+// `forSandbox` can reach. Those suites are dropped from both runs instead (`DOCBLOCK_EXCLUDED`, and
+// the reasoning at the top of this file). The redirect is kept for anything that resolves a stock
+// environment by module path — it is not, and cannot be made into, a rescue for the docblock suites.
 const STRYKER_JSDOM_ENV = '@stryker-mutator/jest-runner/jest-env/jsdom';
 const STRYKER_NODE_ENV = '@stryker-mutator/jest-runner/jest-env/node';
 
@@ -162,9 +165,13 @@ const nodeConfig = forSandbox(projectByName.node, {
 delete nodeConfig.displayName;
 
 /**
- * Config for the `jsdom`-environment run: the React hooks. Both `.ts` and `.tsx` hook suites are
- * matched — several `use-editor-preferences.*.test.ts` files are jsdom suites that opt in with a
- * `@jest-environment` docblock, and leaving them out would under-count kills for that hook.
+ * Config for the `jsdom`-environment run: the React hooks. `.tsx` suites only.
+ *
+ * The jsdom-docblock `.test.ts` suites — `use-editor-preferences.*.test.ts` among them — belong here
+ * by environment but cannot report per-test coverage, so they are excluded rather than allowed to
+ * abort the run (see `DOCBLOCK_EXCLUDED`). Their absence UNDER-counts kills for what they cover: read
+ * a survivor on `use-editor-preferences.ts` as "possibly killed by a suite this run cannot include"
+ * before reading it as a weak assertion.
  */
 const jsdomConfig = forSandbox(projectByName.jsdom, {
   // `.tsx` only. The jsdom-docblock `.test.ts` suites would belong here by environment, but they

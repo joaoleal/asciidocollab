@@ -393,7 +393,8 @@ describe('ConnectionLimitExtension', () => {
       expect(readUsers(extension).size).toBe(0);
     });
 
-    // The users entry is evicted only when BOTH counters are back to zero.
+    // Zero connections is the authority: the entry goes even if a room reference is still held,
+    // since with no socket left nothing could ever release it (see `evictIfEmpty`).
     it('evicts the user entry once the last document connection and room are released', async () => {
       const { extension } = makeLoggedExtension({});
       await extension.onConnect(connectPayload('u1', 's1', ROOM_A));
