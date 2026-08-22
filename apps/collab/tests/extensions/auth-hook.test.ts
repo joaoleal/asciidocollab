@@ -20,9 +20,27 @@ function makePayload(overrides: { context?: Record<string, unknown> } = {}): onC
   } as unknown as onConnectPayload;
 }
 
-describe('AuthHookExtension', () => {
-  const mockLogger = { warn: jest.fn(), error: jest.fn() };
+const mockLogger = { warn: jest.fn(), error: jest.fn() };
 
+/** Builds a hook wired to the shared logger mock and the given fetch stub. */
+function makeAuthHook(mockFetch: jest.Mock): AuthHookExtension {
+  return new AuthHookExtension({
+    apiInternalUrl: 'http://127.0.0.1:4001',
+    authTimeoutMs: 3000,
+    logger: mockLogger as never,
+    fetch: mockFetch as never,
+  });
+}
+
+/** A payload for an arbitrary room name (the default helper is fixed to the document room). */
+function payloadFor(documentName: string): onConnectPayload {
+  return { ...makePayload(), documentName } as unknown as onConnectPayload;
+}
+
+/** A 200 body that WOULD be accepted, used to prove a denial came from the status/room check. */
+const OK_DOCUMENT_BODY = { role: 'editor', userId: 'u-1' };
+
+describe('AuthHookExtension', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -279,6 +297,145 @@ describe('AuthHookExtension', () => {
       const mockFetch = jest.fn().mockResolvedValue({ status: 200, json: async () => ({}) });
       const extension = new AuthHookExtension({ apiInternalUrl: 'http://127.0.0.1:4001', authTimeoutMs: 3000, logger: mockLogger as never, fetch: mockFetch as never });
       await expect(extension.onConnect(presencePayload())).rejects.toMatchObject({ code: 1008 });
+    });
+
+    // The presence body shape is `{ userId: string }` and nothing else may pass. Each case below
+    // pins one conjunct of the guard: a null body, a non-object body, and a non-string userId.
+    it.each([
+      ['a null body', null],
+      ['a non-object body', 'not-an-object'],
+      ['a non-string userId', { userId: 42 }],
+      ['a userId-less object', { role: 'editor' }],
+    ])('rejects a presence connection (1008, auth_malformed_response) on %s', async (_label, body) => {
+      const mockFetch = jest.fn().mockResolvedValue({ status: 200, json: async () => body });
+      const extension = new AuthHookExtension({ apiInternalUrl: 'http://127.0.0.1:4001', authTimeoutMs: 3000, logger: mockLogger as never, fetch: mockFetch as never });
+      const payload = presencePayload();
+
+      // toEqual (not toMatchObject) so a TypeError from a loosened guard cannot pass as a denial.
+      await expect(extension.onConnect(payload)).rejects.toEqual({ code: 1008, reason: 'Policy Violation' });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { actor: undefined, resource: PRESENCE_NAME, reason: 'auth_malformed_response' },
+        'collab connection rejected',
+      );
+      expect(payload.context.userId).toBeUndefined();
+    });
+  });
+
+  // Exact-value assertions on the denial path: the reason strings are the audit contract, and the
+  // guards must reject every body that is not exactly the documented shape.
+  describe('denial reasons and guard boundaries', () => {
+    // A room name the typed parsers reject must be denied BEFORE any auth call is made — the
+    // fetch would otherwise be issued with an undefined URL.
+    it.each([
+      ['a document room without a separator', 'not-a-room'],
+      ['a document room with a non-UUID id', 'not-a-uuid/also-not-a-uuid'],
+      ['a presence room with a non-UUID project id', 'presence/not-a-uuid'],
+    ])('denies %s with reason invalid_room and never calls the auth API', async (_label, documentName) => {
+      const mockFetch = jest.fn().mockResolvedValue({ status: 200, json: async () => OK_DOCUMENT_BODY });
+      const extension = makeAuthHook(mockFetch);
+
+      await expect(extension.onConnect(payloadFor(documentName))).rejects.toEqual({
+        code: 1008,
+        reason: 'Policy Violation',
+      });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { actor: undefined, resource: documentName, reason: 'invalid_room' },
+        'collab connection rejected',
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    // A non-200 must be rejected on the status alone: a body that would otherwise be accepted
+    // must not rescue it, and the audit reason carries the exact status code.
+    it.each([401, 403, 500])('denies status %i with reason auth_status_<code> even when the body is valid', async (status) => {
+      const mockFetch = jest.fn().mockResolvedValue({ status, json: async () => OK_DOCUMENT_BODY });
+      const extension = makeAuthHook(mockFetch);
+      const payload = makePayload();
+
+      await expect(extension.onConnect(payload)).rejects.toEqual({ code: 1008, reason: 'Policy Violation' });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { actor: undefined, resource: DOCUMENT_NAME, reason: `auth_status_${status}` },
+        'collab connection rejected',
+      );
+      expect(payload.context.role).toBeUndefined();
+      expect(payload.context.userId).toBeUndefined();
+    });
+
+    // 200 is the ONLY accepted status — the guard is `!== 200`, not `>= 400`.
+    it('accepts exactly status 200 and denies the adjacent 201', async () => {
+      const okFetch = jest.fn().mockResolvedValue({ status: 200, json: async () => OK_DOCUMENT_BODY });
+      await expect(makeAuthHook(okFetch).onConnect(makePayload())).resolves.toBeUndefined();
+
+      const createdFetch = jest.fn().mockResolvedValue({ status: 201, json: async () => OK_DOCUMENT_BODY });
+      await expect(makeAuthHook(createdFetch).onConnect(makePayload())).rejects.toEqual({
+        code: 1008,
+        reason: 'Policy Violation',
+      });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { actor: undefined, resource: DOCUMENT_NAME, reason: 'auth_status_201' },
+        'collab connection rejected',
+      );
+    });
+
+    it('logs the exact auth_unreachable warning (reason, errorClass, message) when the API is down', async () => {
+      const mockFetch = jest.fn().mockRejectedValue(new TypeError('fetch failed'));
+      const extension = makeAuthHook(mockFetch);
+
+      await expect(extension.onConnect(makePayload())).rejects.toEqual({
+        code: 1008,
+        reason: 'Policy Violation',
+      });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { resource: DOCUMENT_NAME, reason: 'auth_unreachable', errorClass: 'TypeError' },
+        'collab connection rejected',
+      );
+    });
+
+    // An unparseable body (json() rejects) must be treated as malformed, not as a crash.
+    it('denies with auth_malformed_response when the 200 body is not JSON', async () => {
+      const mockFetch = jest.fn().mockResolvedValue({
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON');
+        },
+      });
+      const extension = makeAuthHook(mockFetch);
+
+      await expect(extension.onConnect(makePayload())).rejects.toEqual({
+        code: 1008,
+        reason: 'Policy Violation',
+      });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { actor: undefined, resource: DOCUMENT_NAME, reason: 'auth_malformed_response' },
+        'collab connection rejected',
+      );
+    });
+
+    // Every conjunct of the document-body guard, one failing case each. `{ role: 'admin', userId }`
+    // is the important one: with the role check relaxed (or OR-ed) an unknown role would be
+    // accepted and written onto the connection context.
+    it.each([
+      ['a null body', null],
+      ['a non-object body', 'not-an-object'],
+      ['an unknown role with a valid userId', { role: 'admin', userId: 'u-1' }],
+      ['a null role with a valid userId', { role: null, userId: 'u-1' }],
+      ['a valid role with a non-string userId', { role: 'editor', userId: 42 }],
+      ['a valid role with no userId at all', { role: 'observer' }],
+    ])('denies a document connection (auth_malformed_response) for %s', async (_label, body) => {
+      const mockFetch = jest.fn().mockResolvedValue({ status: 200, json: async () => body });
+      const extension = makeAuthHook(mockFetch);
+      const payload = makePayload();
+
+      // toEqual pins the thrown value exactly: a TypeError escaping a loosened guard fails here.
+      await expect(extension.onConnect(payload)).rejects.toEqual({ code: 1008, reason: 'Policy Violation' });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { actor: undefined, resource: DOCUMENT_NAME, reason: 'auth_malformed_response' },
+        'collab connection rejected',
+      );
+      // Nothing may be written onto the connection for a rejected body.
+      expect(payload.context.role).toBeUndefined();
+      expect(payload.context.userId).toBeUndefined();
+      expect(payload.connectionConfig.readOnly).toBe(false);
     });
   });
 });

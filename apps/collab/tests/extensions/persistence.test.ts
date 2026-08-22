@@ -190,6 +190,62 @@ describe('PersistenceExtension', () => {
       expect(yjsStateStore.save).not.toHaveBeenCalled();
       expect(projectFileStore.write).not.toHaveBeenCalled();
     });
+
+    it('skips ALL storage in onStoreDocument when the FILE NODE behind the document is gone', async () => {
+      // The document record can outlive its file node (the tree row is deleted first). resolveFilePath
+      // must degrade to null there — dereferencing the absent node instead would throw straight out of
+      // the store hook, which is Hocuspocus's write-back path for a room full of live editors.
+      const { yjsStateStore, projectFileStore, documentRepository } = makeStores();
+      const fileNodeRepository = {
+        findById: jest.fn().mockResolvedValue(null),
+        findByParentId: jest.fn(),
+        findByProjectId: jest.fn(),
+        findByPath: jest.fn(),
+        save: jest.fn(),
+        delete: jest.fn(),
+        findDescendants: jest.fn(),
+        findByProjectIdAndType: jest.fn(),
+        deleteAllForProject: jest.fn(),
+      } as unknown as jest.Mocked<FileNodeRepository>;
+
+      const extension = new PersistenceExtension(yjsStateStore, projectFileStore, documentRepository, fileNodeRepository);
+      const document = makeDocument();
+      document.getText('codemirror').insert(0, 'some content');
+
+      await expect(
+        extension.onStoreDocument({ documentName, document, context: {} } as never),
+      ).resolves.toBeUndefined();
+
+      expect(fileNodeRepository.findById).toHaveBeenCalledTimes(1);
+      expect(yjsStateStore.save).not.toHaveBeenCalled();
+      expect(projectFileStore.write).not.toHaveBeenCalled();
+    });
+
+    it('does not bootstrap in onLoadDocument when the file node behind the document is gone', async () => {
+      const { yjsStateStore, projectFileStore, documentRepository } = makeStores({ yjsState: null });
+      const fileNodeRepository = {
+        findById: jest.fn().mockResolvedValue(null),
+        findByParentId: jest.fn(),
+        findByProjectId: jest.fn(),
+        findByPath: jest.fn(),
+        save: jest.fn(),
+        delete: jest.fn(),
+        findDescendants: jest.fn(),
+        findByProjectIdAndType: jest.fn(),
+        deleteAllForProject: jest.fn(),
+      } as unknown as jest.Mocked<FileNodeRepository>;
+
+      const extension = new PersistenceExtension(yjsStateStore, projectFileStore, documentRepository, fileNodeRepository);
+      const document = makeDocument();
+
+      await expect(
+        extension.onLoadDocument({ documentName, document, context: {} } as never),
+      ).resolves.toBeUndefined();
+
+      expect(projectFileStore.read).not.toHaveBeenCalled();
+      expect(yjsStateStore.save).not.toHaveBeenCalled();
+      expect(document.getText('codemirror').toString()).toBe('');
+    });
   });
 
   describe('onStoreDocument', () => {

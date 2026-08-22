@@ -8,6 +8,7 @@ import type {
   FileNodeRepository,
   SystemSettingRepository,
 } from '@asciidocollab/domain';
+import type { Logger } from 'pino';
 
 function makeExtension() {
   return new PersistenceExtension(
@@ -630,5 +631,404 @@ describe('createCollabServer session lifecycle skips presence rooms', () => {
       cfg.onDisconnect({ clientsCount: 0, documentName: `presence/${projectId}`, context: {}, document: { getConnectionsCount: () => 0 } }),
     ).resolves.toBeUndefined();
     expect(sessionCallbacks.onRoomClose).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Session-hook contract. The hooks are the only place the collab server decides whether a room may
+// live, and every failure they absorb leaves nothing behind but a log record — so the record IS the
+// contract. The specs below assert the observable effect of each guard (both outcomes, where a
+// guard has two) and the WHOLE logged payload plus its exact message, never merely that a logger
+// was called.
+// ---------------------------------------------------------------------------------------------
+
+const hookProjectId = '550e8400-e29b-41d4-a716-446655440001';
+const hookYjsStateId = '550e8400-e29b-41d4-a716-446655440002';
+const hookRoomName = `${hookProjectId}/${hookYjsStateId}`;
+const hookDocumentId = { value: '550e8400-e29b-41d4-a716-446655440010' };
+
+type SessionCallbacksArgument = NonNullable<Parameters<typeof createCollabServer>[3]>;
+type DocumentLookupArgument = Parameters<typeof createCollabServer>[4];
+
+interface RecordingLogger {
+  error: jest.Mock;
+  warn: jest.Mock;
+  info: jest.Mock;
+  debug: jest.Mock;
+}
+
+interface RecordingSessionCallbacks {
+  onRoomOpen: jest.Mock;
+  onRoomClose: jest.Mock;
+}
+
+interface CollabHooks {
+  onConnect?: (payload: unknown) => Promise<void>;
+  onDisconnect?: (payload: unknown) => Promise<void>;
+}
+
+function makeRecordingLogger(): RecordingLogger {
+  return { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+}
+
+function makeSettingRepo(value: string | null = '30'): SystemSettingRepository {
+  return { get: jest.fn().mockResolvedValue(value), set: jest.fn() } as unknown as SystemSettingRepository;
+}
+
+function makeSessionCallbacks(overrides: Partial<RecordingSessionCallbacks> = {}): RecordingSessionCallbacks {
+  return {
+    onRoomOpen: overrides.onRoomOpen ?? jest.fn().mockResolvedValue({ success: true, value: undefined }),
+    onRoomClose: overrides.onRoomClose ?? jest.fn().mockResolvedValue({ success: true, value: undefined }),
+  };
+}
+
+function makeDocumentLookup(document: unknown): DocumentLookupArgument {
+  return { findByYjsStateId: jest.fn().mockResolvedValue(document) } as unknown as DocumentLookupArgument;
+}
+
+function lookupCalls(documentRepository: DocumentLookupArgument): jest.Mock {
+  return (documentRepository as unknown as { findByYjsStateId: jest.Mock }).findByYjsStateId;
+}
+
+async function hooksOf(options: {
+  logger?: RecordingLogger;
+  sessionCallbacks?: RecordingSessionCallbacks;
+  documentRepository?: DocumentLookupArgument;
+  settingRepo?: SystemSettingRepository;
+}): Promise<CollabHooks> {
+  const server = await createCollabServer(
+    { port: 0, ...(options.logger && { logger: options.logger as unknown as Logger }) },
+    [makeExtension()],
+    options.settingRepo ?? makeSettingRepo(),
+    options.sessionCallbacks as unknown as SessionCallbacksArgument | undefined,
+    options.documentRepository,
+  );
+  return (server as unknown as { configuration: CollabHooks }).configuration;
+}
+
+/** A last-client-left disconnect payload for the content room, with a working store + document. */
+function disconnectPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    clientsCount: 0,
+    documentName: hookRoomName,
+    context: { documentId: hookDocumentId },
+    document: { getConnectionsCount: jest.fn().mockReturnValue(0) },
+    instance: { storeDocumentHooks: jest.fn().mockResolvedValue(undefined) },
+    ...overrides,
+  };
+}
+
+describe('room-name parsers reject a malformed name with an exact, actionable message', () => {
+  it('parsePresenceRoom names the expected shape and the offending room', () => {
+    // A content room is not a presence room: the message must say so, rather than the UUID
+    // validation error a fabricated slice would raise.
+    expect(() => parsePresenceRoom(hookRoomName)).toThrow(
+      new Error(`Invalid presence room name (expected "presence/<projectId>"): ${hookRoomName}`),
+    );
+  });
+
+  it('parsePresenceRoom accepts a presence room and returns its typed projectId', () => {
+    expect(parsePresenceRoom(`presence/${hookProjectId}`).projectId.value).toBe(hookProjectId);
+  });
+
+  it('parseRoomName names the expected shape and the offending room', () => {
+    expect(() => parseRoomName('no-slash')).toThrow(
+      new Error('Invalid room name (expected "<projectId>/<yjsStateId>"): no-slash'),
+    );
+  });
+
+  it('parseRoomName rejects a name whose second half is empty', () => {
+    expect(() => parseRoomName(`${hookProjectId}/`)).toThrow(
+      new Error(`Invalid room name (expected "<projectId>/<yjsStateId>"): ${hookProjectId}/`),
+    );
+  });
+
+  it('parseRoomName returns both typed ids for a well-formed room name', () => {
+    const parsed = parseRoomName(hookRoomName);
+    expect(parsed.projectId.value).toBe(hookProjectId);
+    expect(parsed.yjsStateId.value).toBe(hookYjsStateId);
+  });
+});
+
+describe('the writeback interval comes from one exact system-setting key', () => {
+  it('reads collaboration.writeback_interval_seconds and applies it as maxDebounce', async () => {
+    const settingRepo = makeSettingRepo('45');
+
+    const server = await createCollabServer({ port: 0 }, [makeExtension()], settingRepo);
+
+    expect((settingRepo.get as jest.Mock).mock.calls).toEqual([
+      ['collaboration.writeback_interval_seconds'],
+    ]);
+    expect((server as unknown as { configuration: { maxDebounce: number } }).configuration.maxDebounce).toBe(45_000);
+  });
+
+  it('falls back to a 30 second write-back when the setting is unset', async () => {
+    const server = await createCollabServer({ port: 0 }, [makeExtension()], makeSettingRepo(null));
+
+    expect((server as unknown as { configuration: { maxDebounce: number } }).configuration.maxDebounce).toBe(30_000);
+  });
+});
+
+// Both collaborators are required: a hook holding only one of them would dereference the other and
+// reject (onConnect) or silently swallow a TypeError (onDisconnect) on every single connection.
+describe('session hooks are installed only when BOTH collaborators are supplied', () => {
+  it('installs both hooks when sessionCallbacks and documentRepository are given', async () => {
+    const hooks = await hooksOf({
+      sessionCallbacks: makeSessionCallbacks(),
+      documentRepository: makeDocumentLookup(null),
+    });
+
+    expect(typeof hooks.onConnect).toBe('function');
+    expect(typeof hooks.onDisconnect).toBe('function');
+  });
+
+  it('installs NEITHER hook when only sessionCallbacks is given', async () => {
+    const hooks = await hooksOf({ sessionCallbacks: makeSessionCallbacks() });
+
+    expect(hooks.onConnect).toBeUndefined();
+    expect(hooks.onDisconnect).toBeUndefined();
+  });
+
+  it('installs NEITHER hook when only documentRepository is given', async () => {
+    const hooks = await hooksOf({ documentRepository: makeDocumentLookup(null) });
+
+    expect(hooks.onConnect).toBeUndefined();
+    expect(hooks.onDisconnect).toBeUndefined();
+  });
+
+  it('installs NEITHER hook when both are omitted', async () => {
+    const hooks = await hooksOf({});
+
+    expect(hooks.onConnect).toBeUndefined();
+    expect(hooks.onDisconnect).toBeUndefined();
+  });
+});
+
+describe('onConnect logs exactly what it rejects on', () => {
+  it('warns with the room name, then errors, when the document has vanished', async () => {
+    const logger = makeRecordingLogger();
+    const sessionCallbacks = makeSessionCallbacks();
+
+    const hooks = await hooksOf({ logger, sessionCallbacks, documentRepository: makeDocumentLookup(null) });
+    await expect(hooks.onConnect!({ documentName: hookRoomName, context: {} })).rejects.toThrow(
+      new Error('Document not found'),
+    );
+
+    expect(logger.warn.mock.calls).toEqual([
+      [{ documentName: hookRoomName }, 'Document not found for room; rejecting connection'],
+    ]);
+    expect(logger.error.mock.calls).toEqual([
+      [
+        { err: new Error('Document not found'), documentName: hookRoomName },
+        'Error in onConnect; rejecting connection',
+      ],
+    ]);
+    expect(sessionCallbacks.onRoomOpen).not.toHaveBeenCalled();
+  });
+
+  it('errors with the open failure and then with the rejection, when onRoomOpen fails', async () => {
+    const logger = makeRecordingLogger();
+    const openError = new Error('DB unavailable');
+    const sessionCallbacks = makeSessionCallbacks({
+      onRoomOpen: jest.fn().mockResolvedValue({ success: false, error: openError }),
+    });
+
+    const hooks = await hooksOf({
+      logger,
+      sessionCallbacks,
+      documentRepository: makeDocumentLookup({ id: hookDocumentId }),
+    });
+    await expect(hooks.onConnect!({ documentName: hookRoomName, context: {} })).rejects.toThrow(openError);
+
+    expect(logger.error.mock.calls).toEqual([
+      [
+        { err: openError, documentName: hookRoomName },
+        'Failed to open collaboration session; rejecting connection to preserve the edit lock',
+      ],
+      [
+        { err: openError, documentName: hookRoomName },
+        'Error in onConnect; rejecting connection',
+      ],
+    ]);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('logs nothing on a successful open and opens the session for the parsed project + document', async () => {
+    const logger = makeRecordingLogger();
+    const sessionCallbacks = makeSessionCallbacks();
+
+    const hooks = await hooksOf({
+      logger,
+      sessionCallbacks,
+      documentRepository: makeDocumentLookup({ id: hookDocumentId }),
+    });
+    const context: Record<string, unknown> = {};
+    await expect(hooks.onConnect!({ documentName: hookRoomName, context })).resolves.toBeUndefined();
+
+    expect(sessionCallbacks.onRoomOpen.mock.calls).toEqual([
+      [expect.objectContaining({ value: hookProjectId }), hookDocumentId],
+    ]);
+    expect(context.documentId).toBe(hookDocumentId);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('logs nothing and looks nothing up for a presence room', async () => {
+    const logger = makeRecordingLogger();
+    const sessionCallbacks = makeSessionCallbacks();
+    const documentRepository = makeDocumentLookup(null);
+
+    const hooks = await hooksOf({ logger, sessionCallbacks, documentRepository });
+    await expect(
+      hooks.onConnect!({ documentName: `presence/${hookProjectId}`, context: {} }),
+    ).resolves.toBeUndefined();
+
+    expect(lookupCalls(documentRepository)).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+});
+
+describe('onDisconnect logs exactly what it absorbs', () => {
+  it('logs the flush failure with its error and room, and still closes the session', async () => {
+    const logger = makeRecordingLogger();
+    const flushError = new Error('store wedged');
+    const sessionCallbacks = makeSessionCallbacks();
+
+    const hooks = await hooksOf({
+      logger,
+      sessionCallbacks,
+      documentRepository: makeDocumentLookup({ id: hookDocumentId }),
+    });
+    await expect(
+      hooks.onDisconnect!(
+        disconnectPayload({ instance: { storeDocumentHooks: jest.fn().mockRejectedValue(flushError) } }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(logger.error.mock.calls).toEqual([
+      [
+        { err: flushError, documentName: hookRoomName },
+        'Failed to flush the write-back before closing the collaboration session; the file store may lag',
+      ],
+    ]);
+    expect(sessionCallbacks.onRoomClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs the close failure with its error and room', async () => {
+    const logger = makeRecordingLogger();
+    const closeError = new Error('Close failed');
+    const sessionCallbacks = makeSessionCallbacks({
+      onRoomClose: jest.fn().mockResolvedValue({ success: false, error: closeError }),
+    });
+
+    const hooks = await hooksOf({
+      logger,
+      sessionCallbacks,
+      documentRepository: makeDocumentLookup({ id: hookDocumentId }),
+    });
+    await expect(hooks.onDisconnect!(disconnectPayload())).resolves.toBeUndefined();
+
+    expect(logger.error.mock.calls).toEqual([
+      [{ err: closeError, documentName: hookRoomName }, 'Failed to close collaboration session'],
+    ]);
+  });
+
+  it('logs NOTHING when the session closes cleanly', async () => {
+    const logger = makeRecordingLogger();
+    const sessionCallbacks = makeSessionCallbacks();
+
+    const hooks = await hooksOf({
+      logger,
+      sessionCallbacks,
+      documentRepository: makeDocumentLookup({ id: hookDocumentId }),
+    });
+    await expect(hooks.onDisconnect!(disconnectPayload())).resolves.toBeUndefined();
+
+    expect(sessionCallbacks.onRoomClose.mock.calls).toEqual([
+      [expect.objectContaining({ value: hookProjectId }), hookDocumentId],
+    ]);
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('logs the absorbed error when onRoomClose throws outright', async () => {
+    const logger = makeRecordingLogger();
+    const thrown = new Error('DB connection lost');
+    const sessionCallbacks = makeSessionCallbacks({ onRoomClose: jest.fn().mockRejectedValue(thrown) });
+
+    const hooks = await hooksOf({
+      logger,
+      sessionCallbacks,
+      documentRepository: makeDocumentLookup({ id: hookDocumentId }),
+    });
+    await expect(hooks.onDisconnect!(disconnectPayload())).resolves.toBeUndefined();
+
+    expect(logger.error.mock.calls).toEqual([
+      [{ err: thrown, documentName: hookRoomName }, 'Error in onDisconnect'],
+    ]);
+  });
+
+  it('resolves the documentId by lookup when Hocuspocus carries NO context object at all', async () => {
+    // Production reality: Hocuspocus does not carry the onConnect-mutated context into onDisconnect,
+    // and may pass no context at all. Reading it unguarded would throw, the outer catch would eat it,
+    // and the session row would leak — leaving the file permanently undeletable (active-session 409).
+    const logger = makeRecordingLogger();
+    const sessionCallbacks = makeSessionCallbacks();
+    const documentRepository = makeDocumentLookup({ id: hookDocumentId });
+
+    const hooks = await hooksOf({ logger, sessionCallbacks, documentRepository });
+    await expect(
+      hooks.onDisconnect!({
+        clientsCount: 0,
+        documentName: hookRoomName,
+        document: { getConnectionsCount: jest.fn().mockReturnValue(0) },
+        instance: { storeDocumentHooks: jest.fn().mockResolvedValue(undefined) },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(lookupCalls(documentRepository)).toHaveBeenCalledTimes(1);
+    expect(sessionCallbacks.onRoomClose.mock.calls).toEqual([
+      [expect.objectContaining({ value: hookProjectId }), hookDocumentId],
+    ]);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('returns QUIETLY when the room resolves to no document', async () => {
+    // Nothing to close and nothing to flush — and, crucially, nothing to log: a deleted document is
+    // an ordinary end of life, not an operator-visible fault.
+    const logger = makeRecordingLogger();
+    const sessionCallbacks = makeSessionCallbacks();
+    const storeDocumentHooks = jest.fn().mockResolvedValue(undefined);
+
+    const hooks = await hooksOf({
+      logger,
+      sessionCallbacks,
+      documentRepository: makeDocumentLookup(null),
+    });
+    await expect(
+      hooks.onDisconnect!(disconnectPayload({ context: {}, instance: { storeDocumentHooks } })),
+    ).resolves.toBeUndefined();
+
+    expect(sessionCallbacks.onRoomClose).not.toHaveBeenCalled();
+    expect(storeDocumentHooks).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('logs nothing and looks nothing up for a presence room', async () => {
+    const logger = makeRecordingLogger();
+    const sessionCallbacks = makeSessionCallbacks();
+    const documentRepository = makeDocumentLookup({ id: hookDocumentId });
+
+    const hooks = await hooksOf({ logger, sessionCallbacks, documentRepository });
+    await expect(
+      hooks.onDisconnect!(
+        disconnectPayload({ documentName: `presence/${hookProjectId}`, context: {} }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(lookupCalls(documentRepository)).not.toHaveBeenCalled();
+    expect(sessionCallbacks.onRoomClose).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 });
