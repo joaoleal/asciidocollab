@@ -5,23 +5,11 @@
   "tsconfigFile": "tsconfig.json",
   "mutate": [
     "src/lib/api/*.ts",
-    "src/lib/fs-entry-walker.ts",
-    "src/hooks/use-asciidoc-preview.ts",
-    "src/hooks/use-auto-save.ts",
-    "src/hooks/use-drop-upload.ts",
-    "src/hooks/use-editor-preferences.ts",
-    "src/hooks/use-file-selection.ts",
-    "src/hooks/use-key-binding-settings.ts",
-    "src/hooks/use-key-bindings.ts",
-    "!src/**/*.test.ts",
-    "!src/**/*.test.tsx",
-    "!src/**/*.spec.ts",
-    "!src/**/*.spec.tsx"
+    "src/lib/fs-entry-walker.ts"
   ],
-  "testRunnerNodeArgs": [],
   "jest": {
     "projectType": "custom",
-    "configFile": "jest.stryker.config.cjs",
+    "configFile": "jest.stryker.node.config.cjs",
     "enableFindRelatedTests": false
   },
   "timeoutMS": 30000,
@@ -35,6 +23,6 @@
   },
   "reporters": ["clear-text", "progress", "json"],
   "jsonReporter": {
-    "fileName": "reports/mutation/mutation.json"
+    "fileName": "reports/mutation/mutation-node.json"
   }
 }

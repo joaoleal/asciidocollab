@@ -46,6 +46,13 @@ TODO.txt
 
 # Mutation testing (Stryker)
 .stryker-tmp/
+# The whole report directory, not just `mutation.json`: apps/web now writes one report per
+# environment (mutation-node.json / mutation-jsdom.json, see stryker.*.config.json), and a bare
+# filename pattern silently stops matching the moment a report is renamed or split.
+# `**/` is required, not decoration: a pattern CONTAINING a slash is anchored to this file's
+# directory, so a bare `reports/mutation/` would only ever match <repo-root>/reports/mutation and
+# would silently miss apps/web/reports/mutation — verified, it did.
+**/reports/mutation/
 mutation.json
 
 # Project collaboration state (Yjs CRDT snapshots)

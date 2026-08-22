@@ -42,6 +42,30 @@ const sharedModuleNameMapper = {
 // option, so it must live inside each project entry (not at the root).
 const coveragePathIgnorePatterns = ['/node_modules/', '<rootDir>/e2e/', '<rootDir>/tests/'];
 
+// `.stryker-tmp/sandbox-XXXX/` is a FULL copy of this package, tests included, left behind whenever a
+// mutation run crashes or is interrupted. `testMatch` below is `**/tests/**`, which happily matches
+// the copies: a single leftover sandbox took a verification run from 389 suites / 6257 tests to 1161
+// suites / 18753 tests, and reported six failures that existed only in the stale copy. Silent
+// triplication that fails on code nobody edited is a hard bug to read, so exclude it everywhere.
+// (During a real Stryker run the sandbox IS the rootDir, so nothing here interferes with it.)
+const testPathIgnorePatterns = ['/node_modules/', '<rootDir>/.stryker-tmp/'];
+
+// `testPathIgnorePatterns` alone is NOT enough, and the difference is easy to miss: it stops jest
+// COLLECTING tests from the sandbox, but haste-map still SCANS it and finds a second copy of every
+// manual mock, so every run prints `duplicate manual mock found: fileMock`. That warning is the
+// visible half; the invisible half is that which copy wins is unspecified. `modulePathIgnorePatterns`
+// removes the directory from the module map entirely, which is what actually settles it.
+// `.next/standalone/apps/web/` is the same trap from a different direction: `next build` copies this
+// package (package.json included) into the build output, so anyone who has run a production build
+// locally gets a second haste entry for the SAME package name. It was invisible until the sandbox
+// warning above stopped drowning it out. Both build dirs are excluded — nothing a test resolves
+// should ever come from compiler output.
+const modulePathIgnorePatterns = [
+  '<rootDir>/.stryker-tmp/',
+  '<rootDir>/.next/',
+  '<rootDir>/.next-dev/',
+];
+
 // Enforce coverage over ALL application source (matching the monorepo convention
 // where domain/api/shared set `collectCoverageFrom: src/**`). Without this, the
 // global threshold below only measures files a test happens to import, so a brand-new
@@ -79,7 +103,8 @@ const config = {
       // VIRTUAL-mock the same `mathjax/*` bundle paths. They run in their own project (below) so the
       // two never share a worker.
       testMatch: ['**/tests/**/*.test.ts'],
-      testPathIgnorePatterns: ['/node_modules/', '\\.integration\\.test\\.ts$'],
+      testPathIgnorePatterns: [...testPathIgnorePatterns, '\\.integration\\.test\\.ts$'],
+      modulePathIgnorePatterns,
       transform: sharedTransform,
       transformIgnorePatterns,
       moduleNameMapper: sharedModuleNameMapper,
@@ -94,6 +119,8 @@ const config = {
       displayName: 'jsdom',
       testEnvironment: 'jsdom',
       testMatch: ['**/tests/**/*.test.tsx'],
+      testPathIgnorePatterns,
+      modulePathIgnorePatterns,
       transform: sharedTransform,
       transformIgnorePatterns,
       moduleNameMapper: sharedModuleNameMapper,
@@ -112,6 +139,8 @@ const config = {
       displayName: 'integration',
       testEnvironment: 'jsdom',
       testMatch: ['**/tests/**/*.integration.test.ts'],
+      testPathIgnorePatterns,
+      modulePathIgnorePatterns,
       transform: sharedTransform,
       transformIgnorePatterns,
       moduleNameMapper: sharedModuleNameMapper,

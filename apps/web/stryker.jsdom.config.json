@@ -1,0 +1,61 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "jest",
+  "plugins": ["@stryker-mutator/jest-runner"],
+  "tsconfigFile": "tsconfig.json",
+  "mutate": [
+    "src/hooks/use-asciidoc-preview.ts",
+    "src/hooks/use-auto-save.ts",
+    "src/hooks/use-drop-upload.ts",
+    "src/hooks/use-editor-preferences.ts",
+    "src/hooks/use-file-selection.ts",
+    "src/hooks/use-key-binding-settings.ts",
+    "src/hooks/use-key-bindings.ts"
+  ],
+  "cost_comment": [
+    "MEASURED 2026-08-16 with ignoreStatic on: 59 minutes wall clock (20:54-21:53), exit 0, mutation",
+    "score 77.18 (868 killed / 240 survived / 17 no-coverage / 21 errors / 1 timeout over 1147",
+    "mutants, 33.46 tests per mutant on average). Weakest files: use-editor-preferences.ts 70.10 and",
+    "use-asciidoc-preview.ts 76.16; use-key-bindings.ts is at 100.",
+    "",
+    "WHY ignoreStatic IS ON. Without it this run reports an ETA of 10-14 HOURS, and the cause is not",
+    "'React suites are slow' — Stryker names it itself on every run:",
+    "  'Detected 42 static mutants (4% of total) that are estimated to take 91% of the time'.",
+    "A STATIC mutant sits in code that executes at module-load time rather than inside a test, so",
+    "perTest coverage cannot narrow it down and Stryker must re-run the ENTIRE 2713-test suite for",
+    "each one. 42 mutants x the whole suite is the entire cost; the other ~1147 are cheap.",
+    "Do NOT try to extrapolate this run's duration from an early throughput sample. Early mutants are",
+    "the cheap non-static ones, so a linear extrapolation understates the total by roughly an order of",
+    "magnitude. That mistake was made once already.",
+    "",
+    "WHAT THIS COSTS US, stated plainly rather than left implicit: the 42 static mutants are NOT",
+    "tested by this run. They are excluded, not killed, and they do not appear as survivors in the",
+    "report. To cover them, run once with ignoreStatic false and budget many hours.",
+    "",
+    "enableFindRelatedTests: TRUE is the other obvious fix and DOES NOT WORK here — it was tried and",
+    "produced 27 ChildProcessCrashedError failures (jest's --findRelatedTests does not survive this",
+    "custom-config setup). Do not re-apply it without re-testing.",
+    "",
+    "Mutation testing is deliberately NOT part of gate.sh or CI. It is a quality instrument run by",
+    "hand when hardening a module, not a required check."
+  ],
+  "ignoreStatic": true,
+  "jest": {
+    "projectType": "custom",
+    "configFile": "jest.stryker.jsdom.config.cjs",
+    "enableFindRelatedTests": false
+  },
+  "timeoutMS": 30000,
+  "timeoutFactor": 2,
+  "concurrency": 4,
+  "coverageAnalysis": "perTest",
+  "thresholds": {
+    "high": 90,
+    "low": 80,
+    "break": 70
+  },
+  "reporters": ["clear-text", "progress", "json"],
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation-jsdom.json"
+  }
+}

@@ -36,7 +36,9 @@
     "render-equivalence:reference": "playwright test web-format-reference --config playwright.render-equivalence.config.ts",
     "render-equivalence:regression": "playwright test web-format-equivalence --config playwright.render-equivalence.config.ts",
     "render-equivalence:cross-format": "playwright test cross-format-agreement --config playwright.render-equivalence.config.ts",
-    "mutate": "stryker run",
+    "mutate": "pnpm run mutate:node && pnpm run mutate:jsdom",
+    "mutate:node": "stryker run stryker.node.config.json",
+    "mutate:jsdom": "stryker run stryker.jsdom.config.json",
     "build:pdfjs-worker": "node scripts/build-pdfjs-worker.mjs"
   },
   "dependencies": {
