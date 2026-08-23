@@ -122,6 +122,30 @@ describe('apiRequest error handling', () => {
     expect(error.code).toBe('UNAVAILABLE');
     expect(error.retryAfter).toBe(5);
   });
+
+  test('carries the structured details a route attaches to its error envelope', async () => {
+    globalThis.fetch = jest.fn(async () =>
+      mockResponse(false, 503, {
+        error: { code: 'LIVE_CONTENT_UNAVAILABLE', message: 'unreadable', details: { path: '/chapters/intro.adoc' } },
+      }),
+    ) as never;
+    const error = await rejection('/x');
+    expect(error.details).toEqual({ path: '/chapters/intro.adoc' });
+  });
+
+  test('leaves details undefined when the envelope carries none', async () => {
+    globalThis.fetch = jest.fn(async () => mockResponse(false, 500, { error: { code: 'CLONE_FAILED', message: 'boom' } })) as never;
+    const error = await rejection('/x');
+    expect(error.details).toBeUndefined();
+  });
+
+  test('ignores details that are not a plain object', async () => {
+    globalThis.fetch = jest.fn(async () =>
+      mockResponse(false, 500, { error: { code: 'CLONE_FAILED', message: 'boom', details: ['/a.adoc'] } }),
+    ) as never;
+    const error = await rejection('/x');
+    expect(error.details).toBeUndefined();
+  });
 });
 
 describe('apiRequest request init', () => {

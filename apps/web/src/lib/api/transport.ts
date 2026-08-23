@@ -13,16 +13,26 @@ export { API_BASE_URL } from './base-url';
  * Custom error class for API errors.
  */
 export class ApiError extends Error {
-  /** Constructs an ApiError with HTTP status, error code, human-readable message, and optional retry delay. */
+  /**
+   * Constructs an ApiError with HTTP status, error code, human-readable message, an optional retry
+   * delay, and the structured `details` a route may attach so a caller can react to the specifics
+   * (which file, which field) without parsing the message text.
+   */
   constructor(
     public readonly status: number,
     public readonly code: string,
     message: string,
     public readonly retryAfter?: number,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/** Narrows a parsed JSON value to a keyed object, rejecting arrays and primitives. */
+function isKeyedObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -72,7 +82,15 @@ export async function apiRequest<T>(
       (typeof data?.error === 'string' ? data.error : undefined) ??
       'An unexpected error occurred';
     const code = data?.error?.code ?? (typeof data?.code === 'string' ? data.code : undefined) ?? 'UNKNOWN_ERROR';
-    throw new ApiError(response.status, code, message, data?.error?.retryAfter);
+
+    // `details` is the machine-readable half of the envelope: a route that needs the UI to name the
+    // specific thing that failed puts it here rather than only in the prose message, so the caller
+    // never has to parse English. Anything that is not a keyed object is dropped — a caller reading
+    // `details.path` must not be handed an array or a string to index into.
+    const rawDetails: unknown = data?.error?.details;
+    const details = isKeyedObject(rawDetails) ? rawDetails : undefined;
+
+    throw new ApiError(response.status, code, message, data?.error?.retryAfter, details);
   }
 
   // Deliberately NOT guarded: a 2xx that is not JSON is a broken server contract, and swallowing it

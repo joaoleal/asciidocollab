@@ -123,7 +123,7 @@ export class DownloadProjectUseCase {
         chunk.map(async (node) => ({
           fileNode: node,
           relativePath: node.path.value.replace(/^\//, ''),
-          source: await resolveDownloadContentSource(resolverDeps, projectId, node),
+          source: await resolveDownloadContentSource(resolverDeps, projectId, node, 'fallback'),
         })),
       );
       results.push(...chunkResults);

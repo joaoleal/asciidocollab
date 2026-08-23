@@ -100,6 +100,14 @@ export const projectsApi = {
     return apiRequest(`/api/projects/${id}/restore`, { method: 'POST' });
   },
 
+  async clone(id: string, name: string): Promise<{ /** The newly created copy of the source project. */
+  data: Project }> {
+    return apiRequest(`/api/projects/${id}/clone`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
   async delete(id: string): Promise<{ /** Confirmation payload containing the deleted project id. */
   data: { /** Unique identifier of the deleted project. */
   id: string } }> {

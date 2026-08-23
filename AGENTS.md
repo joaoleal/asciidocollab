@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
-Active feature plan: specs/045-pdf-style-preview/plan.md
+Active feature plan: specs/047-project-clone/plan.md
 <!-- SPECKIT END -->
 
 ## Hard Constraints (MUST NOT)
@@ -469,6 +469,40 @@ v4 migration notes: `new Server()` replaces `Server.configure()`; the live-docum
 **SSE real-time file tree:** The API broadcasts `FileTreeEventDto` over a per-project in-memory `EventTarget` bus (`FileTreeEventBus` plugin). The frontend connects via a `SharedWorker` that holds one `EventSource` per project and fans events to all tabs. `applyEvent()` handles `created/deleted/renamed/moved` events locally; `onUpdate` (called after any mutation) triggers `fetchTree()` as a reliable fallback. `applyEvent` is idempotent for `created` events to prevent duplicates when refetch beats SSE delivery.
 
 **Project creation invariant:** Creating a project always runs a single DB transaction: insert Project (rootFolderId=null) → insert root FileNode → update Project.rootFolderId. Every project always has a root folder.
+
+**Project cloning — membership is the commit point.** `POST /api/projects/:projectId/clone`
+(`apps/api/src/routes/projects/clone.ts`, rate-limited by `project.clone.*`) copies a project any
+member can reach into a new one the caller owns, via `CloneProjectUseCase`.
+
+There is no transaction. The codebase has no unit-of-work abstraction, and a clone writes to
+PostgreSQL *and* the filesystem, which no database transaction can span. Atomicity instead comes from
+an ordering invariant, and **breaking that order is how you break the feature silently**:
+
+> Every read path in the system authorizes on *membership*, not on the project row
+> (`ProjectRepository.findByMemberId` → `members: { some: { userId } }`; every project-scoped use case
+> gates on `projectMemberRepo.findByCompositeKey`). **A project row with no `ProjectMember` rows is
+> therefore invisible and unreachable to every user, including the one who created it.**
+
+So the clone builds everything — project row, file nodes, documents, assets, bytes, settings,
+dictionary, audit entries — while the project has **no members**, and writes the single owner
+`ProjectMember` row **last**. That row is the commit point. Nothing may be written after it, and
+nothing written before it may be visible. Any failure up to and including that write runs compensating
+cleanup (delete the project row, which cascades; then `ProjectFileStore.removeProject`). The membership
+write is itself inside that cleanup region — a copy that fails to commit is the worst residue there is,
+being complete but permanently unreachable. `apps/api/tests/routes/projects/clone-invisibility.test.ts`
+tests the invariant in isolation, by seeding a memberless project directly and proving nothing can see it.
+
+Two deliberate differences from `DeleteProjectUseCase`, both of which look like omissions and are not:
+cleanup does **not** call `YjsStateStore.deleteAllForProject`, because a clone persists no Yjs state —
+each copied document gets a fresh `yjsStateId` and the collab server seeds the room from the file bytes,
+exactly as it does for a newly created file; and the use case holds no `YjsStateStore` at all, which is
+what makes that unreachable rather than merely unused.
+
+**`ActiveCloneRegistry`** bounds each user to one clone in flight (`tryAcquire`/`release`, released in a
+`finally`). The single `InMemoryActiveCloneRegistry` instance is built at the composition root
+(`apps/api/src/di/services.ts`) and shared by every request; the route builds a fresh use case per
+request but injects that shared instance. It is per API process — correct for the single-container
+deployment, a known limit behind a load balancer.
 
 **RBAC:** Roles (viewer/editor/administrator) are assigned per project via `ProjectMember`. Global admins are a separate flag on `User`. Role checks happen in use cases, not in route handlers.
 

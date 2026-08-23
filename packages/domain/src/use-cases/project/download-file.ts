@@ -83,7 +83,7 @@ export class DownloadFileUseCase {
       this.logger,
     );
     const source: DownloadContentSource = resolverDeps
-      ? await resolveDownloadContentSource(resolverDeps, projectId, fileNode)
+      ? await resolveDownloadContentSource(resolverDeps, projectId, fileNode, 'fallback')
       : { kind: 'stored' };
 
     return { success: true, value: { fileNode, filePath: fileNode.path, source } };

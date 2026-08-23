@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { Folder, FileText, Users, Clock, MoreVertical, Settings } from "lucide-react";
+import { Folder, FileText, Users, Clock, Copy, MoreVertical, Settings } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -10,16 +11,27 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
+import { CloneProjectDialog } from "@/components/clone-project-dialog";
 import { Project } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 
 interface ProjectCardProperties {
+  /** The project this card summarises. */
   project: Project;
+  /**
+   * Receives the copy created from this card's clone action, so the surrounding listing can react
+   * without refetching. Omitted where nothing is listening.
+   *
+   * @param created - The project the server just created.
+   */
+  onCloned?: (created: Project) => void;
 }
 
-/** Renders a summary card for a project: its folder icon, name, role badge, an options menu for owners, description, and a compact footer with file and member counts and the last-updated time. */
-export function ProjectCard({ project }: ProjectCardProperties) {
-  const canManage = project.role === "owner";
+/** Renders a summary card for a project: its folder icon, name, role badge, an options menu, description, and a compact footer with file and member counts and the last-updated time. */
+export function ProjectCard({ project, onCloned }: ProjectCardProperties) {
+  const [cloneOpen, setCloneOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isOwner = project.role === "owner";
 
   return (
     <Card className="group relative flex flex-col h-full hover:shadow-md transition-shadow">
@@ -43,34 +55,66 @@ export function ProjectCard({ project }: ProjectCardProperties) {
                 {project.role}
               </Badge>
             )}
-            {canManage && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Project options"
-                    onClick={(event) => event.stopPropagation()}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <MoreVertical className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+            {/*
+              The menu itself is open to every role; each item carries its own gate instead. The
+              invariant is that the menu must never offer an item whose destination would then
+              refuse the user. Member management and project settings both land on pages that
+              admit owners only, so both are shown to owners alone. Cloning produces a separate
+              project the cloner owns and grants no access to this one, so it is safe for any
+              role that can see the card — which is why a viewer's menu holds Clone and nothing
+              else, rather than not appearing at all.
+            */}
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Project options"
+                  onClick={(event) => event.stopPropagation()}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <MoreVertical className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {isOwner && (
                   <DropdownMenuItem asChild>
                     <Link href={`/dashboard/projects/${project.id}/members`}>
                       <Users className="mr-2 h-4 w-4" aria-hidden="true" />
                       Members
                     </Link>
                   </DropdownMenuItem>
+                )}
+                {isOwner && (
                   <DropdownMenuItem asChild>
                     <Link href={`/dashboard/projects/${project.id}/settings`}>
                       <Settings className="mr-2 h-4 w-4" aria-hidden="true" />
                       Settings
                     </Link>
                   </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
+                )}
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    // Suppress the menu's own dismissal so it cannot race the dialog for focus,
+                    // then close the menu explicitly. Without the second step the menu stays
+                    // mounted behind the modal and is still hanging over the card once the
+                    // dialog closes.
+                    event.preventDefault();
+                    setMenuOpen(false);
+                    setCloneOpen(true);
+                  }}
+                >
+                  <Copy className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Clone
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <CloneProjectDialog
+              open={cloneOpen}
+              onOpenChange={setCloneOpen}
+              projectId={project.id}
+              projectName={project.name}
+              onCloned={(created) => onCloned?.(created)}
+            />
           </div>
         </div>
         <CardDescription className="line-clamp-2">

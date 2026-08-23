@@ -23,3 +23,4 @@ export {
   type HttpStructuredCollaborativeEditorConfig,
   COLLAB_APPLY_STRUCTURED_REPLACEMENT_PATH,
 } from './http-structured-collaborative-editor';
+export { InMemoryActiveCloneRegistry } from './in-memory-active-clone-registry';

@@ -15,7 +15,19 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deletedNotice, setDeletedNotice] = useState(false);
+  const [clonedProject, setClonedProject] = useState<Project | null>(null);
   const searchParameters = useSearchParams();
+
+  /**
+   * The clone response and this insert are a single decision, not two: the clone route answers with
+   * the same full project shape the list route emits, which is the only reason the new card can be
+   * built from the response instead of costing a second round trip. Narrow that body and this has
+   * to become a refetch, or the card renders with blank member and file counts.
+   */
+  const handleCloned = (created: Project) => {
+    setProjects((current) => [created, ...current]);
+    setClonedProject(created);
+  };
 
   useEffect(() => {
     if (searchParameters.get("deleted") === "1") {
@@ -65,6 +77,25 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {clonedProject && (
+        // Deliberately has no dismiss timer, unlike the deleted notice above: this one carries the
+        // direct route to the new project, and a timer would take that away mid-reach.
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm border-[hsl(var(--success-border))] bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]"
+        >
+          <span>
+            Created <strong>{clonedProject.name}</strong>.
+          </span>
+          <Link
+            href={`/dashboard/projects/${clonedProject.id}`}
+            className="font-medium underline underline-offset-2"
+          >
+            Open {clonedProject.name}
+          </Link>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Your Projects</h2>
         <div className="flex items-center gap-2">
@@ -93,7 +124,7 @@ export default function DashboardPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {projects.map((project) => (
-            <ProjectCard key={project.id} project={project} />
+            <ProjectCard key={project.id} project={project} onCloned={handleCloned} />
           ))}
         </div>
       )}

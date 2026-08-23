@@ -16,6 +16,7 @@ export type { TemplateRepository } from './project/template.repository';
 export type { GitRepositoryRepository } from './project/git-repository.repository';
 export type { CollaborationSessionRepository } from './project/collaboration-session.repository';
 export type { ProjectRenderConfigRepository } from './project/project-render-config.repository';
+export type { ActiveCloneRegistry } from './project/active-clone-registry';
 
 // file-tree/
 export type { FileNodeRepository } from './file-tree/file-node.repository';
