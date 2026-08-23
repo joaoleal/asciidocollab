@@ -13,11 +13,11 @@
 ### Session 2026-08-22
 
 - Q: Where is a clone started from? → A: From the projects dashboard, via the per-project overflow menu that today holds Members and Settings. That menu must now appear for every project the user is a member of, not just those they own.
-- Q: With the menu now shown for every role, what does it contain for a viewer or editor? → A: Settings and Clone. Members stays owner-only and is omitted for non-owners, because that page already refuses non-owners; Settings is already role-aware and hides its owner-only section.
+- Q: With the menu now shown for every role, what does it contain for a viewer or editor? → A: **Clone alone.** *(Answered at the time as "Settings and Clone", on the belief that the settings page is role-aware. It is not — it calls `getProjectAccess(id, "owner")` and refuses everyone else, exactly as the members page does. Both are therefore owner-only, and a non-owner's menu holds Clone and nothing else. See the amendment on FR-001c, and R8 in research.md, whose rationale carried the same mistaken premise.)*
 - Q: Does the user wait for a clone, or does it run in the background? → A: Synchronous and all-or-nothing. The user waits on a busy/progress state, and the new project becomes visible only once the whole clone has succeeded.
 - Q: What happens when a document's live editing content cannot be read during a clone? → A: The clone fails. Nothing is created and the user is told which document could not be read, so they can retry. A clone never silently falls back to last-saved content — unlike the existing project download, which does.
 - Q: Are repeated or concurrent clone requests limited? → A: One clone at a time per user. A second concurrent request from the same user is refused with a message saying a clone is already in progress. Clones by different users still run concurrently.
-- Q: Where does the user end up after a successful clone? → A: They stay on the projects dashboard. The list refreshes to include the new project and a confirmation names it and offers a direct action to open it.
+- Q: Where does the user end up after a successful clone? → A: They stay on the projects dashboard. The list refreshes to include the new project and a confirmation names it and offers a direct action to open it. *(Refined during implementation: this holds for the active listing. A clone is never archived, so the **archived** listing deliberately does not gain the new card — adding it would claim an active project is archived — and there the confirmation is the only route to the copy. See the notice rules in contracts/clone-project-ui.md.)*
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -54,8 +54,9 @@ tree and content, and that the source project is untouched.
 5. **Given** a user who is not a member of a project, **When** they attempt to clone it, **Then** the
    request is refused and no new project is created.
 6. **Given** a user whose role in a project is viewer or editor, **When** they open that project's
-   menu on the dashboard, **Then** the menu offers Clone and Settings and does not offer Members;
-   **and given** a user who owns the project, **Then** the menu offers Members, Settings and Clone.
+   menu on the dashboard, **Then** the menu offers Clone and nothing else — neither Members nor
+   Settings, both of which lead to pages that admit owners alone; **and given** a user who owns the
+   project, **Then** the menu offers Members, Settings and Clone.
 7. **Given** the clone dialog is open, **When** the user submits an empty name or a name longer than
    the allowed length, **Then** the clone is not started and the user is told why.
 8. **Given** a collaborator is editing a document in the source project right now, **When** another

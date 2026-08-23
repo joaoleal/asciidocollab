@@ -8,8 +8,10 @@ import {
   PermissionDeniedError,
   Project,
   ProjectId,
+  type ProjectMember,
   UserId,
 } from '@asciidocollab/domain';
+import type { CloneProjectDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId, requireAuth } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
@@ -57,6 +59,46 @@ function mapCloneError(error: DomainError): CloneRefusal {
 }
 
 /**
+ * Reads the display names of a project's owners, or none if they cannot be read.
+ *
+ * This is the only cosmetic read in a description: everything else the body
+ * carries is already in hand by the time it runs. A failure here therefore costs
+ * the card its owner line and nothing more — the counts, the caller's role and
+ * the stored row's own fields stay true — so it is logged and answered around
+ * instead of collapsing the whole description into stated values.
+ *
+ * The list is empty rather than filled in from the caller: a blank display name
+ * rendered as if it were real is worse than none.
+ *
+ * @param request - The current request, used to reach the user repository and the log.
+ * @param project - The project being described, named in the warning if the read fails.
+ * @param members - That project's membership rows; the owners among them are looked up.
+ * @returns One entry per owner whose user row was found, or an empty list if the read failed.
+ */
+async function readOwnerNames(
+  request: FastifyRequest,
+  project: Project,
+  members: ProjectMember[],
+): Promise<{ userId: string; displayName: string }[]> {
+  try {
+    const ownerUsers = await Promise.all(
+      members
+        .filter((member) => member.role.value === 'owner')
+        .map((member) => request.server.repos.user.findById(member.userId)),
+    );
+    return ownerUsers
+      .filter((user): user is NonNullable<typeof user> => user !== null)
+      .map((user) => ({ userId: user.id.value, displayName: user.displayName }));
+  } catch (error) {
+    requestLogger(request).warn('Could not read the owner display names; describing the project without them', {
+      projectId: project.id.value,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+/**
  * Describes a project exactly as `GET /api/projects` describes one, so the copy
  * can be inserted into the dashboard's list without a second request.
  *
@@ -64,44 +106,113 @@ function mapCloneError(error: DomainError): CloneRefusal {
  * than assumed from what the clone just wrote: deriving them the same way the
  * list route does is what keeps the two shapes from drifting apart.
  *
+ * Only the counts and the stored row are load-bearing enough to fail on. The
+ * owner names are fetched separately and absorb their own failure, so a blip
+ * while looking them up costs the description its owner list and leaves every
+ * other field, the counts included, read and true.
+ *
  * @param request - The current request, used to reach the repositories.
  * @param project - The project to describe.
  * @param actorId - The caller, whose own role in the project is reported.
  * @returns The project in the list route's shape.
  */
 async function describeProject(request: FastifyRequest, project: Project, actorId: UserId) {
-  const [members, fileNodes] = await Promise.all([
+  const [stored, members, fileNodes] = await Promise.all([
+    // Described from the row as it now reads, not from the entity the clone just built in memory.
+    // The two are not the same: `rootFolderId` is set on a freshly built project but has no column
+    // to be stored in, so the entity reports one and every later read reports none. Describing the
+    // entity would put a value in this response that the dashboard's next refresh contradicts —
+    // exactly the drift this shared shape exists to prevent.
+    request.server.repos.project.findById(project.id),
     request.server.repos.projectMember.findByProjectId(project.id),
     request.server.repos.fileNode.findByProjectId(project.id),
   ]);
+  const described = stored ?? project;
 
-  const ownerUsers = await Promise.all(
-    members
-      .filter((member) => member.role.value === 'owner')
-      .map((member) => request.server.repos.user.findById(member.userId)),
-  );
-  const owners = ownerUsers
-    .filter((user): user is NonNullable<typeof user> => user !== null)
-    .map((user) => ({ userId: user.id.value, displayName: user.displayName }));
+  const owners = await readOwnerNames(request, described, members);
 
   const membership = members.find((member) => member.userId.value === actorId.value);
 
   return {
-    id: project.id.value,
-    name: project.name.value,
-    description: project.description,
+    id: described.id.value,
+    name: described.name.value,
+    description: described.description,
     owners,
-    tags: [...project.tags],
-    rootFolderId: project.rootFolderId?.value ?? null,
-    mainFileNodeId: project.mainFileNodeId?.value ?? null,
-    language: project.language,
-    archivedAt: project.archivedAt?.toISOString() ?? null,
+    tags: [...described.tags],
+    rootFolderId: described.rootFolderId?.value ?? null,
+    mainFileNodeId: described.mainFileNodeId?.value ?? null,
+    language: described.language,
+    archivedAt: described.archivedAt?.toISOString() ?? null,
     memberCount: members.length,
     fileCount: fileNodes.filter((node) => node.type.value === 'file').length,
     role: membership?.role.value ?? 'viewer',
-    createdAt: project.createdAt.toISOString(),
-    updatedAt: project.updatedAt.toISOString(),
+    createdAt: described.createdAt.toISOString(),
+    updatedAt: described.updatedAt.toISOString(),
   };
+}
+
+/**
+ * Describes a committed copy, falling back to what the clone itself already
+ * knows if the reads that would describe it fail.
+ *
+ * The counts and owner names are a convenience — they save the dashboard a
+ * second request. The copy is real whether or not they can be read, so a failure
+ * here is logged and answered around rather than raised: reporting a clone that
+ * succeeded as a server error would tell the user nothing was copied while their
+ * new project sits in the list behind the message.
+ *
+ * The owner names absorb their own failure, so this fallback is reached only
+ * when the read of the project row, its members and its file nodes failed. Three
+ * of the fields it states are nonetheless safe, each for its own reason:
+ *
+ * - `memberCount` is 1 and `role` is `owner` by construction. The single owner
+ *   membership row is the last write the clone makes and the one that commits
+ *   it, so a copy that reached here has exactly that one member, the caller.
+ * - `owners` is empty rather than invented: the caller is that owner, but naming
+ *   them needs the very read that failed, and a blank name rendered as if it
+ *   were real is worse than none.
+ * - `rootFolderId` is null because it is null for this project in every read
+ *   there will ever be — it has no column to be stored in. The entity built by
+ *   the clone does carry one, and answering with it would put a value here that
+ *   the dashboard's next refresh contradicts.
+ *
+ * `fileCount` is the one value that is neither known nor derivable here, and it
+ * is the one field this body does not carry. `ProjectDto` declares it optional
+ * so that "unknown" can be said, and the dashboard's card drops the chip when it
+ * is absent; a stated zero would instead render "0 files" over a copy that may
+ * hold forty, which is a worse answer than the blank the omission leaves. Every
+ * other field the full description carries is present, so nothing but the file
+ * chip is missing from the card until the next listing fills it in.
+ *
+ * @param request - The current request, used to reach the repositories and the log.
+ * @param project - The committed copy.
+ * @param actorId - The caller, who owns it.
+ * @returns The full description, or every field of it but `fileCount`, with the unreadable ones stated.
+ */
+async function describeCommittedClone(request: FastifyRequest, project: Project, actorId: UserId) {
+  try {
+    return await describeProject(request, project, actorId);
+  } catch (error) {
+    requestLogger(request).warn('Could not describe the finished clone; answering with what is known', {
+      projectId: project.id.value,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      id: project.id.value,
+      name: project.name.value,
+      description: project.description,
+      owners: [],
+      tags: [...project.tags],
+      rootFolderId: null,
+      mainFileNodeId: project.mainFileNodeId?.value ?? null,
+      language: project.language,
+      archivedAt: project.archivedAt?.toISOString() ?? null,
+      memberCount: 1,
+      role: 'owner',
+      createdAt: project.createdAt.toISOString(),
+      updatedAt: project.updatedAt.toISOString(),
+    };
+  }
 }
 
 /**
@@ -116,7 +227,9 @@ async function describeProject(request: FastifyRequest, project: Project, actorI
  * @param app - The Fastify instance the endpoint is registered on.
  */
 export async function cloneRoutes(app: FastifyInstance): Promise<void> {
-  app.post<{ Params: { projectId: string }; Body: { name: string } }>(
+  // The body is the shared request shape rather than a local restatement of it,
+  // so the client and the endpoint cannot drift into disagreeing about the field.
+  app.post<{ Params: { projectId: string }; Body: CloneProjectDto }>(
     '/api/projects/:projectId/clone',
     {
       preHandler: [requireAuth],
@@ -130,7 +243,11 @@ export async function cloneRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: 'object',
           required: ['projectId'],
-          properties: { projectId: { type: 'string' } },
+          // Checked here rather than left to `ProjectId.create`, whose throw is not caught by
+          // anything on this path: a caller sending a malformed id got a 500 and a logged stack
+          // trace for what is plainly a bad request. Rejecting the shape at the boundary cannot leak
+          // anything either — it separates "not an id" from "an id", never one project from another.
+          properties: { projectId: { type: 'string', format: 'uuid' } },
         },
         body: {
           type: 'object',
@@ -176,9 +293,14 @@ export async function cloneRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      return reply
-        .status(201)
-        .send({ data: await describeProject(request, result.value.project, actorId) });
+      // Past this point the copy exists and the caller owns it, so nothing that happens while
+      // describing it may turn into a refusal. `describeProject` reads three more times to fill in
+      // the counts and the owner names, and a connection blip on any of them used to reject the
+      // handler — answering 500 for a project that is already visible, and telling the user through
+      // the dialog that nothing was copied. The description is the only part that can still fail,
+      // and a description is not worth losing a clone over.
+      const described = await describeCommittedClone(request, result.value.project, actorId);
+      return reply.status(201).send({ data: described });
     },
   );
 }

@@ -16,6 +16,15 @@ export class PrismaAssetRepository implements AssetRepository {
     return record ? toDomainAsset(record) : null;
   }
 
+  /** Finds every asset belonging to the given FileNode ids, in one query. */
+  async findByIds(ids: readonly FileNodeId[]): Promise<Asset[]> {
+    if (ids.length === 0) return [];
+    const records = await this.prisma.asset.findMany({
+      where: { id: { in: ids.map((id) => id.value) } },
+    });
+    return records.map(toDomainAsset);
+  }
+
   /** Persists an asset entity via upsert. */
   async save(asset: Asset): Promise<void> {
     await this.prisma.asset.upsert({

@@ -19,7 +19,7 @@ project's rows contain, and where each value comes from.
 | `id` | fresh UUID | generated |
 | `name` | `N` | user input, via `ProjectName.create` |
 | `description`, `tags`, `language` | copied verbatim | `S` |
-| `mainFileNodeId` | **remapped** — the clone's node whose `path` equals `S.mainFile.path`; written as a *separate update* after the file nodes exist (see §6, steps 4 and 7), because the column is an FK to `FileNode` and cannot be set on the initial row | derived |
+| `mainFileNodeId` | **remapped** — the copy of `S.mainFile`, looked up through the identity map built while the tree was written (not by matching paths); written as a *separate update* after the file nodes exist (see §6, steps 4 and 7), because the column is an FK to `FileNode` and cannot be set on the initial row | derived |
 | `archivedAt` | `null` | FR-015, never copied |
 | `createdAt`, `updatedAt` | now | generated |
 
@@ -160,7 +160,11 @@ The response body is the existing `ProjectDto`
 dashboard insert the new card without a second round-trip (FR-025), but only if the route emits
 **every** field the list route emits, including the ones `ProjectDto` marks optional and the card
 renders: `owners`, `rootFolderId`, `mainFileNodeId`, `memberCount`, `fileCount` and `role`. The API
-contract pins the exact body; a narrower shape renders a card with blank counts.
+contract pins the exact body; a narrower shape renders a card with blank counts. The route therefore
+describes the project as the database now returns it rather than as the entity it just built in
+memory — the two differ on `rootFolderId`, which has no column and so reads back as `null` for every
+project, and describing the entity would put a value in the response that the next refresh
+contradicts.
 
 ---
 
@@ -183,19 +187,32 @@ The sequence is not incidental; FR-023/FR-024 depend on it.
 
 1. `tryAcquire` — refuse early if the actor already has a clone running.
 2. Authorize: `A` is a member of `S`. Non-member and non-existent are indistinguishable (FR-002).
-   On refusal, record the `authz.denied` entry against `S` before returning (FR-026a).
+   On refusal, record the `authz.denied` entry before returning (FR-026a). It is scoped to `S` only
+   when `S` exists: `AuditLog.projectId` is a foreign key, so naming a project that is not there
+   makes the insert fail, and audit writes are best-effort — the refusal most worth recording, an id
+   being probed, would be the one silently lost. The id asked for is recorded as the resource either
+   way.
 3. Validate `N`.
 4. Create the project row (still memberless, therefore invisible).
 5. Copy file nodes parent-first, building the identity map.
 6. Per file: resolve content, write bytes, create the `Document` or `Asset` row.
-7. Copy render config and dictionary terms; remap and set the main file.
-8. Write the audit entries.
-9. **Write the owner `ProjectMember` row.** ← the project becomes visible here.
+7. Remap and set the main file; copy render config and dictionary terms.
+8. **Write the owner `ProjectMember` row.** ← the project becomes visible here.
+9. Write the audit entries.
 10. `release`, in a `finally` that also covers every failure path.
 
 Any failure in 4–8 triggers cleanup before the error is returned: delete the project row (which
 cascades to file nodes, documents, assets, render config and dictionary terms) and call
-`ProjectFileStore.removeProject`.
+`ProjectFileStore.removeProject`. Step 4 is inside that range, not before it: an insert that commits
+and then loses its acknowledgement leaves exactly the residue the cleanup exists to remove. A throw
+anywhere in 4–8 becomes a returned `CloneFailedError` rather than escaping, because only a returned
+refusal runs the cleanup.
+
+**Step 9 is deliberately after the commit point** — the only thing that is. Both entries are
+best-effort and neither can strand anything, whereas writing them before step 8 meant an abandoned
+copy left a `project.cloned` entry behind: the cleanup deleted the project row, the audit row
+outlived it with its project reference nulled (the foreign key is `ON DELETE SET NULL`), and the
+governance trail then described a copy no user ever received.
 
 `YjsStateStore.deleteAllForProject` is **deliberately not part of this cleanup**, unlike
 `DeleteProjectUseCase`'s: a clone never persists Yjs state (research R3), so there is nothing for it

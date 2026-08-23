@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { projectsApi } from "@/lib/api";
 import type { Project } from "@/lib/api";
+import { CLONE_IN_PROGRESS_CODE } from "@/lib/api/projects";
 import { ApiError } from "@/lib/api/transport";
 
 /**
@@ -19,6 +20,21 @@ const CLONE_NAME_MAX_LENGTH = 100;
 
 const NAME_FIELD_ID = "clone-project-name";
 const NAME_PROBLEM_ID = "clone-project-name-problem";
+
+/** Said when the server offered no usable explanation of its own. */
+const GENERIC_CLONE_FAILURE = "Failed to clone project.";
+
+/** A refused copy, as it reaches whatever is still on screen once the dialog itself has gone. */
+export interface CloneFailure {
+  /** The sentence to show the user. */
+  message: string;
+  /**
+   * The server's machine-readable refusal code, absent when the request never reached an answer it
+   * could carry one in. A caller keeps its own notices truthful from this rather than by matching
+   * the prose above, which is written for the reader and free to change.
+   */
+  code?: string;
+}
 
 /** Builds the pre-filled suggestion, capped so the whole string fits the server's maximum. */
 function suggestCloneName(sourceName: string): string {
@@ -33,9 +49,9 @@ function suggestCloneName(sourceName: string): string {
  */
 function cloneFailureMessage(caught: unknown): string {
   if (!(caught instanceof ApiError)) {
-    return "Failed to clone project.";
+    return GENERIC_CLONE_FAILURE;
   }
-  if (caught.code === "CLONE_IN_PROGRESS") {
+  if (caught.code === CLONE_IN_PROGRESS_CODE) {
     return "A clone is already running. Wait for it to finish, then try again.";
   }
   if (caught.code === "RATE_LIMITED" || caught.status === 429) {
@@ -49,7 +65,23 @@ function cloneFailureMessage(caught: unknown): string {
   if (caught.code === "FORBIDDEN") {
     return "You no longer have access to that project.";
   }
-  return caught.message;
+  // The server's own wording is the last resort, and an empty one reaches here unchanged: the
+  // transport preserves whatever the body carried. Substituting the generic sentence keeps the
+  // dialog from dropping back to idle having explained nothing.
+  return caught.message.trim().length > 0 ? caught.message : GENERIC_CLONE_FAILURE;
+}
+
+/**
+ * Pairs that sentence with the code it was chosen from. The wording alone is enough for the dialog's
+ * own message area, which is only ever read by a person, but a caller that outlives the dialog has
+ * to decide later whether the refusal is still true — and the code is the only part of a refusal
+ * that can be reasoned about instead of read.
+ */
+function describeCloneFailure(caught: unknown): CloneFailure {
+  return {
+    message: cloneFailureMessage(caught),
+    code: caught instanceof ApiError ? caught.code : undefined,
+  };
 }
 
 interface CloneProjectFormProperties {
@@ -65,29 +97,53 @@ interface CloneProjectFormProperties {
    * @param open - The visibility being requested; the form only ever asks for `false`.
    */
   onOpenChange: (open: boolean) => void;
+  /** Announces that a request has just been sent, superseding whatever the caller last reported. */
+  onCloneStarted: () => void;
   /**
    * Receives the created copy so the caller can show it without a follow-up fetch.
    *
    * @param project - The project the server just created.
    */
   onCloned: (project: Project) => void;
+  /**
+   * Receives the explanation for a copy that failed after the dialog was already gone.
+   *
+   * @param failure - The sentence to show in the caller's own notice area, and the code it came from.
+   */
+  onCloneFailed: (failure: CloneFailure) => void;
 }
 
 /**
  * The dialog's interactive body. It lives in its own component so that Radix unmounting the portal
  * on close discards the typed name, the busy flag and any failure message — reopening then starts
  * from a fresh suggestion rather than from whatever the last attempt left behind.
+ *
+ * That same unmounting is why a failure has two destinations: the request outlives the form, so once
+ * the form is gone its own message area is a place nobody can look, and the outcome has to be handed
+ * back to the caller instead.
  */
 function CloneProjectForm({
   nameFieldReference,
   projectId,
   projectName,
   onOpenChange,
+  onCloneStarted,
   onCloned,
+  onCloneFailed,
 }: CloneProjectFormProperties) {
   const [name, setName] = useState(() => suggestCloneName(projectName));
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  // Whether this form is still on screen. Dismissing the dialog mid-copy unmounts it while the
+  // request carries on, and the failure branch below needs to know which of the two message
+  // surfaces the user can still see.
+  const onScreen = useRef(true);
+  useEffect(
+    () => () => {
+      onScreen.current = false;
+    },
+    [],
+  );
 
   const trimmedName = name.trim();
   const nameIsMissing = trimmedName.length === 0;
@@ -97,14 +153,29 @@ function CloneProjectForm({
     if (!canSubmit) return;
     setPending(true);
     setFailure(null);
+    onCloneStarted();
     try {
       const response = await projectsApi.clone(projectId, trimmedName);
       onCloned(response.data);
+      if (!onScreen.current) {
+        // Dismissed while the copy ran. The copy is real and the caller has to hear about it, but
+        // this form no longer owns what is on screen: any dialog up now belongs to a later attempt,
+        // and closing it would take that attempt's half-typed name with it.
+        return;
+      }
       onOpenChange(false);
     } catch (caughtError) {
+      const failure = describeCloneFailure(caughtError);
+      if (!onScreen.current) {
+        // The user closed the dialog while the copy was running. Reporting into this form now would
+        // write the only account of the failure into something nobody can see, so the caller — which
+        // is still on screen — is told instead.
+        onCloneFailed(failure);
+        return;
+      }
       // Deliberately leaves the typed name alone: the dialog stays open on the same attempt so the
       // user can fix the name or simply retry.
-      setFailure(cloneFailureMessage(caughtError));
+      setFailure(failure.message);
       setPending(false);
     }
   };
@@ -138,13 +209,25 @@ function CloneProjectForm({
       </div>
 
       {pending && (
-        <div
-          role="progressbar"
-          aria-label="Cloning project"
-          className="mt-4 h-1 w-full overflow-hidden rounded-full bg-secondary"
-        >
-          {/* No aria-valuenow: the server reports no progress, so the bar is deliberately indeterminate. */}
-          <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+        // A live region, because nothing that appears here can be reached any other way: the button
+        // that was pressed goes disabled and drops focus, the bar carries no text, and the sentence
+        // below it — the only place the dismissal is explained — is never visited. Announcing
+        // politely waits for the user to pause rather than cutting across them.
+        <div role="status" className="mt-4 space-y-2">
+          <div
+            role="progressbar"
+            aria-label="Cloning project"
+            className="h-1 w-full overflow-hidden rounded-full bg-secondary"
+          >
+            {/* No aria-valuenow: the server reports no progress, so the bar is deliberately indeterminate. */}
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+          </div>
+          {/* Says what leaving actually does. A copy already in flight cannot be called back — the
+              server finishes it either way — so the way out is honest about being a dismissal and
+              not an abort. */}
+          <p className="text-xs text-muted-foreground">
+            The copy will finish on its own. Closing this leaves it running.
+          </p>
         </div>
       )}
 
@@ -155,8 +238,10 @@ function CloneProjectForm({
       )}
 
       <div className="mt-6 flex justify-end gap-3">
-        <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
-          Cancel
+        {/* Never disabled: a modal that blocks Escape and outside clicks is the only way out, and
+            taking it away for the length of a copy would leave the user with no way out at all. */}
+        <Button variant="outline" onClick={() => onOpenChange(false)}>
+          {pending ? "Close" : "Cancel"}
         </Button>
         <Button onClick={handleClone} disabled={!canSubmit}>
           {pending ? "Cloning…" : "Clone"}
@@ -180,24 +265,40 @@ interface CloneProjectDialogProperties {
   /** Name of the project being copied, used to seed the suggestion. */
   projectName: string;
   /**
+   * Announces that a request has just been sent, so the caller can retire whatever it is still
+   * saying about an earlier attempt.
+   */
+  onCloneStarted: () => void;
+  /**
    * Receives the created copy so the caller can show it without a follow-up fetch.
    *
    * @param project - The project the server just created.
    */
   onCloned: (project: Project) => void;
+  /**
+   * Receives the explanation for a copy that failed after the dialog was already dismissed, so the
+   * caller can report it where the user is now.
+   *
+   * @param failure - The sentence to show in the caller's own notice area, and the code it came from.
+   */
+  onCloneFailed: (failure: CloneFailure) => void;
 }
 
 /**
  * Asks for a name and copies a project under it, keeping the user where they are: on success it
  * closes and hands the created project to its caller instead of navigating, and on failure it stays
- * open with the typed name intact and an explanation chosen from the server's error code.
+ * open with the typed name intact and an explanation chosen from the server's error code — unless it
+ * was dismissed while the copy ran, in which case the outcome only travels to the caller and the
+ * dialog on screen, which belongs to a later attempt, is left alone.
  */
 export function CloneProjectDialog({
   open,
   onOpenChange,
   projectId,
   projectName,
+  onCloneStarted,
   onCloned,
+  onCloneFailed,
 }: CloneProjectDialogProperties) {
   const nameFieldReference = useRef<HTMLInputElement>(null);
 
@@ -207,6 +308,9 @@ export function CloneProjectDialog({
         <Dialog.Overlay className="fixed inset-0 bg-black/50 z-50" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-full max-w-md rounded-lg bg-background p-6 shadow-lg"
+          // Stray clicks and stray Escapes never discard a half-typed name, in copy as in the
+          // repository's other confirmation dialogs. The deliberate way out is the button below,
+          // which stays enabled even mid-copy so this guard can never become a trap.
           onPointerDownOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => event.preventDefault()}
           onOpenAutoFocus={(event) => {
@@ -222,7 +326,9 @@ export function CloneProjectDialog({
             projectId={projectId}
             projectName={projectName}
             onOpenChange={onOpenChange}
+            onCloneStarted={onCloneStarted}
             onCloned={onCloned}
+            onCloneFailed={onCloneFailed}
           />
         </Dialog.Content>
       </Dialog.Portal>

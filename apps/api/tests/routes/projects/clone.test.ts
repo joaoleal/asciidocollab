@@ -46,6 +46,8 @@ interface HarnessOptions {
   registry?: InMemoryActiveCloneRegistry;
   /** Maximum clone requests the rate limiter allows in the window. */
   rateLimitMax?: number;
+  /** Length of that window in milliseconds. */
+  rateLimitWindow?: number;
   /** What the live-content reader answers when the document's room is open. */
   liveContent?: { success: true; value: string | null } | { success: false; error: Error };
   /** Whether the source document has an open collaboration room. */
@@ -63,6 +65,32 @@ interface Harness {
   savedMembers: ProjectMember[];
   /** Audit entries the run wrote. */
   savedAudits: { action: string }[];
+}
+
+/**
+ * Rebuilds a saved project the way the database gives it back.
+ *
+ * The real mapper cannot return a root folder id — there is no column for one, so every project it
+ * reconstructs reports none, whatever the entity that was saved had set. A fake that hands back the
+ * very instance it stored is more generous than production and hides exactly that: a response
+ * describing the in-memory entity would carry a root folder id the dashboard's next refresh
+ * contradicts, and a test comparing two such entities would never notice.
+ *
+ * @param project - The entity as it was saved.
+ * @returns An equivalent entity carrying only what a read can actually recover.
+ */
+function asStored(project: Project): Project {
+  return new Project(
+    project.id,
+    project.name,
+    project.description,
+    [...project.tags],
+    null,
+    new Timestamps(project.createdAt, project.updatedAt),
+    project.archivedAt,
+    project.mainFileNodeId,
+    project.language,
+  );
 }
 
 function sourceProject(): Project {
@@ -115,6 +143,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     role = 'viewer',
     registry = new InMemoryActiveCloneRegistry(),
     rateLimitMax = 20,
+    rateLimitWindow = 60_000,
     liveContent = { success: true, value: 'live text' },
     sessionActive = false,
     missingBytes = false,
@@ -131,27 +160,29 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
   app.setErrorHandler(errorHandler);
   await app.register(rateLimit, { global: false });
   app.decorate('config', {
-    project: { clone: { rateLimitMax, rateLimitWindow: 60_000 } },
+    project: { clone: { rateLimitMax, rateLimitWindow } },
   } as never);
   app.decorate('services', { activeCloneRegistry: registry } as never);
   app.decorate('repos', {
     project: {
-      findById: jest.fn(async (projectId: ProjectId) =>
-        projectId.value === SOURCE_PROJECT_ID
-          ? sourceProject()
-          : (savedProjects.find((project) => project.id.value === projectId.value) ?? null),
-      ),
+      findById: jest.fn(async (projectId: ProjectId) => {
+        if (projectId.value === SOURCE_PROJECT_ID) return sourceProject();
+        const saved = savedProjects.find((project) => project.id.value === projectId.value);
+        return saved === undefined ? null : asStored(saved);
+      }),
       save: jest.fn(async (project: Project) => {
         const existing = savedProjects.findIndex((saved) => saved.id.value === project.id.value);
         if (existing === -1) savedProjects.push(project);
         else savedProjects[existing] = project;
       }),
       findByMemberId: jest.fn(async (userId: UserId) => {
-        const projects = savedProjects.filter((project) =>
-          savedMembers.some(
-            (member) => member.projectId.value === project.id.value && member.userId.value === userId.value,
-          ),
-        );
+        const projects = savedProjects
+          .filter((project) =>
+            savedMembers.some(
+              (member) => member.projectId.value === project.id.value && member.userId.value === userId.value,
+            ),
+          )
+          .map(asStored);
         return { projects, total: projects.length, page: 1, limit: 20, totalPages: 1 };
       }),
       delete: jest.fn(async (projectId: ProjectId) => {
@@ -188,6 +219,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
     asset: {
       findById: jest.fn(async () => null),
+      findByIds: jest.fn(async () => []),
       save: jest.fn(async () => undefined),
     },
     auditLog: {
@@ -337,6 +369,22 @@ describe('POST /api/projects/:projectId/clone refusals', () => {
     await app.close();
   });
 
+  it('answers 400 for an id that is not an identifier at all, rather than failing inside', async () => {
+    const { app, savedProjects } = await buildHarness();
+
+    const response = await clone(app, { name: 'Handbook 2027' }, 'not-a-uuid');
+
+    // Constructing the id used to throw past every handler on this route, so client garbage came
+    // back as a 500 with a stack trace in the log. A malformed id is a bad request, and answering it
+    // as one leaks nothing: it separates "not an identifier" from "an identifier", never one
+    // project from another.
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('VALIDATION_ERROR');
+    expect(savedProjects).toHaveLength(0);
+
+    await app.close();
+  });
+
   it('answers 409 when the caller already has a clone running', async () => {
     const registry = new InMemoryActiveCloneRegistry();
     registry.tryAcquire(UserId.create(ACTOR_ID));
@@ -360,6 +408,23 @@ describe('POST /api/projects/:projectId/clone refusals', () => {
     expect(first.statusCode).toBe(201);
     expect(second.statusCode).toBe(429);
     expect(second.json().error.code).toBe('RATE_LIMITED');
+
+    await app.close();
+  });
+
+  it('tells the caller to come back when the window really ends, not a minute from now', async () => {
+    // An hour, because the production window is one and a minute-long window here would agree with
+    // the fallback by accident. The refusal used to advertise 60 seconds whatever the window was:
+    // the rate limiter puts the remaining time on the REPLY and throws an error carrying no headers,
+    // and the handler read the error.
+    const { app } = await buildHarness({ rateLimitMax: 1, rateLimitWindow: 3_600_000 });
+
+    await clone(app, { name: 'Handbook 2027' });
+    const refused = await clone(app, { name: 'Handbook 2028' });
+
+    expect(refused.statusCode).toBe(429);
+    expect(refused.json().error.retryAfter).toBeGreaterThan(3000);
+    expect(refused.headers['retry-after']).toBe('3600');
 
     await app.close();
   });
@@ -430,7 +495,11 @@ describe('the created copy as the dashboard receives it', () => {
       description: 'Everything the team needs',
       owners: [{ userId: ACTOR_ID, displayName: 'Ada Lovelace' }],
       tags: ['handbook'],
-      rootFolderId: expect.any(String),
+      // Null, and deliberately so: a project's root folder is not a stored field, so every read of
+      // this project — including the dashboard's next refresh — reports none. Answering with the id
+      // the freshly built entity happens to hold would put a value here that the very next request
+      // contradicts.
+      rootFolderId: null,
       mainFileNodeId: expect.any(String),
       language: 'en',
       archivedAt: null,
@@ -441,9 +510,123 @@ describe('the created copy as the dashboard receives it', () => {
       createdAt: expect.any(String),
       updatedAt: expect.any(String),
     });
-    expect(data.rootFolderId).not.toBe(ROOT_FOLDER_ID);
     expect(data.mainFileNodeId).not.toBe(FILE_NODE_ID);
 
     await app.close();
+  });
+
+  it('still reports the real counts when only the owner display names cannot be read', async () => {
+    const { app, savedMembers } = await buildHarness();
+    // Break only the cosmetic read. The copy's membership rows and file nodes are already in hand
+    // by the time it runs, so the card must still get the counts that were read: "0 files" over a
+    // copy that has files is a confident wrong number, worse than the blank it would replace.
+    app.repos.user.findById = jest.fn(async () => {
+      throw new Error('connection reset');
+    });
+
+    const created = await clone(app, { name: 'Handbook 2027' });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json().data).toEqual({
+      id: expect.any(String),
+      name: 'Handbook 2027',
+      description: 'Everything the team needs',
+      // The caller is the copy's only owner, but naming them needs the read that just failed, and a
+      // blank display name rendered as if it were real is worse than an empty list.
+      owners: [],
+      tags: ['handbook'],
+      // Null for the same reason the described copy reports null: a project's root folder is not a
+      // stored field, so answering with the id the freshly built entity happens to hold would put a
+      // value here that no later read of this project can ever return.
+      rootFolderId: null,
+      mainFileNodeId: expect.any(String),
+      language: 'en',
+      archivedAt: null,
+      // Both counts are read from the copy's own rows, not stated: the source's one file is counted
+      // in the copy's tree exactly as the fully described body counts it.
+      memberCount: 1,
+      fileCount: 1,
+      role: 'owner',
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    expect(savedMembers).toHaveLength(1);
+
+    await app.close();
+  });
+
+  it('still answers 201 when the copy cannot be described, because the copy exists either way', async () => {
+    const { app, savedMembers } = await buildHarness();
+    // Break a read the description cannot work around — the copy's membership rows, which the two
+    // counts and the caller's role all come from. The clone itself has already committed by the
+    // time it runs, so a blip here must not be reported as a failure to copy: the user would be
+    // told nothing happened while their new project sat in the list behind the message.
+    app.repos.projectMember.findByProjectId = jest.fn(async () => {
+      throw new Error('connection reset');
+    });
+
+    const created = await clone(app, { name: 'Handbook 2027' });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json().data).toEqual({
+      id: expect.any(String),
+      name: 'Handbook 2027',
+      description: 'Everything the team needs',
+      // The caller is the copy's only owner, but naming them needs the read that just failed, and a
+      // blank display name rendered as if it were real is worse than an empty list.
+      owners: [],
+      tags: ['handbook'],
+      // Null for the same reason the described copy reports null: a project's root folder is not a
+      // stored field, so answering with the id the freshly built entity happens to hold would put a
+      // value here that no later read of this project can ever return.
+      rootFolderId: null,
+      mainFileNodeId: expect.any(String),
+      language: 'en',
+      archivedAt: null,
+      // Known by construction rather than read: the single owner membership row is the write that
+      // commits a clone, so a copy that got this far has exactly one member and the caller owns it.
+      memberCount: 1,
+      role: 'owner',
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    // Genuinely unknown here, and said so by being absent rather than answered with a zero the copy
+    // would contradict. The field is optional for exactly this, and the card drops the file chip
+    // when it is missing instead of claiming a count.
+    expect(created.json().data).not.toHaveProperty('fileCount');
+    expect(savedMembers).toHaveLength(1);
+
+    await app.close();
+  });
+
+  it('answers with the same fields whether or not the copy could be described', async () => {
+    // The expected field set is taken from the described body rather than written out again here,
+    // so a field added to one path and forgotten in the other fails this test instead of reaching
+    // the dashboard as a card with a missing count.
+    const described = await buildHarness();
+    const undescribable = await buildHarness();
+    undescribable.app.repos.projectMember.findByProjectId = jest.fn(async () => {
+      throw new Error('connection reset');
+    });
+
+    const full = await clone(described.app, { name: 'Handbook 2027' });
+    const reduced = await clone(undescribable.app, { name: 'Handbook 2027' });
+
+    expect(full.statusCode).toBe(201);
+    expect(reduced.statusCode).toBe(201);
+    // Every field the described body carries but one. `fileCount` comes from the read that failed
+    // and cannot be recovered or guessed, so it is left out rather than answered with a zero the
+    // copy would contradict; the field is optional so absence can say that, and the card drops the
+    // file chip instead of claiming a number. Naming that single exclusion here rather than
+    // loosening the comparison keeps this test failing for any other field that quietly stops
+    // being sent.
+    expect(Object.keys(reduced.json().data).toSorted()).toEqual(
+      Object.keys(full.json().data)
+        .filter((field) => field !== 'fileCount')
+        .toSorted(),
+    );
+
+    await described.app.close();
+    await undescribable.app.close();
   });
 });

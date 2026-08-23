@@ -543,6 +543,23 @@ describe('CloneProjectUseCase', () => {
       expect(denial?.metadata.reason).toBe('not_authorized');
     });
 
+    test('a refusal for a project that does not exist is recorded too, scoped to no project', async () => {
+      await useCase.execute(OWNER_ID, UNKNOWN_PROJECT_ID, 'Handbook copy');
+
+      // An audit row's project reference is a foreign key, so scoping this entry to the id that was
+      // asked for would make the insert fail — and audit writes are best-effort, so it would be
+      // dropped in silence. That would leave the trail blind to precisely the refusal worth seeing:
+      // someone walking the id space to learn which projects exist. The id asked for is still
+      // recorded as the resource, so the attempt is legible.
+      const entries = await auditLogRepo.findAll();
+      const denial = entries.find((entry) => entry.action === 'authz.denied');
+      expect(denial).toBeDefined();
+      expect(denial?.userId?.value).toBe(OWNER_ID.value);
+      expect(denial?.projectId).toBeNull();
+      expect(denial?.resourceId).toBe(UNKNOWN_PROJECT_ID.value);
+      expect(denial?.metadata.reason).toBe('not_authorized');
+    });
+
     test('a denial record that cannot be written leaves the refusal unchanged', async () => {
       const brokenAudit = failingAuditLogRepository();
       const withBrokenAudit = new CloneProjectUseCase(
@@ -568,6 +585,30 @@ describe('CloneProjectUseCase', () => {
       expect(result.error).toBeInstanceOf(PermissionDeniedError);
       expect(result.error.message).toBe(new PermissionDeniedError().message);
       expect(logger.warn).toHaveBeenCalled();
+    });
+
+    test('a refusal survives a source lookup that fails, and is recorded scoped to no project', async () => {
+      // The lookup on the refusal path exists only to decide whether the entry can name a project.
+      // Letting its failure out would turn a decided refusal into a thrown error the caller must
+      // report as a server fault, so a read that does not come back counts as no project — the
+      // same as one that came back empty. The id asked for is still recorded as the resource.
+      jest.spyOn(projectRepo, 'findById').mockRejectedValue(new Error('connection pool exhausted'));
+
+      const result = await useCase.execute(STRANGER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBeInstanceOf(PermissionDeniedError);
+      expect(result.error.message).toBe(new PermissionDeniedError().message);
+
+      const entries = await auditLogRepo.findAll();
+      const denial = entries.find((entry) => entry.action === 'authz.denied');
+      expect(denial).toBeDefined();
+      expect(denial?.userId?.value).toBe(STRANGER_ID.value);
+      expect(denial?.projectId).toBeNull();
+      expect(denial?.resourceType).toBe('Project');
+      expect(denial?.resourceId).toBe(SOURCE_PROJECT_ID.value);
+      expect(denial?.metadata.reason).toBe('not_authorized');
     });
   });
 
@@ -617,12 +658,46 @@ describe('CloneProjectUseCase', () => {
       expect(registry.tryAcquire(STRANGER_ID)).toBe(true);
     });
 
-    test('the slot is released when the clone throws', async () => {
+    test('the slot is released when the very first write throws', async () => {
       jest.spyOn(projectRepo, 'save').mockRejectedValue(new Error('database unavailable'));
 
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      // A throw from the project row is a refused clone, not an escaping exception: the row may
+      // have committed before the connection dropped, and only a refusal runs the cleanup that
+      // removes it. Letting it escape answered the caller with a generic failure and left the
+      // memberless row behind for good.
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBeInstanceOf(CloneFailedError);
+      expect(registry.tryAcquire(OWNER_ID)).toBe(true);
+    });
+
+    test('the slot is released even when the clone escapes as an exception', async () => {
+      // The authorization read runs after the slot is claimed and outside the region that converts a
+      // throw into a refusal, so it can still escape `execute`. Only the `finally` releases the slot
+      // on that path, and the registry has no expiry to rescue it: a momentary database failure here
+      // would otherwise hold the user's slot until the process restarts, refusing every clone they
+      // attempt afterwards. Nothing else now makes `execute` reject, so without this the `finally`
+      // could be deleted and the whole suite would stay green.
+      jest
+        .spyOn(projectMemberRepo, 'findByCompositeKey')
+        .mockRejectedValue(new Error('connection pool timeout'));
+
       await expect(useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy')).rejects.toThrow(
-        'database unavailable',
+        'connection pool timeout',
       );
+      expect(registry.tryAcquire(OWNER_ID)).toBe(true);
+    });
+
+    test('a clone the source read throws on is refused rather than escaping', async () => {
+      jest.spyOn(projectRepo, 'findById').mockRejectedValue(new Error('database unavailable'));
+
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBeInstanceOf(CloneFailedError);
       expect(registry.tryAcquire(OWNER_ID)).toBe(true);
     });
   });
@@ -690,12 +765,19 @@ describe('CloneProjectUseCase', () => {
 
     test('a failure before the membership row leaves no membership behind', async () => {
       const addMemberSpy = jest.spyOn(projectMemberRepo, 'addMember');
+      const deleteSpy = jest.spyOn(projectRepo, 'delete');
       jest.spyOn(projectRepo, 'save').mockRejectedValue(new Error('database unavailable'));
 
-      await expect(useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy')).rejects.toThrow(
-        'database unavailable',
-      );
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toBeInstanceOf(CloneFailedError);
       expect(addMemberSpy).not.toHaveBeenCalled();
+      // The compensating cleanup has to reach a project row whose own write is what failed: the
+      // write may have committed and then lost its acknowledgement, and a row nobody deletes is a
+      // memberless project no read path can ever reach again.
+      expect(deleteSpy).toHaveBeenCalled();
     });
   });
 
@@ -738,6 +820,21 @@ describe('CloneProjectUseCase', () => {
         'project.clone_requested',
         'project.cloned',
       ]);
+    });
+
+    test('records nothing at all when the copy never reaches its commit point', async () => {
+      jest.spyOn(projectMemberRepo, 'addMember').mockRejectedValue(new Error('deadlock detected'));
+
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      expect(result.success).toBe(false);
+      // The trail is written past the commit point precisely so this holds. Recorded before it, a
+      // clone abandoned at the membership write left `project.cloned` behind: the cleanup deleted
+      // the project row, the entry outlived it with its project reference nulled, and the
+      // governance history then described a copy that no user ever received.
+      const entries = await auditLogRepo.findAll();
+      expect(entries.map((entry) => entry.action)).not.toContain('project.cloned');
+      expect(entries.map((entry) => entry.action)).not.toContain('project.clone_requested');
     });
 
     test('gives the copy a trail of its own creation alone, carrying none of the source\'s history', async () => {
@@ -944,6 +1041,21 @@ describe('CloneProjectUseCase', () => {
       const stored = await projectRepo.findById(result.value.project.id);
       expect(source?.mainFileNodeId).toBeNull();
       expect(stored?.mainFileNodeId).toBeNull();
+    });
+
+    test('writes the copy\'s row once when there is no main file to point it at', async () => {
+      const saveSpy = jest.spyOn(projectRepo, 'save');
+
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      // The copy has a root folder, but the root folder has no column of its own, so the
+      // second write a main file needs would send an update changing nothing at all.
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+      expect(saveSpy.mock.calls[0][0].id.value).toBe(result.value.project.id.value);
+      expect(result.value.project.rootFolderId).not.toBeNull();
     });
   });
 
@@ -1174,7 +1286,7 @@ describe('CloneProjectUseCase', () => {
       expect(roots[0].name).not.toBe('Handbook');
     });
 
-    test('records the clone project\'s root folder as its own copied root', async () => {
+    test('hands back a copy pointed at its own root, while the stored row keeps no root at all', async () => {
       const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Runbook');
 
       expect(result.success).toBe(true);
@@ -1185,8 +1297,35 @@ describe('CloneProjectUseCase', () => {
       const stored = await projectRepo.findById(result.value.project.id);
 
       expect(root).toBeDefined();
-      expect(stored?.rootFolderId?.value).toBe(root?.id.value);
-      expect(stored?.rootFolderId?.value).not.toBe(SOURCE_ROOT_ID.value);
+      expect(result.value.project.rootFolderId?.value).toBe(root?.id.value);
+      expect(result.value.project.rootFolderId?.value).not.toBe(SOURCE_ROOT_ID.value);
+      // The root folder has no column of its own, so the row the copy was written to
+      // reports none — only the entity handed straight back to the caller carries it.
+      expect(stored?.rootFolderId).toBeNull();
+    });
+
+    test('finds the root by its path, so a source whose row remembers no root still gets one', async () => {
+      // A project loaded from the database never reports a root folder — it is not a stored column,
+      // and every project the repository reconstructs has it set to null, whatever the entity held
+      // when it was written. So the copy cannot learn the root from the source's row: identifying
+      // it any other way than by its path would leave every real clone with no root at all. This
+      // pins the only source of truth that survives a round trip.
+      const source = await projectRepo.findById(SOURCE_PROJECT_ID);
+      expect(source).not.toBeNull();
+      expect(source?.rootFolderId).toBeNull();
+
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      const cloneNodes = await fileNodeRepo.findByProjectId(result.value.project.id);
+      const pathRootCopy = cloneNodes.find((node) => node.path.value === '/');
+      const chaptersCopy = cloneNodes.find((node) => node.path.value === '/chapters');
+
+      expect(pathRootCopy).toBeDefined();
+      expect(result.value.project.rootFolderId?.value).toBe(pathRootCopy?.id.value);
+      expect(result.value.project.rootFolderId?.value).not.toBe(chaptersCopy?.id.value);
     });
 
     test('leaves the source file tree exactly as it was', async () => {
@@ -1338,6 +1477,20 @@ describe('CloneProjectUseCase', () => {
   describe('binary assets and folders', () => {
     beforeEach(async () => {
       await seedNestedSource(fileNodeRepo, documentRepo, assetRepo, fileStore);
+    });
+
+    test('reads the source assets once as a batch, not once per binary file', async () => {
+      const batchSpy = jest.spyOn(assetRepo, 'findByIds');
+      const perNodeSpy = jest.spyOn(assetRepo, 'findById');
+
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      // The documents are already read in bulk; the assets were not, so a project
+      // full of images cost one serialized round trip per image inside a single
+      // request. Both kinds are now answered from one batch each.
+      expect(result.success).toBe(true);
+      expect(batchSpy).toHaveBeenCalledTimes(1);
+      expect(perNodeSpy).not.toHaveBeenCalled();
     });
 
     test('copies an asset into the clone byte for byte', async () => {
@@ -1592,7 +1745,11 @@ describe('CloneProjectUseCase', () => {
 
       const projectAfter = await projectRepo.findById(SOURCE_PROJECT_ID);
       expect(projectAfter?.name.value).toBe(projectBefore?.name.value);
-      expect(projectAfter?.rootFolderId?.value).toBe(SOURCE_ROOT_ID.value);
+      expect(projectAfter?.mainFileNodeId).toEqual(projectBefore?.mainFileNodeId);
+      // The row cannot say which node is its root, so the tree is where that is checked:
+      // the source still holds its own root at the project root path.
+      const sourceRootAfter = await nodeAt(fileNodeRepo, SOURCE_PROJECT_ID, '/');
+      expect(sourceRootAfter.id.value).toBe(SOURCE_ROOT_ID.value);
       expect(identitiesOf(await fileNodeRepo.findByProjectId(SOURCE_PROJECT_ID))).toEqual(treeBefore);
       expect(await membershipSummary(projectMemberRepo, SOURCE_PROJECT_ID)).toEqual(membersBefore);
       expect(await documentSummary(fileNodeRepo, documentRepo, SOURCE_PROJECT_ID)).toEqual(documentsBefore);
@@ -1754,8 +1911,6 @@ describe('CloneProjectUseCase', () => {
 
     const cloneNodes = await fileNodeRepo.findByProjectId(result.value.project.id);
     expect(shapesOf(cloneNodes)).toEqual([{ path: '/', name: 'Runbook', type: 'folder' }]);
-
-    const stored = await projectRepo.findById(result.value.project.id);
-    expect(stored?.rootFolderId?.value).toBe(cloneNodes[0].id.value);
+    expect(result.value.project.rootFolderId?.value).toBe(cloneNodes[0].id.value);
   });
 });

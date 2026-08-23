@@ -17,9 +17,10 @@ describe('InMemoryActiveCloneRegistry', () => {
     });
 
     it('refuses a second acquisition while the first is still held', () => {
-      registry.tryAcquire(UserId.create(ALICE));
+      const alice = UserId.create(ALICE);
+      registry.tryAcquire(alice);
 
-      expect(registry.tryAcquire(UserId.create(ALICE))).toBe(false);
+      expect(registry.tryAcquire(alice)).toBe(false);
     });
 
     it('keeps refusing on every further attempt, not just the second', () => {
@@ -30,9 +31,14 @@ describe('InMemoryActiveCloneRegistry', () => {
     });
 
     it('matches on the id value, not on object identity', () => {
-      registry.tryAcquire(UserId.create(ALICE));
+      // Two distinct objects naming the same user, which is what arrives across two requests: each
+      // builds its own `UserId`, so a registry keyed on the object itself would hold nothing at all.
+      const claiming = UserId.create(ALICE);
+      const aliceAgain = UserId.create(ALICE);
+      expect(claiming).not.toBe(aliceAgain);
+      registry.tryAcquire(claiming);
 
-      expect(registry.tryAcquire(UserId.create(ALICE))).toBe(false);
+      expect(registry.tryAcquire(aliceAgain)).toBe(false);
     });
 
     it('grants the slot again once the holder released it', () => {

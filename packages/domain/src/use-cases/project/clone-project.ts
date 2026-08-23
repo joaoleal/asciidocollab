@@ -78,7 +78,7 @@ interface ClonedFileTree {
    * this map, so it is carried for the whole run rather than rebuilt per step.
    */
   readonly nodeIdMap: ReadonlyMap<string, FileNodeId>;
-  /** The copy of the source's root folder, or null if the source had no root. */
+  /** The copy of the node at the root path, or null if the source tree had none. */
   readonly rootFolderId: FileNodeId | null;
   /**
    * Every copied node in the order it was written — parent before child. The
@@ -87,6 +87,16 @@ interface ClonedFileTree {
    */
   readonly copiedNodes: readonly CopiedNode[];
 }
+
+/**
+ * What the guarded stretch of the copy ended in: a committed project, or the
+ * refusal to answer with. Carried as one value rather than two locals so that a
+ * built copy and the failure that would discard it cannot both be set, and so
+ * the caller needs no fallback for the impossible pairing of neither.
+ */
+type CloneOutcome =
+  | { readonly built: true; readonly clone: Project }
+  | { readonly built: false; readonly error: DomainError };
 
 /** Everything the steps between the project row and the membership row work from. */
 interface CloneBuild {
@@ -174,7 +184,10 @@ export class CloneProjectUseCase {
    * @param name - The copy's name, validated here rather than by the caller.
    * @param context - Optional request origin recorded with the audit trail.
    * @returns The new project on success; a refusal describing why not otherwise.
-   * @throws {Error} If a repository fails; the clone slot is still released.
+   * @throws {Error} Only if the authorization read itself fails. Every other repository failure —
+   * everything from reading the source to writing the membership row — is caught and returned as a
+   * refusal, because only a returned refusal runs the compensating cleanup. The slot is released
+   * either way.
    */
   async execute(
     actorId: UserId,
@@ -211,11 +224,20 @@ export class CloneProjectUseCase {
     // has a membership row for them, so both leave here with the same refusal.
     const membership = await this.projectMemberRepo.findByCompositeKey(sourceProjectId, actorId);
     if (!membership) {
+      // An audit row's `projectId` is a foreign key, so naming a project that does not exist makes
+      // the insert fail — and audit writes are best-effort, so that failure is swallowed. The
+      // refusal that most deserves recording is exactly the one that would be lost: somebody
+      // walking the id space to find out which projects exist leaves no trail at all, while an
+      // honest mistake against a real project leaves one. Reading the source first costs one query
+      // on the refusal path and lets the entry be written either way, scoped to the project when
+      // there is a project to scope it to. `resourceId` names the id that was asked for regardless,
+      // so the attempt is legible even when it pointed at nothing.
+      const sourceExists = await this.sourceProjectConfirmedToExist(sourceProjectId);
       await recordAuthorizationDenial(
         this.auditLogRepo,
         {
           actorId,
-          projectId: sourceProjectId,
+          projectId: sourceExists ? sourceProjectId : null,
           resourceType: 'Project',
           resourceId: sourceProjectId.value,
           reason: 'not_authorized',
@@ -238,62 +260,106 @@ export class CloneProjectUseCase {
       throw error;
     }
 
-    // Read before anything is written, so the settings the copy carries are the
-    // ones the source had when the copy was asked for. A source whose row is gone
-    // by now — deleted by someone else mid-request — still yields a copy of what
-    // is left of it rather than a refusal, exactly as a source whose files are
-    // deleted after they have been read does.
-    const sourceProject = await this.projectRepo.findById(sourceProjectId);
-
+    // The id is minted before the guarded stretch below so that the compensating
+    // cleanup has something to name whatever happens inside it — including a
+    // project row whose write was the very step that failed. Nothing is written
+    // yet; an id nobody stored is nothing to clean up, and the cleanup tolerates
+    // being handed one.
     const cloneId = ProjectId.create(randomUUID());
-    const clone = new Project(
-      cloneId,
-      cloneName,
-      // Description, tags and language describe the content, which is what is
-      // being copied, so they come across untouched.
-      sourceProject?.description ?? null,
-      [...(sourceProject?.tags ?? [])],
-      null,
-      new Timestamps(),
-      // A copy is always active, whatever state its source is in.
-      null,
-      // The main file is a foreign key to a file node that does not exist yet;
-      // it is set once the tree has been copied.
-      null,
-      sourceProject?.language ?? null,
-    );
-    await this.projectRepo.save(clone);
 
-    // Everything else the copy carries over from its source — the file bytes, the
-    // project-level settings, the audit trail — belongs here, between the project
-    // row and the membership row. The project row already exists, so those steps
-    // can reference the clone's id; nothing is reachable yet, so a failure among
-    // them strands no project a user can see. What they can strand is rows and
-    // bytes nobody will ever collect, which is what the compensating cleanup is
-    // for: every exit from this stretch other than success runs it.
-    let failure: DomainError | null;
+    // Everything the copy is made of belongs inside this one guarded stretch: the
+    // project row, the file bytes, the project-level settings, and finally the
+    // membership row. Nothing here is reachable by any read path until that last
+    // write lands, so a failure among them strands no project a user can see.
+    // What it can strand is rows and bytes nobody will ever collect, which is
+    // what the compensating cleanup is for — every exit other than success runs
+    // it, and every throw becomes a refusal rather than escaping as itself.
+    //
+    // The project row is INSIDE rather than above it because a write that fails
+    // after the row has committed — a connection reset between the insert and its
+    // acknowledgement — leaves exactly the residue this cleanup exists to remove:
+    // a project with no members that no read path can reach, and so nothing that
+    // walks visible projects would ever find again.
+    let outcome: CloneOutcome;
     try {
-      failure = await this.fillClone({ actorId, sourceProjectId, sourceProject, clone, cloneName, context });
-      // The membership row commits the copy, and it is inside this stretch rather
-      // than after it because failing to write it is the worst residue of all: a
-      // fully built project that no read path can reach, so nothing that walks
-      // visible projects would ever find it again to clean it up.
+      // Read before anything is written, so the settings the copy carries are the
+      // ones the source had when the copy was asked for. A source whose row is gone
+      // by now — deleted by someone else mid-request — still yields a copy of what
+      // is left of it rather than a refusal, exactly as a source whose files are
+      // deleted after they have been read does.
+      const sourceProject = await this.projectRepo.findById(sourceProjectId);
+
+      const clone = new Project(
+        cloneId,
+        cloneName,
+        // Description, tags and language describe the content, which is what is
+        // being copied, so they come across untouched.
+        sourceProject?.description ?? null,
+        [...(sourceProject?.tags ?? [])],
+        null,
+        new Timestamps(),
+        // A copy is always active, whatever state its source is in.
+        null,
+        // The main file is a foreign key to a file node that does not exist yet;
+        // it is set once the tree has been copied.
+        null,
+        sourceProject?.language ?? null,
+      );
+      await this.projectRepo.save(clone);
+
+      const failure = await this.fillClone({ actorId, sourceProjectId, sourceProject, clone, cloneName, context });
       if (failure === null) {
+        // The membership row commits the copy, and it is inside this stretch
+        // rather than after it because failing to write it is the worst residue
+        // of all: a fully built project that no read path can reach, so nothing
+        // that walks visible projects would ever find it again to clean it up.
         await this.projectMemberRepo.addMember(new ProjectMember(cloneId, actorId, Role.create('owner')));
+        outcome = { built: true, clone };
+      } else {
+        outcome = { built: false, error: failure };
       }
     } catch (error) {
-      failure = new CloneFailedError(error);
+      outcome = { built: false, error: new CloneFailedError(error) };
     }
 
-    if (failure !== null) {
+    if (!outcome.built) {
       await this.cleanUpAbandonedClone(cloneId);
       // A live document that could not be read surfaces as itself rather than as
       // a generic failure: it is the one cause the caller can act on, because it
       // names the file to close or retry.
-      return { success: false, error: failure };
+      return { success: false, error: outcome.error };
     }
 
-    return { success: true, value: { project: clone } };
+    // Only now, past the commit point. Recording the copy before the membership
+    // row meant a run that failed at that last write still left a `project.cloned`
+    // entry behind: the cleanup deleted the project row, the audit row outlived it
+    // with its project reference nulled, and the governance trail then claimed a
+    // copy no user ever received. Both entries are best-effort, so an audit store
+    // that is down cannot undo a copy that is already committed.
+    await this.recordCloneAudit(actorId, sourceProjectId, outcome.clone, context);
+
+    return { success: true, value: { project: outcome.clone } };
+  }
+
+  /**
+   * Answers whether the source could be confirmed to exist, for the refusal's audit entry alone.
+   *
+   * The read is the only thing this method does, and its failure must not become the caller's
+   * answer: the refusal is already decided by the missing membership row, so a database hiccup
+   * here would turn a designed refusal into a thrown error and a logged stack trace. A read that
+   * did not come back cannot confirm anything, so it counts as no project — which is also the
+   * answer that keeps the audit insert's project foreign key valid, the reason the question is
+   * asked at all. The id that was asked for is recorded as the resource either way.
+   *
+   * @param sourceProjectId - The project the actor named and may not reach.
+   * @returns True only when the project was read back; false when it is absent or unreadable.
+   */
+  private async sourceProjectConfirmedToExist(sourceProjectId: ProjectId): Promise<boolean> {
+    try {
+      return (await this.projectRepo.findById(sourceProjectId)) !== null;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -314,24 +380,32 @@ export class CloneProjectUseCase {
     await this.copyRenderConfig(build);
     await this.copyDictionaryTerms(build);
 
-    await this.recordCloneAudit(build);
-
+    // No audit entry here. The trail is written past the commit point by the
+    // caller, so a copy that is abandoned after this point leaves none.
     return null;
   }
 
   /**
-   * Fills in the two project-row columns that name file nodes: the root folder
-   * and the main file.
+   * Points the clone's project entity at the two file nodes it names: its root
+   * folder and its main file.
    *
-   * Both are foreign keys to rows that did not exist when the project row was
-   * written, so neither could be part of it — the root's id cannot be known
-   * before the folder is written, the same two-step a newly created project goes
-   * through. They are known at the same moment and neither constrains the other,
-   * so one further write carries both rather than one write each.
+   * Only the main file is a stored column, and it is the reason for the second
+   * write: it is a foreign key to a row that did not exist when the project row
+   * was written, the same two-step a newly created project goes through. It is
+   * translated through the tree's identity map rather than copied, so repointing
+   * or deleting the source's main file afterwards reaches nothing the copy
+   * depends on.
    *
-   * The main file is translated through the tree's identity map rather than
-   * copied: the copy names its own node, so repointing or deleting the source's
-   * main file afterwards reaches nothing the copy depends on.
+   * The root folder is set on the entity and goes no further, because there is no
+   * column for it — `toPersistenceProject` does not write one and every project
+   * read back reports none, a newly created project included. Nothing outside this
+   * class reads it back either: the caller describing the fresh copy re-reads the
+   * row, precisely because the field does not survive the write. It is kept only so
+   * the entity this use case hands back is internally consistent with the tree it
+   * just wrote.
+   *
+   * Because of that, a copy with no main file has nothing to write: the second
+   * save is skipped rather than sending an update that would change no column.
    *
    * @param build - The copy being assembled, and the source it is copied from.
    * @param fileTree - The tree just written for the copy, and its identity map.
@@ -342,14 +416,13 @@ export class CloneProjectUseCase {
     const cloneMainFileId =
       sourceMainFileId === null ? undefined : fileTree.nodeIdMap.get(sourceMainFileId.value);
 
-    if (fileTree.rootFolderId === null && cloneMainFileId === undefined) return;
-
     if (fileTree.rootFolderId !== null) {
       clone.setRootFolderId(fileTree.rootFolderId);
     }
-    if (cloneMainFileId !== undefined) {
-      clone.setMainFile(cloneMainFileId);
-    }
+
+    if (cloneMainFileId === undefined) return;
+
+    clone.setMainFile(cloneMainFileId);
     await this.projectRepo.save(clone);
   }
 
@@ -414,11 +487,20 @@ export class CloneProjectUseCase {
    * read its owners are entitled to see recorded against it.
    *
    * Both writes are best-effort, so an audit store that is down cannot undo a
-   * copy that is already built.
+   * copy that is already built. Called only past the commit point, so an entry
+   * here is only ever written about a copy that exists.
+   *
+   * @param actorId - The user who asked for the copy and now owns it.
+   * @param sourceProjectId - The project that was copied.
+   * @param clone - The committed copy.
+   * @param context - Request origin recorded with the trail, when there is one.
    */
-  private async recordCloneAudit(build: CloneBuild): Promise<void> {
-    const { actorId, sourceProjectId, clone, context } = build;
-
+  private async recordCloneAudit(
+    actorId: UserId,
+    sourceProjectId: ProjectId,
+    clone: Project,
+    context: RequestContext | undefined,
+  ): Promise<void> {
     await recordAuditSuccess(
       this.auditLogRepo,
       {
@@ -496,10 +578,24 @@ export class CloneProjectUseCase {
    * that does not exist yet. Anything the source leaves unreachable from a root
    * is unreachable in the copy too, so it is not carried over.
    *
+   * The root is the node at the root path, deliberately, and NOT the id the
+   * source's project row names — the main-file pointer is translated through the
+   * id map, and the asymmetry looks like an oversight until you check where a
+   * root folder id can be read from. `Project.rootFolderId` is not a stored
+   * column: there is no such field on the project table, `toDomainProject`
+   * constructs every project with it set to null, and `toPersistenceProject`
+   * never writes it. It is populated only on an entity a use case has just built
+   * in memory. So a source loaded from the database always reports no root, and
+   * an implementation that translated that id would identify no root at all on
+   * every real clone while passing happily against an in-memory fake that stores
+   * entities by reference. The path is the only answer that survives a round trip,
+   * and every project's root is created at it.
+   *
    * @param sourceProjectId - The project whose tree is being read.
    * @param cloneProjectId - The project the copies are written under.
    * @param cloneName - The clone's name, which its root folder takes.
-   * @returns The source-to-clone node id map and the clone's root folder id.
+   * @returns The source-to-clone node id map, the clone's root folder id, and every copied node in
+   * the order it was written, which the content pass replays.
    */
   private async copyFileTree(
     sourceProjectId: ProjectId,
@@ -594,6 +690,16 @@ export class CloneProjectUseCase {
       sourceDocuments.map((document) => [document.fileNodeId.value, document]),
     );
 
+    // The assets are read in bulk for the same reason the documents are. A node
+    // with no document is a binary file, and asking for its asset row one file at
+    // a time turned a project full of images into one serialized round trip per
+    // image inside a single request. Every id is offered, not only the ones
+    // already known to be assets: a node's kind is decided by whether it has a
+    // document, and both answers now come from a batch rather than from a query
+    // per node.
+    const sourceAssets = await this.assetRepo.findByIds(sourceFileNodeIds);
+    const assetsBySourceNodeId = new Map(sourceAssets.map((asset) => [asset.id.value, asset]));
+
     // Built here rather than through `buildResolverDeps`, whose only job is to
     // refuse a partly-wired caller: all three collaborators are required of this
     // use case, so there is no partial wiring for it to catch.
@@ -621,7 +727,13 @@ export class CloneProjectUseCase {
       const sourceDocument = documentsBySourceNodeId.get(sourceNode.id.value);
       const failure =
         sourceDocument === undefined
-          ? await this.copyAsset(sourceProjectId, cloneProjectId, sourceNode, cloneNodeId)
+          ? await this.copyAsset(
+              sourceProjectId,
+              cloneProjectId,
+              sourceNode,
+              cloneNodeId,
+              assetsBySourceNodeId.get(sourceNode.id.value) ?? null,
+            )
           : await this.copyDocument(
               resolverDeps,
               sourceProjectId,
@@ -645,12 +757,18 @@ export class CloneProjectUseCase {
    * recorded size is the length of what was written rather than the number the
    * source row carried, because the two can disagree and only one of them
    * describes the file the clone now holds.
+   *
+   * The source's asset row is handed in from the batch the caller already read
+   * rather than looked up here, so a project of many images costs one query and
+   * not one per file. A node with no row of its own still copies — its bytes are
+   * what matter — and the copy takes the default media type.
    */
   private async copyAsset(
     sourceProjectId: ProjectId,
     cloneProjectId: ProjectId,
     sourceNode: FileNode,
     cloneNodeId: FileNodeId,
+    sourceAsset: Asset | null,
   ): Promise<DomainError | null> {
     const bytes = await this.fileStore.read(sourceProjectId, sourceNode.path);
     if (bytes === null) {
@@ -661,7 +779,6 @@ export class CloneProjectUseCase {
 
     await this.fileStore.write(cloneProjectId, sourceNode.path, bytes);
 
-    const sourceAsset = await this.assetRepo.findById(sourceNode.id);
     await this.assetRepo.save(
       // An asset's id is its file node's id, so the copy is addressed by the
       // clone's node rather than carrying an identifier of its own.

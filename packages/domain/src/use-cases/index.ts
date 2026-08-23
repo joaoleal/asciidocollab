@@ -109,7 +109,7 @@ export { withOrigin } from './audit-metadata';
 export { saveAuditBestEffort, recordAuthorizationDenial, recordAuditSuccess } from './audit-recording';
 export type { AuthorizationDenial, AuditSuccessRecord } from './audit-recording';
 export { resolveDownloadContentSource, buildResolverDeps } from './project/download-content-source';
-export type { DownloadContentSource, LiveReadErrorPolicy, ResolveDownloadContentSourceDeps } from './project/download-content-source';
+export type { DownloadContentSource, ResolveDownloadContentSourceDeps } from './project/download-content-source';
 export { DownloadFileUseCase } from './project/download-file';
 export type { DownloadFileResult } from './project/download-file';
 export { DownloadProjectUseCase } from './project/download-project';

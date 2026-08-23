@@ -199,6 +199,13 @@ private state keyed by `(userId, documentId)`, which Principle VII keeps out of 
 
 **Question**: FR-001b/FR-001c — the card menu becomes unconditional, with role-dependent contents.
 
+> **Corrected during implementation. The decision below was made on a false premise and was not
+> shipped.** `/settings` does *not* render for any member: `settings/page.tsx:12` calls
+> `getProjectAccess(id, "owner")` and refuses everyone else, precisely as `/members` does. The
+> role-aware `visibleSettingsSections(isOwner)` cited below governs what an owner sees *within* the
+> page, not who may reach it. So Settings is owner-only too, and **a non-owner's menu holds Clone and
+> nothing else**. What shipped is that rule; see the FR-001c amendment in spec.md.
+
 **Decision**: drop the `canManage` gate on the menu in
 `apps/web/src/components/project-card.tsx:22` and gate the **items** instead: Clone and Settings for
 every role, Members only when `project.role === "owner"`.

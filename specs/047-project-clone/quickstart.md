@@ -52,12 +52,12 @@ Two traps that have cost time on this repo before:
 
 | Path | How |
 |---|---|
-| Live content unavailable (FR-009a) | Open a document in the source in another browser so a session is live, stop the collab container, then clone. Expect a 503 naming that file, and **no new project** anywhere in the list. |
-| One clone at a time (FR-027) | Start a clone of a large project, then fire a second from another tab. Expect 409 `CLONE_IN_PROGRESS`, and the first clone unaffected. |
+| Live content unavailable (FR-009a) | Open a document in the source in another browser so a session is live, then stop the collaboration server and clone. Expect a 503 naming that file, and **no new project** anywhere in the list. Locally the collaboration server is a host process, not a container — `dev.sh` and both e2e stacks run `apps/collab/dist/index.js` directly, so stop it by port (it holds the public websocket port and the internal edit port; the API holds its own internal port). Only the production compose file has a collab container. |
+| One clone at a time (FR-027) | Start a clone of a large project, then fire a second from another tab. Expect 409 `CLONE_IN_PROGRESS`, and the first clone unaffected. Automating this needs care — see the caution about serialized request contexts below. |
 | Non-member (FR-002, FR-026a) | `POST /api/projects/<some other user's project>/clone` → 403, identical to the response for a project id that does not exist. Then confirm an `authz.denied` entry was recorded against the source project. |
-| Rate limit | Exceed `ASCIIDOCOLLAB_PROJECT_CLONE_RATE_LIMIT_MAX` (default 20/hour) → 429. Set it to 1 locally to test without cloning twenty times. |
-| Nothing visible on failure (FR-024) | Provoke a storage error mid-clone. Nothing appears in the project list, and the clone's directory is gone from project storage (FR-024a). |
-| Abrupt stop (FR-024b) | Kill the API mid-clone. Nothing appears in the project list and no project can be opened — but expect the partial directory to still be on disk. That residue is unreachable and deliberately not reclaimed; see the spec's Out of Scope. |
+| Rate limit | Exceed `ASCIIDOCOLLAB_PROJECT_CLONE_RATE_LIMIT_MAX` (default 20/hour) → 429 with code `RATE_LIMITED`. Set it to 1 locally to test without cloning twenty times — and **restart the API**, because the limit is read once at startup. |
+| Nothing visible on failure (FR-024) | Provoke a storage error mid-clone — making the storage root read-only for the duration of the request is enough. Expect 500 `CLONE_FAILED`; nothing appears in the project list, and the clone's directory is gone from project storage (FR-024a). |
+| Abrupt stop (FR-024b) | Kill the API mid-clone. Nothing appears in the project list and no project can be opened — a 403, the same answer a stranger gets. **Whether a directory is left on disk depends on when the stop lands**, and both outcomes are correct: killed during the file-tree phase, the copy leaves a project row with no members and *no directory at all*; killed once content is being written, the partial directory remains. Either way the row has zero `ProjectMember` rows, which is what makes it unreachable. That residue is deliberately not reclaimed; see the spec's Out of Scope. |
 
 ## Testing
 
@@ -77,6 +77,24 @@ Cautions that apply to this repo:
   Compose project name.
 - **e2e specs share one account**, and editor preferences are per-account, so a spec that changes a
   preference leaks into later specs. The clone spec should not touch preferences.
+- **Playwright's request contexts do not race.** `page.request` — and separate `request.newContext()`
+  contexts too — dispatch one fetch at a time, so two "concurrent" clone posts leave one after the
+  other has finished. Both then return 201 and the one-clone-at-a-time check reads as a missing
+  guard when the guard is fine. Use Node's own `fetch`, or separate processes, when the point of the
+  check is that two requests overlap.
+- **e2e specs also share the clone rate limit.** It is 20 per hour per user in production and the
+  window does not reset inside a run, so the suite exhausts it. All four e2e scripts raise
+  `ASCIIDOCOLLAB_PROJECT_CLONE_RATE_LIMIT_MAX`, as they already do for every other limit. The
+  production default is deliberately left alone — if a clone spec starts failing on an assertion
+  about a copy that was never made, check the dialog for "too many clones recently" before
+  suspecting the clone itself.
+- **An AI agent running the testcontainer suites needs explicit consent.** Prisma ≥7.9 refuses the
+  `prisma db push --accept-data-loss` that `startTestContainer` shells out to when it detects an
+  agent driving it, so `@asciidocollab/infrastructure` and `@asciidocollab/api` fail wholesale with
+  what looks like a database outage. The target is a throwaway container on a random port, but the
+  consent is the user's to give: disclose the command and what it destroys, ask, then pass their
+  reply verbatim as `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` on the command line only — never
+  in a file, a script, or committed config.
 
 ## Definition of done
 

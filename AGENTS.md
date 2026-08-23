@@ -484,13 +484,21 @@ an ordering invariant, and **breaking that order is how you break the feature si
 > therefore invisible and unreachable to every user, including the one who created it.**
 
 So the clone builds everything — project row, file nodes, documents, assets, bytes, settings,
-dictionary, audit entries — while the project has **no members**, and writes the single owner
-`ProjectMember` row **last**. That row is the commit point. Nothing may be written after it, and
-nothing written before it may be visible. Any failure up to and including that write runs compensating
-cleanup (delete the project row, which cascades; then `ProjectFileStore.removeProject`). The membership
-write is itself inside that cleanup region — a copy that fails to commit is the worst residue there is,
-being complete but permanently unreachable. `apps/api/tests/routes/projects/clone-invisibility.test.ts`
-tests the invariant in isolation, by seeding a memberless project directly and proving nothing can see it.
+dictionary — while the project has **no members**, and writes the single owner `ProjectMember` row
+**last**. That row is the commit point: it is the last write that can *fail the clone*, and nothing
+written before it is visible. Any failure up to and including it runs compensating cleanup (delete the
+project row, which cascades; then `ProjectFileStore.removeProject`). The membership write is itself
+inside that cleanup region — a copy that fails to commit is the worst residue there is, being complete
+but permanently unreachable. **The project row's own write is inside it too**, because an insert that
+commits and then loses its acknowledgement leaves exactly that residue; a throw anywhere in the region
+becomes a `CloneFailedError` rather than escaping, since only a returned refusal runs the cleanup.
+`apps/api/tests/routes/projects/clone-invisibility.test.ts` tests the invariant in isolation, by
+seeding a memberless project directly and proving nothing can see it.
+
+The **audit entries are the one thing written after the commit point**, and deliberately: both are
+best-effort and neither can strand anything, whereas recording them before it meant an abandoned copy
+left a `project.cloned` entry that outlived the deleted project row (the FK is `ON DELETE SET NULL`)
+and claimed a copy no user ever received.
 
 Two deliberate differences from `DeleteProjectUseCase`, both of which look like omissions and are not:
 cleanup does **not** call `YjsStateStore.deleteAllForProject`, because a clone persists no Yjs state —

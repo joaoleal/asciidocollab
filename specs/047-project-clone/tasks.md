@@ -164,10 +164,10 @@ preference — preferences are per-account and every e2e spec shares one login.
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T031 [P] Walk `specs/047-project-clone/quickstart.md` end to end on a running stack, including its failure-path table (live content unavailable, one-clone-at-a-time, non-member + `authz.denied`, rate limit, nothing visible on failure, abrupt stop), and correct the document where reality differs
+- [X] T031 [P] Walk `specs/047-project-clone/quickstart.md` end to end on a running stack, including its failure-path table (live content unavailable, one-clone-at-a-time, non-member + `authz.denied`, rate limit, nothing visible on failure, abrupt stop), and correct the document where reality differs
 - [X] T032 [P] Update `AGENTS.md` with the clone route, the injected `ActiveCloneRegistry`, and the membership-last visibility invariant, so the next contributor does not discover the commit-point ordering by breaking it
-- [ ] T033 Run the full quality gate from the repo root — `pnpm gate` (config in `package.json`) plus the Docker-gated and `RUN_*`-gated jobs the local gate skips (`.github/workflows/`), and the security scan. Cap Jest workers and run under a memory-limited scope; a skipped check is not a pass (Constitution §End-of-Feature Verification)
-- [ ] T034 Run `/code-review` repeatedly over the `047-project-clone` branch diff until it returns zero findings, applying each fix in the files it names
+- [X] T033 Run the full quality gate from the repo root — `pnpm gate` (config in `package.json`) plus the Docker-gated and `RUN_*`-gated jobs the local gate skips (`.github/workflows/`), and the security scan. Cap Jest workers and run under a memory-limited scope; a skipped check is not a pass (Constitution §End-of-Feature Verification)
+- [X] T034 Run `/code-review` repeatedly over the `047-project-clone` branch diff until it returns zero findings, applying each fix in the files it names
 
 ---
 

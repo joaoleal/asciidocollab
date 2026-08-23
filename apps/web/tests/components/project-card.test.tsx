@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ProjectCard } from '@/components/project-card';
+import type { CloneFailure } from '@/components/clone-project-dialog';
 import type { Project, ProjectMemberRole } from '@/lib/api';
 
 const makeProject = (overrides: Partial<Project> = {}): Project => ({
@@ -48,25 +49,46 @@ jest.mock('@/components/ui/dropdown-menu', () => ({
 }));
 
 const CREATED_COPY: Pick<Project, 'id' | 'name'> = { id: 'copy-1', name: 'Copy of My Project' };
+const CLONE_FAILURE: CloneFailure = {
+  code: 'FORBIDDEN',
+  message: 'You no longer have access to that project.',
+};
 
 // Stand in for the real dialog: it only has to report that it was opened for the right project and
-// to hand a created copy back the way the real one does on success.
+// to hand back what the real one reports — that an attempt has started, a created copy, and the
+// explanation for a copy that failed once the dialog had already been dismissed — plus a way to
+// close itself, which is the moment the card has to take focus back.
 jest.mock('@/components/clone-project-dialog', () => ({
   CloneProjectDialog: ({
     open,
     projectId,
     projectName,
+    onOpenChange,
+    onCloneStarted,
     onCloned,
+    onCloneFailed,
   }: {
     open: boolean;
     projectId: string;
     projectName: string;
+    onOpenChange: (open: boolean) => void;
+    onCloneStarted: () => void;
     onCloned: (project: Pick<Project, 'id' | 'name'>) => void;
+    onCloneFailed: (failure: CloneFailure) => void;
   }) =>
     open ? (
       <div data-testid="clone-dialog" data-project-id={projectId} data-project-name={projectName}>
+        <button type="button" onClick={() => onCloneStarted()}>
+          start clone
+        </button>
         <button type="button" onClick={() => onCloned(CREATED_COPY)}>
           finish clone
+        </button>
+        <button type="button" onClick={() => onCloneFailed(CLONE_FAILURE)}>
+          fail clone
+        </button>
+        <button type="button" onClick={() => onOpenChange(false)}>
+          dismiss clone
         </button>
       </div>
     ) : null,
@@ -160,10 +182,14 @@ describe('ProjectCard', () => {
   });
 
   test('omits file and member counts when undefined', () => {
-    render(
+    const { container } = render(
       <ProjectCard project={makeProject({ fileCount: undefined, memberCount: undefined })} />,
     );
     expect(screen.queryByText(/files?$/)).not.toBeInTheDocument();
+    // A member count is a bare number beside an icon, so once it is gone there is no text left to
+    // search for and any text query passes whether it rendered or not. The emptiness of the wrapper
+    // the two counts share is what actually says neither was drawn.
+    expect(container.querySelector('.border-t > div')).toBeEmptyDOMElement();
   });
 
   test('renders the navigating stretched link to the project', () => {
@@ -182,6 +208,33 @@ describe('ProjectCard', () => {
     expect(dialog).toHaveAttribute('data-project-name', 'Alpha');
   });
 
+  test('tells the listing that a fresh attempt has started', () => {
+    const onCloneStarted = jest.fn();
+    render(<ProjectCard project={makeProject()} onCloneStarted={onCloneStarted} />);
+    fireEvent.click(screen.getByText('Clone'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'start clone' }));
+
+    expect(onCloneStarted).toHaveBeenCalledTimes(1);
+  });
+
+  // Radix hands focus back to a trigger this dialog has none of, and the menu item it was chosen
+  // from is unmounted by then, so without this the user is left on the document body with no way
+  // back into the card by keyboard.
+  test('returns focus to the options button once the clone dialog closes', () => {
+    render(<ProjectCard project={makeProject()} />);
+    fireEvent.click(screen.getByText('Clone'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'dismiss clone' }));
+
+    expect(screen.getByRole('button', { name: 'Project options' })).toHaveFocus();
+  });
+
+  test('leaves focus alone while no clone dialog has been opened', () => {
+    render(<ProjectCard project={makeProject()} />);
+    expect(screen.getByRole('button', { name: 'Project options' })).not.toHaveFocus();
+  });
+
   test('hands the created copy to the listing that rendered the card', () => {
     const onCloned = jest.fn();
     render(<ProjectCard project={makeProject()} onCloned={onCloned} />);
@@ -192,12 +245,28 @@ describe('ProjectCard', () => {
     expect(onCloned).toHaveBeenCalledWith(CREATED_COPY);
   });
 
-  test('survives a clone when no listener was supplied', () => {
+  test('hands a failure the dismissed dialog could not show to the listing that rendered the card', () => {
+    const onCloneFailed = jest.fn();
+    render(<ProjectCard project={makeProject()} onCloneFailed={onCloneFailed} />);
+    fireEvent.click(screen.getByText('Clone'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'fail clone' }));
+
+    expect(onCloneFailed).toHaveBeenCalledWith(CLONE_FAILURE);
+  });
+
+  test('survives any clone report when no listener was supplied', () => {
     render(<ProjectCard project={makeProject()} />);
     fireEvent.click(screen.getByText('Clone'));
 
     expect(() =>
+      fireEvent.click(screen.getByRole('button', { name: 'start clone' })),
+    ).not.toThrow();
+    expect(() =>
       fireEvent.click(screen.getByRole('button', { name: 'finish clone' })),
+    ).not.toThrow();
+    expect(() =>
+      fireEvent.click(screen.getByRole('button', { name: 'fail clone' })),
     ).not.toThrow();
   });
 

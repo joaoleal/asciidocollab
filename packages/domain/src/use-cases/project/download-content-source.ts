@@ -5,18 +5,57 @@ import { CollaborationSessionRepository } from '../../ports/project/collaboratio
 import { CollaborativeContentReader } from '../../ports/storage/collaborative-content-reader';
 import { Logger } from '../../ports/observability/logger';
 
+/** The file's current content, taken live from its collaborative room. */
+export interface InlineContentSource {
+  /** Discriminant. */
+  kind: 'inline';
+  /** The live text, verbatim UTF-8. */
+  bytes: Buffer;
+}
+
+/** An instruction to serve whatever the file store holds. */
+export interface StoredContentSource {
+  /** Discriminant. */
+  kind: 'stored';
+}
+
+/** A file whose current content could not be determined, named so the caller can say which. */
+export interface UnavailableContentSource {
+  /** Discriminant. */
+  kind: 'unavailable';
+  /** The file the live read failed for. */
+  fileNode: FileNode;
+}
+
 /** Per-file content source resolved before serving a download. */
 export type DownloadContentSource =
-  | { kind: 'inline'; bytes: Buffer }
-  | { kind: 'stored' }
-  | { kind: 'unavailable'; fileNode: FileNode };
+  | InlineContentSource
+  | StoredContentSource
+  | UnavailableContentSource;
 
 /**
  * What a caller wants to happen when the live collaborative read of a document fails.
  * `'fallback'` serves the last bytes written to the file store, which may be stale;
  * `'fail'` refuses to substitute them and surfaces the file as unavailable instead.
+ *
+ * Names the two policies for the implementation below; it is deliberately not exported and is
+ * not the type to annotate an argument with. `resolveDownloadContentSource` is overloaded on the
+ * two literals so that each one gets the narrower return type it actually produces, and a value
+ * widened to this union matches neither overload.
  */
-export type LiveReadErrorPolicy = 'fallback' | 'fail';
+type LiveReadErrorPolicy = 'fallback' | 'fail';
+
+/**
+ * The sources a given policy can actually produce.
+ *
+ * `'unavailable'` is unreachable under `'fallback'`, and saying so in the type rather than only in
+ * prose is what keeps the download routes honest: they branch on `'inline'` and treat everything
+ * else as stored, which is correct precisely because they ask for `'fallback'`. Were one of them to
+ * switch to `'fail'` it would start receiving a refusal it silently serves the stored bytes for —
+ * the stale-content outcome the policy exists to prevent. Narrowing the return type makes that
+ * switch a compile error at the call site instead of a quiet regression.
+ */
+export type ResolvedWithFallback = Exclude<DownloadContentSource, UnavailableContentSource>;
 
 /** Dependencies required by {@link resolveDownloadContentSource}. */
 export interface ResolveDownloadContentSourceDeps {
@@ -74,6 +113,18 @@ export function buildResolverDeps(
  * @returns The live bytes, an instruction to serve the stored bytes, or — only under `'fail'` —
  * the file node whose live content could not be read.
  */
+export async function resolveDownloadContentSource(
+  deps: ResolveDownloadContentSourceDeps,
+  projectId: ProjectId,
+  fileNode: FileNode,
+  onLiveReadError: 'fallback',
+): Promise<ResolvedWithFallback>;
+export async function resolveDownloadContentSource(
+  deps: ResolveDownloadContentSourceDeps,
+  projectId: ProjectId,
+  fileNode: FileNode,
+  onLiveReadError: 'fail',
+): Promise<DownloadContentSource>;
 export async function resolveDownloadContentSource(
   deps: ResolveDownloadContentSourceDeps,
   projectId: ProjectId,

@@ -19,6 +19,18 @@ export interface AssetRepository {
   findById(id: FileNodeId): Promise<Asset | null>;
 
   /**
+   * Finds every asset belonging to the given FileNode ids.
+   *
+   * Exists for the callers that walk a whole tree: asking one id at a time turns
+   * a copy or an export of a project full of images into one round trip per
+   * image, in sequence, inside a single request.
+   *
+   * @param ids - The FileNode ids whose assets are wanted.
+   * @returns The assets that exist, in no guaranteed order; ids with no asset are absent.
+   */
+  findByIds(ids: readonly FileNodeId[]): Promise<Asset[]>;
+
+  /**
    * Persists an asset entity.
    *
    * @param asset - The asset entity to save.

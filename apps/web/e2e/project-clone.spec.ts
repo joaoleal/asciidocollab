@@ -370,11 +370,23 @@ test.describe('Project cloning', () => {
       const dialog = page.getByRole('dialog');
       await page.getByRole('menuitem', { name: /^clone$/i }).click();
       await expect(dialog).toBeVisible();
-      await expect(dialog.getByLabel(/name for the copy/i)).toHaveValue(`Copy of ${sourceName}`);
+      const nameField = dialog.getByLabel(/name for the copy/i);
+      await expect(nameField).toHaveValue(`Copy of ${sourceName}`);
       await expect(page.getByRole('menu')).toHaveCount(0);
 
+      // The menu closes and the dialog takes the focus with it, landing on the name with the whole
+      // suggestion selected so the first keystroke replaces it. Both halves are asserted before
+      // anything types into the field: filling it would focus and deselect it, and a hand-off that
+      // never happened would look identical afterwards. Only a real browser can see this — the
+      // menu is mocked away in the component tests.
+      await expect(nameField).toBeFocused();
+      const selection = await nameField.evaluate((element: HTMLInputElement) =>
+        element.value.slice(element.selectionStart ?? 0, element.selectionEnd ?? 0),
+      );
+      expect(selection).toBe(`Copy of ${sourceName}`);
+
       const cloneName = `Clone Copy ${unique()}`;
-      await dialog.getByLabel(/name for the copy/i).fill(cloneName);
+      await nameField.fill(cloneName);
       await dialog.getByRole('button', { name: /^clone$/i }).click();
       await expect(dialog).toBeHidden({ timeout: 30_000 });
       await expect(page.getByRole('menu')).toHaveCount(0);

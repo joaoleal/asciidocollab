@@ -16,7 +16,7 @@ import { FileNodeNotFoundError } from '../../errors/file-tree/file-node-not-foun
 import { ValidationError } from '../../errors/common/validation-error';
 import { DomainError } from '../../errors/domain-error';
 import { Result } from '../../types/result';
-import { DownloadContentSource, buildResolverDeps, resolveDownloadContentSource } from './download-content-source';
+import { ResolvedWithFallback, buildResolverDeps, resolveDownloadContentSource } from './download-content-source';
 
 /** Return value carrying the file node, its storage path, and the resolved content source. */
 export interface DownloadFileResult {
@@ -25,7 +25,7 @@ export interface DownloadFileResult {
   /** Absolute storage path used to open a read stream for the stored case. */
   filePath: FilePath;
   /** Resolved content source: live inline bytes or a signal to stream from disk. */
-  source: DownloadContentSource;
+  source: ResolvedWithFallback;
 }
 
 /** Authorises and resolves a single-file download request for a project member. */
@@ -82,7 +82,7 @@ export class DownloadFileUseCase {
       this.collaborativeContentReader,
       this.logger,
     );
-    const source: DownloadContentSource = resolverDeps
+    const source: ResolvedWithFallback = resolverDeps
       ? await resolveDownloadContentSource(resolverDeps, projectId, fileNode, 'fallback')
       : { kind: 'stored' };
 

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { FilePath, ProjectId } from '@asciidocollab/domain';
+import { AUDIT_AUTHZ_DENIED, FilePath, ProjectId } from '@asciidocollab/domain';
 import { startTestContainer, stopTestContainer } from '@asciidocollab/testing';
 import { buildServer } from '../../../src/index';
 import { registerRoute } from '../../../src/routes/auth/register';
@@ -57,6 +57,7 @@ describe('a project row carrying no membership row', () => {
   let intendedOwnerCookie: string;
   /** An unrelated user, to show the row is not merely hidden from its would-be owner. */
   let bystanderCookie: string;
+  let bystanderId: string;
 
   /** The memberless project seeded straight into the database. */
   let orphanProjectId: string;
@@ -93,6 +94,7 @@ describe('a project row carrying no membership row', () => {
     intendedOwnerCookie = intendedOwner.cookie;
     const bystander = await createUser('bystander');
     bystanderCookie = bystander.cookie;
+    bystanderId = bystander.userId;
 
     orphanProjectId = await seedMemberlessProject();
   });
@@ -251,9 +253,46 @@ describe('a project row carrying no membership row', () => {
   });
 
   test('the refused clone left nothing of its own behind', async () => {
+    // Refuses here rather than relying on the tests above having done it: read on its own — under a
+    // name filter, say — this would count the seeded orphan and pass while proving nothing.
+    const refused = await readProjectThroughEveryPath(intendedOwnerCookie, orphanProjectId);
+    expect(refused.clone).toBe(403);
+
     // A refusal that still wrote a project row would replace one orphan with two.
     const projectsOwnedByNobody = await testContext.client.project.count({ where: { members: { none: {} } } });
     expect(projectsOwnedByNobody).toBe(1);
+  });
+
+  test('a clone aimed at an id no project has is refused, and the database keeps the refusal', async () => {
+    // The audit row's `projectId` is a real foreign key, so an entry scoped to a project that does
+    // not exist is rejected by Postgres — and because audit writes are best-effort, that rejection
+    // is swallowed. The refusal worth recording most, somebody walking the id space to learn which
+    // projects exist, was therefore the only one never recorded. Only a real database can tell the
+    // two behaviours apart: an in-memory repository enforces no foreign key and stores the broken
+    // row as happily as the good one.
+    const unknownProjectId = randomUUID();
+
+    const refused = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${unknownProjectId}/clone`,
+      headers: { cookie: bystanderCookie },
+      payload: { name: 'Copy of an id that names nothing' },
+    });
+
+    expect(refused.statusCode).toBe(403);
+
+    const denial = await testContext.client.auditLog.findFirst({
+      where: { action: AUDIT_AUTHZ_DENIED, resourceId: unknownProjectId },
+    });
+    expect(denial).not.toBeNull();
+    expect(denial?.userId).toBe(bystanderId);
+    expect(denial?.resourceType).toBe('Project');
+    // Unscoped, which is the only way the row can exist at all: the id it names is not a project,
+    // so it is carried as the resource that was asked for rather than as the project scope.
+    expect(denial?.projectId).toBeNull();
+
+    // Nothing was copied, so the refusal cost the store nothing either.
+    expect(await testContext.client.project.count({ where: { id: unknownProjectId } })).toBe(0);
   });
 
   test('the very same row becomes visible and readable the moment a membership row exists', async () => {
@@ -283,6 +322,10 @@ describe('a project row carrying no membership row', () => {
       expect(bystander.ids).not.toContain(orphanProjectId);
     } finally {
       await testContext.client.projectMember.deleteMany({ where: { projectId: orphanProjectId } });
+      // Granting the membership turns the clone attempt from refused into successful, so this test
+      // creates a real copy. Removing it keeps the file's counts a function of its own seed rather
+      // than of which tests happened to run before them.
+      await testContext.client.project.deleteMany({ where: { name: 'Copy of a row nobody owns' } });
     }
   });
 });

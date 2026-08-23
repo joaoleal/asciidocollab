@@ -1,4 +1,4 @@
-import type { ProjectDto } from '@asciidocollab/shared';
+import type { CloneProjectDto, ProjectDto } from '@asciidocollab/shared';
 import { apiRequest } from '@/lib/api/transport';
 import type { PaginatedResponse, PaginationParameters } from '@/lib/api/transport';
 import { API_BASE_URL } from './base-url';
@@ -37,6 +37,15 @@ export interface Project {
   /** ISO timestamp when the project was last updated. */
   updatedAt: string;
 }
+
+/**
+ * Code the clone endpoint refuses with when the caller already has a copy running: the server
+ * serialises clones per user, so a second attempt started before the first answers is turned away
+ * with this. Named here, beside the request that provokes it, because more than one place has to
+ * recognise it — the dialog to choose its wording, and a listing to know that the refusal stops
+ * being true the moment the copy it blamed lands.
+ */
+export const CLONE_IN_PROGRESS_CODE = 'CLONE_IN_PROGRESS';
 
 /** CRUD client for the project resource. */
 export const projectsApi = {
@@ -102,9 +111,12 @@ export const projectsApi = {
 
   async clone(id: string, name: string): Promise<{ /** The newly created copy of the source project. */
   data: Project }> {
+    // Typed as the shared request shape so a change to what the endpoint expects
+    // is a compile error here rather than a rejected request at runtime.
+    const body: CloneProjectDto = { name };
     return apiRequest(`/api/projects/${id}/clone`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(body),
     });
   },
 
