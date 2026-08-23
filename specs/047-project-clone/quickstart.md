@@ -35,7 +35,11 @@ Two traps that have cost time on this repo before:
    term.
 2. Invite user B as **viewer**. Add a review comment.
 3. As **B**, open the dashboard. The project card must now show an overflow menu (it did not before)
-   containing **Settings** and **Clone**, and **not** Members.
+   containing **Clone** and nothing else — **not** Members, and **not** Settings. Both of those land
+   on pages that admit owners only, and the menu must never offer a destination that then refuses the
+   user. (Settings was originally listed here for every role; see the FR-001c amendment in spec.md
+   for why that was wrong and what was done about it.) Sign in as **A** and confirm the owner's menu
+   holds all three.
 4. Clone it as "B's copy". B stays on the dashboard, the new card appears without a reload, and the
    confirmation offers to open it.
 5. In the clone, confirm: B is owner and the only member; the tree matches; the document opens in the

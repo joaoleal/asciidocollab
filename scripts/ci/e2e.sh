@@ -39,6 +39,12 @@ export ASCIIDOCOLLAB_AUTH_EMAIL_VERIFICATION_RATE_LIMIT_MAX=500
 export ASCIIDOCOLLAB_AUTH_INVITATION_RATE_LIMIT_MAX=500
 # Outline / cross-document suites set a project's main file many times; raise the 50/hour default.
 export ASCIIDOCOLLAB_PROJECT_MAIN_FILE_RATE_LIMIT_MAX=10000
+# Project cloning is budgeted at 20 per HOUR in production, and the window does not reset inside a
+# run: the clone spec spends six of them per pass, so two attempts plus a retried failure sit right
+# on the ceiling, and a second run within the hour starts already over it. A 429 there is silent in
+# the same way the render-config one was — the dialog reports "too many clones recently" and the test
+# fails on an assertion about the copy that was never made.
+export ASCIIDOCOLLAB_PROJECT_CLONE_RATE_LIMIT_MAX=10000
 
 # PDF converter-extension drop folder. The default (/data/pdf-extensions) is a production bind mount
 # that does not exist here, and a missing folder is deliberately the "no extensions offered" case —
