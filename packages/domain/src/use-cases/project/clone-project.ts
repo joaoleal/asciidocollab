@@ -420,7 +420,19 @@ export class CloneProjectUseCase {
       clone.setRootFolderId(fileTree.rootFolderId);
     }
 
-    if (cloneMainFileId === undefined) return;
+    if (cloneMainFileId === undefined) {
+      if (sourceMainFileId !== null) {
+        // The source named a main file, but the tree just written for the copy holds no counterpart:
+        // that node — or the source row itself — was deleted between the source read and the tree walk,
+        // the concurrency this use case embraces. A null main file is a legitimate state, so the copy
+        // still commits; only the pointer's silent loss to the race is surfaced, not raised.
+        this.logger?.warn('Cloned project left without a main file: the source main file was gone by the tree walk', {
+          projectId: clone.id.value,
+          sourceMainFileId: sourceMainFileId.value,
+        });
+      }
+      return;
+    }
 
     clone.setMainFile(cloneMainFileId);
     await this.projectRepo.save(clone);
@@ -465,16 +477,21 @@ export class CloneProjectUseCase {
   private async copyDictionaryTerms(build: CloneBuild): Promise<void> {
     const sourceTerms = await this.dictionaryRepo.listByProject(build.sourceProjectId);
 
-    for (const sourceTerm of sourceTerms) {
-      await this.dictionaryRepo.add(
-        new ProjectDictionaryTerm(
-          ProjectDictionaryTermId.create(randomUUID()),
-          build.clone.id,
-          sourceTerm.term,
-          build.actorId,
+    // The inserts are mutually independent — each is a fresh row against the clone, with no ordering
+    // constraint between them — so they run together rather than as one awaited round trip after
+    // another, the same reason the document and asset reads above are batched.
+    await Promise.all(
+      sourceTerms.map((sourceTerm) =>
+        this.dictionaryRepo.add(
+          new ProjectDictionaryTerm(
+            ProjectDictionaryTermId.create(randomUUID()),
+            build.clone.id,
+            sourceTerm.term,
+            build.actorId,
+          ),
         ),
-      );
-    }
+      ),
+    );
   }
 
   /**
@@ -700,6 +717,13 @@ export class CloneProjectUseCase {
     const sourceAssets = await this.assetRepo.findByIds(sourceFileNodeIds);
     const assetsBySourceNodeId = new Map(sourceAssets.map((asset) => [asset.id.value, asset]));
 
+    // The resolver also asks, for every node that has a document, whether that document has a live
+    // collaboration session. Wired straight to the repository that answer is one round trip per
+    // document — the same N+1 the sibling download path batches away — so the active ids are read
+    // once here and served from a set, exactly as the document and asset kinds already are above.
+    const activeDocumentIds = await this.collaborationSessionRepo.findActiveDocumentIds(sourceProjectId);
+    const activeDocumentIdSet = new Set(activeDocumentIds.map((documentId) => documentId.value));
+
     // Built here rather than through `buildResolverDeps`, whose only job is to
     // refuse a partly-wired caller: all three collaborators are required of this
     // use case, so there is no partial wiring for it to catch.
@@ -713,7 +737,9 @@ export class CloneProjectUseCase {
       documentRepo: {
         findByFileNodeId: async (fileNodeId) => documentsBySourceNodeId.get(fileNodeId.value) ?? null,
       },
-      collaborationSessionRepo: this.collaborationSessionRepo,
+      collaborationSessionRepo: {
+        isActive: async (_projectId, documentId) => activeDocumentIdSet.has(documentId.value),
+      },
       collaborativeContentReader: this.collaborativeContentReader,
       logger: this.logger,
     };

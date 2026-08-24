@@ -229,6 +229,10 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     },
     collaborationSession: {
       isActive: jest.fn(async () => sessionActive),
+      // The clone resolves live sessions in one batch (findActiveDocumentIds) rather than one
+      // isActive call per document, so the double answers the same toggle in that shape: the source
+      // document's id is active exactly when sessionActive, keyed on the id the resolver checks.
+      findActiveDocumentIds: jest.fn(async () => (sessionActive ? [sourceDocument().id] : [])),
     },
     projectRenderConfig: {
       findByProjectId: jest.fn(async () => null),

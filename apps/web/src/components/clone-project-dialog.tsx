@@ -138,12 +138,14 @@ function CloneProjectForm({
   // request carries on, and the failure branch below needs to know which of the two message
   // surfaces the user can still see.
   const onScreen = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on each setup so React StrictMode's setup→cleanup→setup (the dev default) leaves it true;
+    // a mount-only cleanup would run once and never restore it, marking a live form as off screen.
+    onScreen.current = true;
+    return () => {
       onScreen.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const trimmedName = name.trim();
   const nameIsMissing = trimmedName.length === 0;

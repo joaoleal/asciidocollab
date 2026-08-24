@@ -1057,6 +1057,26 @@ describe('CloneProjectUseCase', () => {
       expect(saveSpy.mock.calls[0][0].id.value).toBe(result.value.project.id.value);
       expect(result.value.project.rootFolderId).not.toBeNull();
     });
+
+    test('warns and leaves the copy without a main file when the source main file is gone by the tree walk', async () => {
+      await saveSourceProject(projectRepo, { mainFileNodeId: SOURCE_INDEX_ID });
+      // The concurrency this use case embraces: the source's main file node is deleted between the
+      // source read and the tree walk, so the copied tree holds no counterpart to the pointer the
+      // source row still carries. The copy commits without a main file, and the silent loss is logged.
+      await fileNodeRepo.delete(SOURCE_INDEX_ID);
+
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      const stored = await projectRepo.findById(result.value.project.id);
+      expect(stored?.mainFileNodeId).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('without a main file'),
+        expect.objectContaining({ sourceMainFileId: SOURCE_INDEX_ID.value }),
+      );
+    });
   });
 
   describe('render configuration', () => {
@@ -1354,6 +1374,20 @@ describe('CloneProjectUseCase', () => {
       expect(result.success).toBe(true);
       expect(batchSpy).toHaveBeenCalledTimes(1);
       expect(perNodeSpy).not.toHaveBeenCalled();
+    });
+
+    test('checks live collaboration sessions once as a batch, not once per document', async () => {
+      const batchSpy = jest.spyOn(collaborationSessionRepo, 'findActiveDocumentIds');
+      const perDocumentSpy = jest.spyOn(collaborationSessionRepo, 'isActive');
+
+      const result = await useCase.execute(OWNER_ID, SOURCE_PROJECT_ID, 'Handbook copy');
+
+      // Resolving each document's content asks whether it has a live session; answering that from a
+      // single findActiveDocumentIds read keeps the copy at one session round trip rather than one
+      // per document — the N+1 the sibling download path already avoids.
+      expect(result.success).toBe(true);
+      expect(batchSpy).toHaveBeenCalledTimes(1);
+      expect(perDocumentSpy).not.toHaveBeenCalled();
     });
 
     beforeEach(async () => {

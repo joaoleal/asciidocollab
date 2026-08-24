@@ -139,7 +139,10 @@ async function describeProject(request: FastifyRequest, project: Project, actorI
     description: described.description,
     owners,
     tags: [...described.tags],
-    rootFolderId: described.rootFolderId?.value ?? null,
+    // Sourced from the stored row alone, never the `?? project` fallback entity: the entity carries a
+    // rootFolderId that has no column and every later read reports as null, so reading it from
+    // `described` would leak that value here whenever `stored` is null — the drift the note above rejects.
+    rootFolderId: stored?.rootFolderId?.value ?? null,
     mainFileNodeId: described.mainFileNodeId?.value ?? null,
     language: described.language,
     archivedAt: described.archivedAt?.toISOString() ?? null,
