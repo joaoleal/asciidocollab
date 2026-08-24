@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "isolatedModules": true,
+    // ts-jest runs the tests as ESM; bundler resolution lets test files import sources without the
+    // explicit .js extensions that the node16 build config (tsconfig.json) requires of src/.
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "rootDir": ".",
+    "types": ["jest", "node"]
+  },
+  "include": ["src", "tests"]
+}

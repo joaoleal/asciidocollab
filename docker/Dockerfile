@@ -6,18 +6,20 @@
 # so the workspace compiles once; no runtime image contains another service, the
 # monorepo source, dev dependencies or a compiler toolchain.
 #
-#   target: migrate  → one-shot job: applies the Prisma schema, then exits
-#   target: api      → apps/api    (Fastify REST + internal auth server)
-#   target: collab   → apps/collab (Hocuspocus WebSocket + internal edit server)
-#   target: web      → apps/web    (Next.js standalone)
+#   target: migrate     → one-shot job: applies the Prisma schema, then exits
+#   target: api         → apps/api         (Fastify REST + internal auth server)
+#   target: collab      → apps/collab      (Hocuspocus WebSocket + internal edit server)
+#   target: git-worker  → apps/git-worker  (sandboxed git CLI runner; skeleton — no run loop yet)
+#   target: web         → apps/web         (Next.js standalone)
 #
 # Stage graph:
 #   base ─┬─ toolchain ── manifests ─┬─ deps ── build-backend ─┬─ build-web
 #         │                          │                         └─ artifacts
-#         │                          ├─ prod-api ──┐
-#         │                          ├─ prod-collab┤
-#         │                          └─ prod-db ───┤
-#         └─ runtime ────────────────────────────── ┴─ api / collab / migrate / web
+#         │                          ├─ prod-api ────────┐
+#         │                          ├─ prod-collab──────┤
+#         │                          ├─ prod-git-worker──┤
+#         │                          └─ prod-db ─────────┤
+#         └─ runtime ──────────────────────────────────── ┴─ api / collab / git-worker / migrate / web
 #
 # Build context is the REPOSITORY ROOT (compose sets `context: ..`).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -53,6 +55,7 @@ FROM toolchain AS manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json        apps/api/package.json
 COPY apps/collab/package.json     apps/collab/package.json
+COPY apps/git-worker/package.json apps/git-worker/package.json
 COPY apps/web/package.json        apps/web/package.json
 COPY packages/asciidoc-core/package.json   packages/asciidoc-core/package.json
 COPY packages/asciidoc-pdf/package.json    packages/asciidoc-pdf/package.json
@@ -81,7 +84,7 @@ FROM build-backend AS artifacts
 RUN set -eu; \
     for p in packages/asciidoc-core packages/asciidoc-pdf \
              packages/db packages/domain packages/infrastructure packages/primitives packages/shared \
-             apps/api apps/collab; do \
+             apps/api apps/collab apps/git-worker; do \
       if [ -d "/app/$p/dist" ]; then \
         mkdir -p "/artifacts/$p"; \
         cp -R "/app/$p/dist" "/artifacts/$p/dist"; \
@@ -170,6 +173,14 @@ RUN pnpm --filter @asciidocollab/collab --prod --legacy --node-linker=hoisted de
            /prod/collab/node_modules/re2/vendor \
            /prod/collab/node_modules/re2/build/Release/obj.target
 
+# git-worker has no Prisma dependency yet (skeleton only — see apps/git-worker), so its production
+# install needs none of the @prisma/client optional-peer pruning the api/collab stages do above.
+FROM manifests AS prod-git-worker
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    CI=true pnpm install --frozen-lockfile --prod --filter "@asciidocollab/git-worker..."
+COPY --from=artifacts /artifacts/ ./
+RUN pnpm --filter @asciidocollab/git-worker --prod --legacy --node-linker=hoisted deploy /prod/git-worker
+
 # The migrate job is the one place that legitimately needs the Prisma CLI, so
 # this install keeps dev dependencies for the db package only.
 FROM manifests AS prod-db
@@ -215,6 +226,20 @@ USER root
 RUN mkdir -p /data/storage && chown -R node:node /data
 USER node
 EXPOSE 4002 4003
+CMD ["node", "dist/index.js"]
+
+# ─── git-worker (sandboxed git CLI runner) ────────────────────────────────────
+# Skeleton only for now (see apps/git-worker): no run loop or RPC port yet, so nothing is EXPOSEd.
+# This is the one image that runs the real `git`/`git-lfs` CLIs, which is why they are installed HERE
+# rather than in the shared `runtime` base — no other service ships them.
+FROM runtime AS git-worker
+WORKDIR /app
+USER root
+RUN apk add --no-cache git git-lfs
+COPY --from=prod-git-worker --chown=node:node /prod/git-worker ./
+# Mirrors the api/collab volume mount: a git-worker job operates on the same per-project storage root.
+RUN mkdir -p /data/storage && chown -R node:node /data
+USER node
 CMD ["node", "dist/index.js"]
 
 # ─── migrate: applies the schema to Postgres, then exits ──────────────────────
