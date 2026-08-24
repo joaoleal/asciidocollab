@@ -41,6 +41,34 @@ describe('PrismaGitRepositoryRepository', () => {
     expect(found!.id.value).toBe(gitRepo.id.value);
   });
 
+  it('should round-trip syncStatus, defaultBranch, and lastKnownRemoteHead', async () => {
+    const project = await setupProject();
+    const gitRepo = createTestGitRepository(project.id, {
+      syncStatus: 'AHEAD',
+      defaultBranch: 'develop',
+      lastKnownRemoteHead: 'abc123def456',
+    });
+    await repo.save(gitRepo);
+
+    const found = await repo.findById(gitRepo.id);
+    expect(found).not.toBeNull();
+    expect(found!.syncStatus).toBe('AHEAD');
+    expect(found!.defaultBranch).toBe('develop');
+    expect(found!.lastKnownRemoteHead).toBe('abc123def456');
+  });
+
+  it('should default syncStatus, defaultBranch, and lastKnownRemoteHead when not provided', async () => {
+    const project = await setupProject();
+    const gitRepo = createTestGitRepository(project.id);
+    await repo.save(gitRepo);
+
+    const found = await repo.findById(gitRepo.id);
+    expect(found).not.toBeNull();
+    expect(found!.syncStatus).toBe('UP_TO_DATE');
+    expect(found!.defaultBranch).toBeNull();
+    expect(found!.lastKnownRemoteHead).toBeNull();
+  });
+
   it('should return null when finding by non-existent id', async () => {
     const result = await repo.findById(GitRepositoryId.create('00000000-0000-4000-8000-000000000001'));
     expect(result).toBeNull();

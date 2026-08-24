@@ -1,6 +1,7 @@
 import { GitRepositoryId } from '../value-objects/ids/git-repository-id';
 import { ProjectId } from '../value-objects/ids/project-id';
 import { GitProvider } from '../value-objects/project/git-provider';
+import { GitSyncStatus, DEFAULT_GIT_SYNC_STATUS } from '../types/git-sync-status';
 
 /**
  * Links a project to an external Git repository for synchronisation.
@@ -23,6 +24,12 @@ export class GitRepository {
     public readonly credentialReference: string,
     /** The currently active branch. Defaults to `'main'`. */
     public readonly currentBranch: string = 'main',
+    /** Synchronisation state relative to the remote, as last observed. Defaults to `'UP_TO_DATE'`. */
+    public readonly syncStatus: GitSyncStatus = DEFAULT_GIT_SYNC_STATUS,
+    /** The remote's default branch (e.g. what `HEAD` points to), or null if not yet known. */
+    public readonly defaultBranch: string | null = null,
+    /** The last remote commit hash observed for `currentBranch`, or null if not yet known. */
+    public readonly lastKnownRemoteHead: string | null = null,
     /**
      * Timestamp of the last successful synchronisation, or null if never
      *  synced.

@@ -15,8 +15,6 @@ describe('GitRepository entity', () => {
       'https://github.com/user/repo.git',
       'cred-encrypted-abc123',
       'main',
-      null,
-      new Date('2026-05-26T12:00:00Z'),
     );
     expect(repo.id).toBe(repoId);
     expect(repo.projectId).toBe(projectId);
@@ -29,16 +27,13 @@ describe('GitRepository entity', () => {
   });
 
   test('accepts different GitProviders', () => {
-    const github = new GitRepository(repoId, projectId, GitProvider.create('github'), 'url', 'cred', 'main', null, new Date());
+    const github = new GitRepository(repoId, projectId, GitProvider.create('github'), 'url', 'cred');
     const gitlab = new GitRepository(
       GitRepositoryId.create('550e8400-e29b-41d4-a716-446655440002'),
       projectId,
       GitProvider.create('gitlab'),
       'url',
       'cred',
-      'main',
-      null,
-      new Date(),
     );
     const bitbucket = new GitRepository(
       GitRepositoryId.create('550e8400-e29b-41d4-a716-446655440003'),
@@ -46,9 +41,6 @@ describe('GitRepository entity', () => {
       GitProvider.create('bitbucket'),
       'url',
       'cred',
-      'main',
-      null,
-      new Date(),
     );
     expect(github.provider.value).toBe('github');
     expect(gitlab.provider.value).toBe('gitlab');
@@ -60,16 +52,13 @@ describe('GitRepository entity', () => {
   });
 
   test('is unique per project (same projectId)', () => {
-    const repo1 = new GitRepository(repoId, projectId, GitProvider.create('github'), 'url1', 'cred1', 'main', null, new Date());
+    const repo1 = new GitRepository(repoId, projectId, GitProvider.create('github'), 'url1', 'cred1');
     const repo2 = new GitRepository(
       GitRepositoryId.create('550e8400-e29b-41d4-a716-446655440010'),
       projectId,
       GitProvider.create('gitlab'),
       'url2',
       'cred2',
-      'main',
-      null,
-      new Date(),
     );
     expect(repo1.projectId).toBe(repo2.projectId);
     expect(repo1.id).not.toBe(repo2.id);
@@ -77,7 +66,33 @@ describe('GitRepository entity', () => {
 
   test('createdAt is set on creation', () => {
     const now = new Date();
-    const repo = new GitRepository(repoId, projectId, GitProvider.create('github'), 'url', 'cred', 'main', null, now);
+    const repo = new GitRepository(repoId, projectId, GitProvider.create('github'), 'url', 'cred', 'main', undefined, undefined, undefined, undefined, now);
     expect(repo.createdAt).toBe(now);
+  });
+
+  test('defaults syncStatus, defaultBranch, and lastKnownRemoteHead when omitted', () => {
+    const repo = new GitRepository(repoId, projectId, GitProvider.create('github'), 'url', 'cred');
+    expect(repo.syncStatus).toBe('UP_TO_DATE');
+    expect(repo.defaultBranch).toBeNull();
+    expect(repo.lastKnownRemoteHead).toBeNull();
+  });
+
+  test('creates with explicit syncStatus, defaultBranch, and lastKnownRemoteHead', () => {
+    const repo = new GitRepository(
+      repoId,
+      projectId,
+      GitProvider.create('github'),
+      'https://github.com/user/repo.git',
+      'cred-encrypted-abc123',
+      'main',
+      'AHEAD',
+      'develop',
+      'abc123def456',
+      null,
+      new Date('2026-05-26T12:00:00Z'),
+    );
+    expect(repo.syncStatus).toBe('AHEAD');
+    expect(repo.defaultBranch).toBe('develop');
+    expect(repo.lastKnownRemoteHead).toBe('abc123def456');
   });
 });

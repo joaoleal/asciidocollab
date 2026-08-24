@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 import { GitRepository, GitRepositoryId, ProjectId, GitProvider, GitRepositoryRepository } from '@asciidocollab/domain';
+import type { GitSyncStatus } from '@asciidocollab/domain';
 
 /**
  * Prisma-backed implementation of the `GitRepositoryRepository` interface.
@@ -57,7 +58,9 @@ export class PrismaGitRepositoryRepository implements GitRepositoryRepository {
 
 type GitRepositoryRecord = {
   id: string; projectId: string; provider: string; remoteUrl: string;
-  credentialRef: string; currentBranch: string; lastSyncAt: Date | null; createdAt: Date;
+  credentialRef: string; currentBranch: string; syncStatus: string;
+  defaultBranch: string | null; lastKnownRemoteHead: string | null;
+  lastSyncAt: Date | null; createdAt: Date;
 };
 
 function toDomainGitRepository(record: GitRepositoryRecord): GitRepository {
@@ -68,6 +71,9 @@ function toDomainGitRepository(record: GitRepositoryRecord): GitRepository {
     record.remoteUrl,
     record.credentialRef,
     record.currentBranch,
+    record.syncStatus as GitSyncStatus,
+    record.defaultBranch,
+    record.lastKnownRemoteHead,
     record.lastSyncAt,
     record.createdAt,
   );
@@ -87,7 +93,17 @@ function toPersistenceGitRepository(gitRepository: GitRepository): Prisma.GitRep
     remoteUrl: gitRepository.remoteUrl,
     credentialRef: gitRepository.credentialReference,
     currentBranch: gitRepository.currentBranch,
+    syncStatus: gitRepository.syncStatus,
+    defaultBranch: gitRepository.defaultBranch,
+    lastKnownRemoteHead: gitRepository.lastKnownRemoteHead,
     lastSyncAt: gitRepository.lastSyncAt,
     createdAt: gitRepository.createdAt,
+    // connectedByUserId is not carried by the domain entity — data-model.md lists only
+    // syncStatus/defaultBranch/lastKnownRemoteHead as GitRepository entity extensions, and
+    // GitRepositoryRepository#save(gitRepository) has no request context to source a user id
+    // from. Omitting the key here means upsert leaves it untouched on update (and null on
+    // create), so a routine save() never clobbers who connected the repository. The
+    // ConnectRepository/DisconnectRepository use case (not part of this task) should set it
+    // directly when it lands.
   };
 }

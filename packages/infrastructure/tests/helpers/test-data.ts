@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { User, UserId, Email, Project, ProjectId, ProjectName, ProjectMember, Role, FileNode, FileNodeId, FileNodeType, FilePath, Document, DocumentId, ContentId, YjsStateId, MimeType, Asset, Template, TemplateId, TemplateCategory, GitRepository, GitRepositoryId, GitProvider, AuditLog, AuditLogId, Timestamps } from '@asciidocollab/domain';
-import type { RegistrationMethod } from '@asciidocollab/domain';
+import type { RegistrationMethod, GitSyncStatus } from '@asciidocollab/domain';
 
 type UserOverrides = Partial<{ id?: UserId; email?: Email; displayName?: string; passwordHash?: string | null; passwordHistory?: string[]; samlSubject?: string | null; mfaSecret?: string | null; isAdmin?: boolean; timestamps?: Timestamps; emailVerified?: boolean; registrationMethod?: RegistrationMethod }>;
 
@@ -94,7 +94,7 @@ export function createTestTemplate(overrides?: { id?: TemplateId; name?: string;
   );
 }
 
-export function createTestGitRepository(projectId: ProjectId, overrides?: { id?: GitRepositoryId; provider?: GitProvider; remoteUrl?: string; credentialReference?: string; currentBranch?: string; lastSyncAt?: Date | null; createdAt?: Date }): GitRepository {
+export function createTestGitRepository(projectId: ProjectId, overrides?: { id?: GitRepositoryId; provider?: GitProvider; remoteUrl?: string; credentialReference?: string; currentBranch?: string; syncStatus?: GitSyncStatus; defaultBranch?: string | null; lastKnownRemoteHead?: string | null; lastSyncAt?: Date | null; createdAt?: Date }): GitRepository {
   return new GitRepository(
     overrides?.id ?? GitRepositoryId.create(randomUUID()),
     projectId,
@@ -102,6 +102,9 @@ export function createTestGitRepository(projectId: ProjectId, overrides?: { id?:
     overrides?.remoteUrl ?? 'https://github.com/test/repo.git',
     overrides?.credentialReference ?? 'cred-123',
     overrides?.currentBranch ?? 'main',
+    overrides?.syncStatus ?? 'UP_TO_DATE',
+    overrides?.defaultBranch ?? null,
+    overrides?.lastKnownRemoteHead ?? null,
     overrides?.lastSyncAt ?? null,
     overrides?.createdAt ?? new Date(),
   );
