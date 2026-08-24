@@ -39,14 +39,17 @@ function resolveTimed(themeText: string): {
  *
  * The least rather than the mean, because every disturbance a shared runner adds — a slice lost to
  * another job, a collection landing mid-measurement, a cold cache — only ever makes a reading LARGER.
- * The smallest of a few is the closest any of them gets to what the work itself costs.
+ * The smallest of a few is the closest any of them gets to what the work itself costs. Five readings
+ * rather than three because the caller subtracts two of these figures: each still carries whatever
+ * jitter its fastest reading did not shed, the two do not cancel, and more readings shrink the residual
+ * each contributes to that difference.
  *
  * @param themeText - The document.
  * @returns The lowest reading, in milliseconds.
  */
 function fastestResolveMs(themeText: string): number {
   let fastest = Number.POSITIVE_INFINITY;
-  for (let reading = 0; reading < 3; reading++) {
+  for (let reading = 0; reading < 5; reading++) {
     fastest = Math.min(fastest, resolveTimed(themeText).elapsedMs);
   }
   return fastest;
@@ -449,10 +452,14 @@ describe('a colour value nested deeper than the export joins', () => {
     // warm-up cannot be mistaken for the join.
     const overBytes = fastestResolveMs(aliasedColour(1));
     const overMegabytes = fastestResolveMs(document);
-    // Fifty milliseconds where the difference measures single digits and the join it refuses is
-    // 211 ms of `Array#join` — a native copy of 480 MB, which no machine does in fifty and which
-    // instrumentation only makes slower.
-    expect(overMegabytes - overBytes).toBeLessThan(50);
+    // The difference measures single digits, and the join it refuses is 211 ms of `Array#join` — a
+    // native copy of 480 MB. The bound sits between the two, not against either: both readings are
+    // the ~115 ms parse of twelve thousand aliases, and the jitter that parse leaves after a
+    // fastest-of-five does not fully cancel when they are subtracted — a loaded runner has left the
+    // difference above fifty even with the join absent. A hundred and twenty clears that noise while
+    // staying well under the 211 ms it exists to catch, which no machine does in a hundred and twenty
+    // and which instrumentation only makes slower.
+    expect(overMegabytes - overBytes).toBeLessThan(120);
   });
 });
 
