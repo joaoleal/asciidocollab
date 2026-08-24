@@ -12,6 +12,7 @@ import {
   SmtpEmailChangeNotifier,
   SmtpRegistrationInvitationNotifier,
   SmtpEmailVerificationNotifier,
+  InMemoryActiveCloneRegistry,
 } from '@asciidocollab/infrastructure';
 import type { EmailSender } from '@asciidocollab/domain';
 import type { getConfig } from '../config';
@@ -105,6 +106,12 @@ export function createServices(input: CreateServicesInput): AppContainer['servic
     appConfig.auth.emailVerification.resendHtmlTemplate.replaceAll('{frontendUrl}', appConfig.api.frontendUrl),
   );
 
+  // Built here and nowhere else: the clone use case is constructed per request,
+  // so the one-clone-per-user guard only holds if the registry outlives the use
+  // case. The composition root owns that lifetime — a module-level instance would
+  // be a static singleton shared by every server in the process instead.
+  const activeCloneRegistry = new InMemoryActiveCloneRegistry();
+
   return {
     passwordHasher,
     breachChecker,
@@ -117,5 +124,6 @@ export function createServices(input: CreateServicesInput): AppContainer['servic
     emailChangeNotifier,
     registrationInvitationNotifier,
     emailVerificationNotifier,
+    activeCloneRegistry,
   };
 }

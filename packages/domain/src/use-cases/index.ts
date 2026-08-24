@@ -25,6 +25,8 @@ export { RequestEmailChangeUseCase } from './auth/request-email-change';
 export { ConfirmEmailChangeUseCase } from './auth/confirm-email-change';
 export type { ConfirmEmailChangeResult } from './auth/confirm-email-change';
 export { DeleteProjectUseCase } from './project/delete-project';
+export { CloneProjectUseCase } from './project/clone-project';
+export type { CloneProjectResult } from './project/clone-project';
 export { SendUserInvitationUseCase } from './auth/send-user-invitation';
 export { AcceptUserInvitationUseCase } from './auth/accept-user-invitation';
 export type { AcceptUserInvitationResult } from './auth/accept-user-invitation';

@@ -42,11 +42,14 @@ describe('CreateProjectUseCase', () => {
     expect(project).not.toBeNull();
     expect(project!.name.value).toBe('My Project');
     expect(project!.description).toBe('A test project');
-    expect(project!.rootFolderId).not.toBeNull();
-    expect(project!.rootFolderId!.value).toBe(value.rootFolderId.value);
+    // The project row has no column for its root folder, so a project read back never
+    // reports one however the entity was set before it was written. The tree is where the
+    // root actually lives, and the result names the node to look for.
+    expect(project!.rootFolderId).toBeNull();
 
     const rootFolder = await fileNodeRepo.findById(value.rootFolderId);
     expect(rootFolder).not.toBeNull();
+    expect(rootFolder!.path.value).toBe('/');
     expect(rootFolder!.type.value).toBe('folder');
     expect(rootFolder!.name).toBe('My Project');
     expect(rootFolder!.parentId).toBeNull();

@@ -72,6 +72,8 @@ export interface ProjectDto {
   archivedAt: string | null;
   /** Number of project members. */
   memberCount?: number;
+  /** Number of files (not folders) in the project. */
+  fileCount?: number;
   /** Current user's role in the project. */
   role?: 'viewer' | 'editor' | 'owner';
   /** Creation timestamp. */

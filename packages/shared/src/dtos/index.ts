@@ -1,5 +1,6 @@
 /** @file Re-exports all DTO types from the shared package. */
 export type { CreateProjectDto, CreateProjectResultDto } from './create-project.dto';
+export type { CloneProjectDto } from './clone-project.dto';
 export type { RenameFileDto, RenameFileResultDto } from './rename-file.dto';
 export type { DeleteFileDto } from './delete-file.dto';
 export type { InviteUserDto } from './invite-user.dto';

@@ -36,6 +36,18 @@ export interface ProjectConfig {
     /** Extension-source read rate limit window in milliseconds. */
     sourceRateLimitWindow: number;
   };
+  /**
+   * Project cloning rate limiting configuration. A clone copies a whole project
+   * per request — the heaviest project operation in the system — so its budget
+   * is deliberately the smallest of the project routes. The one-clone-at-a-time
+   * guard bounds *concurrent* cost; this bounds *sustained* cost.
+   */
+  clone: {
+    /** Maximum clone requests per user/IP per window. */
+    rateLimitMax: number;
+    /** Clone rate limit window in milliseconds. */
+    rateLimitWindow: number;
+  };
   /** Project render-config (get/save) rate limiting configuration. */
   renderConfig: {
     /** Maximum render-config requests per user/IP per window. */
@@ -176,6 +188,20 @@ export const projectSchema: convict.Schema<ProjectConfig> = {
       format: 'integer',
       default: 3_600_000,
       env: 'ASCIIDOCOLLAB_PROJECT_PDF_EXTENSIONS_SOURCE_RATE_LIMIT_WINDOW',
+    },
+  },
+  clone: {
+    rateLimitMax: {
+      doc: 'Maximum project-clone requests per user/IP per window. Sized below the refactoring budget: a clone copies an entire project.',
+      format: 'integer',
+      default: 20,
+      env: 'ASCIIDOCOLLAB_PROJECT_CLONE_RATE_LIMIT_MAX',
+    },
+    rateLimitWindow: {
+      doc: 'Project-clone rate limit window in milliseconds.',
+      format: 'integer',
+      default: 3_600_000,
+      env: 'ASCIIDOCOLLAB_PROJECT_CLONE_RATE_LIMIT_WINDOW',
     },
   },
   renderConfig: {

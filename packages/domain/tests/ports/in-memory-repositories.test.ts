@@ -7,6 +7,7 @@ import { InMemoryGitRepositoryRepository } from './project/in-memory-git-reposit
 import { InMemoryTemplateRepository } from './project/in-memory-template.repository';
 import { InMemoryAssetRepository } from './file-tree/in-memory-asset.repository';
 import { InMemoryAuditLogRepository } from './admin/in-memory-audit-log.repository';
+import { InMemoryActiveCloneRegistry } from './project/in-memory-active-clone-registry';
 import { Project } from '../../src/entities/project';
 import { User } from '../../src/entities/user';
 import { FileNode } from '../../src/entities/file-node';
@@ -311,6 +312,47 @@ describe('In-Memory Repository Fakes', () => {
       await expect(
         repo.save(new Asset(fileNodeId, MimeType.create('image/jpeg'), 200n, sameDate))
       ).rejects.toThrow();
+    });
+  });
+
+  describe('InMemoryActiveCloneRegistry', () => {
+    it('grants the first acquisition for a user', () => {
+      const registry = new InMemoryActiveCloneRegistry();
+      expect(registry.tryAcquire(userId)).toBe(true);
+    });
+
+    it('refuses a second acquisition until the first is released', () => {
+      const registry = new InMemoryActiveCloneRegistry();
+      registry.tryAcquire(userId);
+      expect(registry.tryAcquire(userId)).toBe(false);
+      registry.release(userId);
+      expect(registry.tryAcquire(userId)).toBe(true);
+    });
+
+    it('keeps users independent of one another', () => {
+      const registry = new InMemoryActiveCloneRegistry();
+      expect(registry.tryAcquire(userId)).toBe(true);
+      expect(registry.tryAcquire(userId2)).toBe(true);
+      registry.release(userId);
+      expect(registry.tryAcquire(userId2)).toBe(false);
+    });
+
+    it('treats releasing a user who holds nothing as a no-op', () => {
+      const registry = new InMemoryActiveCloneRegistry();
+      expect(() => registry.release(userId)).not.toThrow();
+      expect(registry.tryAcquire(userId)).toBe(true);
+    });
+
+    it('keys holders by id value rather than by instance identity', () => {
+      const registry = new InMemoryActiveCloneRegistry();
+      registry.tryAcquire(UserId.create(userId.value));
+      expect(registry.tryAcquire(UserId.create(userId.value))).toBe(false);
+    });
+
+    it('does not share held users between instances', () => {
+      const first = new InMemoryActiveCloneRegistry();
+      first.tryAcquire(userId);
+      expect(new InMemoryActiveCloneRegistry().tryAcquire(userId)).toBe(true);
     });
   });
 

@@ -11,6 +11,7 @@ export { InMemoryProjectRepository } from './project/in-memory-project.repositor
 export { InMemoryProjectMemberRepository } from './project/in-memory-project-member.repository';
 export { InMemoryTemplateRepository } from './project/in-memory-template.repository';
 export { InMemoryGitRepositoryRepository } from './project/in-memory-git-repository.repository';
+export { InMemoryActiveCloneRegistry } from './project/in-memory-active-clone-registry';
 
 // file-tree/
 export { InMemoryFileNodeRepository } from './file-tree/in-memory-file-node.repository';

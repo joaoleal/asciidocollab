@@ -49,6 +49,31 @@ describe('PrismaAssetRepository', () => {
     expect(result).toBeNull();
   });
 
+  it('finds several assets at once, ignoring ids that have none', async () => {
+    const project = await setupProject();
+    const { fileNodeId: firstId } = await setupFileNode(project.id.value, 'first.png');
+    const { fileNodeId: secondId } = await setupFileNode(project.id.value, 'second.png');
+    const { fileNodeId: withoutAsset } = await setupFileNode(project.id.value, 'third.png');
+    await repo.save(createTestAsset(firstId));
+    await repo.save(createTestAsset(secondId));
+
+    const found = await repo.findByIds([firstId, secondId, withoutAsset]);
+
+    expect(found.map((asset) => asset.id.value).toSorted()).toEqual(
+      [firstId.value, secondId.value].toSorted(),
+    );
+  });
+
+  it('asks the database nothing when there are no ids to look up', async () => {
+    const findMany = jest.spyOn(client.asset, 'findMany');
+
+    const found = await repo.findByIds([]);
+
+    expect(found).toEqual([]);
+    expect(findMany).not.toHaveBeenCalled();
+    findMany.mockRestore();
+  });
+
   it('should delete an asset', async () => {
     const project = await setupProject();
     const { fileNodeId } = await setupFileNode(project.id.value);
@@ -67,11 +92,11 @@ describe('PrismaAssetRepository', () => {
     return project;
   }
 
-  async function setupFileNode(projectId: string): Promise<{ fileNodeId: FileNodeId }> {
+  async function setupFileNode(projectId: string, name = 'test.png'): Promise<{ fileNodeId: FileNodeId }> {
     const folderId = randomUUID();
-    await client.fileNode.create({ data: { id: folderId, projectId, name: 'root', type: 'FOLDER', path: '/', parentId: null } });
+    await client.fileNode.create({ data: { id: folderId, projectId, name: `root-${folderId}`, type: 'FOLDER', path: `/${folderId}`, parentId: null } });
     const fileId = randomUUID();
-    await client.fileNode.create({ data: { id: fileId, projectId, name: 'test.png', type: 'FILE', path: '/test.png', parentId: folderId } });
+    await client.fileNode.create({ data: { id: fileId, projectId, name, type: 'FILE', path: `/${folderId}/${name}`, parentId: folderId } });
     return { fileNodeId: FileNodeId.create(fileId) };
   }
 });

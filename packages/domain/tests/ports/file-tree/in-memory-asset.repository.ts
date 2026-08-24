@@ -11,6 +11,16 @@ export class InMemoryAssetRepository implements AssetRepository {
     return this.storage.get(id.value) ?? null;
   }
 
+  /** Returns the assets that exist for the given FileNode ids; unknown ids are absent. */
+  async findByIds(ids: readonly FileNodeId[]): Promise<Asset[]> {
+    const found: Asset[] = [];
+    for (const id of ids) {
+      const asset = this.storage.get(id.value);
+      if (asset !== undefined) found.push(asset);
+    }
+    return found;
+  }
+
   /**
    * Inserts the asset. Throws if an asset with the same FileNode id already
    * exists, mirroring the database-level PK + FK uniqueness constraint.

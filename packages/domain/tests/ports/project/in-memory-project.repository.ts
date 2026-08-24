@@ -1,11 +1,35 @@
 import { Project } from '../../../src/entities/project';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { UserId } from '../../../src/value-objects/ids/user-id';
+import { Timestamps } from '../../../src/value-objects/common/timestamps';
 import {
   ProjectRepository,
   PaginationParameters,
   PaginatedProjects,
 } from '../../../src/ports/project/project.repository';
+
+/**
+ * Rebuilds a project the way the database round trip does, so a caller can
+ * never read back state the schema cannot hold.
+ *
+ * The root folder is the one field that is dropped: there is no column for it,
+ * so the real mapper writes none and reconstructs every project with none. A
+ * fake that handed back the very entity it was given would let a use case pass
+ * on a value production always reports as absent.
+ */
+function asStored(project: Project): Project {
+  return new Project(
+    project.id,
+    project.name,
+    project.description,
+    [...project.tags],
+    null,
+    new Timestamps(project.createdAt, project.updatedAt),
+    project.archivedAt,
+    project.mainFileNodeId,
+    project.language,
+  );
+}
 
 /**
  * In-memory implementation of ProjectRepository for testing.
@@ -43,7 +67,8 @@ export class InMemoryProjectRepository implements ProjectRepository {
    * @returns The project if found, null otherwise.
    */
   async findById(id: ProjectId): Promise<Project | null> {
-    return this.storage.get(id.value) ?? null;
+    const stored = this.storage.get(id.value);
+    return stored === undefined ? null : asStored(stored);
   }
 
   /**
@@ -69,7 +94,7 @@ export class InMemoryProjectRepository implements ProjectRepository {
     const total = all.length;
     const page = pagination.page;
     const limit = pagination.limit;
-    const projects = all.slice((page - 1) * limit, page * limit);
+    const projects = all.slice((page - 1) * limit, page * limit).map(asStored);
     return { projects, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
@@ -79,7 +104,9 @@ export class InMemoryProjectRepository implements ProjectRepository {
    * @param project - The project entity to save.
    */
   async save(project: Project): Promise<void> {
-    this.storage.set(project.id.value, project);
+    // A copy, not the caller's entity: a row does not keep changing after it is
+    // written, and the copy is what drops the fields the schema has no column for.
+    this.storage.set(project.id.value, asStored(project));
   }
 
   /**

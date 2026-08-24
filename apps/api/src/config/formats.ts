@@ -57,3 +57,38 @@ convict.addFormat({
     }
   },
 });
+
+/**
+ * Custom convict format for a base64-encoded 32-byte key.
+ *
+ * Mirrors the runtime guard in SessionEncryption (the infrastructure package) so a
+ * wrong-length or malformed session encryption key is rejected at config load. The server
+ * then fails fast at startup with an operator-facing error, instead of booting and later
+ * throwing the same "must be a base64-encoded 32-byte string" at the first user who triggers
+ * a session, such as the first-admin account-setup submit, where it would surface as a
+ * baffling error under the sign-up form. Like `required-string`, this also rejects a
+ * null/unset or empty value, so the key remains required.
+ */
+convict.addFormat({
+  name: 'base64-32byte-key',
+  validate: (value: unknown) => {
+    if (value === null || value === undefined) {
+      throw new TypeError('must be set via environment variable');
+    }
+    if (typeof value !== 'string') {
+      throw new TypeError('must be a string');
+    }
+    if (value.length === 0) {
+      throw new TypeError('must not be empty');
+    }
+    // Validate the alphabet before decoding: Buffer.from silently drops characters outside the
+    // base64 alphabet, so an otherwise-malformed key could coincidentally decode to 32 bytes and
+    // slip through the length check below.
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+      throw new Error('must be a base64-encoded 32-byte string (e.g. openssl rand -base64 32)');
+    }
+    if (Buffer.from(value, 'base64').length !== 32) {
+      throw new Error('must be a base64-encoded 32-byte string (e.g. openssl rand -base64 32)');
+    }
+  },
+});

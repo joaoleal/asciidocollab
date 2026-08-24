@@ -25,6 +25,10 @@ export const AUDIT_DICTIONARY_TERM_ADDED = 'grammar.dictionary_term_added';
 export const AUDIT_DICTIONARY_TERM_REMOVED = 'grammar.dictionary_term_removed';
 export const AUDIT_GRAMMAR_SETTINGS_UPDATED = 'grammar.settings_updated';
 
+// Project cloning events
+export const AUDIT_PROJECT_CLONED = 'project.cloned';
+export const AUDIT_PROJECT_CLONE_REQUESTED = 'project.clone_requested';
+
 // Authorization events
 export const AUDIT_AUTHZ_DENIED = 'authz.denied';
 

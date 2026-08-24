@@ -13,7 +13,7 @@ import { PermissionDeniedError } from '../../errors/common/permission-denied';
 import { ProjectNotFoundError } from '../../errors/project/project-not-found';
 import { DomainError } from '../../errors/domain-error';
 import { Result } from '../../types/result';
-import { DownloadContentSource, ResolveDownloadContentSourceDeps, buildResolverDeps, resolveDownloadContentSource } from './download-content-source';
+import { ResolvedWithFallback, ResolveDownloadContentSourceDeps, buildResolverDeps, resolveDownloadContentSource } from './download-content-source';
 
 /** Single file entry within the project download archive. */
 export interface DownloadProjectFile {
@@ -22,7 +22,7 @@ export interface DownloadProjectFile {
   /** Path relative to the project root, with no leading slash. */
   relativePath: string;
   /** Resolved content source: live inline bytes or a signal to stream from disk. */
-  source: DownloadContentSource;
+  source: ResolvedWithFallback;
 }
 
 /** Return value containing the project name and all its downloadable files. */
@@ -87,7 +87,7 @@ export class DownloadProjectUseCase {
 
   private async resolveFileSources(projectId: ProjectId, fileNodes: FileNode[]): Promise<DownloadProjectFile[]> {
     if (!buildResolverDeps(this.documentRepo, this.collaborationSessionRepo, this.collaborativeContentReader)) {
-      const storedSource: DownloadContentSource = { kind: 'stored' };
+      const storedSource: ResolvedWithFallback = { kind: 'stored' };
       return fileNodes.map((node) => ({
         fileNode: node,
         relativePath: node.path.value.replace(/^\//, ''),
@@ -123,7 +123,7 @@ export class DownloadProjectUseCase {
         chunk.map(async (node) => ({
           fileNode: node,
           relativePath: node.path.value.replace(/^\//, ''),
-          source: await resolveDownloadContentSource(resolverDeps, projectId, node),
+          source: await resolveDownloadContentSource(resolverDeps, projectId, node, 'fallback'),
         })),
       );
       results.push(...chunkResults);

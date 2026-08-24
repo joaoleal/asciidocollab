@@ -35,6 +35,7 @@ import { fileContentRoutes } from '../routes/projects/file-content';
 import { fileTreeRoutes } from '../routes/projects/file-tree';
 import { projectMainFileRoutes } from '../routes/projects/main-file';
 import { renderConfigRoutes } from '../routes/projects/render-config';
+import { cloneRoutes } from '../routes/projects/clone';
 import { dictionaryRoutes } from '../routes/grammar/dictionary';
 import { ignoredLintsRoutes } from '../routes/grammar/ignored-lints';
 import { pdfExtensionRoutes } from '../routes/projects/pdf-extensions';
@@ -91,6 +92,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(fileTreeRoutes);
       await innerApp.register(projectMainFileRoutes);
       await innerApp.register(renderConfigRoutes);
+      await innerApp.register(cloneRoutes);
       await innerApp.register(dictionaryRoutes);
       await innerApp.register(ignoredLintsRoutes);
       await innerApp.register(pdfExtensionRoutes);

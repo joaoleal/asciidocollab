@@ -1,7 +1,8 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Folder, FileText, Users, Clock, MoreVertical, Settings } from "lucide-react";
+import { Folder, FileText, Users, Clock, Copy, MoreVertical, Settings } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -10,16 +11,59 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
+import { CloneProjectDialog } from "@/components/clone-project-dialog";
+import type { CloneFailure } from "@/components/clone-project-dialog";
 import { Project } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 
 interface ProjectCardProperties {
+  /** The project this card summarises. */
   project: Project;
+  /**
+   * Receives the copy created from this card's clone action, so the surrounding listing can react
+   * without refetching. Omitted where nothing is listening.
+   *
+   * @param created - The project the server just created.
+   */
+  onCloned?: (created: Project) => void;
+  /**
+   * Receives the explanation for a copy that failed after its dialog was dismissed, which the card
+   * has nowhere of its own to show. Omitted where nothing is listening.
+   *
+   * @param failure - The sentence describing why the copy failed, and the code it came from.
+   */
+  onCloneFailed?: (failure: CloneFailure) => void;
+  /**
+   * Announces that this card's dialog has just sent a request, so the listing can retire whatever
+   * it is still saying about an earlier attempt. Omitted where nothing is listening.
+   */
+  onCloneStarted?: () => void;
 }
 
-/** Renders a summary card for a project: its folder icon, name, role badge, an options menu for owners, description, and a compact footer with file and member counts and the last-updated time. */
-export function ProjectCard({ project }: ProjectCardProperties) {
-  const canManage = project.role === "owner";
+/** Renders a summary card for a project: its folder icon, name, role badge, an options menu, description, and a compact footer with file and member counts and the last-updated time. */
+export function ProjectCard({
+  project,
+  onCloned,
+  onCloneFailed,
+  onCloneStarted,
+}: ProjectCardProperties) {
+  const [cloneOpen, setCloneOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isOwner = project.role === "owner";
+
+  const optionsButtonReference = useRef<HTMLButtonElement>(null);
+  const cloneWasOpen = useRef(false);
+  // The clone dialog is opened from a menu item that unmounts with the menu, and it has no
+  // Dialog.Trigger of its own, so Radix restores focus to nothing and closing drops the user on the
+  // document body. Send focus back to the control the flow started from, which is still here. It
+  // has to happen after the close has been committed: while the change handler runs the dialog's
+  // focus trap is still mounted and bounces any outside focus straight back inside it.
+  useEffect(() => {
+    if (cloneWasOpen.current && !cloneOpen) {
+      optionsButtonReference.current?.focus();
+    }
+    cloneWasOpen.current = cloneOpen;
+  }, [cloneOpen]);
 
   return (
     <Card className="group relative flex flex-col h-full hover:shadow-md transition-shadow">
@@ -43,34 +87,69 @@ export function ProjectCard({ project }: ProjectCardProperties) {
                 {project.role}
               </Badge>
             )}
-            {canManage && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Project options"
-                    onClick={(event) => event.stopPropagation()}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <MoreVertical className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+            {/*
+              The menu itself is open to every role; each item carries its own gate instead. The
+              invariant is that the menu must never offer an item whose destination would then
+              refuse the user. Member management and project settings both land on pages that
+              admit owners only, so both are shown to owners alone. Cloning produces a separate
+              project the cloner owns and grants no access to this one, so it is safe for any
+              role that can see the card — which is why a viewer's menu holds Clone and nothing
+              else, rather than not appearing at all.
+            */}
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  ref={optionsButtonReference}
+                  aria-label="Project options"
+                  onClick={(event) => event.stopPropagation()}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <MoreVertical className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {isOwner && (
                   <DropdownMenuItem asChild>
                     <Link href={`/dashboard/projects/${project.id}/members`}>
                       <Users className="mr-2 h-4 w-4" aria-hidden="true" />
                       Members
                     </Link>
                   </DropdownMenuItem>
+                )}
+                {isOwner && (
                   <DropdownMenuItem asChild>
                     <Link href={`/dashboard/projects/${project.id}/settings`}>
                       <Settings className="mr-2 h-4 w-4" aria-hidden="true" />
                       Settings
                     </Link>
                   </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
+                )}
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    // Suppress the menu's own dismissal so it cannot race the dialog for focus,
+                    // then close the menu explicitly. Without the second step the menu stays
+                    // mounted behind the modal and is still hanging over the card once the
+                    // dialog closes.
+                    event.preventDefault();
+                    setMenuOpen(false);
+                    setCloneOpen(true);
+                  }}
+                >
+                  <Copy className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Clone
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <CloneProjectDialog
+              open={cloneOpen}
+              onOpenChange={setCloneOpen}
+              projectId={project.id}
+              projectName={project.name}
+              onCloneStarted={() => onCloneStarted?.()}
+              onCloned={(created) => onCloned?.(created)}
+              onCloneFailed={(failure) => onCloneFailed?.(failure)}
+            />
           </div>
         </div>
         <CardDescription className="line-clamp-2">

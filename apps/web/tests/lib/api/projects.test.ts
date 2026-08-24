@@ -348,3 +348,55 @@ describe('renameSymbol request shape', () => {
     expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
   });
 });
+
+describe('projectsApi.clone', () => {
+  test('POSTs the requested name to the clone endpoint and returns the created project', async () => {
+    const created = { id: 'p2', name: 'Copy of Docs', fileCount: 3, memberCount: 1, role: 'owner' };
+    mockFetch.mockResolvedValueOnce(okResponse({ data: created }));
+    const response = await projectsApi.clone('p1', 'Copy of Docs');
+    const [url, options] = singleFetchCall();
+    expect(url).toBe(`${API_BASE_URL}/api/projects/p1/clone`);
+    expect(options.method).toBe('POST');
+    expect(options.credentials).toBe('include');
+    expect(JSON.parse(options.body as string)).toEqual({ name: 'Copy of Docs' });
+    expect(response.data).toEqual(created);
+  });
+
+  test('rejects with the server status, code and message when the response is not ok', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ error: { code: 'CLONE_IN_PROGRESS', message: 'already running' } }),
+    });
+    await expect(projectsApi.clone('p1', 'Copy of Docs')).rejects.toMatchObject({
+      status: 409,
+      code: 'CLONE_IN_PROGRESS',
+      message: 'already running',
+    });
+  });
+
+  test('carries the structured details the server attaches to an unreadable-content failure', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: () =>
+        Promise.resolve({
+          error: {
+            code: 'LIVE_CONTENT_UNAVAILABLE',
+            message: 'Could not read the current content of /chapters/intro.adoc',
+            details: { path: '/chapters/intro.adoc' },
+          },
+        }),
+    });
+    await expect(projectsApi.clone('p1', 'Copy of Docs')).rejects.toMatchObject({
+      status: 503,
+      code: 'LIVE_CONTENT_UNAVAILABLE',
+      details: { path: '/chapters/intro.adoc' },
+    });
+  });
+
+  test('propagates a network failure to the caller', async () => {
+    mockFetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(projectsApi.clone('p1', 'Copy of Docs')).rejects.toThrow('Failed to fetch');
+  });
+});

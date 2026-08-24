@@ -1,5 +1,6 @@
 import { CreateProjectDto, CreateProjectResultDto } from '../../src/dtos/create-project.dto';
 import { RenameFileDto, RenameFileResultDto } from '../../src/dtos/rename-file.dto';
+import { CloneProjectDto } from '../../src/dtos/clone-project.dto';
 import { DeleteFileDto } from '../../src/dtos/delete-file.dto';
 import { InviteUserDto } from '../../src/dtos/invite-user.dto';
 import { RemoveMemberDto } from '../../src/dtos/remove-member.dto';
@@ -201,5 +202,13 @@ describe('ProjectEvent DTOs', () => {
         }
       }
     }
+  });
+});
+
+describe('CloneProject DTOs', () => {
+  test('CloneProjectDto carries only the new project name', () => {
+    const dto: CloneProjectDto = { name: 'Handbook 2027' };
+    expect(dto.name).toBe('Handbook 2027');
+    expect(Object.keys(dto)).toEqual(['name']);
   });
 });

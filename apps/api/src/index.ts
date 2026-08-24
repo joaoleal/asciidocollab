@@ -47,6 +47,7 @@ import type {
   EmailChangeNotifier,
   RegistrationInvitationNotifier,
   EmailVerificationNotifier,
+  ActiveCloneRegistry,
 } from '@asciidocollab/domain';
 import { loadConfig, getConfig } from './config';
 import { createRepositories } from './di/repositories';
@@ -151,6 +152,8 @@ export interface AppContainer {
     registrationInvitationNotifier: RegistrationInvitationNotifier;
     /** Notifier for email-verification emails. */
     emailVerificationNotifier: EmailVerificationNotifier;
+    /** Bounds each user to one clone in flight; shared by every request this server serves. */
+    activeCloneRegistry: ActiveCloneRegistry;
   };
 }
 
@@ -340,6 +343,7 @@ declare module 'fastify' {
       emailChangeNotifier: EmailChangeNotifier;
       registrationInvitationNotifier: RegistrationInvitationNotifier;
       emailVerificationNotifier: EmailVerificationNotifier;
+      activeCloneRegistry: ActiveCloneRegistry;
     };
   }
 }

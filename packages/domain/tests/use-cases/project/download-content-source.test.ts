@@ -73,7 +73,7 @@ describe('resolveDownloadContentSource', () => {
     const reader = makeReader({ success: true, value: liveText });
     const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('inline');
     expect((result as Extract<DownloadContentSource, { kind: 'inline' }>).bytes).toEqual(Buffer.from(liveText, 'utf8'));
@@ -89,7 +89,7 @@ describe('resolveDownloadContentSource', () => {
     const logger: Logger = { warn: warnSpy };
     const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader, logger };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('stored');
     expect(warnSpy).not.toHaveBeenCalled();
@@ -106,7 +106,7 @@ describe('resolveDownloadContentSource', () => {
     const logger: Logger = { warn: warnSpy };
     const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader, logger };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('stored');
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -129,7 +129,7 @@ describe('resolveDownloadContentSource', () => {
     const reader = makeReader({ success: true, value: 'should not be read' });
     const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('stored');
     expect(reader.readContent as jest.Mock).not.toHaveBeenCalled();
@@ -140,7 +140,7 @@ describe('resolveDownloadContentSource', () => {
     const reader = makeReader({ success: true, value: 'should not be read' });
     const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('stored');
     expect(reader.readContent as jest.Mock).not.toHaveBeenCalled();
@@ -155,7 +155,7 @@ describe('resolveDownloadContentSource', () => {
     const reader = makeReader({ success: true, value: liveText });
     const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('inline');
     const { bytes } = result as Extract<DownloadContentSource, { kind: 'inline' }>;
@@ -179,7 +179,7 @@ describe('resolveDownloadContentSource', () => {
       logger,
     };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('stored');
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -205,13 +205,148 @@ describe('resolveDownloadContentSource', () => {
       logger,
     };
 
-    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode());
+    const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fallback');
 
     expect(result.kind).toBe('stored');
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const [, meta] = warnSpy.mock.calls[0] as [string, Record<string, unknown>];
     expect(meta).toHaveProperty('error', sessionError.message);
   });
+
+  describe("with the 'fail' policy", () => {
+    test('a failed live read reports the file as unavailable instead of falling back', async () => {
+      const document = makeDocument();
+      await documentRepo.save(document);
+      await collaborationSessionRepo.open(projectId, document.id);
+
+      const reader = makeReader({ success: false, error: new Error('collab server unreachable') });
+      const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
+      const fileNode = makeFileNode();
+
+      const result = await resolveDownloadContentSource(deps, projectId, fileNode, 'fail');
+
+      expect(result).toEqual({ kind: 'unavailable', fileNode });
+    });
+
+    test('a failed live read never resolves to stored, so stale stored bytes are never served', async () => {
+      const document = makeDocument();
+      await documentRepo.save(document);
+      await collaborationSessionRepo.open(projectId, document.id);
+
+      const reader = makeReader({ success: false, error: new Error('collab server unreachable') });
+      const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
+
+      const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fail');
+
+      expect(result.kind).not.toBe('stored');
+    });
+
+    test('a failed live read logs no fallback warning, because nothing fell back', async () => {
+      const document = makeDocument();
+      await documentRepo.save(document);
+      await collaborationSessionRepo.open(projectId, document.id);
+
+      const reader = makeReader({ success: false, error: new Error('collab server unreachable') });
+      const warnSpy = jest.fn();
+      const logger: Logger = { warn: warnSpy };
+      const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader, logger };
+
+      const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fail');
+
+      expect(result.kind).toBe('unavailable');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    test('a reader that throws is still a failed live read, not a licence to serve stored bytes', async () => {
+      const document = makeDocument();
+      await documentRepo.save(document);
+      await collaborationSessionRepo.open(projectId, document.id);
+
+      const throwingReader: CollaborativeContentReader = {
+        readContent: jest.fn().mockRejectedValue(new Error('collab response body was truncated')),
+      };
+      const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: throwingReader };
+      const fileNode = makeFileNode();
+
+      const result = await resolveDownloadContentSource(deps, projectId, fileNode, 'fail');
+
+      expect(result).toEqual({ kind: 'unavailable', fileNode });
+    });
+
+    test('a session check that throws leaves the current content undetermined, so nothing stored is substituted', async () => {
+      const document = makeDocument();
+      await documentRepo.save(document);
+      const throwingSessionRepo: ResolveDownloadContentSourceDeps['collaborationSessionRepo'] = {
+        isActive: jest.fn().mockRejectedValue(new Error('Redis timeout')),
+      };
+      const deps: ResolveDownloadContentSourceDeps = {
+        documentRepo,
+        collaborationSessionRepo: throwingSessionRepo,
+        collaborativeContentReader: makeReader({ success: true, value: 'should not be read' }),
+      };
+      const fileNode = makeFileNode();
+
+      const result = await resolveDownloadContentSource(deps, projectId, fileNode, 'fail');
+
+      expect(result).toEqual({ kind: 'unavailable', fileNode });
+    });
+
+    test('a document lookup that throws leaves the current content undetermined, so nothing stored is substituted', async () => {
+      const throwingDocumentRepo: ResolveDownloadContentSourceDeps['documentRepo'] = {
+        findByFileNodeId: jest.fn().mockRejectedValue(new Error('DB connection timeout')),
+      };
+      const deps: ResolveDownloadContentSourceDeps = {
+        documentRepo: throwingDocumentRepo,
+        collaborationSessionRepo,
+        collaborativeContentReader: makeReader({ success: true, value: 'should not be read' }),
+      };
+      const fileNode = makeFileNode();
+
+      const result = await resolveDownloadContentSource(deps, projectId, fileNode, 'fail');
+
+      expect(result).toEqual({ kind: 'unavailable', fileNode });
+    });
+
+    test('a dormant session still resolves to stored — a dormant document is not a failed read', async () => {
+      const document = makeDocument();
+      await documentRepo.save(document);
+      // session NOT opened → isActive returns false
+
+      const reader = makeReader({ success: true, value: 'should not be read' });
+      const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
+
+      const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fail');
+
+      expect(result).toEqual({ kind: 'stored' });
+      expect(reader.readContent as jest.Mock).not.toHaveBeenCalled();
+    });
+
+    test('a file node with no document still resolves to stored — a binary asset is not a failed read', async () => {
+      // documentRepo is empty → findByFileNodeId returns null
+      const reader = makeReader({ success: true, value: 'should not be read' });
+      const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
+
+      const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fail');
+
+      expect(result).toEqual({ kind: 'stored' });
+      expect(reader.readContent as jest.Mock).not.toHaveBeenCalled();
+    });
+
+    test('a successful live read still returns the live inline bytes', async () => {
+      const liveText = '= Live Document\nEdited moments ago';
+      const document = makeDocument();
+      await documentRepo.save(document);
+      await collaborationSessionRepo.open(projectId, document.id);
+
+      const reader = makeReader({ success: true, value: liveText });
+      const deps: ResolveDownloadContentSourceDeps = { documentRepo, collaborationSessionRepo, collaborativeContentReader: reader };
+
+      const result = await resolveDownloadContentSource(deps, projectId, makeFileNode(), 'fail');
+
+      expect(result).toEqual({ kind: 'inline', bytes: Buffer.from(liveText, 'utf8') });
+    });
+  });
+
 });
 
 describe('buildResolverDeps', () => {
