@@ -28,6 +28,41 @@ enum GitProvider {
   BITBUCKET
 }
 
+enum GitSyncStatus {
+  UP_TO_DATE
+  AHEAD
+  BEHIND
+  DIVERGED
+  CONFLICTED
+  DISCONNECTED
+}
+
+enum GitOperationKind {
+  IMPORT
+  INITIALIZE
+  CONNECT
+  DISCONNECT
+  COMMIT
+  PUSH
+  PULL
+  FETCH
+  BRANCH_CREATE
+  BRANCH_SWITCH
+  RESOLVE
+  DISCARD
+  AMEND
+  UNDO_PULL
+}
+
+enum GitOperationState {
+  QUEUED
+  RUNNING
+  AWAITING_CONFLICT
+  SUCCEEDED
+  FAILED
+  ABORTED
+}
+
 enum ReviewItemKind {
   COMMENT
   TASK
@@ -91,10 +126,12 @@ model Project {
 
   members               ProjectMember[]
   fileNodes             FileNode[]
-  mainFile              FileNode?              @relation("ProjectMainFile", fields: [mainFileNodeId], references: [id], onDelete: SetNull)
+  mainFile              FileNode?               @relation("ProjectMainFile", fields: [mainFileNodeId], references: [id], onDelete: SetNull)
   gitRepository         GitRepository?
+  gitCredential         GitCredential?
+  gitOperations         GitOperation[]
   auditLogs             AuditLog[]
-  templates             Template[]             @relation("TemplateSourceProject")
+  templates             Template[]              @relation("TemplateSourceProject")
   collaborationSessions CollaborationSession[]
   reviewComments        ReviewComment[]
   renderConfig          ProjectRenderConfig?
@@ -123,12 +160,12 @@ model FileNode {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  project             Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  parent              FileNode?  @relation("FileNodeHierarchy", fields: [parentId], references: [id])
-  children            FileNode[] @relation("FileNodeHierarchy")
+  project             Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent              FileNode?     @relation("FileNodeHierarchy", fields: [parentId], references: [id])
+  children            FileNode[]    @relation("FileNodeHierarchy")
   document            Document?
   asset               Asset?
-  mainFileForProjects Project[]  @relation("ProjectMainFile")
+  mainFileForProjects Project[]     @relation("ProjectMainFile")
   ignoredLints        IgnoredLint[]
 
   @@unique([projectId, path])
@@ -189,16 +226,80 @@ model Template {
 }
 
 model GitRepository {
-  id            String      @id @default(uuid()) @db.Uuid
-  projectId     String      @unique @db.Uuid
-  provider      GitProvider
-  remoteUrl     String
-  credentialRef String
-  currentBranch String      @default("main")
-  lastSyncAt    DateTime?
-  createdAt     DateTime    @default(now())
+  id                  String        @id @default(uuid()) @db.Uuid
+  projectId           String        @unique @db.Uuid
+  provider            GitProvider
+  remoteUrl           String
+  credentialRef       String
+  currentBranch       String        @default("main")
+  defaultBranch       String?
+  lastKnownRemoteHead String?
+  syncStatus          GitSyncStatus @default(UP_TO_DATE)
+  connectedByUserId   String?       @db.Uuid
+  lastSyncAt          DateTime?
+  createdAt           DateTime      @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// Encrypted credential store that GitRepository.credentialRef points to (feature 048, D5).
+model GitCredential {
+  id              String      @id @default(uuid()) @db.Uuid
+  projectId       String      @unique @db.Uuid
+  provider        GitProvider
+  // AES-256-GCM ciphertext (iv:tag:ciphertext); NEVER logged or returned to clients.
+  encryptedToken  String
+  tokenHint       String? // last 4 chars for UI display only
+  createdByUserId String      @db.Uuid
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// Durable record of a whole-project git operation: the cross-instance lock + progress + audit source.
+model GitOperation {
+  id                String            @id @default(uuid()) @db.Uuid
+  projectId         String            @db.Uuid
+  kind              GitOperationKind
+  state             GitOperationState @default(QUEUED)
+  branch            String?
+  triggeredByUserId String            @db.Uuid
+  progress          Int               @default(0) // 0..100
+  heartbeatAt       DateTime? // worker liveness; a stale heartbeat on a non-terminal op → swept to FAILED
+  errorCode         String? // typed domain error code (safe, no internals)
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime          @default(now())
+
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conflicts GitConflict[]
+  // "One active op per project" (single-flight + write-lock) is enforced by a PARTIAL UNIQUE index
+  // on projectId WHERE state IN (QUEUED, RUNNING, AWAITING_CONFLICT). Prisma 7.9.1 cannot express a
+  // partial UNIQUE index in the schema DSL (`@@index(where: ...)` needs the "partialIndexes" preview
+  // feature and only produces a non-unique filtered index; `unique: true` alongside `where` is
+  // rejected by the CLI) — this constraint must be added as raw SQL
+  // (`CREATE UNIQUE INDEX ... ON "GitOperation" ("projectId") WHERE state IN (...)`) in a future
+  // migration, once migrations are permitted for this feature. Workers claim the next QUEUED row
+  // with SELECT … FOR UPDATE SKIP LOCKED (no queue library, no advisory locks).
+
+  @@index([projectId])
+}
+
+// A conflicted file awaiting resolution during a PULL/SWITCH.
+model GitConflict {
+  id          String   @id @default(uuid()) @db.Uuid
+  operationId String   @db.Uuid
+  path        String
+  // stage blobs materialized to temp storage; content fetched on demand for the merge view
+  isBinary    Boolean  @default(false)
+  resolved    Boolean  @default(false)
+  resolution  String? // 'ours' | 'theirs' | 'merged'
+  createdAt   DateTime @default(now())
+
+  operation GitOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@index([operationId])
 }
 
 model AuditLog {
