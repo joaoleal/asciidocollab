@@ -278,10 +278,13 @@ model GitOperation {
   // on projectId WHERE state IN (QUEUED, RUNNING, AWAITING_CONFLICT). Prisma 7.9.1 cannot express a
   // partial UNIQUE index in the schema DSL (`@@index(where: ...)` needs the "partialIndexes" preview
   // feature and only produces a non-unique filtered index; `unique: true` alongside `where` is
-  // rejected by the CLI) — this constraint must be added as raw SQL
-  // (`CREATE UNIQUE INDEX ... ON "GitOperation" ("projectId") WHERE state IN (...)`) in a future
-  // migration, once migrations are permitted for this feature. Workers claim the next QUEUED row
-  // with SELECT … FOR UPDATE SKIP LOCKED (no queue library, no advisory locks).
+  // rejected by the CLI) — this constraint must be added as raw SQL in a future migration, once
+  // migrations are permitted for this feature. The exact statement is captured at
+  // packages/infrastructure/src/persistence/git/git-operation-active-op-unique-index.sql so it is
+  // not lost before then. Workers claim the next QUEUED row with SELECT … FOR UPDATE SKIP LOCKED
+  // (no queue library, no advisory locks — see PrismaGitOperationRepository#claimNextQueued);
+  // #withGuard enforces single-flight defensively without this index in the meantime (see that
+  // class's docs).
 
   @@index([projectId])
 }
