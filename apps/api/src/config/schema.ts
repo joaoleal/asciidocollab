@@ -12,12 +12,14 @@ import { adminSchema, failedSignInSchema } from './schema-admin';
 import type { AdminConfig, FailedSignInConfig } from './schema-admin';
 import { collabSchema } from './schema-collab';
 import type { CollabConfig } from './schema-collab';
+import { gitSchema } from './schema-git';
+import type { GitConfig } from './schema-git';
 
 /**
  * Convict schema definition for AsciiDoCollab API server.
  *
  * Single source of truth for all configuration fields. The schema is composed
- * from per-domain fragments (server, auth, storage, project, admin, collab),
+ * from per-domain fragments (server, auth, storage, project, admin, collab, git),
  * each living in its own module. Each field maps to an environment variable for
  * override. Fields marked `sensitive: true` are redacted in logs/output.
  */
@@ -45,6 +47,7 @@ export function createConfig() {
     failedSignIn: failedSignInSchema,
     downloads: downloadsSchema,
     collab: collabSchema,
+    git: gitSchema,
   });
 }
 
@@ -68,4 +71,6 @@ export interface Config {
   downloads: DownloadsConfig;
   /** Collaboration server configuration. */
   collab: CollabConfig;
+  /** Git repository sync configuration. */
+  git: GitConfig;
 }

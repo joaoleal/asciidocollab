@@ -92,3 +92,35 @@ convict.addFormat({
     }
   },
 });
+
+/**
+ * Custom convict format for a comma-separated list of strings.
+ *
+ * Environment variables carry a single string, so array-valued fields (e.g. the git
+ * egress host allowlist) need `coerce` to split "a.com,b.com" into `['a.com', 'b.com']`.
+ * A programmatic/config-file default is already an array and passes through `coerce`
+ * unchanged (it only touches strings). Entries are trimmed; empty entries (an empty
+ * string, or a trailing/doubled comma) are dropped.
+ */
+convict.addFormat({
+  name: 'comma-separated-strings',
+  coerce: (value: unknown) => {
+    if (typeof value !== 'string') {
+      return value;
+    }
+    return value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  },
+  validate: (value: unknown) => {
+    if (!Array.isArray(value)) {
+      throw new TypeError('must be an array of strings');
+    }
+    for (const entry of value) {
+      if (typeof entry !== 'string' || entry.length === 0) {
+        throw new TypeError('must be an array of non-empty strings');
+      }
+    }
+  },
+});
