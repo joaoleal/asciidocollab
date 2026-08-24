@@ -203,7 +203,7 @@ export const authSchema: convict.Schema<AuthConfig> = {
     },
     encryptionKey: {
       doc: 'AES-256 key for session data encryption at rest. Must be a base64-encoded 32-byte string (e.g. openssl rand -base64 32).',
-      format: 'required-string',
+      format: 'base64-32byte-key',
       default: '',
       sensitive: true,
       env: 'ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY',
