@@ -55,3 +55,29 @@ export type {
   ReplaceRequestDto,
   ReplaceResultDto,
 } from './project-replace.dto';
+export type {
+  GitProvider,
+  GitSyncStatus,
+  GitRepositoryDto,
+  BranchDto,
+  CommitDto,
+  PendingChangeType,
+  PendingChangeDto,
+  FileGitStatus,
+  ConflictResolution,
+  ConflictDto,
+} from './git.dto';
+export {
+  GIT_PROVIDERS,
+  isGitProvider,
+  GIT_SYNC_STATUSES,
+  isGitSyncStatus,
+  PENDING_CHANGE_TYPES,
+  isPendingChangeType,
+  FILE_GIT_STATUSES,
+  isFileGitStatus,
+  CONFLICT_RESOLUTIONS,
+  isConflictResolution,
+} from './git.dto';
+export type { GitErrorCode, GitErrorDto } from './git-error.dto';
+export { GIT_ERROR_CODES, isGitErrorCode } from './git-error.dto';
