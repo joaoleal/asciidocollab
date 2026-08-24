@@ -163,6 +163,24 @@ describe('InMemoryGitOperationRepository', () => {
 
       expect(result).toEqual({ success: true, value: 'unblocked' });
     });
+
+    it('fails with GitOperationInProgressError without calling the action when the active operation is RUNNING', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      expect(claimed?.state).toBe('RUNNING'); // sanity: the op is genuinely RUNNING, not still QUEUED
+      const action = jest.fn(async () => 'should not run');
+
+      const result = await repo.withGuard(projectA, action);
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(GitOperationInProgressError);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    // AWAITING_CONFLICT is not reachable through this fake's public API: no method here transitions an
+    // operation into that state (only enqueue → QUEUED and claimNextQueued → RUNNING exist). A future
+    // task that adds the conflict-detection/state-transition surface should add the matching case here.
   });
 
   describe('conflict CRUD', () => {
