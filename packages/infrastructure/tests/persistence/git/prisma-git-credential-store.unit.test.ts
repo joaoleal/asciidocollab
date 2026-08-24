@@ -186,7 +186,7 @@ describe('PrismaGitCredentialStore', () => {
     });
   });
 
-  describe('loadDecrypted (adapter-specific execution-time path — carry-forward #1)', () => {
+  describe('loadDecrypted (adapter-specific execution-time decrypted path)', () => {
     it('returns the decrypted plaintext token and the tokenHint', async () => {
       const { store, encryption } = makeStore();
       await store.save(projectId, { encryptedToken: encryption.encrypt(plaintext), tokenHint: '7890', provider, createdByUserId });

@@ -24,10 +24,10 @@ export interface DecryptedGitCredential {
  * Prisma-backed implementation of the `GitCredentialStore` port, storing AES-256-GCM ciphertext
  * (produced by {@link SessionEncryption}) in the `GitCredential` table.
  *
- * Resolves carry-forward #2 from the T005 review on the port itself. The `save` method of
- * `GitCredentialStore` takes a `GitCredentialSaveInput` that widens `GitCredentialRecord` with
- * `provider`/`createdByUserId`, since the `GitCredential` row requires both and neither belongs
- * on the record that `load` hands back.
+ * `save` accepts a `GitCredentialSaveInput` that widens `GitCredentialRecord` with
+ * `provider`/`createdByUserId`. Those two fields are supplied only on save — the `GitCredential`
+ * row's columns require them, but they have no place on the ciphertext record `load` hands back,
+ * since a reader only ever needs the ciphertext and its display hint.
  *
  * Neither `save`, `load`, nor `delete` encrypt or decrypt anything — the `encryptedToken` field
  * they move is already ciphertext produced upstream of this port (per the `GitCredentialRecord`
@@ -36,13 +36,13 @@ export interface DecryptedGitCredential {
  * session encryption key), wired by the composition root — is used by this adapter only for
  * {@link loadDecrypted}.
  *
- * Resolves carry-forward #1 (the decrypted-token path) with a deliberately adapter-specific
- * method: `loadDecrypted` is not added to the domain `GitCredentialStore` port. Decryption is an
- * infrastructure concern, and keeping it off the port means every other consumer (use cases, the
- * in-memory test fake) keeps working with ciphertext-only semantics. Only the git-worker's
- * composition root, which already depends on this concrete adapter for DI, should call it, at job
- * execution time, to hand the plaintext to `git` out-of-band via a `GIT_ASKPASS` helper or similar
- * — never via argv, the working tree, `.git/config`, or a log line (Security Constitution 1.3.0).
+ * Decryption is intentionally isolated to `loadDecrypted`, a deliberately adapter-specific method
+ * not added to the domain `GitCredentialStore` port: decryption is an infrastructure concern, and
+ * keeping it off the port means every other consumer (use cases, the in-memory test fake) keeps
+ * working with ciphertext-only semantics. Only the git-worker's composition root, which already
+ * depends on this concrete adapter for DI, should call it, at job execution time, to hand the
+ * plaintext to `git` out-of-band via a `GIT_ASKPASS` helper or similar — never via argv, the
+ * working tree, `.git/config`, or a log line.
  */
 export class PrismaGitCredentialStore implements GitCredentialStore {
   /**

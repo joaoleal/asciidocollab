@@ -147,7 +147,7 @@ describe('PrismaGitCredentialStore', () => {
     expect(await client.gitCredential.count({ where: { projectId: project.id.value } })).toBe(0);
   });
 
-  describe('loadDecrypted (execution-time path for the git-worker — carry-forward #1)', () => {
+  describe('loadDecrypted (execution-time decrypted path)', () => {
     it('returns the decrypted plaintext token and hint', async () => {
       const { project, owner } = await setupProjectAndUser();
       await store.save(project.id, {
