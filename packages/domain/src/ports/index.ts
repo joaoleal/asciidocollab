@@ -19,7 +19,7 @@ export type { ProjectRenderConfigRepository } from './project/project-render-con
 export type { ActiveCloneRegistry } from './project/active-clone-registry';
 
 // git/
-export type { GitCredentialStore, GitCredentialRecord } from './git/git-credential-store';
+export type { GitCredentialStore, GitCredentialRecord, GitCredentialSaveInput } from './git/git-credential-store';
 export type {
   GitOperationRepository,
   EnqueueGitOperationInput,
