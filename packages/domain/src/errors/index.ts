@@ -39,3 +39,4 @@ export { DictionaryTermNotFoundError } from './grammar/dictionary-term-not-found
 export { AnchorInvalidError } from './review/anchor-invalid';
 export { ReviewOperationInvalidError } from './review/review-operation-invalid';
 export { ReviewCountConflictError } from './review/review-count-conflict';
+export { GitOperationInProgressError } from './git/git-operation-in-progress';

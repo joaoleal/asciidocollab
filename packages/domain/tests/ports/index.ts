@@ -15,6 +15,8 @@ export { InMemoryActiveCloneRegistry } from './project/in-memory-active-clone-re
 
 // git/
 export { InMemoryGitCredentialStore } from './git/in-memory-git-credential-store';
+export { InMemoryGitOperationRepository } from './git/in-memory-git-operation-repository';
+export type { Clock } from './git/in-memory-git-operation-repository';
 
 // file-tree/
 export { InMemoryFileNodeRepository } from './file-tree/in-memory-file-node.repository';

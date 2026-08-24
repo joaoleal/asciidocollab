@@ -4,6 +4,7 @@ import { PermissionDeniedError } from '../src/errors/common/permission-denied';
 import { CloneAlreadyInProgressError } from '../src/errors/project/clone-already-in-progress';
 import { LiveContentUnavailableError } from '../src/errors/project/live-content-unavailable';
 import { CloneFailedError } from '../src/errors/project/clone-failed';
+import { GitOperationInProgressError } from '../src/errors/git/git-operation-in-progress';
 
 describe('CannotRemoveLastAdminError', () => {
   it('uses system-level message when no context is provided', () => {
@@ -56,6 +57,14 @@ describe('CloneAlreadyInProgressError', () => {
     const error = new CloneAlreadyInProgressError();
     expect(error.name).toBe('CloneAlreadyInProgressError');
     expect(error.message).toBe('A clone is already running for this user');
+  });
+});
+
+describe('GitOperationInProgressError', () => {
+  it('explains that a git operation is already active for the project', () => {
+    const error = new GitOperationInProgressError();
+    expect(error.name).toBe('GitOperationInProgressError');
+    expect(error.message).toBe('A git operation is already in progress for this project');
   });
 });
 

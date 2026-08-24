@@ -5,6 +5,8 @@ export { ProjectMember } from './project-member';
 export { FileNode } from './file-node';
 export { Document } from './document';
 export { GitRepository } from './git-repository';
+export { GitOperation } from './git-operation';
+export { GitConflict } from './git-conflict';
 export { Asset } from './asset';
 export { Template } from './template';
 export { AuditLog } from './audit-log';

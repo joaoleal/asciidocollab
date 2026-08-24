@@ -11,6 +11,8 @@ export { ProjectId } from './ids/project-id';
 export { FileNodeId } from './ids/file-node-id';
 export { DocumentId } from './ids/document-id';
 export { GitRepositoryId } from './ids/git-repository-id';
+export { GitOperationId } from './ids/git-operation-id';
+export { GitConflictId } from './ids/git-conflict-id';
 export { TemplateId } from './ids/template-id';
 export { AuditLogId } from './ids/audit-log-id';
 export { AuthAttemptTelemetryId } from './ids/auth-attempt-telemetry-id';

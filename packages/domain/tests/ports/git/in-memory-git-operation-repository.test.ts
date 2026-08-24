@@ -1,0 +1,212 @@
+import { ProjectId } from '../../../src/value-objects/ids/project-id';
+import { UserId } from '../../../src/value-objects/ids/user-id';
+import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
+import { InMemoryGitOperationRepository } from './in-memory-git-operation-repository';
+
+/** A mutable clock so tests can advance time deterministically without sleeping. */
+function fakeClock(startIso: string) {
+  let now = new Date(startIso);
+  return {
+    clock: () => now,
+    advanceMs(ms: number) {
+      now = new Date(now.getTime() + ms);
+    },
+  };
+}
+
+describe('InMemoryGitOperationRepository', () => {
+  const projectA = ProjectId.create('550e8400-e29b-41d4-a716-446655440020');
+  const projectB = ProjectId.create('550e8400-e29b-41d4-a716-446655440021');
+  const user = UserId.create('550e8400-e29b-41d4-a716-446655440022');
+
+  describe('enqueue and claimNextQueued', () => {
+    it('enqueues an operation in the QUEUED state', async () => {
+      const repo = new InMemoryGitOperationRepository();
+
+      const operation = await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+
+      expect(operation.state).toBe('QUEUED');
+      expect(operation.projectId).toBe(projectA);
+      expect(operation.kind).toBe('PUSH');
+      expect(operation.heartbeatAt).toBeNull();
+    });
+
+    it('claims queued operations in first-in-first-out order', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const first = await repo.enqueue({ projectId: projectA, kind: 'COMMIT', triggeredByUserId: user });
+      const second = await repo.enqueue({ projectId: projectB, kind: 'PULL', triggeredByUserId: user });
+
+      const claimedFirst = await repo.claimNextQueued(30_000);
+      const claimedSecond = await repo.claimNextQueued(30_000);
+
+      expect(claimedFirst?.id.value).toBe(first.id.value);
+      expect(claimedSecond?.id.value).toBe(second.id.value);
+    });
+
+    it('transitions a claimed operation to RUNNING with a fresh heartbeat', async () => {
+      const { clock } = fakeClock('2026-01-01T00:00:00.000Z');
+      const repo = new InMemoryGitOperationRepository(clock);
+      await repo.enqueue({ projectId: projectA, kind: 'COMMIT', triggeredByUserId: user });
+
+      const claimed = await repo.claimNextQueued(30_000);
+
+      expect(claimed?.state).toBe('RUNNING');
+      expect(claimed?.heartbeatAt).toEqual(new Date('2026-01-01T00:00:00.000Z'));
+      expect(claimed?.startedAt).toEqual(new Date('2026-01-01T00:00:00.000Z'));
+    });
+
+    it('returns null when there is nothing to claim', async () => {
+      const repo = new InMemoryGitOperationRepository();
+
+      expect(await repo.claimNextQueued(30_000)).toBeNull();
+    });
+
+    it('skips a RUNNING operation whose heartbeat is still fresh', async () => {
+      const { clock, advanceMs } = fakeClock('2026-01-01T00:00:00.000Z');
+      const repo = new InMemoryGitOperationRepository(clock);
+      await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      await repo.claimNextQueued(30_000);
+
+      advanceMs(10_000); // heartbeat is only 10s old; threshold is 30s
+
+      expect(await repo.claimNextQueued(30_000)).toBeNull();
+    });
+
+    it('reclaims a RUNNING operation whose heartbeat has gone stale', async () => {
+      const { clock, advanceMs } = fakeClock('2026-01-01T00:00:00.000Z');
+      const repo = new InMemoryGitOperationRepository(clock);
+      const enqueued = await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const firstClaim = await repo.claimNextQueued(30_000);
+
+      advanceMs(31_000); // heartbeat is now 31s old; threshold is 30s
+
+      const reclaimed = await repo.claimNextQueued(30_000);
+
+      expect(reclaimed?.id.value).toBe(enqueued.id.value);
+      expect(reclaimed?.state).toBe('RUNNING');
+      expect(reclaimed?.heartbeatAt).toEqual(new Date('2026-01-01T00:00:31.000Z'));
+      // startedAt is preserved from the original claim, not reset on reclaim.
+      expect(reclaimed?.startedAt).toEqual(firstClaim?.startedAt);
+    });
+
+    it('prefers a QUEUED operation over reclaiming a stale RUNNING one', async () => {
+      const { clock, advanceMs } = fakeClock('2026-01-01T00:00:00.000Z');
+      const repo = new InMemoryGitOperationRepository(clock);
+      const running = await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      await repo.claimNextQueued(30_000);
+      advanceMs(31_000);
+      const queued = await repo.enqueue({ projectId: projectB, kind: 'PULL', triggeredByUserId: user });
+
+      const claimed = await repo.claimNextQueued(30_000);
+
+      expect(claimed?.id.value).toBe(queued.id.value);
+      expect(running.id.value).not.toBe(queued.id.value);
+    });
+  });
+
+  describe('heartbeat', () => {
+    it('refreshes heartbeatAt to the current time', async () => {
+      const { clock, advanceMs } = fakeClock('2026-01-01T00:00:00.000Z');
+      const repo = new InMemoryGitOperationRepository(clock);
+      const enqueued = await repo.enqueue({ projectId: projectA, kind: 'COMMIT', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+
+      advanceMs(20_000);
+      await repo.heartbeat(claimed!.id);
+
+      // Heartbeat was refreshed at t=20s, so 25s later (t=45s) it's only 25s stale — under the 30s threshold.
+      advanceMs(25_000);
+      expect(await repo.claimNextQueued(30_000)).toBeNull();
+
+      // Past 30s since the refresh, it becomes reclaimable again.
+      advanceMs(10_000);
+      const reclaimed = await repo.claimNextQueued(30_000);
+      expect(reclaimed?.id.value).toBe(enqueued.id.value);
+    });
+
+    it('is a no-op for an operation id that does not exist', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const enqueued = await repo.enqueue({ projectId: projectA, kind: 'COMMIT', triggeredByUserId: user });
+      const unknownId = enqueued.id;
+      await repo.clearConflicts(unknownId); // sanity: unrelated id doesn't throw either
+
+      await expect(repo.heartbeat(unknownId)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('withGuard', () => {
+    it('runs the action and returns its value when the project has no active operation', async () => {
+      const repo = new InMemoryGitOperationRepository();
+
+      const result = await repo.withGuard(projectA, async () => 'done');
+
+      expect(result).toEqual({ success: true, value: 'done' });
+    });
+
+    it('fails with GitOperationInProgressError without calling the action when an operation is active', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'COMMIT', triggeredByUserId: user });
+      const action = jest.fn(async () => 'should not run');
+
+      const result = await repo.withGuard(projectA, action);
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(GitOperationInProgressError);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('does not let one project’s active operation block another project', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'COMMIT', triggeredByUserId: user });
+
+      const result = await repo.withGuard(projectB, async () => 'unblocked');
+
+      expect(result).toEqual({ success: true, value: 'unblocked' });
+    });
+  });
+
+  describe('conflict CRUD', () => {
+    it('round-trips a created conflict through list and get', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const operation = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+
+      const created = await repo.createConflict({ operationId: operation.id, path: 'docs/intro.adoc' });
+
+      expect(created.resolved).toBe(false);
+      expect(created.resolution).toBeNull();
+      expect(await repo.getConflict(created.id)).toEqual(created);
+      expect(await repo.listConflicts(operation.id)).toEqual([created]);
+    });
+
+    it('lists only the conflicts belonging to the requested operation', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const operationOne = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const operationTwo = await repo.enqueue({ projectId: projectB, kind: 'PULL', triggeredByUserId: user });
+      const conflictOne = await repo.createConflict({ operationId: operationOne.id, path: 'a.adoc' });
+      await repo.createConflict({ operationId: operationTwo.id, path: 'b.adoc' });
+
+      expect(await repo.listConflicts(operationOne.id)).toEqual([conflictOne]);
+    });
+
+    it('returns null for a conflict id that does not exist', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const operation = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const created = await repo.createConflict({ operationId: operation.id, path: 'gone.adoc' });
+      const missing = created.id;
+      await repo.clearConflicts(operation.id);
+
+      expect(await repo.getConflict(missing)).toBeNull();
+    });
+
+    it('clears every conflict recorded for an operation', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const operation = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      await repo.createConflict({ operationId: operation.id, path: 'a.adoc' });
+      await repo.createConflict({ operationId: operation.id, path: 'b.adoc', isBinary: true });
+
+      await repo.clearConflicts(operation.id);
+
+      expect(await repo.listConflicts(operation.id)).toEqual([]);
+    });
+  });
+});

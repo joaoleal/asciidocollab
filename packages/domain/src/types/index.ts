@@ -3,6 +3,10 @@ export type { Result } from './result';
 export type { SearchQuery, SearchMode, ReplaceSelection, PositionalEdit } from './search';
 export type { RegistrationMethod } from './registration-method';
 export type { RequestContext } from './request-context';
+export type { GitOperationKind } from './git-operation-kind';
+export type { GitOperationState } from './git-operation-state';
+export { ACTIVE_GIT_OPERATION_STATES } from './git-operation-state';
+export type { ConflictResolution } from './conflict-resolution';
 // AsciiDoc structural DTOs — cross-boundary type contracts (re-exported type-only by shared).
 export type {
   TextRange,
