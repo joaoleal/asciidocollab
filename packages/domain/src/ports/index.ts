@@ -18,6 +18,9 @@ export type { CollaborationSessionRepository } from './project/collaboration-ses
 export type { ProjectRenderConfigRepository } from './project/project-render-config.repository';
 export type { ActiveCloneRegistry } from './project/active-clone-registry';
 
+// git/
+export type { GitCredentialStore, GitCredentialRecord } from './git/git-credential-store';
+
 // file-tree/
 export type { FileNodeRepository } from './file-tree/file-node.repository';
 export type { DocumentRepository } from './file-tree/document.repository';
