@@ -25,6 +25,12 @@ export type {
   EnqueueGitOperationInput,
   CreateGitConflictInput,
 } from './git/git-operation-repository';
+export type {
+  GitCommandRunner,
+  GitWorkingTreeStatus,
+  GitPendingChange,
+  GitPendingChangeType,
+} from './git/git-command-runner';
 
 // file-tree/
 export type { FileNodeRepository } from './file-tree/file-node.repository';
