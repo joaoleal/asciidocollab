@@ -21,6 +21,41 @@ export const GIT_WORKER_BRANCHES_PATH = '/internal/git/branches';
 /** Path of the internal endpoint that creates a new local branch. */
 export const GIT_WORKER_BRANCH_CREATE_PATH = '/internal/git/branch-create';
 
+/**
+ * Path of the internal endpoint that completes a project's currently conflicted operation (a
+ * re-run merge with a resolving commit for a `PULL`, or a resolved-changes landing with no commit
+ * for a `BRANCH_SWITCH`). Byte-matches the git-worker's own `GIT_PULL_COMPLETE_PATH`
+ * (`apps/git-worker/src/internal-git-server.ts`) — confirmed by reading that file directly.
+ */
+export const GIT_WORKER_PULL_COMPLETE_PATH = '/internal/git/pull/complete';
+
+/**
+ * Path of the internal endpoint that undoes a project's most recent pull. Byte-matches the
+ * git-worker's own `GIT_UNDO_PULL_PATH` — confirmed by reading that file directly.
+ */
+export const GIT_WORKER_UNDO_PULL_PATH = '/internal/git/undo-pull';
+
+/**
+ * Path of the internal endpoint that lists a project's currently conflicting files.
+ *
+ * NOTE: unlike every other path constant in this file, the git-worker's `internal-git-server.ts`
+ * does NOT yet register a dispatch branch for this path (nor for
+ * {@link GIT_WORKER_CONFLICT_STAGES_PATH} / {@link GIT_WORKER_CONFLICT_RESOLVE_PATH} below) —
+ * confirmed by reading that file directly. `ListConflictsUseCase`/`GetConflictStagesUseCase`/
+ * `ResolveConflictsUseCase` already exist in `@asciidocollab/domain` but are not yet constructed
+ * in the worker's composition root or bound as RPC op fns. A follow-up worker-side task must add
+ * matching request parsers + op-fn bindings using these exact path strings and the request-body
+ * shapes this client posts (see each method below) before these three routes are functional
+ * end-to-end against a real worker.
+ */
+export const GIT_WORKER_CONFLICTS_PATH = '/internal/git/conflicts';
+
+/** Path of the internal endpoint that reads one conflicting file's three-way stages. See the note on {@link GIT_WORKER_CONFLICTS_PATH}. */
+export const GIT_WORKER_CONFLICT_STAGES_PATH = '/internal/git/conflicts/stages';
+
+/** Path of the internal endpoint that records one file's conflict resolution. See the note on {@link GIT_WORKER_CONFLICTS_PATH}. */
+export const GIT_WORKER_CONFLICT_RESOLVE_PATH = '/internal/git/conflicts/resolve';
+
 /** Header carrying the shared secret expected by the git-worker's internal endpoints. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
 
@@ -143,6 +178,60 @@ export interface GitWorkerCreatedBranchData {
   };
 }
 
+/** One conflicting file in the conflict-list endpoint's `data` field — no content, just enough to drive the panel. */
+export interface GitWorkerConflictSummaryData {
+  /** Project-relative path of the conflicting file. */
+  readonly path: string;
+  /** Whether the file is binary. */
+  readonly isBinary: boolean;
+  /** Whether this file's conflict already has a recorded resolution. */
+  readonly resolved: boolean;
+}
+
+/** Wire shape of the conflict-list endpoint's `data` field. */
+export interface GitWorkerConflictListData {
+  /** The awaiting operation these conflicts belong to. */
+  readonly operationId: string;
+  /** Every conflicting file, in recorded order. */
+  readonly files: readonly GitWorkerConflictSummaryData[];
+}
+
+/** Wire shape of the conflict-stages endpoint's `data` field. */
+export interface GitWorkerConflictStagesData {
+  /** The merge-base content, or null when the file had no merge base (an add/add conflict). */
+  readonly base: string | null;
+  /** This branch's ("ours") content. Empty for a binary conflict. */
+  readonly ours: string;
+  /** The incoming branch's ("theirs") content. Empty for a binary conflict. */
+  readonly theirs: string;
+  /** Whether the file is binary (no textual three-way view). */
+  readonly isBinary: boolean;
+}
+
+/** Wire shape of the conflict-resolve endpoint's `data` field. */
+export interface GitWorkerResolveConflictData {
+  /** Always `true` on success. */
+  readonly resolved: true;
+}
+
+/** Wire shape of the pull-complete endpoint's `data` field. */
+export interface GitWorkerCompleteMergeData {
+  /** Always `'resolved'` on success. */
+  readonly status: 'resolved';
+  /** The completed operation. */
+  readonly operationId: string;
+  /** The resolving merge commit's hash for a completed `PULL`; empty string for a `BRANCH_SWITCH`. */
+  readonly headCommit: string;
+}
+
+/** Wire shape of the undo-pull endpoint's `data` field. */
+export interface GitWorkerUndoPullData {
+  /** The pull operation that was undone. */
+  readonly operationId: string;
+  /** The commit the working tree was restored to. */
+  readonly headCommit: string;
+}
+
 /** Input shared by every git-worker request: the project and the acting principal. */
 export interface GitWorkerRequestInput {
   /** The project the operation acts on, as a raw UUID v4 string. */
@@ -167,6 +256,20 @@ export interface GitWorkerCommitInput extends GitWorkerRequestInput {
 export interface GitWorkerCreateBranchInput extends GitWorkerRequestInput {
   /** The new branch's name. */
   readonly name: string;
+}
+
+/** Input for {@link GitWorkerClient.getConflictStages}. */
+export interface GitWorkerConflictPathInput extends GitWorkerRequestInput {
+  /** Project-relative path of the conflicting file. */
+  readonly path: string;
+}
+
+/** Input for {@link GitWorkerClient.resolveConflict}. */
+export interface GitWorkerResolveConflictInput extends GitWorkerConflictPathInput {
+  /** The chosen resolution for the whole file. */
+  readonly resolution: 'ours' | 'theirs' | 'merged';
+  /** The user-edited merged content; required when {@link resolution} is `'merged'`. */
+  readonly mergedContent?: string;
 }
 
 /**
@@ -197,6 +300,16 @@ export interface GitWorkerClient {
   getBranches(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBranchListData>>;
   /** Creates a new branch from the working tree's current branch tip. */
   createBranch(input: GitWorkerCreateBranchInput): Promise<GitWorkerResult<GitWorkerCreatedBranchData>>;
+  /** Lists a project's currently conflicting files. */
+  listConflicts(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerConflictListData>>;
+  /** Reads one conflicting file's three-way (base/ours/theirs) stages. */
+  getConflictStages(input: GitWorkerConflictPathInput): Promise<GitWorkerResult<GitWorkerConflictStagesData>>;
+  /** Records one file's chosen conflict resolution. */
+  resolveConflict(input: GitWorkerResolveConflictInput): Promise<GitWorkerResult<GitWorkerResolveConflictData>>;
+  /** Completes a project's currently conflicted operation (a resolving commit for a `PULL`, or a resolved-changes landing with no commit for a `BRANCH_SWITCH`). */
+  completePull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerCompleteMergeData>>;
+  /** Undoes a project's most recent pull. */
+  undoPull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerUndoPullData>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -336,6 +449,45 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       projectId: input.projectId,
       actorId: input.actorId,
       name: input.name,
+    });
+  }
+
+  async listConflicts(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerConflictListData>> {
+    return this.post<GitWorkerConflictListData>(GIT_WORKER_CONFLICTS_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+    });
+  }
+
+  async getConflictStages(input: GitWorkerConflictPathInput): Promise<GitWorkerResult<GitWorkerConflictStagesData>> {
+    return this.post<GitWorkerConflictStagesData>(GIT_WORKER_CONFLICT_STAGES_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      path: input.path,
+    });
+  }
+
+  async resolveConflict(input: GitWorkerResolveConflictInput): Promise<GitWorkerResult<GitWorkerResolveConflictData>> {
+    return this.post<GitWorkerResolveConflictData>(GIT_WORKER_CONFLICT_RESOLVE_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      path: input.path,
+      resolution: input.resolution,
+      ...(input.mergedContent !== undefined ? { mergedContent: input.mergedContent } : {}),
+    });
+  }
+
+  async completePull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerCompleteMergeData>> {
+    return this.post<GitWorkerCompleteMergeData>(GIT_WORKER_PULL_COMPLETE_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+    });
+  }
+
+  async undoPull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerUndoPullData>> {
+    return this.post<GitWorkerUndoPullData>(GIT_WORKER_UNDO_PULL_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
     });
   }
 }

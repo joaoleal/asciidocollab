@@ -14,6 +14,8 @@ describe('git error codes', () => {
       'empty_commit_message',
       'remote_already_initialized',
       'remote_history_rewritten',
+      'unresolved_conflicts',
+      'nothing_to_undo',
     ]);
   });
 

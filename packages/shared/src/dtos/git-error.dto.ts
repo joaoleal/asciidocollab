@@ -16,7 +16,9 @@ export type GitErrorCode =
   | 'nothing_staged'
   | 'empty_commit_message'
   | 'remote_already_initialized'
-  | 'remote_history_rewritten';
+  | 'remote_history_rewritten'
+  | 'unresolved_conflicts'
+  | 'nothing_to_undo';
 
 /** The exhaustive, stable set of typed git-sync error codes. */
 export const GIT_ERROR_CODES: readonly GitErrorCode[] = [
@@ -30,6 +32,8 @@ export const GIT_ERROR_CODES: readonly GitErrorCode[] = [
   'empty_commit_message',
   'remote_already_initialized',
   'remote_history_rewritten',
+  'unresolved_conflicts',
+  'nothing_to_undo',
 ];
 
 /** Narrows an arbitrary string to a {@link GitErrorCode}. */

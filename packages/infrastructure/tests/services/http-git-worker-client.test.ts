@@ -8,6 +8,11 @@ import {
   GIT_WORKER_COMMIT_PATH,
   GIT_WORKER_BRANCHES_PATH,
   GIT_WORKER_BRANCH_CREATE_PATH,
+  GIT_WORKER_PULL_COMPLETE_PATH,
+  GIT_WORKER_UNDO_PULL_PATH,
+  GIT_WORKER_CONFLICTS_PATH,
+  GIT_WORKER_CONFLICT_STAGES_PATH,
+  GIT_WORKER_CONFLICT_RESOLVE_PATH,
 } from '../../src/services/http-git-worker-client';
 
 describe('HttpGitWorkerClient', () => {
@@ -178,6 +183,154 @@ describe('HttpGitWorkerClient', () => {
     });
 
     await expect(client.getBranches({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
+  });
+
+  it('POSTs listConflicts to the conflicts endpoint and returns the conflict list', async () => {
+    const conflictListData = {
+      operationId: '990e8400-e29b-41d4-a716-446655440010',
+      files: [{ path: 'docs/a.adoc', isBinary: false, resolved: false }],
+    };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: conflictListData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      secret: 'w0rkersecret',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.listConflicts({ projectId, actorId });
+
+    expect(result).toEqual({ ok: true, data: conflictListData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_CONFLICTS_PATH}`);
+    expect(init.method).toBe('POST');
+    expect(init.headers['x-git-worker-internal-secret']).toBe('w0rkersecret');
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('POSTs getConflictStages to the conflict-stages endpoint with the path and returns the stages', async () => {
+    const stagesData = { base: 'base text', ours: 'ours text', theirs: 'theirs text', isBinary: false };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: stagesData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.getConflictStages({ projectId, actorId, path: 'docs/a.adoc' });
+
+    expect(result).toEqual({ ok: true, data: stagesData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_CONFLICT_STAGES_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId, path: 'docs/a.adoc' });
+  });
+
+  it('POSTs resolveConflict to the conflict-resolve endpoint with the resolution and mergedContent, and returns resolved:true', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: { resolved: true } }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.resolveConflict({
+      projectId,
+      actorId,
+      path: 'docs/a.adoc',
+      resolution: 'merged',
+      mergedContent: 'the merged text',
+    });
+
+    expect(result).toEqual({ ok: true, data: { resolved: true } });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_CONFLICT_RESOLVE_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({
+      projectId,
+      actorId,
+      path: 'docs/a.adoc',
+      resolution: 'merged',
+      mergedContent: 'the merged text',
+    });
+  });
+
+  it('POSTs resolveConflict without a mergedContent field when none is given (ours/theirs)', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: { resolved: true } }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await client.resolveConflict({ projectId, actorId, path: 'docs/a.adoc', resolution: 'ours' });
+
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({ projectId, actorId, path: 'docs/a.adoc', resolution: 'ours' });
+    expect(Object.prototype.hasOwnProperty.call(body, 'mergedContent')).toBe(false);
+  });
+
+  it('POSTs completePull to the pull-complete endpoint and returns the resolved outcome', async () => {
+    const completeData = { status: 'resolved', operationId: '990e8400-e29b-41d4-a716-446655440010', headCommit: 'abc123' };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: completeData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.completePull({ projectId, actorId });
+
+    expect(result).toEqual({ ok: true, data: completeData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_PULL_COMPLETE_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('surfaces UnresolvedConflictsError from completePull as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'UnresolvedConflictsError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.completePull({ projectId, actorId });
+    expect(result).toEqual({ ok: false, error: 'UnresolvedConflictsError' });
+  });
+
+  it('POSTs undoPull to the undo-pull endpoint and returns the restored outcome', async () => {
+    const undoData = { operationId: '990e8400-e29b-41d4-a716-446655440011', headCommit: 'def456' };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: undoData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.undoPull({ projectId, actorId });
+
+    expect(result).toEqual({ ok: true, data: undoData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_UNDO_PULL_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('surfaces NothingToUndoError from undoPull as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'NothingToUndoError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.undoPull({ projectId, actorId });
+    expect(result).toEqual({ ok: false, error: 'NothingToUndoError' });
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from listConflicts on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.listConflicts({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
   });
 
   it('omits the secret header when none is configured', async () => {

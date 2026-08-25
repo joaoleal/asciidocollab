@@ -9,6 +9,11 @@ describe('gitErrorResponse', () => {
     ['EmptyCommitMessageError', 422, 'empty_commit_message'],
     ['ValidationError', 400, 'validation_error'],
     ['GitCommandFailedError', 500, 'git_command_failed'],
+    ['UnresolvedConflictsError', 409, 'unresolved_conflicts'],
+    ['NothingToUndoError', 409, 'nothing_to_undo'],
+    ['GitConflictNotFoundError', 422, 'validation_error'],
+    ['NoConflictInProgressError', 404, 'no_conflict_in_progress'],
+    ['InvalidResolutionError', 422, 'validation_error'],
   ])('maps %s to %i / %s', (name, status, code) => {
     const result = gitErrorResponse(name);
     expect(result.status).toBe(status);

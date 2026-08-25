@@ -58,6 +58,31 @@ const GIT_ERROR_TABLE: Readonly<Record<string, GitErrorTableEntry>> = {
     code: 'git_command_failed',
     message: 'The git command failed to complete',
   },
+  UnresolvedConflictsError: {
+    status: 409,
+    code: 'unresolved_conflicts',
+    message: 'This operation still has unresolved conflicts',
+  },
+  NothingToUndoError: {
+    status: 409,
+    code: 'nothing_to_undo',
+    message: 'There is nothing to undo for this project',
+  },
+  GitConflictNotFoundError: {
+    status: 422,
+    code: 'validation_error',
+    message: 'No conflict recorded for that path',
+  },
+  NoConflictInProgressError: {
+    status: 404,
+    code: 'no_conflict_in_progress',
+    message: 'This project has no conflict awaiting resolution',
+  },
+  InvalidResolutionError: {
+    status: 422,
+    code: 'validation_error',
+    message: 'The submitted resolution is invalid for this conflict',
+  },
 };
 
 /**
