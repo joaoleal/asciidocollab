@@ -11,8 +11,8 @@ describe('InMemoryGitCommandRunner', () => {
   const dirtyStatus: GitWorkingTreeStatus = {
     currentBranch: 'feature/x',
     changes: [
-      { path: 'docs/intro.adoc', changeType: 'modified', staged: false },
-      { path: 'docs/new.adoc', changeType: 'added', staged: true },
+      { path: 'docs/intro.adoc', changeType: 'modified', state: 'unstaged' },
+      { path: 'docs/new.adoc', changeType: 'added', state: 'staged' },
     ],
   };
 

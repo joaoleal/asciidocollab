@@ -11,17 +11,24 @@ import { Result } from '../../types/result';
 export type GitPendingChangeType = 'added' | 'modified' | 'removed' | 'renamed' | 'copied';
 
 /**
- * A single working-tree change, staged or not, awaiting commit. Shaped to match
- * `packages/shared`'s `PendingChangeDto` exactly, so the infrastructure adapter that
- * implements this port can hand one to the API boundary unchanged.
+ * Where a pending change currently stands in the working tree/index. `conflicted` names a
+ * change left unresolved by a merge or rebase; no use case in this package produces it yet — it
+ * exists now so a later merge/pull story can populate it without another type change.
+ */
+export type GitPendingChangeState = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
+
+/**
+ * A single working-tree change, awaiting commit, and where it currently stands
+ * (`state`) — staged for the next commit, an unstaged edit to a tracked file, a brand-new
+ * file never `git add`-ed, or left conflicted by an unresolved merge.
  */
 export interface GitPendingChange {
   /** Project-relative path of the changed file. */
   readonly path: string;
   /** The kind of change. */
   readonly changeType: GitPendingChangeType;
-  /** Whether this change is currently staged for the next commit. */
-  readonly staged: boolean;
+  /** Where this change currently stands in the working tree/index. */
+  readonly state: GitPendingChangeState;
 }
 
 /** A project's working tree: its current branch and its uncommitted changes. */

@@ -32,6 +32,8 @@ export { ConnectRepositoryUseCase } from './git/connect-repository';
 export type { ConnectRepositoryInput, ConnectRepositoryResult } from './git/connect-repository';
 export { ImportRepositoryUseCase } from './git/import-repository';
 export type { ImportRepositoryInput, ImportRepositoryResult } from './git/import-repository';
+export { GetGitStatusUseCase } from './git/get-git-status';
+export type { GetGitStatusInput, GetGitStatusResult } from './git/get-git-status';
 export { CheckSystemSetupUseCase } from './settings/check-system-setup';
 export { UpdateDisplayNameUseCase } from './auth/update-display-name';
 export type { UpdateDisplayNameResult } from './auth/update-display-name';

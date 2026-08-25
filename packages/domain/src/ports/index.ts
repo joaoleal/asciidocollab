@@ -33,6 +33,7 @@ export type {
   GitWorkingTreeStatus,
   GitPendingChange,
   GitPendingChangeType,
+  GitPendingChangeState,
   GitRemoteAccessCheck,
   GitCloneInput,
   ClonedFileEntry,
