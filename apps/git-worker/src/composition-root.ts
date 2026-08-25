@@ -9,6 +9,8 @@ import {
   CommitChangesUseCase,
   GetBranchesUseCase,
   CreateBranchUseCase,
+  CompleteMergeUseCase,
+  UndoPullUseCase,
   GitChangeReconciler,
   ProjectId,
   UserId,
@@ -19,6 +21,8 @@ import {
   type CommitChangesResult,
   type GetBranchesResult,
   type CreateBranchResult,
+  type CompleteMergeResult,
+  type UndoPullResult,
   type DomainError,
   type Result,
 } from '@asciidocollab/domain';
@@ -265,6 +269,28 @@ export async function compositionRoot() {
     gitCommandRunner,
     useCaseLogger,
   );
+  // Complete/undo run SYNC over this same internal RPC seam, operating on the project's EXISTING
+  // awaiting/most-recent operation rather than enqueuing a new one — see the composition below.
+  const completeMergeUseCase = new CompleteMergeUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitRepositoryRepository,
+    gitOperationRepository,
+    gitCommandRunner,
+    conflictStageStore,
+    gitChangeReconciler,
+    useCaseLogger,
+  );
+  const undoPullUseCase = new UndoPullUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitRepositoryRepository,
+    gitOperationRepository,
+    gitCommandRunner,
+    conflictStageStore,
+    gitChangeReconciler,
+    useCaseLogger,
+  );
 
   // Bound as the internal RPC server's op fns (`src/index.ts`): each converts the raw UUID
   // strings the transport validated into the domain's own `ProjectId`/`UserId` value objects at
@@ -300,6 +326,16 @@ export async function compositionRoot() {
       projectId: ProjectId.create(input.projectId),
       actorId: UserId.create(input.actorId),
       name: input.name,
+    });
+  const completePull = (input: { projectId: string; actorId: string }): Promise<Result<CompleteMergeResult, DomainError>> =>
+    completeMergeUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+    });
+  const undoPull = (input: { projectId: string; actorId: string }): Promise<Result<UndoPullResult, DomainError>> =>
+    undoPullUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
     });
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
@@ -348,5 +384,7 @@ export async function compositionRoot() {
     commit,
     getBranches,
     createBranch,
+    completePull,
+    undoPull,
   };
 }

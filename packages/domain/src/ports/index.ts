@@ -58,6 +58,11 @@ export type {
   GitBranchList,
   GitCreateBranchInput,
   GitCreatedBranch,
+  GitConflictResolutionChoice,
+  GitResolveMergeInput,
+  GitResolveMergeOutcome,
+  GitRestoreToSnapshotInput,
+  GitRestoreOutcome,
 } from './git/git-command-runner';
 
 // file-tree/

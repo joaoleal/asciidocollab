@@ -7,12 +7,14 @@ import {
   DomainError,
   LiveContentFlushFailedError,
   type CommitChangesResult,
+  type CompleteMergeResult,
   type CreateBranchResult,
   type GetBranchesResult,
   type GetGitStatusResult,
   type GitBehindAhead,
   type Result,
   type StageChangesResult,
+  type UndoPullResult,
 } from '@asciidocollab/domain';
 
 /** Path of the internal endpoint the API calls to read a project's working-tree git status. */
@@ -35,6 +37,16 @@ export const GIT_BRANCHES_PATH = '/internal/git/branches';
 
 /** Path of the internal endpoint the API calls to create a new local branch. */
 export const GIT_BRANCH_CREATE_PATH = '/internal/git/branch-create';
+
+/**
+ * Path of the internal endpoint the API calls to complete a project's currently conflicted
+ * operation — a re-run merge with a resolving commit for a `PULL`, or a resolved-changes landing
+ * with no commit for a `BRANCH_SWITCH`.
+ */
+export const GIT_PULL_COMPLETE_PATH = '/internal/git/pull/complete';
+
+/** Path of the internal endpoint the API calls to undo a project's most recent pull. */
+export const GIT_UNDO_PULL_PATH = '/internal/git/undo-pull';
 
 /** Header carrying the optional shared secret. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
@@ -301,6 +313,21 @@ export interface GitOpsHandlerDeps {
    * @returns The use case's own `Result`.
    */
   createBranch: (request: CreateBranchRequest) => Promise<Result<CreateBranchResult, DomainError>>;
+  /**
+   * Completes a project's currently conflicted operation (a resolving commit for a `PULL`, or a
+   * resolved-changes landing with no commit for a `BRANCH_SWITCH`).
+   *
+   * @param request - The validated status-shaped request (same fields as a status request).
+   * @returns The use case's own `Result`.
+   */
+  completePull: (request: GitStatusRequest) => Promise<Result<CompleteMergeResult, DomainError>>;
+  /**
+   * Undoes a project's most recent pull.
+   *
+   * @param request - The validated status-shaped request (same fields as a status request).
+   * @returns The use case's own `Result`.
+   */
+  undoPull: (request: GitStatusRequest) => Promise<Result<UndoPullResult, DomainError>>;
   /** Optional shared secret; when set, requests without a matching header are rejected (401). */
   secret?: string;
   /** Logger for failures. */
@@ -309,8 +336,8 @@ export interface GitOpsHandlerDeps {
 
 /**
  * Builds the node HTTP request handler for the internal git short-op endpoints (status,
- * behind-ahead, stage, unstage, commit, branches, branch-create). Separated from the server so it
- * can be unit-tested with injected functions.
+ * behind-ahead, stage, unstage, commit, branches, branch-create, pull-complete, undo-pull).
+ * Separated from the server so it can be unit-tested with injected functions.
  *
  * @param deps - The op functions, optional secret, and logger.
  * @returns A node `http` request handler.
@@ -328,7 +355,9 @@ export function createGitOpsRequestHandler(
         path !== GIT_UNSTAGE_PATH &&
         path !== GIT_COMMIT_PATH &&
         path !== GIT_BRANCHES_PATH &&
-        path !== GIT_BRANCH_CREATE_PATH)
+        path !== GIT_BRANCH_CREATE_PATH &&
+        path !== GIT_PULL_COMPLETE_PATH &&
+        path !== GIT_UNDO_PULL_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -395,7 +424,7 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.getBranches(parsed);
       label = 'branches';
-    } else {
+    } else if (path === GIT_BRANCH_CREATE_PATH) {
       const parsed = parseCreateBranchBody(raw);
       if (!parsed) {
         response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
@@ -403,6 +432,22 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.createBranch(parsed);
       label = 'branch-create';
+    } else if (path === GIT_PULL_COMPLETE_PATH) {
+      const parsed = parseGitStatusBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.completePull(parsed);
+      label = 'pull-complete';
+    } else {
+      const parsed = parseGitStatusBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.undoPull(parsed);
+      label = 'undo-pull';
     }
 
     try {
@@ -441,15 +486,19 @@ export interface InternalGitServerOptions {
   getBranches: GitOpsHandlerDeps['getBranches'];
   /** Creates a new branch from the working tree's current branch tip. */
   createBranch: GitOpsHandlerDeps['createBranch'];
+  /** Completes a project's currently conflicted operation. */
+  completePull: GitOpsHandlerDeps['completePull'];
+  /** Undoes a project's most recent pull. */
+  undoPull: GitOpsHandlerDeps['undoPull'];
 }
 
 /**
  * Starts the internal HTTP server that lets the API run the git short ops (status, behind-ahead,
- * stage, unstage, commit, branches, branch-create) worker-side, against the real git adapter.
- * Binds to loopback by default; pair with a shared secret and/or network policy in production.
- * Returns the server so the caller can close it on shutdown.
+ * stage, unstage, commit, branches, branch-create, pull-complete, undo-pull) worker-side, against
+ * the real git adapter. Binds to loopback by default; pair with a shared secret and/or network
+ * policy in production. Returns the server so the caller can close it on shutdown.
  *
- * @param options - Bind address, the seven op fns, optional secret/mTLS, logger.
+ * @param options - Bind address, the op fns, optional secret/mTLS, logger.
  * @returns A promise resolving to the listening HTTP(S) server, or rejecting if the bind fails.
  */
 export function startInternalGitServer(options: InternalGitServerOptions): Promise<http.Server> {
@@ -461,6 +510,8 @@ export function startInternalGitServer(options: InternalGitServerOptions): Promi
     commit: options.commit,
     getBranches: options.getBranches,
     createBranch: options.createBranch,
+    completePull: options.completePull,
+    undoPull: options.undoPull,
     ...(options.secret ? { secret: options.secret } : {}),
     logger: options.logger,
   });

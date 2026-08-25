@@ -5,6 +5,7 @@ import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id'
 import { GitConflictId } from '../../../src/value-objects/ids/git-conflict-id';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { ConflictResolution } from '../../../src/types/conflict-resolution';
+import { GitOperationKind } from '../../../src/types/git-operation-kind';
 import { Result } from '../../../src/types/result';
 import { TERMINAL_GIT_OPERATION_STATES } from '../../../src/types/git-operation-state';
 import {
@@ -219,6 +220,15 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     );
     this.conflicts.set(resolved.id.value, resolved);
     return { success: true, value: resolved };
+  }
+
+  /** Reads back the most recently created operation of `kind` for a project, or null. */
+  async findMostRecentByKind(projectId: ProjectId, kind: GitOperationKind): Promise<GitOperation | null> {
+    return (
+      [...this.operations.values()]
+        .filter((op) => op.projectId.value === projectId.value && op.kind === kind)
+        .toSorted((a, b) => this.sequenceOf(b) - this.sequenceOf(a))[0] ?? null
+    );
   }
 
   /** Finds the oldest (by enqueue order) stored operation matching `predicate`, or undefined. */

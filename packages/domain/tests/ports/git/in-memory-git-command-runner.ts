@@ -22,6 +22,10 @@ import {
   GitPushInput,
   GitPushResult,
   GitRemoteAccessCheck,
+  GitResolveMergeInput,
+  GitResolveMergeOutcome,
+  GitRestoreOutcome,
+  GitRestoreToSnapshotInput,
   GitWorkingTreeStatus,
 } from '../../../src/ports/git/git-command-runner';
 import { Result } from '../../../src/types/result';
@@ -60,6 +64,10 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly branchLists = new Map<string, GitBranchList>();
   private readonly checkoutFailures = new Map<string, GitCommandFailedError>();
   private readonly checkoutOutcomes = new Map<string, GitCheckoutOutcome>();
+  private readonly resolveMergeFailures = new Map<string, GitCommandFailedError>();
+  private readonly resolveMergeOutcomes = new Map<string, GitResolveMergeOutcome>();
+  private readonly restoreToSnapshotFailures = new Map<string, GitCommandFailedError>();
+  private readonly restoreToSnapshotOutcomes = new Map<string, GitRestoreOutcome>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -99,6 +107,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `checkout`, in call order, for asserting the flush list, branch, and stash flag. */
   readonly checkoutCalls: { projectId: ProjectId; input: GitCheckoutInput }[] = [];
+
+  /** Every call made to `resolveMerge`, in call order, for asserting the branch and resolutions. */
+  readonly resolveMergeCalls: { projectId: ProjectId; input: GitResolveMergeInput }[] = [];
+
+  /** Every call made to `restoreToSnapshot`, in call order, for asserting the operation id. */
+  readonly restoreToSnapshotCalls: { projectId: ProjectId; input: GitRestoreToSnapshotInput }[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -467,6 +481,77 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
     const outcome: GitCheckoutOutcome = this.checkoutOutcomes.get(projectId.value) ?? {
       status: 'switched',
+      headCommit: '0'.repeat(40),
+      changes: [],
+    };
+
+    return { success: true, value: outcome };
+  }
+
+  /**
+   * Configures the `GitResolveMergeOutcome` `resolveMerge` returns for a project on success — a
+   * `resolved` outcome with its `changes`, or a `stillConflicted` outcome with its `conflicts`. A
+   * `stillConflicted` result is a seeded happy-path outcome, not a failure — use
+   * `seedResolveMergeFailure` only for an actual git command failure.
+   */
+  seedResolveMerge(projectId: ProjectId, outcome: GitResolveMergeOutcome): void {
+    this.resolveMergeOutcomes.set(projectId.value, outcome);
+  }
+
+  /** Configures `resolveMerge` to fail for a project, taking priority over any seeded outcome. */
+  seedResolveMergeFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.resolveMergeFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact branch and resolutions, so a test can assert them — and
+   * returns the seeded `GitResolveMergeOutcome` (defaulting to `{status: 'resolved', headCommit:
+   * '0'.repeat(40), changes: []}` when unseeded), unless a failure was seeded for this project via
+   * `seedResolveMergeFailure`.
+   */
+  async resolveMerge(
+    projectId: ProjectId,
+    input: GitResolveMergeInput,
+  ): Promise<Result<GitResolveMergeOutcome, GitCommandFailedError>> {
+    this.resolveMergeCalls.push({ projectId, input });
+
+    const failure = this.resolveMergeFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome: GitResolveMergeOutcome = this.resolveMergeOutcomes.get(projectId.value) ?? {
+      status: 'resolved',
+      headCommit: '0'.repeat(40),
+      changes: [],
+    };
+
+    return { success: true, value: outcome };
+  }
+
+  /** Configures the `GitRestoreOutcome` `restoreToSnapshot` returns for a project on success. */
+  seedRestoreToSnapshot(projectId: ProjectId, outcome: GitRestoreOutcome): void {
+    this.restoreToSnapshotOutcomes.set(projectId.value, outcome);
+  }
+
+  /** Configures `restoreToSnapshot` to fail for a project, taking priority over any seeded outcome. */
+  seedRestoreToSnapshotFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.restoreToSnapshotFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact operation id, so a test can assert it — and returns the
+   * seeded `GitRestoreOutcome` (defaulting to `{headCommit: '0'.repeat(40), changes: []}` when
+   * unseeded), unless a failure was seeded for this project via `seedRestoreToSnapshotFailure`.
+   */
+  async restoreToSnapshot(
+    projectId: ProjectId,
+    input: GitRestoreToSnapshotInput,
+  ): Promise<Result<GitRestoreOutcome, GitCommandFailedError>> {
+    this.restoreToSnapshotCalls.push({ projectId, input });
+
+    const failure = this.restoreToSnapshotFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome: GitRestoreOutcome = this.restoreToSnapshotOutcomes.get(projectId.value) ?? {
       headCommit: '0'.repeat(40),
       changes: [],
     };

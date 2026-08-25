@@ -18,6 +18,10 @@ import type {
   GitPushError,
   GitPushInput,
   GitPushResult,
+  GitResolveMergeInput,
+  GitResolveMergeOutcome,
+  GitRestoreOutcome,
+  GitRestoreToSnapshotInput,
   GitWorkingTreeStatus,
   ProjectId,
   RepositoryUnreachableError,
@@ -53,6 +57,10 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly createBranchFailures = new Map<string, GitCommandFailedError>();
   private readonly listBranchesResults = new Map<string, GitBranchList>();
   private readonly listBranchesFailures = new Map<string, GitCommandFailedError>();
+  private readonly resolveMergeResults = new Map<string, GitResolveMergeOutcome>();
+  private readonly resolveMergeFailures = new Map<string, GitCommandFailedError>();
+  private readonly restoreToSnapshotResults = new Map<string, GitRestoreOutcome>();
+  private readonly restoreToSnapshotFailures = new Map<string, GitCommandFailedError>();
 
   /** Every call made to `clone`, in call order, for asserting interactions. */
   readonly cloneCalls: GitCloneInput[] = [];
@@ -77,6 +85,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `listBranches`, in call order, for asserting interactions. */
   readonly listBranchesCalls: ProjectId[] = [];
+
+  /** Every call made to `resolveMerge`, in call order, for asserting interactions. */
+  readonly resolveMergeCalls: { projectId: ProjectId; input: GitResolveMergeInput }[] = [];
+
+  /** Every call made to `restoreToSnapshot`, in call order, for asserting interactions. */
+  readonly restoreToSnapshotCalls: { projectId: ProjectId; input: GitRestoreToSnapshotInput }[] = [];
 
   /** Configures `clone` to return `repository` for a remote URL. */
   seedClone(remoteUrl: string, repository: ClonedRepository): void {
@@ -159,6 +173,26 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   /** Configures `listBranches` to fail for a project, taking priority over any seeded result. */
   seedListBranchesFailure(projectId: ProjectId, error: GitCommandFailedError): void {
     this.listBranchesFailures.set(projectId.value, error);
+  }
+
+  /** Configures `resolveMerge` to return `outcome` (resolved or stillConflicted) for a project. */
+  seedResolveMerge(projectId: ProjectId, outcome: GitResolveMergeOutcome): void {
+    this.resolveMergeResults.set(projectId.value, outcome);
+  }
+
+  /** Configures `resolveMerge` to fail for a project, taking priority over any seeded outcome. */
+  seedResolveMergeFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.resolveMergeFailures.set(projectId.value, error);
+  }
+
+  /** Configures `restoreToSnapshot` to return `outcome` for a project. */
+  seedRestoreToSnapshot(projectId: ProjectId, outcome: GitRestoreOutcome): void {
+    this.restoreToSnapshotResults.set(projectId.value, outcome);
+  }
+
+  /** Configures `restoreToSnapshot` to fail for a project, taking priority over any seeded outcome. */
+  seedRestoreToSnapshotFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.restoreToSnapshotFailures.set(projectId.value, error);
   }
 
   async getStatus(): Promise<Result<GitWorkingTreeStatus, GitCommandFailedError>> {
@@ -302,5 +336,39 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: result };
+  }
+
+  async resolveMerge(
+    projectId: ProjectId,
+    input: GitResolveMergeInput,
+  ): Promise<Result<GitResolveMergeOutcome, GitCommandFailedError>> {
+    this.resolveMergeCalls.push({ projectId, input });
+
+    const failure = this.resolveMergeFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome = this.resolveMergeResults.get(projectId.value);
+    if (!outcome) {
+      throw new Error(`no resolveMerge outcome seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: outcome };
+  }
+
+  async restoreToSnapshot(
+    projectId: ProjectId,
+    input: GitRestoreToSnapshotInput,
+  ): Promise<Result<GitRestoreOutcome, GitCommandFailedError>> {
+    this.restoreToSnapshotCalls.push({ projectId, input });
+
+    const failure = this.restoreToSnapshotFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome = this.restoreToSnapshotResults.get(projectId.value);
+    if (!outcome) {
+      throw new Error(`no restoreToSnapshot outcome seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: outcome };
   }
 }

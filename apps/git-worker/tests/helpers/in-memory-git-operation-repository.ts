@@ -6,12 +6,15 @@ import {
   GitConflictId,
   GitOperationInProgressError,
   IllegalGitOperationTransitionError,
+  GitConflictNotFoundError,
   GIT_OPERATION_LEGAL_TRANSITIONS,
   TERMINAL_GIT_OPERATION_STATES,
 } from '@asciidocollab/domain';
 import type {
+  ConflictResolution,
   CreateGitConflictInput,
   EnqueueGitOperationInput,
+  GitOperationKind,
   GitOperationRepository,
   GitOperationTransitionInput,
   GitOperationTransitionTarget,
@@ -176,6 +179,39 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     for (const [id, conflict] of this.conflicts) {
       if (conflict.operationId.value === operationId.value) this.conflicts.delete(id);
     }
+  }
+
+  async resolveConflict(
+    operationId: GitOperationId,
+    path: string,
+    resolution: ConflictResolution,
+  ): Promise<Result<GitConflict, GitConflictNotFoundError>> {
+    const existing = [...this.conflicts.values()].find(
+      (conflict) => conflict.operationId.value === operationId.value && conflict.path === path,
+    );
+    if (!existing) {
+      return { success: false, error: new GitConflictNotFoundError(path) };
+    }
+
+    const resolved = new GitConflict(
+      existing.id,
+      existing.operationId,
+      existing.path,
+      existing.isBinary,
+      true,
+      resolution,
+      existing.createdAt,
+    );
+    this.conflicts.set(resolved.id.value, resolved);
+    return { success: true, value: resolved };
+  }
+
+  async findMostRecentByKind(projectId: ProjectId, kind: GitOperationKind): Promise<GitOperation | null> {
+    return (
+      [...this.operations.values()]
+        .filter((op) => op.projectId.value === projectId.value && op.kind === kind)
+        .toSorted((a, b) => this.sequenceOf(b) - this.sequenceOf(a))[0] ?? null
+    );
   }
 
   private oldestFirst(predicate: (op: GitOperation) => boolean): GitOperation | undefined {

@@ -57,5 +57,9 @@ export const AUDIT_GIT_REPOSITORY_CONNECTED = 'git.repository_connected';
 // Per-file conflict resolution
 export const AUDIT_GIT_CONFLICT_RESOLVED = 'git.conflict_resolved';
 
+// Completing (all conflicts resolved) or undoing a conflicted/clean pull
+export const AUDIT_GIT_CONFLICTS_RESOLVED = 'git.conflicts_resolved';
+export const AUDIT_GIT_PULL_UNDONE = 'git.pull_undone';
+
 // Project-level maintainer-editable git-ignore patterns
 export const AUDIT_PROJECT_GIT_IGNORE_PATTERNS_UPDATED = 'project.git_ignore_patterns_updated';

@@ -34,6 +34,8 @@ async function main() {
     commit: app.commit,
     getBranches: app.getBranches,
     createBranch: app.createBranch,
+    completePull: app.completePull,
+    undoPull: app.undoPull,
   });
 
   async function shutdown() {

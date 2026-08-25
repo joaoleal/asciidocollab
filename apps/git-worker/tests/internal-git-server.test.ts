@@ -11,6 +11,8 @@ import {
   LiveContentFlushFailedError,
   ValidationError,
   GitCommandFailedError,
+  UnresolvedConflictsError,
+  NothingToUndoError,
 } from '@asciidocollab/domain';
 import {
   GIT_STATUS_PATH,
@@ -20,6 +22,8 @@ import {
   GIT_COMMIT_PATH,
   GIT_BRANCHES_PATH,
   GIT_BRANCH_CREATE_PATH,
+  GIT_PULL_COMPLETE_PATH,
+  GIT_UNDO_PULL_PATH,
   createGitOpsRequestHandler,
   parseGitStatusBody,
   parseStageChangesBody,
@@ -94,6 +98,8 @@ interface HandlerDoubles {
   commit: jest.Mock;
   getBranches: jest.Mock;
   createBranch: jest.Mock;
+  completePull: jest.Mock;
+  undoPull: jest.Mock;
   logger: { info: jest.Mock; error: jest.Mock };
   secret?: string;
 }
@@ -107,6 +113,14 @@ function handlerDoubles(): HandlerDoubles {
     commit: jest.fn(async () => ({ success: true, value: { commit: { hash: 'abc123', message: 'msg', authoredAt: new Date('2026-01-01T00:00:00.000Z') } } })),
     getBranches: jest.fn(async () => ({ success: true, value: { current: 'main', branches: ['main'] } })),
     createBranch: jest.fn(async () => ({ success: true, value: { branch: { name: 'feature/x' } } })),
+    completePull: jest.fn(async () => ({
+      success: true,
+      value: { status: 'resolved', operationId: '990e8400-e29b-41d4-a716-446655440010', headCommit: 'abc123' },
+    })),
+    undoPull: jest.fn(async () => ({
+      success: true,
+      value: { operationId: '990e8400-e29b-41d4-a716-446655440011', headCommit: 'def456' },
+    })),
     logger: fakeLogger(),
   };
 }
@@ -365,6 +379,56 @@ describe('createGitOpsRequestHandler', () => {
     expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'ValidationError' });
   });
 
+  it('answers pull-complete with {ok:true,data} on a success Result', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_PULL_COMPLETE_PATH), recordingResponse(), statusBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: { status: 'resolved', operationId: '990e8400-e29b-41d4-a716-446655440010', headCommit: 'abc123' },
+    });
+    expect(doubles.completePull).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID });
+  });
+
+  it('answers 400 for pull-complete on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_PULL_COMPLETE_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.completePull).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for UnresolvedConflictsError from pull-complete', async () => {
+    const doubles = handlerDoubles();
+    doubles.completePull = jest.fn(async () => ({ success: false, error: new UnresolvedConflictsError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_PULL_COMPLETE_PATH), recordingResponse(), statusBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'UnresolvedConflictsError' });
+  });
+
+  it('answers undo-pull with {ok:true,data} on a success Result', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_UNDO_PULL_PATH), recordingResponse(), statusBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: { operationId: '990e8400-e29b-41d4-a716-446655440011', headCommit: 'def456' },
+    });
+    expect(doubles.undoPull).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID });
+  });
+
+  it('answers 400 for undo-pull on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_UNDO_PULL_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.undoPull).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for NothingToUndoError from undo-pull', async () => {
+    const doubles = handlerDoubles();
+    doubles.undoPull = jest.fn(async () => ({ success: false, error: new NothingToUndoError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_UNDO_PULL_PATH), recordingResponse(), statusBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'NothingToUndoError' });
+  });
+
   it('answers {ok:false,error} for RepositoryNotConnectedError from branches', async () => {
     const doubles = handlerDoubles();
     doubles.getBranches = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
@@ -567,6 +631,8 @@ describe('internal git server (HTTP)', () => {
       commit: doubles.commit,
       getBranches: doubles.getBranches,
       createBranch: doubles.createBranch,
+      completePull: doubles.completePull,
+      undoPull: doubles.undoPull,
       ...options,
     });
     await waitListening(server);
@@ -625,6 +691,8 @@ describe('internal git server (HTTP)', () => {
         commit: doubles.commit,
         getBranches: doubles.getBranches,
         createBranch: doubles.createBranch,
+        completePull: doubles.completePull,
+        undoPull: doubles.undoPull,
       }),
     ).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
@@ -653,6 +721,8 @@ describe('startInternalGitServer wiring', () => {
       commit: doubles.commit,
       getBranches: doubles.getBranches,
       createBranch: doubles.createBranch,
+      completePull: doubles.completePull,
+      undoPull: doubles.undoPull,
     });
     listening = server;
     expect(logger.info).toHaveBeenCalledWith(

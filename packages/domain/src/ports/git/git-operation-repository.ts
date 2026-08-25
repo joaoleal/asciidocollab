@@ -167,6 +167,18 @@ export interface GitOperationRepository {
   findById(operationId: GitOperationId): Promise<GitOperation | null>;
 
   /**
+   * Reads back the most recently created operation of the given kind for a project, in whatever
+   * state it currently holds. Used to locate an already-terminal operation (for example a
+   * `SUCCEEDED` `PULL` with no active row left) that a later action still needs to reference — an
+   * undo of a clean pull is the first caller.
+   *
+   * @param projectId - The project to search.
+   * @param kind - The operation kind to match.
+   * @returns The most recently created matching operation, or null when none exists.
+   */
+  findMostRecentByKind(projectId: ProjectId, kind: GitOperationKind): Promise<GitOperation | null>;
+
+  /**
    * Records a new conflicting file discovered during an operation.
    *
    * @param input - The conflict to record.

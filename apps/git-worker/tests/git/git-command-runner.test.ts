@@ -608,6 +608,237 @@ describe('RealGitCommandRunner.merge', () => {
   });
 });
 
+describe('RealGitCommandRunner.resolveMerge', () => {
+  it('re-runs the merge, applies ours/theirs/merged, takes a two-parent resolving commit, and recovers the clean remote change alongside the resolutions', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440090');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'doc.adoc'), 'base line\n');
+      await writeFile(path.join(tree, 'mix.adoc'), 'base mix\n');
+      await writeFile(path.join(tree, 'keep.adoc'), 'base keep\n');
+    });
+    await addRemoteCommit(remotePath, 'remote edits', async (clone) => {
+      await writeFile(path.join(clone, 'doc.adoc'), 'remote line\n');
+      await writeFile(path.join(clone, 'mix.adoc'), 'remote mix\n');
+      await writeFile(path.join(clone, 'keep.adoc'), 'remote keep\n');
+      await writeFile(path.join(clone, 'remote-only.adoc'), 'from remote\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+
+    // First, a real conflicted merge — exactly what a PULL leaves behind before this task's flow
+    // takes over: a flush commit on the local tip, MERGE_HEAD aborted, stages captured.
+    const conflicted = await runner.merge(projectId, {
+      branch: 'main',
+      flush: [
+        { path: 'doc.adoc', content: 'local line\n' },
+        { path: 'mix.adoc', content: 'local mix\n' },
+        { path: 'keep.adoc', content: 'local keep\n' },
+      ],
+      operationId: OPERATION_ID,
+    });
+    expect(conflicted.success).toBe(true);
+    if (!conflicted.success) throw new Error('expected success');
+    if (conflicted.value.status !== 'conflicted') throw new Error('expected conflicted');
+    expect(conflicted.value.conflicts.map((c) => c.path).sort()).toEqual(['doc.adoc', 'keep.adoc', 'mix.adoc']);
+
+    const flushCommit = await readReference(cwd, 'HEAD');
+    const remoteTip = await readReference(cwd, 'refs/remotes/origin/main');
+
+    // A 'merged' resolution's bytes, as ResolveConflicts would have recorded them.
+    await conflictStageStore.writeMerged(OPERATION_ID, 'mix.adoc', Buffer.from('merged mix\n'));
+
+    const resolved = await runner.resolveMerge(projectId, {
+      branch: 'main',
+      operationId: OPERATION_ID,
+      resolutions: [
+        { path: 'doc.adoc', resolution: 'theirs' },
+        { path: 'mix.adoc', resolution: 'merged' },
+        { path: 'keep.adoc', resolution: 'ours' },
+      ],
+    });
+
+    expect(resolved.success).toBe(true);
+    if (!resolved.success) throw new Error('expected success');
+    if (resolved.value.status !== 'resolved') throw new Error('expected resolved');
+
+    // A genuine merge commit: two parents — the local flush tip and the remote-tracking ref.
+    const { stdout: parents } = await execFile('git', ['rev-list', '--parents', '-n', '1', 'HEAD'], { cwd });
+    const parentHashes = parents.trim().split(/\s+/).slice(1);
+    expect(parentHashes.sort()).toEqual([flushCommit, remoteTip].sort());
+    expect(resolved.value.headCommit).toBe(await readReference(cwd, 'HEAD'));
+
+    // The resolutions landed on disk...
+    expect(await readFile(path.join(cwd, 'doc.adoc'), 'utf8')).toBe('remote line\n');
+    expect(await readFile(path.join(cwd, 'mix.adoc'), 'utf8')).toBe('merged mix\n');
+    expect(await readFile(path.join(cwd, 'keep.adoc'), 'utf8')).toBe('local keep\n');
+
+    // ...and the returned change-set carries the resolved files PLUS the clean remote-only file a
+    // naive re-apply-only-conflicted-files approach would have silently dropped. 'keep.adoc' (an
+    // 'ours' resolution that reproduces exactly its pre-merge content) carries no real diff, so it
+    // is absent from the change-set — that is expected, not a gap.
+    const byPath = new Map(
+      resolved.value.changes.map((change) => [change.type === 'renamed' ? change.toPath : change.path, change]),
+    );
+    expect(byPath.get('doc.adoc')).toEqual({ type: 'modified', path: 'doc.adoc', content: Buffer.from('remote line\n'), mimeType: 'text/asciidoc' });
+    expect(byPath.get('mix.adoc')).toEqual({ type: 'modified', path: 'mix.adoc', content: Buffer.from('merged mix\n'), mimeType: 'text/asciidoc' });
+    expect(byPath.get('remote-only.adoc')).toEqual({ type: 'added', path: 'remote-only.adoc', content: Buffer.from('from remote\n'), mimeType: 'text/asciidoc' });
+    expect(byPath.has('keep.adoc')).toBe(false);
+
+    const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
+    expect(status.trim()).toBe('');
+  });
+
+  it('reports stillConflicted and leaves a clean, aborted tree when a resolution is missing for a conflicting path', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440091');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'doc.adoc'), 'base line\n');
+      await writeFile(path.join(tree, 'other.adoc'), 'base other\n');
+    });
+    await addRemoteCommit(remotePath, 'remote edits both', async (clone) => {
+      await writeFile(path.join(clone, 'doc.adoc'), 'remote line\n');
+      await writeFile(path.join(clone, 'other.adoc'), 'remote other\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+
+    const conflicted = await runner.merge(projectId, {
+      branch: 'main',
+      flush: [
+        { path: 'doc.adoc', content: 'local line\n' },
+        { path: 'other.adoc', content: 'local other\n' },
+      ],
+      operationId: OPERATION_ID,
+    });
+    expect(conflicted.success).toBe(true);
+    if (!conflicted.success) throw new Error('expected success');
+    if (conflicted.value.status !== 'conflicted') throw new Error('expected conflicted');
+
+    // Only 'doc.adoc' is resolved — 'other.adoc' is deliberately left unresolved.
+    const resolved = await runner.resolveMerge(projectId, {
+      branch: 'main',
+      operationId: OPERATION_ID,
+      resolutions: [{ path: 'doc.adoc', resolution: 'theirs' }],
+    });
+
+    expect(resolved.success).toBe(true);
+    if (!resolved.success) throw new Error('expected success');
+    if (resolved.value.status !== 'stillConflicted') throw new Error('expected stillConflicted');
+    expect(resolved.value.conflicts).toEqual([{ path: 'other.adoc', isBinary: false }]);
+
+    // The merge was aborted: no MERGE_HEAD, clean tree, nothing committed.
+    await expect(stat(path.join(cwd, '.git', 'MERGE_HEAD'))).rejects.toThrow();
+    const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
+    expect(status.trim()).toBe('');
+  });
+
+  it('returns GitCommandFailedError for a genuine merge failure (no tracking ref to merge)', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440092');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'base.adoc'), 'base\n');
+    await commitAll(cwd, 'base');
+    // Deliberately never populate refs/remotes/origin/main.
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, conflictStageStore);
+    const result = await runner.resolveMerge(projectId, { branch: 'main', operationId: OPERATION_ID, resolutions: [] });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+});
+
+describe('RealGitCommandRunner.restoreToSnapshot', () => {
+  it('resets the working tree to the recorded pre-operation head and returns the reversal change-set', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440093');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'a.adoc'), 'original\n');
+    });
+    const preOpHead = await readReference(cwd, 'HEAD');
+
+    // Simulate whatever the pull/switch landed after the snapshot was captured.
+    await writeFile(path.join(cwd, 'a.adoc'), 'pulled\n');
+    await writeFile(path.join(cwd, 'b.adoc'), 'added by the pull\n');
+    await commitAll(cwd, 'landed pull');
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    await conflictStageStore.writeSnapshot(OPERATION_ID, { preOpHead, branch: 'main' });
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+
+    const result = await runner.restoreToSnapshot(projectId, { operationId: OPERATION_ID });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.headCommit).toBe(preOpHead);
+    expect(await readReference(cwd, 'HEAD')).toBe(preOpHead);
+    expect(await readFile(path.join(cwd, 'a.adoc'), 'utf8')).toBe('original\n');
+    await expect(stat(path.join(cwd, 'b.adoc'))).rejects.toThrow();
+
+    // The reversal set: the tree after the reset compared against the tree right before it.
+    expect(result.value.changes).toEqual(
+      expect.arrayContaining([
+        { type: 'modified', path: 'a.adoc', content: Buffer.from('original\n'), mimeType: 'text/asciidoc' },
+        { type: 'removed', path: 'b.adoc' },
+      ]),
+    );
+  });
+
+  it('returns GitCommandFailedError when no snapshot is recorded for the operation', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440094');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'a.adoc'), 'original\n');
+    });
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+
+    const result = await runner.restoreToSnapshot(projectId, { operationId: OPERATION_ID });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+
+  it('returns GitCommandFailedError when the recorded pre-operation head no longer resolves', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440095');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'a.adoc'), 'original\n');
+    });
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    await conflictStageStore.writeSnapshot(OPERATION_ID, {
+      preOpHead: '0123456789abcdef0123456789abcdef01234567',
+      branch: 'main',
+    });
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+
+    const result = await runner.restoreToSnapshot(projectId, { operationId: OPERATION_ID });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+
+  it('returns GitCommandFailedError when no conflict stage store is configured', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440096');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'a.adoc'), 'original\n');
+    });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.restoreToSnapshot(projectId, { operationId: OPERATION_ID });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+});
+
 describe('RealGitCommandRunner.getStatus', () => {
   it('returns the current branch and no changes for a clean working tree', async () => {
     const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440050');

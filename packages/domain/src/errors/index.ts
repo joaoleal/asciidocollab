@@ -54,3 +54,5 @@ export { NonFastForwardError } from './git/non-fast-forward';
 export { GitConflictNotFoundError } from './git/git-conflict-not-found';
 export { NoConflictInProgressError } from './git/no-conflict-in-progress';
 export { InvalidResolutionError } from './git/invalid-resolution';
+export { UnresolvedConflictsError } from './git/unresolved-conflicts';
+export { NothingToUndoError } from './git/nothing-to-undo';

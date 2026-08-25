@@ -32,6 +32,10 @@ import {
   type GitPushInput,
   type GitPushResult,
   type GitRemoteAccessCheck,
+  type GitResolveMergeInput,
+  type GitResolveMergeOutcome,
+  type GitRestoreOutcome,
+  type GitRestoreToSnapshotInput,
   type GitWorkingTreeStatus,
   type ProjectId,
   type Result,
@@ -40,7 +44,7 @@ import { assertRemoteHostAllowed, type HostAddressResolver } from './egress-allo
 import { guessMimeType } from './guess-mime-type.js';
 import { declaresLfsFilter } from './lfs-pointer.js';
 import { GitProcessError, runGitCommand, runGitCommandForBytes } from './run-git-command.js';
-import { resolveWorkingTreePath } from './working-tree.js';
+import { ensureCleanWorkingTree, resolveWorkingTreePath } from './working-tree.js';
 
 /**
  * The username presented alongside every access token this runner supplies over HTTP Basic auth.
@@ -1247,6 +1251,181 @@ export class RealGitCommandRunner implements GitCommandRunner {
       return { success: true, value: { status: 'switched', headCommit: postSwitchHead, changes } };
     } catch {
       return { success: false, error: new GitCommandFailedError('The branch switch could not be completed.') };
+    }
+  }
+
+  /**
+   * Completes a previously-aborted conflicted `PULL` by RE-RUNNING `git merge --no-edit
+   * refs/remotes/origin/<branch>` (recreating `MERGE_HEAD`), dropping each `input.resolutions`
+   * entry onto its conflicted path, and taking a genuine resolving merge commit. Re-running the
+   * merge (rather than committing only the files that were in conflict) also recovers whatever the
+   * remote changed in files that were NOT conflicted, which the original abort discarded. Touches
+   * no network.
+   *
+   * Ordering: `ensureCleanWorkingTree` (belt-and-braces — the tree should already be clean, per
+   * `AWAITING_CONFLICT`'s own invariant) → capture `preHead` → re-run the merge (a non-zero exit
+   * with no unmerged paths is a genuine failure, e.g. the tracking ref no longer exists; a CLEAN
+   * merge here — the remote resolved itself since detection — is also fine, nothing to apply) → for
+   * each resolution, `ours`/`theirs` via `git checkout --ours/--theirs -- <path>` + `git add`, or
+   * `merged` via the bytes {@link ConflictStageStore.readMerged} recorded, written then `git add`-ed
+   * → verify no unmerged path remains (`git diff --name-only --diff-filter=U`); if one does, abort
+   * and return `stillConflicted` with the still-unmerged paths (classified exactly as
+   * {@link merge} classifies its own) → `git commit --no-edit` (reusing the merge's own prepared
+   * message) under {@link SERVICE_COMMIT_IDENTITY} → compute the change-set from `preHead` to the
+   * new `HEAD` via {@link computeMergeChanges}.
+   *
+   * Any throw while applying resolutions (or reading the still-unmerged set) runs `git merge
+   * --abort` before propagating, so a partial failure never leaves `MERGE_HEAD` or a half-resolved
+   * index behind — the awaiting operation stays untouched and retryable.
+   *
+   * @param projectId - The project whose working tree to complete the merge in.
+   * @param input - The branch, the operation id (keys the conflict-stage-store reads for a
+   *   `merged` resolution), and every conflicting file's chosen resolution.
+   * @returns A {@link GitResolveMergeOutcome}; a `GitCommandFailedError` (generic message) when the
+   *   underlying git command fails, no conflict-stage store is configured for a `merged`
+   *   resolution, or its recorded bytes are missing.
+   */
+  async resolveMerge(
+    projectId: ProjectId,
+    input: GitResolveMergeInput,
+  ): Promise<Result<GitResolveMergeOutcome, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      await ensureCleanWorkingTree(cwd);
+
+      const preHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const preHead = readRevParseAnswer(preHeadResult.stdout);
+
+      const remoteReference = `refs/remotes/origin/${input.branch}`;
+      let reproducedConflict = false;
+      try {
+        await runGitCommand(cwd, {
+          command: 'merge',
+          flags: ['--no-edit'],
+          positionals: [remoteReference],
+          identity: SERVICE_COMMIT_IDENTITY,
+        });
+      } catch (error) {
+        const conflicts = await readMergeConflicts(cwd);
+        if (conflicts.length === 0) {
+          // No unmerged paths → a genuine command failure (e.g. the tracking ref no longer
+          // exists), not a reproduction of the original conflict.
+          throw error;
+        }
+        reproducedConflict = true;
+      }
+
+      if (reproducedConflict) {
+        const stillConflicted = await this.applyResolutionsOrAbort(cwd, input);
+        if (stillConflicted) {
+          return { success: true, value: stillConflicted };
+        }
+
+        await runGitCommand(cwd, { command: 'commit', flags: ['--no-edit'], identity: SERVICE_COMMIT_IDENTITY });
+      }
+
+      const headCommitResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const headCommit = readRevParseAnswer(headCommitResult.stdout);
+      const changes = await computeMergeChanges(cwd, preHead, headCommit);
+      return { success: true, value: { status: 'resolved', headCommit, changes } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The merge could not be completed.') };
+    }
+  }
+
+  /**
+   * Applies every resolution onto the just-reproduced conflicted merge, then verifies no unmerged
+   * path remains. Returns the `stillConflicted` outcome (after aborting) when one does; returns
+   * null — meaning the caller should proceed straight to `git commit` — when every path is clean.
+   *
+   * Any throw while applying a resolution (or checking the remaining unmerged set) runs `git merge
+   * --abort` before rethrowing, so {@link resolveMerge}'s own `catch` always finds a clean tree.
+   */
+  private async applyResolutionsOrAbort(
+    cwd: string,
+    input: GitResolveMergeInput,
+  ): Promise<GitResolveMergeOutcome | null> {
+    try {
+      for (const resolution of input.resolutions) {
+        if (resolution.resolution === 'merged') {
+          if (!this.conflictStageStore) {
+            throw new Error('No conflict stage store is configured to read the merged content from.');
+          }
+          const merged = await this.conflictStageStore.readMerged(input.operationId, resolution.path);
+          if (!merged.success || merged.value === null) {
+            throw new Error(`No merged content was recorded for '${resolution.path}'.`);
+          }
+          await writeFile(path.join(cwd, resolution.path), merged.value);
+          await runGitCommand(cwd, { command: 'add', positionals: [resolution.path] });
+        } else {
+          await runGitCommand(cwd, {
+            command: 'checkout',
+            flags: [`--${resolution.resolution}`],
+            positionals: [resolution.path],
+          });
+          await runGitCommand(cwd, { command: 'add', positionals: [resolution.path] });
+        }
+      }
+
+      const remaining = await readMergeConflicts(cwd);
+      if (remaining.length > 0) {
+        await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] });
+        return { status: 'stillConflicted', conflicts: remaining };
+      }
+      return null;
+    } catch (error) {
+      await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Restores the working tree to an operation's pre-operation undo snapshot, undoing a pull or
+   * switch — whether it left the project `AWAITING_CONFLICT` or already landed cleanly. Touches no
+   * network.
+   *
+   * Reads the snapshot from the configured conflict-stage store by `input.operationId`; captures
+   * the pre-reset `HEAD`; `git reset --hard <preOpHead>`; computes the reversal change-set as the
+   * delta from the pre-reset `HEAD` to the now-reset working tree via the single-argument form of
+   * {@link computeMergeChanges} (mirrors how {@link checkout} computes its own change-set) — the
+   * exact set the caller needs to revert docs/live editors.
+   *
+   * @param projectId - The project whose working tree to restore.
+   * @param input - The operation whose snapshot to restore to.
+   * @returns A {@link GitRestoreOutcome}; a `GitCommandFailedError` (generic message) when no
+   *   conflict-stage store is configured, no snapshot is recorded for the operation, its recorded
+   *   commit is no longer resolvable, or the underlying git command fails.
+   */
+  async restoreToSnapshot(
+    projectId: ProjectId,
+    input: GitRestoreToSnapshotInput,
+  ): Promise<Result<GitRestoreOutcome, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    if (!this.conflictStageStore) {
+      return { success: false, error: new GitCommandFailedError('No conflict stage store is configured.') };
+    }
+
+    try {
+      const snapshot = await this.conflictStageStore.readSnapshot(input.operationId);
+      if (!snapshot.success) return snapshot;
+      if (snapshot.value === null) {
+        return {
+          success: false,
+          error: new GitCommandFailedError('No pre-operation snapshot is recorded for this operation.'),
+        };
+      }
+
+      const preResetHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const preResetHead = readRevParseAnswer(preResetHeadResult.stdout);
+
+      await runGitCommand(cwd, { command: 'reset', flags: ['--hard'], positionals: [snapshot.value.preOpHead] });
+
+      const changes = await computeMergeChanges(cwd, preResetHead);
+      return { success: true, value: { headCommit: snapshot.value.preOpHead, changes } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The working tree could not be restored.') };
     }
   }
 }

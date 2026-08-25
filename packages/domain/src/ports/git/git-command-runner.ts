@@ -4,6 +4,7 @@ import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
 import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
 import { NonFastForwardError } from '../../errors/git/non-fast-forward';
+import { ConflictResolution } from '../../types/conflict-resolution';
 import { Result } from '../../types/result';
 
 /**
@@ -289,6 +290,54 @@ export interface GitCreatedBranch {
 }
 
 /**
+ * One conflicted file's chosen resolution, as a completion use case hands it to
+ * {@link GitCommandRunner.resolveMerge}. The `merged` bytes themselves are NOT carried here — the
+ * runner reads them from the `ConflictStageStore` by `(operationId, path)`, so large/binary content
+ * never crosses this port.
+ */
+export interface GitConflictResolutionChoice {
+  /** Workspace-relative POSIX path, no leading slash, of the conflicted file. */
+  readonly path: string;
+  /** The chosen resolution for this file. */
+  readonly resolution: ConflictResolution;
+}
+
+/** Everything {@link GitCommandRunner.resolveMerge} needs to complete a previously-aborted conflicted pull. */
+export interface GitResolveMergeInput {
+  /** The local branch the original merge ran against. */
+  readonly branch: string;
+  /** The conflicted `PULL` operation being completed. Keys the `ConflictStageStore` reads. */
+  readonly operationId: GitOperationId;
+  /** Every conflicting file's chosen resolution. The caller guarantees this covers every conflict. */
+  readonly resolutions: readonly GitConflictResolutionChoice[];
+}
+
+/**
+ * The outcome of a {@link GitCommandRunner.resolveMerge} call. Mirrors {@link GitMergeOutcome}'s
+ * shape: `resolved` on a completed merge (with the resolving commit and the full landed
+ * change-set); `stillConflicted` when some path was left unresolved by the given choices — a
+ * caller/validation bug, since the caller guarantees a full set, but represented as a normal
+ * outcome rather than a thrown error. A genuine git failure is the `Result` error instead.
+ */
+export type GitResolveMergeOutcome =
+  | { readonly status: 'resolved'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
+  | { readonly status: 'stillConflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
+
+/** Input for {@link GitCommandRunner.restoreToSnapshot}. */
+export interface GitRestoreToSnapshotInput {
+  /** The operation whose pre-operation undo snapshot to restore. The snapshot is read from the `ConflictStageStore`. */
+  readonly operationId: GitOperationId;
+}
+
+/** What a completed {@link GitCommandRunner.restoreToSnapshot} call produced. */
+export interface GitRestoreOutcome {
+  /** The commit the working tree was restored to (the snapshot's `preOpHead`). */
+  readonly headCommit: string;
+  /** The reversal change-set: the tree after the reset compared against the tree before it, so the caller can revert docs/live editors. */
+  readonly changes: readonly GitMergeFileChange[];
+}
+
+/**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
  * The real adapter (`apps/git-worker`) runs the actual `git` CLI via `execFile` inside a
@@ -516,4 +565,54 @@ export interface GitCommandRunner {
    *   command itself fails (for example, the target branch does not exist).
    */
   checkout(projectId: ProjectId, input: GitCheckoutInput): Promise<Result<GitCheckoutOutcome, GitCommandFailedError>>;
+
+  /**
+   * Completes a previously-aborted conflicted `PULL` by RE-RUNNING the merge (recreating
+   * `MERGE_HEAD`), dropping each file's chosen resolution onto its conflicted path, and taking a
+   * genuine merge commit — the resolving commit that completing a conflicted merge requires. Re-running the
+   * merge (rather than committing only the resolved files) also recovers whatever the remote
+   * changed in files that were NOT in conflict, which the original abort discarded.
+   *
+   * Adapter contract: reset the working tree clean and capture `preHead`; `git merge --no-edit
+   * <remoteRef>` (a clean auto-merge here is fine — nothing to resolve, skip straight to the
+   * commit); apply each `input.resolutions` entry (`ours`/`theirs` via `git checkout --ours/--theirs
+   * -- <path>` + `git add`, `merged` via the `ConflictStageStore`'s recorded bytes + `git add`);
+   * verify no unmerged paths remain (else abort and return `stillConflicted`); `git commit --no-edit`
+   * under the service identity; compute the change-set from `preHead` to the new head. Any throw
+   * after the merge runs `git merge --abort` in a `finally`, so a failure here leaves the working
+   * tree clean and the caller's operation untouched and retryable. Touches no network — a purely
+   * LOCAL operation, like {@link merge}.
+   *
+   * @param projectId - The project whose working tree to complete the merge in.
+   * @param input - The branch, the operation id (keys the `ConflictStageStore`), and every
+   *   conflict's chosen resolution.
+   * @returns A {@link GitResolveMergeOutcome}; a `GitCommandFailedError` only when a git command
+   *   itself fails, or the `ConflictStageStore` read for a `merged` resolution fails.
+   */
+  resolveMerge(
+    projectId: ProjectId,
+    input: GitResolveMergeInput,
+  ): Promise<Result<GitResolveMergeOutcome, GitCommandFailedError>>;
+
+  /**
+   * Restores the working tree to an operation's pre-operation undo snapshot (`git reset --hard
+   * <preOpHead>`), undoing a pull or switch — whether it left the project `AWAITING_CONFLICT` or
+   * already landed cleanly. Touches no network — a purely LOCAL operation, like {@link merge}.
+   *
+   * Adapter contract: read the snapshot from the `ConflictStageStore` by `input.operationId`;
+   * capture the pre-reset `HEAD`; `git reset --hard <preOpHead>`; compute the reversal change-set as
+   * the delta from the pre-reset `HEAD` to the now-reset working tree (the single-argument form of
+   * the change-computing helper {@link merge} uses, mirroring how {@link checkout} computes its own
+   * change-set) — the exact set the caller needs to revert docs/live editors.
+   *
+   * @param projectId - The project whose working tree to restore.
+   * @param input - The operation whose snapshot to restore to.
+   * @returns A {@link GitRestoreOutcome}; a `GitCommandFailedError` when no snapshot is recorded for
+   *   the operation, its recorded commit is no longer resolvable, or the underlying git command
+   *   fails.
+   */
+  restoreToSnapshot(
+    projectId: ProjectId,
+    input: GitRestoreToSnapshotInput,
+  ): Promise<Result<GitRestoreOutcome, GitCommandFailedError>>;
 }
