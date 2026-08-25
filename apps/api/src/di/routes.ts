@@ -37,6 +37,7 @@ import { projectMainFileRoutes } from '../routes/projects/main-file';
 import { renderConfigRoutes } from '../routes/projects/render-config';
 import { gitIgnorePatternsRoutes } from '../routes/projects/git-ignore-patterns';
 import { cloneRoutes } from '../routes/projects/clone';
+import { gitImportRoutes } from '../routes/git/import';
 import { dictionaryRoutes } from '../routes/grammar/dictionary';
 import { ignoredLintsRoutes } from '../routes/grammar/ignored-lints';
 import { pdfExtensionRoutes } from '../routes/projects/pdf-extensions';
@@ -95,6 +96,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(renderConfigRoutes);
       await innerApp.register(gitIgnorePatternsRoutes);
       await innerApp.register(cloneRoutes);
+      await innerApp.register(gitImportRoutes);
       await innerApp.register(dictionaryRoutes);
       await innerApp.register(ignoredLintsRoutes);
       await innerApp.register(pdfExtensionRoutes);
