@@ -42,7 +42,10 @@ export interface UseBranches {
   branches: BranchDto[];
   /** True while the branch list is loading. */
   loading: boolean;
-  /** A genuinely unexpected load failure. */
+  /**
+   * A genuinely unexpected load failure. A project with no connected git repository (404) is NOT
+   * an error — it simply resolves to an empty branch list — so this stays null in that case.
+   */
   error: string | null;
   /** Reloads the branch list — for use after a switch or a creation changes it. */
   refetch: () => Promise<void>;
@@ -68,6 +71,9 @@ export interface UseBranches {
 
 /** The two `ApiError.code`s that open the confirm dialog rather than surfacing as an error. */
 const CONFIRMABLE_CODES: ReadonlySet<string> = new Set(['uncommitted_changes', 'open_files_need_confirm']);
+
+/** ApiError status codes that mean "this project has no connected git repository" — not a failure. */
+const NOT_CONNECTED_STATUSES: ReadonlySet<number> = new Set([404]);
 
 /**
  * @param projectId - The project whose branches are being managed.
@@ -100,11 +106,16 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
         // "nothing loaded" rather than crashing the switcher's render.
         setCurrent(typeof result.current === 'string' ? result.current : null);
         setBranches(Array.isArray(result.branches) ? result.branches : []);
-      } catch {
+      } catch (error_) {
         if (!active()) return;
         setCurrent(null);
         setBranches([]);
-        setError('Failed to load branches.');
+        if (error_ instanceof ApiError && NOT_CONNECTED_STATUSES.has(error_.status)) {
+          // No connected git repository: an empty list, not an error — same not-connected
+          // convention as `useBehindAhead`/`useGitTreeStatus`/`useGitStatus`.
+        } else {
+          setError('Failed to load branches.');
+        }
       } finally {
         if (active()) setLoading(false);
       }

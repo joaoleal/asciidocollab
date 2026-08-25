@@ -59,6 +59,18 @@ describe('useBranches list load', () => {
     expect(result.current.branches).toEqual([]);
   });
 
+  test('resolves quietly (not an error) when the project has no connected git repo (404)', async () => {
+    mockGetBranches.mockRejectedValueOnce(
+      new ApiError(404, 'repository_not_connected', 'This project has no connected Git repository'),
+    );
+    const { result } = renderHook(() => useBranches('proj1', jest.fn()));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.current).toBeNull();
+    expect(result.current.branches).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+
   test('refetch reloads the list', async () => {
     const { result } = renderHook(() => useBranches('proj1', jest.fn()));
     await waitFor(() => expect(result.current.loading).toBe(false));
