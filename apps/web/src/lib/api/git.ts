@@ -15,6 +15,7 @@ import type {
   FileGitStatus,
   GitOperationStatusDto,
   GitProvider,
+  GitRepositoryDto,
   GitStatusDto,
 } from '@asciidocollab/shared';
 
@@ -299,5 +300,119 @@ export async function undoPull(projectId: string): Promise<UndoPullResult> {
   return apiRequest(`/api/projects/${projectId}/git/undo-pull`, {
     method: 'POST',
     body: JSON.stringify({}),
+  });
+}
+
+/** Request body shared by {@link connectRepository} and {@link initializeRepository}. */
+export interface RepositoryConnectionInput {
+  /** The git hosting provider the remote lives on. */
+  provider: GitProvider;
+  /** The remote repository's URL. */
+  remoteUrl: string;
+  /**
+   * The plaintext access token to authenticate with. Sent once in this request body; this client
+   * never stores, logs, or otherwise retains it.
+   */
+  token: string;
+  /** The branch to check out (connect) or initialize on (initialize). Omitted when not given, so the
+   * server falls back to its own default. */
+  branch?: string;
+}
+
+/** What a successful connect hands back: the newly connected repository. */
+export interface ConnectRepositoryResult {
+  /** The project's now-connected repository. */
+  repository: GitRepositoryDto;
+}
+
+/**
+ * Attaches the project's current files to an EXISTING remote the caller already has, running a
+ * connectivity/authentication preflight synchronously — this resolves only once that preflight (and
+ * the connection itself) has actually succeeded (`201`), unlike {@link initializeRepository}.
+ */
+export async function connectRepository(
+  projectId: string,
+  input: RepositoryConnectionInput,
+): Promise<ConnectRepositoryResult> {
+  const body: { provider: GitProvider; remoteUrl: string; token: string; branch?: string } = {
+    provider: input.provider,
+    remoteUrl: input.remoteUrl,
+    token: input.token,
+  };
+  if (input.branch) body.branch = input.branch;
+  return apiRequest(`/api/projects/${projectId}/git/connect`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** What starting an initialize hands back: the operation to poll and the project it applies to. */
+export interface InitializeRepositoryResult {
+  /** Identifier of the newly queued initialize operation. */
+  operationId: string;
+  /** Identifier of the project the initialize applies to. */
+  projectId: string;
+}
+
+/**
+ * Starts turning the project's current files into the initial commit of a brand-new remote: an
+ * expected-empty remote is committed to and pushed. Resolves as soon as the server has queued the
+ * initialize (`202`) — the returned identifiers are for polling {@link getGitOperation}, not a sign
+ * the init/commit/push itself has finished.
+ */
+export async function initializeRepository(
+  projectId: string,
+  input: RepositoryConnectionInput,
+): Promise<InitializeRepositoryResult> {
+  const body: { provider: GitProvider; remoteUrl: string; token: string; branch?: string } = {
+    provider: input.provider,
+    remoteUrl: input.remoteUrl,
+    token: input.token,
+  };
+  if (input.branch) body.branch = input.branch;
+  return apiRequest(`/api/projects/${projectId}/git/initialize`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Unlinks the project from its connected remote: deletes the stored credential and the repository
+ * link, leaving the project's current files untouched. Synchronous — there is no operation to poll.
+ */
+export async function disconnectRepository(projectId: string): Promise<{ ok: true }> {
+  return apiRequest(`/api/projects/${projectId}/git/disconnect`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+/** Request body for {@link rotateGitCredential}. */
+export interface RotateGitCredentialInput {
+  /**
+   * The new plaintext access token. Sent once in this request body; this client never stores, logs,
+   * or otherwise retains it.
+   */
+  token: string;
+}
+
+/** What a successful credential rotation hands back. */
+export interface RotateGitCredentialResult {
+  /** A display-safe hint derived from the new token (e.g. its last few characters), or null. */
+  tokenHint: string | null;
+}
+
+/**
+ * Rotates the access credential stored for the project's already-connected remote. Synchronous, and
+ * requires an existing connection — refused with `404 repository_not_connected` otherwise. Performs
+ * no remote verification of the new token; a bad one instead surfaces on the next git operation.
+ */
+export async function rotateGitCredential(
+  projectId: string,
+  input: RotateGitCredentialInput,
+): Promise<RotateGitCredentialResult> {
+  return apiRequest(`/api/projects/${projectId}/git/credential`, {
+    method: 'PUT',
+    body: JSON.stringify({ token: input.token }),
   });
 }

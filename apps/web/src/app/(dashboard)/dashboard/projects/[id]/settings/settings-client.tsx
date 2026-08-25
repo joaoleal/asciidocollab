@@ -34,6 +34,7 @@ import {
   useRenderConfigDraft,
 } from "@/components/render-config-settings";
 import { ExtensionsSection } from "@/components/settings/extensions-section";
+import { RepositorySection } from "@/components/git/repository-section";
 import { SectionNav } from "@/components/settings/section-nav";
 import {
   resolveSettingsSection,
@@ -197,6 +198,7 @@ function SectionedSettings({
           <RenderConfigSection section={section} />
         )}
         {section === "extensions" && <ExtensionsSection />}
+        {section === "repository" && isOwner && <RepositorySection projectId={project.id} />}
         {section === "danger" && isOwner && <DangerSection project={project} router={router} />}
       </div>
 

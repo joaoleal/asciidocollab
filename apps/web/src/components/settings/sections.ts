@@ -12,7 +12,7 @@
  */
 
 /** The identifier of a project-options section, as it appears in the `?section=` query parameter. */
-export type SettingsSectionId = 'general' | 'rendering' | 'pdf' | 'extensions' | 'html' | 'danger';
+export type SettingsSectionId = 'general' | 'rendering' | 'pdf' | 'extensions' | 'html' | 'repository' | 'danger';
 
 /** One navigable section of the project options page. */
 export interface SettingsSection {
@@ -71,6 +71,16 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = Object.freeze([
     label: 'HTML Export',
     description:
       'How an exported HTML file is packaged and what colours it uses. These shape the exported file, not the live preview.',
+  },
+  {
+    id: 'repository',
+    label: 'Git Repository',
+    description: 'Connect this project to a remote repository, initialize a new one, and rotate its access credential.',
+    // Every action here — connect, initialize, disconnect, rotate credential — is OWNER-gated on the
+    // server (data-model.md's git authorization matrix), with no read-only affordance a non-owner
+    // could use. Hidden from the nav entirely, same treatment as Danger Zone below, rather than shown
+    // with every control disabled.
+    ownerOnly: true,
   },
   {
     id: 'danger',

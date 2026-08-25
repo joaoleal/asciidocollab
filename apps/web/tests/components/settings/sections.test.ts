@@ -15,6 +15,7 @@ describe('settings section registry', () => {
       'pdf',
       'extensions',
       'html',
+      'repository',
       'danger',
     ]);
   });
@@ -41,6 +42,11 @@ describe('visibleSettingsSections', () => {
   it('offers the danger zone only to owners', () => {
     expect(visibleSettingsSections(true).map((s) => s.id)).toContain('danger');
     expect(visibleSettingsSections(false).map((s) => s.id)).not.toContain('danger');
+  });
+
+  it('offers the git repository section only to owners', () => {
+    expect(visibleSettingsSections(true).map((s) => s.id)).toContain('repository');
+    expect(visibleSettingsSections(false).map((s) => s.id)).not.toContain('repository');
   });
 
   it('offers every other section to non-owners', () => {

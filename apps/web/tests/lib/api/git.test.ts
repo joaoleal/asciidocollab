@@ -7,7 +7,9 @@ import {
   checkoutBranch,
   commitChanges,
   completePull,
+  connectRepository,
   createBranch,
+  disconnectRepository,
   getBehindAhead,
   getBranches,
   getConflicts,
@@ -16,8 +18,10 @@ import {
   getGitStatus,
   getGitTreeStatus,
   importRepository,
+  initializeRepository,
   isGitOperationTerminal,
   resolveConflict,
+  rotateGitCredential,
   startPull,
   undoPull,
 } from '@/lib/api/git';
@@ -524,6 +528,224 @@ describe('undoPull', () => {
       status: 403,
       code: 'insufficient_role',
     });
+  });
+});
+
+describe('connectRepository', () => {
+  test('POSTs provider/remoteUrl/token to the project-scoped connect endpoint and returns the repository', async () => {
+    const repository = {
+      id: 'repo1',
+      projectId: 'proj1',
+      provider: 'github',
+      remoteUrl: 'https://github.com/acme/handbook.git',
+      currentBranch: 'main',
+      defaultBranch: 'main',
+      syncStatus: 'UP_TO_DATE',
+      lastSyncAt: null,
+      connectedByUserId: 'user1',
+      createdAt: '2026-08-24T00:00:00Z',
+    };
+    okOnce({ repository });
+
+    const result = await connectRepository('proj1', {
+      provider: 'github',
+      remoteUrl: 'https://github.com/acme/handbook.git',
+      token: 'ghp_secret',
+    });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/connect`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({
+      provider: 'github',
+      remoteUrl: 'https://github.com/acme/handbook.git',
+      token: 'ghp_secret',
+    });
+    expect(result).toEqual({ repository });
+  });
+
+  test('includes a branch only when given', async () => {
+    okOnce({ repository: {} });
+
+    await connectRepository('proj1', {
+      provider: 'gitlab',
+      remoteUrl: 'https://gitlab.com/acme/handbook.git',
+      token: 'glpat_secret',
+      branch: 'develop',
+    });
+
+    expect(requestBody()).toEqual({
+      provider: 'gitlab',
+      remoteUrl: 'https://gitlab.com/acme/handbook.git',
+      token: 'glpat_secret',
+      branch: 'develop',
+    });
+  });
+
+  test('omits branch when not given', async () => {
+    okOnce({ repository: {} });
+
+    await connectRepository('proj1', {
+      provider: 'github',
+      remoteUrl: 'https://github.com/acme/handbook.git',
+      token: 'ghp_secret',
+    });
+
+    expect(requestBody()).not.toHaveProperty('branch');
+  });
+
+  test('surfaces an already-connected refusal', async () => {
+    failOnce(409, { error: { code: 'already_connected', message: 'This project already has a connected repository' } });
+
+    await expect(
+      connectRepository('proj1', { provider: 'github', remoteUrl: 'https://github.com/a/b.git', token: 't' }),
+    ).rejects.toMatchObject({ status: 409, code: 'already_connected' });
+  });
+
+  test('surfaces a non-owner refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'You do not have the required role for this action' } });
+
+    await expect(
+      connectRepository('proj1', { provider: 'github', remoteUrl: 'https://github.com/a/b.git', token: 't' }),
+    ).rejects.toMatchObject({ status: 403, code: 'insufficient_role' });
+  });
+});
+
+describe('initializeRepository', () => {
+  test('POSTs provider/remoteUrl/token to the project-scoped initialize endpoint and returns the queued operation', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    const result = await initializeRepository('proj1', {
+      provider: 'github',
+      remoteUrl: 'https://github.com/acme/handbook.git',
+      token: 'ghp_secret',
+    });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/initialize`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({
+      provider: 'github',
+      remoteUrl: 'https://github.com/acme/handbook.git',
+      token: 'ghp_secret',
+    });
+    expect(result).toEqual({ operationId: 'op1', projectId: 'proj1' });
+  });
+
+  test('includes a branch only when given', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    await initializeRepository('proj1', {
+      provider: 'gitlab',
+      remoteUrl: 'https://gitlab.com/acme/handbook.git',
+      token: 'glpat_secret',
+      branch: 'develop',
+    });
+
+    expect(requestBody()).toMatchObject({ branch: 'develop' });
+  });
+
+  test('omits branch when not given', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    await initializeRepository('proj1', {
+      provider: 'github',
+      remoteUrl: 'https://github.com/acme/handbook.git',
+      token: 'ghp_secret',
+    });
+
+    expect(requestBody()).not.toHaveProperty('branch');
+  });
+
+  test('surfaces an already-connected refusal', async () => {
+    failOnce(409, { error: { code: 'already_connected', message: 'This project already has a connected repository' } });
+
+    await expect(
+      initializeRepository('proj1', { provider: 'github', remoteUrl: 'https://github.com/a/b.git', token: 't' }),
+    ).rejects.toMatchObject({ status: 409, code: 'already_connected' });
+  });
+});
+
+describe('disconnectRepository', () => {
+  test('POSTs an empty body to the project-scoped disconnect endpoint', async () => {
+    okOnce({ ok: true });
+
+    const result = await disconnectRepository('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/disconnect`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({});
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('surfaces a not-connected refusal', async () => {
+    failOnce(404, { error: { code: 'repository_not_connected', message: 'This project has no connected Git repository' } });
+
+    await expect(disconnectRepository('proj1')).rejects.toMatchObject({
+      status: 404,
+      code: 'repository_not_connected',
+    });
+  });
+
+  test('surfaces a non-owner refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'You do not have the required role for this action' } });
+
+    await expect(disconnectRepository('proj1')).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
+    });
+  });
+});
+
+describe('rotateGitCredential', () => {
+  test('PUTs the token to the project-scoped credential endpoint and returns the new hint', async () => {
+    okOnce({ tokenHint: '…a1b2' });
+
+    const result = await rotateGitCredential('proj1', { token: 'ghp_new_secret' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/credential`);
+    expect(requestInit().method).toBe('PUT');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({ token: 'ghp_new_secret' });
+    expect(result).toEqual({ tokenHint: '…a1b2' });
+  });
+
+  test('surfaces a not-connected refusal', async () => {
+    failOnce(404, { error: { code: 'repository_not_connected', message: 'This project has no connected Git repository' } });
+
+    await expect(rotateGitCredential('proj1', { token: 't' })).rejects.toMatchObject({
+      status: 404,
+      code: 'repository_not_connected',
+    });
+  });
+
+  test('surfaces a non-owner refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'You do not have the required role for this action' } });
+
+    await expect(rotateGitCredential('proj1', { token: 't' })).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
+    });
+  });
+
+  test('never logs the token to the console', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    okOnce({ tokenHint: '…a1b2' });
+    const secret = 'ghp_super_secret_token_value';
+    await rotateGitCredential('proj1', { token: secret });
+
+    for (const spy of [logSpy, warnSpy, errorSpy]) {
+      for (const call of spy.mock.calls) {
+        expect(call.join(' ')).not.toContain(secret);
+      }
+    }
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 });
 
