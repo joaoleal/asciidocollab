@@ -6,8 +6,10 @@ import { FileIcon } from './file-icon';
 import { DragDropZone } from './drag-drop-zone';
 import { FileTreeActions } from './file-tree-actions';
 import { OpenByOthersMarker } from './open-by-others-marker';
+import { GitStatusBadge, rollUpFolderStatus } from './git-status-badge';
 import type { ParticipantPresence } from '@/hooks/use-collab-presence';
 import type { FileTreeNode as FileTreeNodeType, NodeActionRequest } from './types';
+import type { FileGitStatus } from '@asciidocollab/shared';
 import { API_BASE_URL } from '@/lib/api/base-url';
 
 /**
@@ -38,6 +40,12 @@ interface Properties {
   /** Feature 024: other users currently editing each file, keyed by file node id. */
   presenceByFile?: ReadonlyMap<string, ParticipantPresence[]>;
   /**
+   * Current git status per file, keyed by file node id. A file shows its own entry; a folder shows a
+   * roll-up of its descendants' statuses (see {@link rollUpFolderStatus}). Absent entirely for a
+   * project with no connected git repository, in which case no badges render.
+   */
+  statusByFileNodeId?: Record<string, FileGitStatus>;
+  /**
    * The tree's pending keyboard-shortcut request, passed to every node and honoured only by the one
    * it names. Nodes forward it to their children so a request reaches a node at any depth.
    */
@@ -45,8 +53,10 @@ interface Properties {
 }
 
 /** Renders a single file or folder node in the file tree, with expand/collapse and drag-drop support. */
-export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, onSelect, onContextMenu, onUpdate, onError, isExpanded = false, onToggle, expandedState, isProjectRoot = false, onFolderDrop, presenceByFile, actionRequest }: Properties) {
+export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, onSelect, onContextMenu, onUpdate, onError, isExpanded = false, onToggle, expandedState, isProjectRoot = false, onFolderDrop, presenceByFile, statusByFileNodeId, actionRequest }: Properties) {
   const [zipDownloading, setZipDownloading] = useState(false);
+  const folderRollupStatus =
+    node.type === 'folder' && statusByFileNodeId ? rollUpFolderStatus(node, statusByFileNodeId) : null;
   const handleClick = () => {
     if (node.type === 'folder') {
       onToggle?.(node.id);
@@ -118,6 +128,12 @@ export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, 
         </>
       )}
       <span className="truncate text-sm flex-1">{node.name}</span>
+      {node.type === 'file' && (
+        <GitStatusBadge status={statusByFileNodeId?.[node.id] ?? 'unchanged'} />
+      )}
+      {node.type === 'folder' && folderRollupStatus && (
+        <GitStatusBadge status={folderRollupStatus} rollup />
+      )}
       {node.type === 'file' && <OpenByOthersMarker participants={presenceByFile?.get(node.id) ?? []} />}
       {isProjectRoot && (
         <a
@@ -185,6 +201,7 @@ export function FileTreeNode({ node, depth, projectId, canEdit, selectedNodeId, 
             expandedState={expandedState}
             onFolderDrop={onFolderDrop}
             presenceByFile={presenceByFile}
+            statusByFileNodeId={statusByFileNodeId}
             actionRequest={actionRequest}
           />
         ))}

@@ -3,7 +3,7 @@
  * and polls the long-running operation that clone runs as.
  */
 import { apiRequest } from '@/lib/api/transport';
-import type { GitOperationStatusDto, GitProvider } from '@asciidocollab/shared';
+import type { FileGitStatus, GitOperationStatusDto, GitProvider } from '@asciidocollab/shared';
 
 /** Request body for `POST /api/git/import`. */
 export interface ImportRepositoryInput {
@@ -46,6 +46,21 @@ export async function importRepository(input: ImportRepositoryInput): Promise<Im
  */
 export async function getGitOperation(projectId: string, operationId: string): Promise<GitOperationStatusDto> {
   return apiRequest(`/api/projects/${projectId}/git/operations/${operationId}`);
+}
+
+/** Response shape of `GET /api/projects/:projectId/git/tree-status`. */
+export interface GitTreeStatus {
+  /** Per-file git status, keyed by file node id. Files with no entry are unchanged. */
+  statusByFileNodeId: Record<string, FileGitStatus>;
+}
+
+/**
+ * Reads each file's current git status (modified, staged, untracked, …) for the project's file tree,
+ * keyed by file node id. Callers treat a not-connected / 404 refusal (a project with no git repo) as
+ * an empty map rather than an error — see {@link useGitTreeStatus}.
+ */
+export async function getGitTreeStatus(projectId: string): Promise<GitTreeStatus> {
+  return apiRequest(`/api/projects/${projectId}/git/tree-status`);
 }
 
 /** The `GitOperationStatusDto` states that mean polling should stop. */

@@ -14,7 +14,7 @@ import { useFileTreeKeyHandler } from '@/hooks/use-file-tree-key-handler';
 import { useFileTreeUIState } from '@/hooks/use-file-tree-ui-state';
 import type { FileTreeNode as FileTreeNodeType, NodeActionKind, NodeActionRequest } from './types';
 import type { ParticipantPresence } from '@/hooks/use-collab-presence';
-import type { FileTreeEventDto } from '@asciidocollab/shared';
+import type { FileGitStatus, FileTreeEventDto } from '@asciidocollab/shared';
 import { API_BASE_URL } from '@/lib/api/base-url';
 
 // Folders are grouped before files; within each group, entries are ordered alphabetically
@@ -39,6 +39,12 @@ interface Properties {
   selectedNodeId: string | null;
   /** Feature 024: other users currently editing each file, keyed by file node id (for the marker). */
   presenceByFile?: ReadonlyMap<string, ParticipantPresence[]>;
+  /**
+   * Current git status per file, keyed by file node id, for the per-node status badge (folders show a
+   * roll-up of their descendants). Absent for a project with no connected git repository, in which
+   * case no badges render.
+   */
+  statusByFileNodeId?: Record<string, FileGitStatus>;
   /** When provided, renders a collapse button in the header and calls this on click. */
   onCollapse?: () => void;
   // A request to reveal and select a file by its project-relative path, such as from a Ctrl+click
@@ -158,7 +164,7 @@ function findNodeByPath(node: FileTreeNodeType, path: string): FileTreeNodeType 
 }
 
 /** Renders the full file tree for a project, with real-time SSE updates and keyboard shortcut support. */
-export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, presenceByFile, onCollapse, openPathRequest, autoSelectNodeId }: Properties) {
+export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, presenceByFile, statusByFileNodeId, onCollapse, openPathRequest, autoSelectNodeId }: Properties) {
   const [tree, setTree] = useState<FileTreeNodeType | null>(null);
   const [fetchError, setFetchError] = useState(false);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
@@ -563,6 +569,7 @@ export function FileTree({ projectId, canEdit, onSelectFile, selectedNodeId, pre
                   expandedState={expandedState}
                   onFolderDrop={handleFolderDrop}
                   presenceByFile={presenceByFile}
+                  statusByFileNodeId={statusByFileNodeId}
                   actionRequest={actionRequest}
                 />
               ))

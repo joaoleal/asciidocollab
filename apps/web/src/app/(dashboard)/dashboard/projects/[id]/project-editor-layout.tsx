@@ -12,6 +12,7 @@ import { FileTree } from '@/components/file-tree/file-tree';
 import { AsciiDocEditor, type EditorGrammarState } from '@/components/editor/asciidoc-editor';
 import { useProjectSymbolIndex } from '@/hooks/use-project-symbol-index';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
+import { useGitTreeStatus } from '@/hooks/use-git-tree-status';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
@@ -486,6 +487,10 @@ export function ProjectEditorLayout({
     editorConnectionState,
     editorPending,
   } = useManagedCollab({ projectId, selectedFile, contentState, canEdit, cursorLine: currentLine });
+
+  // Per-file git status for the file tree's badges (a read-only display enhancement — see the hook
+  // for why a project with no connected git repository resolves to an empty map rather than an error).
+  const { statusByFileNodeId } = useGitTreeStatus(projectId);
 
   // ── Review comments & tasks (feature 038) ──────────────────────────────────────────────────
   // Comments are available only for a collaborative .adoc (a live Y.Doc + document id). The review
@@ -1390,6 +1395,7 @@ export function ProjectEditorLayout({
                 onSelectFile={handleSelectFile}
                 selectedNodeId={selectedFile?.nodeId ?? null}
                 presenceByFile={presenceByFile}
+                statusByFileNodeId={statusByFileNodeId}
                 openPathRequest={openPathRequest}
                 // Only on a genuine first open (nothing remembered) — never override a restored selection.
                 autoSelectNodeId={isFirstOpen ? mainFileNodeId : null}

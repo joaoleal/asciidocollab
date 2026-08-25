@@ -3,7 +3,7 @@
  * a brand-new project, and polling the long-running operation it returns.
  */
 import { API_BASE_URL } from '@/lib/api/base-url';
-import { getGitOperation, importRepository, isGitOperationTerminal } from '@/lib/api/git';
+import { getGitOperation, getGitTreeStatus, importRepository, isGitOperationTerminal } from '@/lib/api/git';
 
 const fetchMock = jest.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -107,6 +107,29 @@ describe('getGitOperation', () => {
     failOnce(404, { error: { code: 'NOT_FOUND', message: 'Git operation not found' } });
 
     await expect(getGitOperation('proj1', 'missing')).rejects.toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('getGitTreeStatus', () => {
+  test('GETs the project-scoped tree-status endpoint', async () => {
+    const body = { statusByFileNodeId: { 'file-1': 'modified', 'file-2': 'staged' } };
+    okOnce(body);
+
+    const result = await getGitTreeStatus('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/tree-status`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(body);
+  });
+
+  test('surfaces a not-connected refusal for a project with no git repo', async () => {
+    failOnce(404, { error: { code: 'NOT_FOUND', message: 'Project is not connected to a git repository' } });
+
+    await expect(getGitTreeStatus('proj1')).rejects.toMatchObject({
       status: 404,
       code: 'NOT_FOUND',
     });

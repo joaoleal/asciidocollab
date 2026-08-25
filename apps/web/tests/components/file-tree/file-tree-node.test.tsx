@@ -586,6 +586,139 @@ describe('FileTreeNode — Download as ZIP (root project node)', () => {
     expect(screen.queryByTestId('open-by-others-marker')).not.toBeInTheDocument();
   });
 
+  it('renders a git status badge for a file with a non-unchanged status', () => {
+    render(
+      <FileTreeNode
+        node={fileNode}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        statusByFileNodeId={{ 'file-1': 'modified' }}
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Modified' })).toBeInTheDocument();
+  });
+
+  it('renders no git status badge for a file with an unchanged status', () => {
+    render(
+      <FileTreeNode
+        node={fileNode}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        statusByFileNodeId={{ 'file-1': 'unchanged' }}
+      />,
+    );
+    expect(screen.queryByRole('img', { name: /modified|staged|untracked|removed|conflicted/i })).not.toBeInTheDocument();
+  });
+
+  it('renders no git status badge for a file missing from the status map', () => {
+    render(
+      <FileTreeNode
+        node={fileNode}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        statusByFileNodeId={{}}
+      />,
+    );
+    expect(screen.queryByRole('img', { name: /modified|staged|untracked|removed|conflicted/i })).not.toBeInTheDocument();
+  });
+
+  it('renders no git status badge for a folder node, even if the status map carries its id', () => {
+    render(
+      <FileTreeNode
+        node={folderNode}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        statusByFileNodeId={{ 'folder-1': 'modified' }}
+      />,
+    );
+    expect(screen.queryByRole('img', { name: 'Modified' })).not.toBeInTheDocument();
+  });
+
+  it('renders a roll-up badge on a folder when a descendant file has a changed status', () => {
+    render(
+      <FileTreeNode
+        node={folderNode}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        statusByFileNodeId={{ 'file-1': 'modified' }}
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Contains changes: Modified' })).toBeInTheDocument();
+  });
+
+  it('renders a roll-up badge on a folder for a status on a DEEPLY nested descendant', () => {
+    const grandchild = { id: 'gc', name: 'deep.adoc', type: 'file' as const, path: '/src/sub/deep.adoc', parentId: 'sub', children: [] };
+    const childFolder = { id: 'sub', name: 'sub', type: 'folder' as const, path: '/src/sub', parentId: 'folder-1', children: [grandchild] };
+    const parent = { ...folderNode, children: [childFolder] };
+    render(
+      <FileTreeNode
+        node={parent}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        statusByFileNodeId={{ gc: 'conflicted' }}
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Contains changes: Conflicted' })).toBeInTheDocument();
+  });
+
+  it('renders no roll-up badge on a folder when every descendant is unchanged', () => {
+    render(
+      <FileTreeNode
+        node={folderNode}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        statusByFileNodeId={{ 'file-1': 'unchanged' }}
+      />,
+    );
+    expect(screen.queryByRole('img', { name: /contains changes/i })).not.toBeInTheDocument();
+  });
+
+  it('passes the status map down to child nodes when a folder is expanded', () => {
+    render(
+      <FileTreeNode
+        node={folderNode}
+        depth={0}
+        projectId="proj-1"
+        canEdit={false}
+        selectedNodeId={null}
+        onSelect={jest.fn()}
+        onContextMenu={jest.fn()}
+        isExpanded
+        onToggle={jest.fn()}
+        statusByFileNodeId={{ 'file-1': 'staged' }}
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Staged' })).toBeInTheDocument();
+  });
+
   it('expands a nested child folder according to expandedState', () => {
     const grandchild = { id: 'gc', name: 'deep.adoc', type: 'file' as const, path: '/src/sub/deep.adoc', parentId: 'sub', children: [] };
     const childFolder = { id: 'sub', name: 'sub', type: 'folder' as const, path: '/src/sub', parentId: 'folder-1', children: [grandchild] };
