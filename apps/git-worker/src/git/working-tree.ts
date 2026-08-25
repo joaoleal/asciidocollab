@@ -20,10 +20,15 @@ export function resolveWorkingTreePath(storageRoot: string, projectId: ProjectId
  * (Security Constitution, Git Sandbox Security) that keeps one job from ever observing another
  * job's leftover state.
  *
+ * `.collab/` — the Yjs collaborative-editing blob store — is excluded from the clean step. It
+ * lives inside the working tree as an internal sibling of the tracked project files, not project
+ * content, and is never tracked by git, so a plain `clean -fdx` would otherwise delete it (as an
+ * untracked, and once the managed `.gitignore` is in place, also ignored, path) on every job.
+ *
  * @param cwd - The working tree to clean.
  * @throws {GitProcessError} If either `git` invocation fails.
  */
 export async function ensureCleanWorkingTree(cwd: string): Promise<void> {
   await runGitCommand(cwd, { command: 'reset', flags: ['--hard'] });
-  await runGitCommand(cwd, { command: 'clean', flags: ['-fdx'] });
+  await runGitCommand(cwd, { command: 'clean', flags: ['-fdx', '-e', '/.collab/'] });
 }

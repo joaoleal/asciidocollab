@@ -50,7 +50,10 @@ export interface GitWorkerApp {
  * to the `UNHANDLED_GIT_OPERATION_KIND` failure path (see `dispatch/git-operation-dispatcher.ts`),
  * so a claimed op always reaches a terminal state — and releases the single-flight lock it
  * holds — rather than hanging forever. `gitCredentialStore` and `gitCommandRunner` are already
- * constructed here, ready for those handlers to close over once they exist.
+ * constructed here, ready for those handlers to close over once they exist. Likewise,
+ * `writeManagedGitignore` (`git/managed-gitignore.ts`) is ready for a future init/commit handler
+ * to call — after `ensureCleanWorkingTree`, with the project's current `gitIgnorePatterns` — so
+ * the managed `.gitignore` (and its merged owner-set patterns) stays current on every job.
  *
  * @returns The composed application, ready to start. Structurally satisfies `GitWorkerApp` plus a
  *   few extra fields (below) exposed for tests and future use-case wiring — no explicit

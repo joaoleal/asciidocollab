@@ -18,6 +18,14 @@ export { SetProjectMainFileUseCase } from './project/set-project-main-file';
 export type { SetProjectMainFileInput } from './project/set-project-main-file';
 export { ArchiveProjectUseCase } from './project/archive-project';
 export { RestoreProjectUseCase } from './project/restore-project';
+export { GetProjectGitIgnorePatternsUseCase } from './project/get-project-git-ignore-patterns';
+export type { GitIgnorePatternsResult } from './project/get-project-git-ignore-patterns';
+export { SaveProjectGitIgnorePatternsUseCase } from './project/save-project-git-ignore-patterns';
+export {
+  requireGitIgnorePatternsOwner,
+  GIT_IGNORE_PATTERNS_RESOURCE_TYPE,
+} from './project/git-ignore-patterns-authorization';
+export type { GitIgnorePatternsAuthzContext } from './project/git-ignore-patterns-authorization';
 export { CheckSystemSetupUseCase } from './settings/check-system-setup';
 export { UpdateDisplayNameUseCase } from './auth/update-display-name';
 export type { UpdateDisplayNameResult } from './auth/update-display-name';

@@ -121,6 +121,10 @@ model Project {
   language       String?
   archivedAt     DateTime?
   mainFileNodeId String?   @db.Uuid
+  // Maintainer-editable git-ignore patterns (owner-gated), merged by the git-worker into the
+  // project's managed .gitignore alongside the always-ignored internal entries (.collab/, *.tmp).
+  // Schema-only addition: no migration generated yet (see project's migration policy).
+  gitIgnorePatterns String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 

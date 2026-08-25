@@ -55,6 +55,13 @@ export interface ProjectConfig {
     /** Render-config rate limit window in milliseconds. */
     rateLimitWindow: number;
   };
+  /** Project owner-gated git-ignore-patterns (get/save) rate limiting configuration. */
+  gitIgnorePatterns: {
+    /** Maximum git-ignore-patterns requests per user/IP per window. */
+    rateLimitMax: number;
+    /** Git-ignore-patterns rate limit window in milliseconds. */
+    rateLimitWindow: number;
+  };
   /** Cross-file refactoring (find-usages/rename-symbol) rate limiting configuration. */
   refactoring: {
     /** Maximum refactoring requests per user/IP per window. */
@@ -216,6 +223,20 @@ export const projectSchema: convict.Schema<ProjectConfig> = {
       format: 'integer',
       default: 3_600_000,
       env: 'ASCIIDOCOLLAB_PROJECT_RENDER_CONFIG_RATE_LIMIT_WINDOW',
+    },
+  },
+  gitIgnorePatterns: {
+    rateLimitMax: {
+      doc: 'Maximum owner-gated git-ignore-patterns (get/save) requests per user/IP per window.',
+      format: 'integer',
+      default: 120,
+      env: 'ASCIIDOCOLLAB_PROJECT_GIT_IGNORE_PATTERNS_RATE_LIMIT_MAX',
+    },
+    rateLimitWindow: {
+      doc: 'Git-ignore-patterns rate limit window in milliseconds.',
+      format: 'integer',
+      default: 3_600_000,
+      env: 'ASCIIDOCOLLAB_PROJECT_GIT_IGNORE_PATTERNS_RATE_LIMIT_WINDOW',
     },
   },
   refactoring: {

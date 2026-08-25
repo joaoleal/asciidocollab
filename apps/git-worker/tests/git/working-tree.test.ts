@@ -1,4 +1,4 @@
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectId } from '@asciidocollab/domain';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from '../../src/git/working-tree.js';
@@ -32,6 +32,23 @@ describe('ensureCleanWorkingTree', () => {
     await writeFile(path.join(cwd, 'untracked.txt'), 'stray file before any commit\n');
 
     await expect(ensureCleanWorkingTree(cwd)).resolves.toBeUndefined();
+    await expect(access(path.join(cwd, 'untracked.txt'))).rejects.toThrow();
+  });
+
+  it('never removes the .collab/ Yjs blob store, even though it is untracked', async () => {
+    const cwd = await createTemporaryWorkingTree();
+    await writeFile(path.join(cwd, 'tracked.txt'), 'original\n');
+    await commitAll(cwd, 'init');
+
+    await mkdir(path.join(cwd, '.collab'), { recursive: true });
+    await writeFile(path.join(cwd, '.collab', 'state.bin'), 'live collaboration state');
+    await writeFile(path.join(cwd, 'untracked.txt'), 'should still be removed\n');
+
+    await ensureCleanWorkingTree(cwd);
+
+    await expect(readFile(path.join(cwd, '.collab', 'state.bin'), 'utf8')).resolves.toBe(
+      'live collaboration state',
+    );
     await expect(access(path.join(cwd, 'untracked.txt'))).rejects.toThrow();
   });
 });

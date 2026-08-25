@@ -28,6 +28,7 @@ function asStored(project: Project): Project {
     project.archivedAt,
     project.mainFileNodeId,
     project.language,
+    project.gitIgnorePatterns,
   );
 }
 

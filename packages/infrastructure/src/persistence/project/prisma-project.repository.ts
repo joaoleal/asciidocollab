@@ -123,7 +123,8 @@ export class PrismaProjectRepository implements ProjectRepository {
 
 function toDomainProject(record: {
   id: string; name: string; description: string | null;
-  tags: unknown; archivedAt: Date | null; mainFileNodeId?: string | null; language?: string | null; createdAt: Date; updatedAt: Date;
+  tags: unknown; archivedAt: Date | null; mainFileNodeId?: string | null; language?: string | null;
+  gitIgnorePatterns?: string | null; createdAt: Date; updatedAt: Date;
 }): Project {
   return new Project(
     ProjectId.create(record.id),
@@ -136,12 +137,14 @@ function toDomainProject(record: {
     record.mainFileNodeId ? FileNodeId.create(record.mainFileNodeId) : null,
     // A corrupt/unknown stored language must not break loading — treat it as unset.
     record.language && isSpellcheckLanguage(record.language) ? record.language : null,
+    record.gitIgnorePatterns ?? null,
   );
 }
 
 function toPersistenceProject(project: Project): {
   id: string; name: string; description: string | null;
-  tags: string[]; mainFileNodeId: string | null; language: string | null; createdAt: Date; updatedAt: Date;
+  tags: string[]; mainFileNodeId: string | null; language: string | null; gitIgnorePatterns: string | null;
+  createdAt: Date; updatedAt: Date;
 } {
   return {
     id: project.id.value,
@@ -150,6 +153,7 @@ function toPersistenceProject(project: Project): {
     tags: [...project.tags],
     mainFileNodeId: project.mainFileNodeId?.value ?? null,
     language: project.language,
+    gitIgnorePatterns: project.gitIgnorePatterns,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };

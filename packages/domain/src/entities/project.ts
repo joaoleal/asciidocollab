@@ -3,6 +3,11 @@ import { ProjectName } from '../value-objects/project/project-name';
 import { FileNodeId } from '../value-objects/ids/file-node-id';
 import { Timestamps } from '../value-objects/common/timestamps';
 import { isSpellcheckLanguage, type SpellcheckLanguage } from '../constants/editor-preferences';
+import { ValidationError } from '../errors/common/validation-error';
+
+/** Upper bound on the stored length of {@link Project.gitIgnorePatterns}, a defensive cap on an
+ *  otherwise-unbounded free-text field a project owner controls. */
+const GIT_IGNORE_PATTERNS_MAX_LENGTH = 20_000;
 
 /**
  * Represents an AsciiDoc collaboration project.
@@ -23,6 +28,7 @@ export class Project {
   private _name: ProjectName;
   private _description: string | null;
   private _language: SpellcheckLanguage | null;
+  private _gitIgnorePatterns: string | null;
 
   /**
    * @throws {Error} If tags exceed 10 items, `initialArchivedAt` precedes
@@ -59,6 +65,11 @@ export class Project {
      * falls back to its default). Must be a supported language code when present.
      */
     initialLanguage: SpellcheckLanguage | null = null,
+    /**
+     * Maintainer-editable git-ignore patterns merged into the project's managed `.gitignore` by
+     * the worker, or null when unset. Owner-gated at the use-case boundary, not here.
+     */
+    initialGitIgnorePatterns: string | null = null,
   ) {
     const deduplicatedTags = [...new Set(tags)];
     if (deduplicatedTags.length > 10) {
@@ -80,7 +91,26 @@ export class Project {
     this._mainFileNodeId = initialMainFileNodeId;
     this._archivedAt = initialArchivedAt;
     this._language = initialLanguage;
+    this._gitIgnorePatterns = Project.normalizeGitIgnorePatterns(initialGitIgnorePatterns);
     this._timestamps = timestamps;
+  }
+
+  /**
+   * Trims the value and collapses an empty/whitespace-only string to null, so "cleared" always
+   * reads back as null regardless of which empty-ish value the caller passed.
+   *
+   * @throws {ValidationError} If the (trimmed) value exceeds {@link GIT_IGNORE_PATTERNS_MAX_LENGTH}.
+   */
+  private static normalizeGitIgnorePatterns(value: string | null): string | null {
+    if (value === null) return null;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return null;
+    if (trimmed.length > GIT_IGNORE_PATTERNS_MAX_LENGTH) {
+      throw new ValidationError(
+        `gitIgnorePatterns must not exceed ${GIT_IGNORE_PATTERNS_MAX_LENGTH} characters`,
+      );
+    }
+    return trimmed;
   }
 
   /** @returns The display name of the project. */
@@ -96,6 +126,26 @@ export class Project {
   /** @returns The configured document/spellcheck language, or null when unset. */
   get language(): SpellcheckLanguage | null {
     return this._language;
+  }
+
+  /**
+   * @returns The maintainer-editable git-ignore patterns merged into the project's managed
+   *   `.gitignore`, or null when none are set.
+   */
+  get gitIgnorePatterns(): string | null {
+    return this._gitIgnorePatterns;
+  }
+
+  /**
+   * Sets or clears the project's maintainer-editable git-ignore patterns and bumps the update
+   * timestamp. An empty or whitespace-only value is normalized to null (clears the setting).
+   *
+   * @param patterns - Newline-separated git-ignore pattern lines, or null to clear.
+   * @throws {ValidationError} If the value exceeds the maximum stored length.
+   */
+  setGitIgnorePatterns(patterns: string | null): void {
+    this._gitIgnorePatterns = Project.normalizeGitIgnorePatterns(patterns);
+    this._timestamps = new Timestamps(this._timestamps.createdAt, new Date());
   }
 
   /** @returns The root folder identifier, or null if not initialised. */

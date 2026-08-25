@@ -74,4 +74,45 @@ describe('Project entity', () => {
       () => new Project(projectId, projectName, null, [], null, undefined, null, null, 'klingon' as 'en'),
     ).toThrow();
   });
+
+  test('gitIgnorePatterns defaults to null and can be set or cleared', () => {
+    const project = new Project(projectId, projectName, null, [], null);
+    expect(project.gitIgnorePatterns).toBeNull();
+
+    project.setGitIgnorePatterns('build/\n*.log');
+    expect(project.gitIgnorePatterns).toBe('build/\n*.log');
+
+    project.setGitIgnorePatterns(null);
+    expect(project.gitIgnorePatterns).toBeNull();
+  });
+
+  test('normalizes an empty/whitespace-only gitIgnorePatterns value to null', () => {
+    const project = new Project(projectId, projectName, null, [], null);
+
+    project.setGitIgnorePatterns('   \n  ');
+    expect(project.gitIgnorePatterns).toBeNull();
+  });
+
+  test('rejects gitIgnorePatterns beyond the maximum length', () => {
+    const project = new Project(projectId, projectName, null, [], null);
+    const tooLong = 'a'.repeat(20_001);
+
+    expect(() => project.setGitIgnorePatterns(tooLong)).toThrow();
+  });
+
+  test('can be constructed with an initial gitIgnorePatterns value', () => {
+    const project = new Project(
+      projectId,
+      projectName,
+      null,
+      [],
+      null,
+      undefined,
+      null,
+      null,
+      null,
+      'dist/',
+    );
+    expect(project.gitIgnorePatterns).toBe('dist/');
+  });
 });
