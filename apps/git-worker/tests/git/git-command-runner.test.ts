@@ -60,6 +60,389 @@ async function stage(cwd: string, ...files: string[]): Promise<void> {
   await execFile('git', ['add', ...files], { cwd });
 }
 
+/**
+ * Builds a project working tree on `main` with a caller-supplied base commit, pushes it to a fresh
+ * bare "remote", and populates the project's `refs/remotes/origin/main` tracking ref from it — the
+ * shared starting point for the LOCAL merge / behind-ahead integration tests (setup uses plain
+ * `git`, never the code under test).
+ */
+async function setupProjectWithTracking(
+  projectId: string,
+  seed: (cwd: string) => Promise<void>,
+): Promise<{ storageRoot: string; cwd: string; remotePath: string }> {
+  const storageRoot = await createTemporaryStorageRootWithProject(projectId);
+  const cwd = path.join(storageRoot, projectId);
+  await seed(cwd);
+  await commitAll(cwd, 'base');
+
+  const remotePath = await createTemporaryBareRemote();
+  await execFile('git', ['remote', 'add', 'origin', remotePath], { cwd });
+  await execFile('git', ['push', '-q', 'origin', 'HEAD:refs/heads/main'], { cwd });
+  // Point the bare remote's HEAD at main so a fresh clone of it (see addRemoteCommit) checks out
+  // main with the base files, rather than an empty init.defaultBranch.
+  await execFile('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: remotePath });
+  await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+  return { storageRoot, cwd, remotePath };
+}
+
+/**
+ * Clones a bare remote into a throwaway working tree, applies `mutate` to it, commits, and pushes
+ * back to `main` — advancing the remote branch out from under a project, so a later plain-`git`
+ * fetch in the project populates a diverged tracking ref (setup helper, plain `git`).
+ */
+async function addRemoteCommit(
+  remotePath: string,
+  message: string,
+  mutate: (clone: string) => Promise<void>,
+): Promise<void> {
+  const parent = await mkdtemp(path.join(tmpdir(), 'git-worker-test-remote-advance-'));
+  const clone = path.join(parent, 'clone');
+  await execFile('git', ['clone', '-q', remotePath, clone]);
+  await execFile('git', ['config', 'user.email', 'remote@example.com'], { cwd: clone });
+  await execFile('git', ['config', 'user.name', 'Remote'], { cwd: clone });
+  await mutate(clone);
+  await execFile('git', ['add', '-A'], { cwd: clone });
+  await execFile('git', ['commit', '-q', '-m', message], { cwd: clone });
+  await execFile('git', ['push', '-q', 'origin', 'HEAD:refs/heads/main'], { cwd: clone });
+}
+
+/** Reads the tip of the given ref in a working tree (test setup helper). */
+async function readReference(cwd: string, reference: string): Promise<string> {
+  const { stdout } = await execFile('git', ['rev-parse', reference], { cwd });
+  return stdout.trim();
+}
+
+describe('RealGitCommandRunner.fetch', () => {
+  it('updates the remote-tracking ref and returns the remote tip', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440072');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+
+    const sourceTree = await createTemporaryWorkingTree();
+    await writeFile(path.join(sourceTree, 'remote.adoc'), 'remote content\n');
+    await commitAll(sourceTree, 'remote init');
+    const remotePath = await createTemporaryBareRemote();
+    await pushToOrigin(sourceTree, remotePath);
+    const remoteTip = await readHeadCommit(sourceTree);
+
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.fetch(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+        branch: 'main',
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('expected success');
+      expect(result.value.remoteHead).toBe(remoteTip);
+      // The explicit refspec created the tracking ref that merge/getBehindAhead depend on.
+      expect(await readReference(cwd, 'refs/remotes/origin/main')).toBe(remoteTip);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects a fetch to a non-allowlisted host before attempting any network operation', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440073');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const runner = new RealGitCommandRunner(storageRoot, ['git.example.com']);
+
+    const capture = await withArgvCapturingGit(async (getCalls) => {
+      const result = await runner.fetch(projectId, {
+        remoteUrl: 'https://not-allowed.example.com/org/repo.git',
+        token: 'x',
+        branch: 'main',
+      });
+      return { result, calls: await getCalls() };
+    });
+
+    expect(capture.result.success).toBe(false);
+    if (capture.result.success) throw new Error('expected failure');
+    expect(capture.result.error).toBeInstanceOf(RepositoryUnreachableError);
+    expect(capture.calls).toEqual([]);
+  });
+
+  it('returns RepositoryUnreachableError when the remote cannot be reached', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440074');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const port = await unusedLoopbackPort();
+    const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+
+    const result = await runner.fetch(projectId, {
+      remoteUrl: `http://127.0.0.1:${port}/repo.git`,
+      token: 'x',
+      branch: 'main',
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(RepositoryUnreachableError);
+  });
+
+  it('never leaks the token into argv across the fetch operation', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440075');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+
+    const sourceTree = await createTemporaryWorkingTree();
+    await writeFile(path.join(sourceTree, 'remote.adoc'), 'remote content\n');
+    await commitAll(sourceTree, 'remote init');
+    const remotePath = await createTemporaryBareRemote();
+    await pushToOrigin(sourceTree, remotePath);
+
+    const token = 'super-secret-fetch-test-token-DO-NOT-LEAK-9c3d';
+    const server = await startGitHttpServer({
+      projectRoot: path.join(remotePath, '..'),
+      requireAuth: { username: 'x-access-token', password: token },
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        const result = await runner.fetch(projectId, { remoteUrl: `${server.url}/repo.git`, token, branch: 'main' });
+        return { result, calls: await getCalls() };
+      });
+
+      expect(capture.result.success).toBe(true);
+      expect(server.authorizationHeadersSeen.length).toBeGreaterThan(0);
+      for (const call of capture.calls) {
+        for (const argument of call) {
+          expect(argument).not.toContain(token);
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('RealGitCommandRunner.getBehindAhead', () => {
+  it('reports the remote as ahead when it has commits the local branch lacks', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440076');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'remote one', async (clone) => {
+      await writeFile(path.join(clone, 'one.adoc'), 'one\n');
+    });
+    await addRemoteCommit(remotePath, 'remote two', async (clone) => {
+      await writeFile(path.join(clone, 'two.adoc'), 'two\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.getBehindAhead(projectId, 'main');
+
+    expect(result).toEqual({ success: true, value: { behind: 2, ahead: 0 } });
+  });
+
+  it('reports the local branch as ahead when it has commits the remote lacks', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440077');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await writeFile(path.join(cwd, 'local.adoc'), 'local\n');
+    await commitAll(cwd, 'local one');
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.getBehindAhead(projectId, 'main');
+
+    expect(result).toEqual({ success: true, value: { behind: 0, ahead: 1 } });
+  });
+
+  it('reports a diverged local and remote with counts on both sides', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440078');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'remote one', async (clone) => {
+      await writeFile(path.join(clone, 'one.adoc'), 'one\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+    await writeFile(path.join(cwd, 'local.adoc'), 'local\n');
+    await commitAll(cwd, 'local one');
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.getBehindAhead(projectId, 'main');
+
+    expect(result).toEqual({ success: true, value: { behind: 1, ahead: 1 } });
+  });
+
+  it('reports zero on both sides when local and remote are in sync', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440079');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.getBehindAhead(projectId, 'main');
+
+    expect(result).toEqual({ success: true, value: { behind: 0, ahead: 0 } });
+  });
+});
+
+describe('RealGitCommandRunner.merge', () => {
+  it('merges remote-only changes cleanly, classifying add/modify/remove/rename with bytes present', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440080');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'to-modify.adoc'), 'v1\n');
+      await writeFile(path.join(tree, 'to-remove.adoc'), 'bye\n');
+      await writeFile(path.join(tree, 'old-name.adoc'), 'one\ntwo\nthree\nfour\nfive\n');
+    });
+    await addRemoteCommit(remotePath, 'remote changes', async (clone) => {
+      await writeFile(path.join(clone, 'to-modify.adoc'), 'v2\n');
+      await execFile('git', ['rm', '-q', 'to-remove.adoc'], { cwd: clone });
+      await execFile('git', ['mv', 'old-name.adoc', 'new-name.adoc'], { cwd: clone });
+      await writeFile(path.join(clone, 'added.adoc'), 'brand new\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+    const remoteTip = await readReference(cwd, 'refs/remotes/origin/main');
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.merge(projectId, { branch: 'main', flush: [] });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'merged') throw new Error('expected merged');
+    expect(result.value.headCommit).toBe(remoteTip);
+    expect(result.value.changes).toEqual(
+      expect.arrayContaining([
+        { type: 'added', path: 'added.adoc', content: Buffer.from('brand new\n'), mimeType: 'text/asciidoc' },
+        { type: 'modified', path: 'to-modify.adoc', content: Buffer.from('v2\n'), mimeType: 'text/asciidoc' },
+        { type: 'removed', path: 'to-remove.adoc' },
+        {
+          type: 'renamed',
+          fromPath: 'old-name.adoc',
+          toPath: 'new-name.adoc',
+          content: Buffer.from('one\ntwo\nthree\nfour\nfive\n'),
+          mimeType: 'text/asciidoc',
+        },
+      ]),
+    );
+    expect(result.value.changes).toHaveLength(4);
+  });
+
+  it('returns merged with no changes when already up to date', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440081');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    const headBefore = await readReference(cwd, 'HEAD');
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.merge(projectId, { branch: 'main', flush: [] });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value).toEqual({ status: 'merged', headCommit: headBefore, changes: [] });
+  });
+
+  it('commits the flushed local side, then merges non-conflicting remote changes on top', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440082');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'remote adds a file', async (clone) => {
+      await writeFile(path.join(clone, 'remote.adoc'), 'from remote\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.merge(projectId, {
+      branch: 'main',
+      flush: [{ path: 'base.adoc', content: 'locally flushed\n' }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'merged') throw new Error('expected merged');
+    // The change-set is the REMOTE's contribution only — the flushed local edit is excluded.
+    expect(result.value.changes).toEqual([
+      { type: 'added', path: 'remote.adoc', content: Buffer.from('from remote\n'), mimeType: 'text/asciidoc' },
+    ]);
+    // The flush landed in a commit and is present in the merged working tree.
+    expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('locally flushed\n');
+    const { stdout: flushed } = await execFile('git', ['show', 'HEAD~1:base.adoc'], { cwd });
+    expect(flushed).toBe('locally flushed\n');
+  });
+
+  it('reports a genuine three-way conflict, flags binary vs text, and leaves the tree clean', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440083');
+    const baseBinary = Buffer.from([0x00, 0x01, 0x02, 0x00, 0x03]);
+    const remoteBinary = Buffer.from([0x00, 0x0A, 0x0B, 0x00, 0x0C]);
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'doc.adoc'), 'base line\n');
+      await writeFile(path.join(tree, 'pic.bin'), baseBinary);
+    });
+    await addRemoteCommit(remotePath, 'remote edits both', async (clone) => {
+      await writeFile(path.join(clone, 'doc.adoc'), 'remote line\n');
+      await writeFile(path.join(clone, 'pic.bin'), remoteBinary);
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.merge(projectId, {
+      branch: 'main',
+      // A NUL byte in the flushed text makes git treat pic.bin as binary on the local side too.
+      flush: [
+        { path: 'doc.adoc', content: 'local line\n' },
+        { path: 'pic.bin', content: 'CCC CCC' },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'conflicted') throw new Error('expected conflicted');
+    const byPath = new Map(result.value.conflicts.map((conflict) => [conflict.path, conflict.isBinary]));
+    expect(byPath.get('doc.adoc')).toBe(false);
+    expect(byPath.get('pic.bin')).toBe(true);
+    expect(result.value.conflicts).toHaveLength(2);
+
+    // merge --abort ran: no unmerged paths, working tree clean.
+    const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
+    expect(status.trim()).toBe('');
+  });
+
+  it('returns GitCommandFailedError for a genuine merge failure (no tracking ref to merge)', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440084');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'base.adoc'), 'base\n');
+    await commitAll(cwd, 'base');
+    // Deliberately never populate refs/remotes/origin/main.
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.merge(projectId, { branch: 'main', flush: [] });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+
+  it('rejects a flush path escaping the working tree, writing nothing', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440085');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    const headBefore = await readReference(cwd, 'HEAD');
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.merge(projectId, {
+      branch: 'main',
+      flush: [{ path: '../escaped-by-merge-test.adoc', content: 'pwned' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    await expect(stat(path.join(cwd, '..', 'escaped-by-merge-test.adoc'))).rejects.toThrow();
+    expect(await readReference(cwd, 'HEAD')).toBe(headBefore);
+  });
+});
+
 describe('RealGitCommandRunner.getStatus', () => {
   it('returns the current branch and no changes for a clean working tree', async () => {
     const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440050');

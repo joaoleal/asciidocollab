@@ -8,10 +8,17 @@ import {
   RepositoryUnreachableError,
   type ClonedFileEntry,
   type ClonedRepository,
+  type GitBehindAhead,
   type GitCloneInput,
   type GitCommandRunner,
   type GitCommitInput,
   type GitCommitResult,
+  type GitFetchInput,
+  type GitFetchResult,
+  type GitMergeConflictPath,
+  type GitMergeFileChange,
+  type GitMergeInput,
+  type GitMergeOutcome,
   type GitPendingChange,
   type GitPendingChangeType,
   type GitPushError,
@@ -36,6 +43,20 @@ import { resolveWorkingTreePath } from './working-tree.js';
 const CREDENTIAL_USERNAME = 'x-access-token';
 
 /**
+ * The commit message recorded when {@link RealGitCommandRunner.merge} snapshots the live local
+ * edits into a commit before running the three-way merge.
+ */
+const FLUSH_COMMIT_MESSAGE = 'Flush live edits before pull';
+
+/**
+ * The fixed, non-personal identity attributed to the automated commits {@link RealGitCommandRunner.merge}
+ * records (the pre-merge flush snapshot and any merge commit a non-fast-forward merge produces). A
+ * merge carries no triggering author the way a user-initiated commit does, so a stable service
+ * identity is used rather than any real person's name/email — flagged for review.
+ */
+const SERVICE_COMMIT_IDENTITY = { name: 'AsciiDoc Collab', email: 'noreply@asciidocollab.invalid' } as const;
+
+/**
  * Maps a failure from the network-facing steps of {@link RealGitCommandRunner.clone} to this
  * port's typed clone error union, using {@link GitProcessError.networkFailureKind} when the
  * failure was classified as a reachability or credential problem, and a generic
@@ -50,6 +71,23 @@ function toCloneFailure(
     if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
   }
   return new GitCommandFailedError('The repository could not be cloned.');
+}
+
+/**
+ * Maps a failure from the single network step of {@link RealGitCommandRunner.fetch} to this port's
+ * typed fetch error union — the same reachability/credential classification {@link toCloneFailure}
+ * performs, with a generic `GitCommandFailedError` fallback. There is no non-fast-forward case: a
+ * fetch only ever updates a remote-tracking ref, never a branch, so it can never be rejected the
+ * way a push can.
+ */
+function toFetchFailure(
+  error: unknown,
+): RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError {
+  if (error instanceof GitProcessError) {
+    if (error.networkFailureKind === 'unreachable') return new RepositoryUnreachableError();
+    if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
+  }
+  return new GitCommandFailedError('The repository could not be fetched.');
 }
 
 /**
@@ -165,6 +203,187 @@ async function materializeEntries(workingDirectory: string): Promise<ClonedFileE
     entries.push({ path: relativePath, content, mimeType: guessMimeType(relativePath) });
   }
   return entries;
+}
+
+/**
+ * Reports whether `workingDirectory`'s index holds any staged change (`git diff --cached --quiet`
+ * exits 1 when it does, 0 when it does not), used by {@link RealGitCommandRunner.merge} to decide
+ * whether the pre-merge flush actually produced anything worth committing. Any exit code other than
+ * the expected 0/1 is a real failure and is rethrown, never silently read as "nothing staged".
+ *
+ * @param workingDirectory - The working tree whose index to inspect.
+ * @returns True when there are staged changes, false when the index matches `HEAD`.
+ */
+async function hasStagedChanges(workingDirectory: string): Promise<boolean> {
+  try {
+    await runGitCommand(workingDirectory, { command: 'diff', flags: ['--cached', '--quiet'] });
+    return false;
+  } catch (error) {
+    if (error instanceof GitProcessError && error.exitCode === 1) return true;
+    throw error;
+  }
+}
+
+/**
+ * Reads the set of paths git reports as binary between the two sides of a merge in progress, by
+ * scanning `git diff --numstat -z HEAD MERGE_HEAD` output for the rows git marks binary (both its
+ * added and deleted counts rendered as a dash rather than a number). Used only to classify the
+ * {@link GitMergeConflictPath.isBinary} flag on conflicted files.
+ *
+ * The comparison is deliberately the two-tree `HEAD` (ours) vs `MERGE_HEAD` (theirs) diff, NOT a
+ * plain `git diff` of the conflicted working tree: during a conflict, `git diff`'s combined output
+ * reports a binary file as `0\t0` rather than `-\t-`, so it cannot distinguish binary from text —
+ * whereas an ordinary two-tree diff reliably emits `-\t-` for a binary blob. Both refs exist for
+ * the whole conflicted state, before `git merge --abort` runs. Extra (non-conflicted) paths in the
+ * result are harmless: the caller only looks up the paths it already knows are conflicted.
+ *
+ * The `-z` numstat stream is NUL-delimited: a normal file is one record `added\tdeleted\tpath`; a
+ * rename is a record `added\tdeleted\t` (empty path field) immediately followed by two further
+ * NUL-separated tokens (old path, then new path). Both shapes are handled so the scan never
+ * misaligns on a renamed entry.
+ *
+ * @param workingDirectory - The working tree whose in-progress merge to inspect.
+ * @returns Every path git reports as a binary change between the two merge sides.
+ */
+async function readBinaryDiffPaths(workingDirectory: string): Promise<Set<string>> {
+  const { stdout } = await runGitCommand(workingDirectory, {
+    command: 'diff',
+    flags: ['--numstat', '-z'],
+    positionals: ['HEAD', 'MERGE_HEAD'],
+  });
+  const tokens = stdout.split('\0');
+  const binaryPaths = new Set<string>();
+
+  let index = 0;
+  while (index < tokens.length) {
+    const record = tokens[index];
+    if (record.length === 0) {
+      index += 1;
+      continue;
+    }
+
+    const firstTab = record.indexOf('\t');
+    const secondTab = record.indexOf('\t', firstTab + 1);
+    if (firstTab === -1 || secondTab === -1) {
+      index += 1;
+      continue;
+    }
+
+    const added = record.slice(0, firstTab);
+    const deleted = record.slice(firstTab + 1, secondTab);
+    const inlinePath = record.slice(secondTab + 1);
+    const isBinary = added === '-' && deleted === '-';
+
+    if (inlinePath.length > 0) {
+      if (isBinary) binaryPaths.add(inlinePath);
+      index += 1;
+    } else {
+      // Rename record: the two following tokens are the old and new paths.
+      const newPath = tokens[index + 2];
+      if (isBinary && newPath) binaryPaths.add(newPath);
+      index += 3;
+    }
+  }
+  return binaryPaths;
+}
+
+/**
+ * Lists the files a merge in progress left unmerged (`git diff --name-only --diff-filter=U -z`) and
+ * pairs each with its {@link GitMergeConflictPath.isBinary} flag. An empty result means the merge
+ * failed for a reason other than a content conflict (its caller treats that as a genuine failure).
+ *
+ * @param workingDirectory - The working tree whose in-progress merge to inspect.
+ * @returns One {@link GitMergeConflictPath} per unmerged file.
+ */
+async function readMergeConflicts(workingDirectory: string): Promise<GitMergeConflictPath[]> {
+  const { stdout } = await runGitCommand(workingDirectory, {
+    command: 'diff',
+    flags: ['--name-only', '--diff-filter=U', '-z'],
+  });
+  const conflictedPaths = stdout.split('\0').filter((entry) => entry.length > 0);
+  if (conflictedPaths.length === 0) return [];
+
+  const binaryPaths = await readBinaryDiffPaths(workingDirectory);
+  return conflictedPaths.map((conflictedPath) => ({
+    path: conflictedPath,
+    isBinary: binaryPaths.has(conflictedPath),
+  }));
+}
+
+/**
+ * Computes the file-level change-set a clean merge contributed, as the diff from `fromCommit` to
+ * `toCommit` (`git diff --name-status -M -z <fromCommit> <toCommit>`) — with `fromCommit` being the
+ * post-flush pre-merge `HEAD`, this is exactly the REMOTE's contribution, excluding the live local
+ * edits the domain already holds. The added/modified/renamed bytes are read from the post-merge
+ * working tree, which the domain's own `ProjectFileStore` cannot see.
+ *
+ * The `-z` name-status stream is NUL-delimited: each record is `status` then its path(s) as
+ * separate tokens — `A`/`M`/`D` take one path, `R<score>` takes two (old, then new). `-M` enables
+ * rename detection; copy detection is not requested, so no `C` record can appear. `core.quotePath`
+ * is globally disabled, so every path token is already raw bytes needing no unescaping.
+ *
+ * @param workingDirectory - The post-merge working tree the changed bytes are read from.
+ * @param fromCommit - The pre-merge `HEAD` (the local side already committed).
+ * @param toCommit - The post-merge `HEAD`.
+ * @returns One {@link GitMergeFileChange} per changed file.
+ */
+async function computeMergeChanges(
+  workingDirectory: string,
+  fromCommit: string,
+  toCommit: string,
+): Promise<GitMergeFileChange[]> {
+  const { stdout } = await runGitCommand(workingDirectory, {
+    command: 'diff',
+    flags: ['--name-status', '-M', '-z'],
+    positionals: [fromCommit, toCommit],
+  });
+  const tokens = stdout.split('\0');
+  const changes: GitMergeFileChange[] = [];
+
+  let index = 0;
+  while (index < tokens.length) {
+    const status = tokens[index];
+    if (status.length === 0) {
+      index += 1;
+      continue;
+    }
+
+    const code = status[0];
+    switch (code) {
+      case 'A':
+      case 'M': {
+        const changedPath = tokens[index + 1];
+        const content = await readFile(path.join(workingDirectory, changedPath));
+        changes.push({
+          type: code === 'A' ? 'added' : 'modified',
+          path: changedPath,
+          content,
+          mimeType: guessMimeType(changedPath),
+        });
+        index += 2;
+        break;
+      }
+      case 'D': {
+        changes.push({ type: 'removed', path: tokens[index + 1] });
+        index += 2;
+        break;
+      }
+      case 'R': {
+        const fromPath = tokens[index + 1];
+        const toPath = tokens[index + 2];
+        const content = await readFile(path.join(workingDirectory, toPath));
+        changes.push({ type: 'renamed', fromPath, toPath, content, mimeType: guessMimeType(toPath) });
+        index += 3;
+        break;
+      }
+      default: {
+        // No other status can appear (copy detection is off; `-z` never emits the octal-escape case
+        // core.quotePath would). Advance past status + one path defensively rather than looping.
+        index += 2;
+      }
+    }
+  }
+  return changes;
 }
 
 /**
@@ -510,6 +729,183 @@ export class RealGitCommandRunner implements GitCommandRunner {
 
     const headCommitOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
     return { success: true, value: { headCommit: readRevParseAnswer(headCommitOutput.stdout) } };
+  }
+
+  /**
+   * Fetches `input.branch` from the remote into the project's remote-tracking ref, authenticating
+   * out-of-band with `input.token` exactly as {@link clone}/{@link push} do — the token rides
+   * `GIT_ASKPASS`, never argv. Gated on {@link assertRemoteAllowed} before any network spawn.
+   *
+   * An explicit refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) is used rather than a
+   * bare `git fetch <url> <branch>`, so `refs/remotes/origin/<branch>` is always created/advanced —
+   * the tracking ref that {@link getBehindAhead} and {@link merge} then read locally. The leading
+   * `+` allows a non-fast-forward remote history to still update the tracking ref.
+   *
+   * @param projectId - The project whose working tree's remote-tracking ref to update.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to fetch.
+   * @returns The remote-tracking ref's new tip on success; a `RepositoryUnreachableError`/
+   *   `AuthenticationFailedError` on the same terms as {@link clone}, or a `GitCommandFailedError`
+   *   for any other failure.
+   */
+  async fetch(
+    projectId: ProjectId,
+    input: GitFetchInput,
+  ): Promise<Result<GitFetchResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      await this.assertRemoteAllowed(input.remoteUrl);
+    } catch {
+      return { success: false, error: new RepositoryUnreachableError() };
+    }
+
+    try {
+      await runGitCommand(cwd, {
+        command: 'fetch',
+        positionals: [input.remoteUrl, `+refs/heads/${input.branch}:refs/remotes/origin/${input.branch}`],
+        credential: { username: CREDENTIAL_USERNAME, token: input.token },
+      });
+    } catch (error) {
+      return { success: false, error: toFetchFailure(error) };
+    }
+
+    const remoteHeadOutput = await runGitCommand(cwd, {
+      command: 'rev-parse',
+      positionals: [`refs/remotes/origin/${input.branch}`],
+    });
+    return { success: true, value: { remoteHead: readRevParseAnswer(remoteHeadOutput.stdout) } };
+  }
+
+  /**
+   * Compares a local branch against its already-fetched remote-tracking ref with a single
+   * `git rev-list --count --left-right <branch>...refs/remotes/origin/<branch>` — a purely local
+   * comparison, no network. The `<local>...<remote>` order makes the left count the commits the
+   * local branch has that the remote lacks (`ahead`) and the right count the reverse (`behind`).
+   * The explicit `refs/remotes/origin/<branch>` ref is used rather than `@{u}`, so no configured
+   * upstream is required.
+   *
+   * @param projectId - The project whose working tree to compare.
+   * @param branch - The local branch to compare against its remote-tracking ref.
+   * @returns The `{ behind, ahead }` counts; a `GitCommandFailedError` when the underlying command
+   *   fails (for example, the branch has no remote-tracking ref yet) or its output is unparseable.
+   */
+  async getBehindAhead(projectId: ProjectId, branch: string): Promise<Result<GitBehindAhead, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      const { stdout } = await runGitCommand(cwd, {
+        command: 'rev-list',
+        flags: ['--count', '--left-right'],
+        positionals: [`${branch}...refs/remotes/origin/${branch}`],
+      });
+      const [leftText, rightText] = stdout.trim().split(/\s+/);
+      const ahead = Number.parseInt(leftText, 10);
+      const behind = Number.parseInt(rightText, 10);
+      if (Number.isNaN(ahead) || Number.isNaN(behind)) {
+        return {
+          success: false,
+          error: new GitCommandFailedError('The branch divergence from its remote could not be determined.'),
+        };
+      }
+      return { success: true, value: { behind, ahead } };
+    } catch {
+      return {
+        success: false,
+        error: new GitCommandFailedError('The branch divergence from its remote could not be determined.'),
+      };
+    }
+  }
+
+  /**
+   * Runs a local three-way merge of the already-fetched `refs/remotes/origin/<branch>` into
+   * `input.branch`. Touches no network.
+   *
+   * Ordering (all in the project's own working tree):
+   * 1. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
+   *    write — an unsafe path fails the whole merge closed, with no partial write.
+   * 2. Each flush entry is written then `git add`-ed, exactly as {@link commit} does, forming the
+   *    live local side of the merge.
+   * 3. That local side is committed — but only when {@link hasStagedChanges} confirms something is
+   *    staged — under {@link SERVICE_COMMIT_IDENTITY} (a merge carries no author) with
+   *    {@link FLUSH_COMMIT_MESSAGE}, so the merge is a clean commit-vs-commit three-way.
+   * 4. `preMergeHead` is captured AFTER that commit, so the computed change-set is the REMOTE's
+   *    contribution only, excluding the live local edits the domain already holds.
+   * 5. `git merge --no-edit refs/remotes/origin/<branch>` runs. A non-zero exit is EXPECTED when the
+   *    merge conflicts and is NOT immediately an error: unmerged paths are inspected
+   *    ({@link readMergeConflicts}) — if there are none the exit was a genuine failure
+   *    (`GitCommandFailedError`); if there are, `git merge --abort` restores a clean tree (the
+   *    domain records conflicts in its own store, never on disk) and the `conflicted` outcome is
+   *    returned.
+   * 6. On a clean merge, the change-set is computed from `preMergeHead` to the post-merge `HEAD`
+   *    ({@link computeMergeChanges}); an unchanged `HEAD` (already up to date) yields empty changes.
+   *
+   * @param projectId - The project whose working tree to merge into.
+   * @param input - The branch to merge into and the live-content flush list.
+   * @returns A {@link GitMergeOutcome} — `merged` (with the remote's change-set) or `conflicted`
+   *   (with the files left in conflict); a `GitCommandFailedError` only when a git command itself
+   *   fails or a flush path is unsafe. A conflict is an expected outcome, never an error.
+   */
+  async merge(projectId: ProjectId, input: GitMergeInput): Promise<Result<GitMergeOutcome, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    for (const entry of input.flush) {
+      if (!staysInsideWorkingTree(cwd, entry.path)) {
+        return {
+          success: false,
+          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
+        };
+      }
+    }
+
+    try {
+      for (const entry of input.flush) {
+        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
+        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
+      }
+
+      if (await hasStagedChanges(cwd)) {
+        await runGitCommand(cwd, {
+          command: 'commit',
+          flags: ['-m', FLUSH_COMMIT_MESSAGE],
+          identity: SERVICE_COMMIT_IDENTITY,
+        });
+      }
+
+      const preMergeHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const preMergeHead = readRevParseAnswer(preMergeHeadResult.stdout);
+
+      const remoteReference = `refs/remotes/origin/${input.branch}`;
+      try {
+        // A non-fast-forward merge records a merge commit, which needs a committer identity — the
+        // same service identity the flush commit uses, since a merge carries no author.
+        await runGitCommand(cwd, {
+          command: 'merge',
+          flags: ['--no-edit'],
+          positionals: [remoteReference],
+          identity: SERVICE_COMMIT_IDENTITY,
+        });
+      } catch (error) {
+        const conflicts = await readMergeConflicts(cwd);
+        if (conflicts.length === 0) {
+          // No unmerged paths → this was a genuine command failure (e.g. the ref does not exist),
+          // not a content conflict.
+          throw error;
+        }
+        await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] });
+        return { success: true, value: { status: 'conflicted', conflicts } };
+      }
+
+      const postMergeHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const postMergeHead = readRevParseAnswer(postMergeHeadResult.stdout);
+      if (preMergeHead === postMergeHead) {
+        return { success: true, value: { status: 'merged', headCommit: postMergeHead, changes: [] } };
+      }
+
+      const changes = await computeMergeChanges(cwd, preMergeHead, postMergeHead);
+      return { success: true, value: { status: 'merged', headCommit: postMergeHead, changes } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The merge could not be completed.') };
+    }
   }
 }
 

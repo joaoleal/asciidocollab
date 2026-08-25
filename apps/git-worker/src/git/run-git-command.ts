@@ -218,12 +218,18 @@ const ASKPASS_SCRIPT = [
  * @throws {GitProcessError} If `git` cannot be spawned or exits non-zero.
  */
 export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<GitCommandResult> {
+  // `--end-of-options` guards the caller-supplied positionals from being reparsed as options; it is
+  // appended only when there ARE positionals to guard. With none, it is not merely redundant but
+  // actively harmful for the subcommands that reject a trailing argument outright (`git merge
+  // --abort` fails with "--abort expects no arguments"). Omitting it here changes nothing for any
+  // call that passes positionals — the injection defense is unchanged for exactly the inputs it
+  // exists to neutralize.
+  const positionals = spec.positionals ?? [];
   const arguments_ = [
     ...SECURE_GLOBAL_CONFIG,
     spec.command,
     ...(spec.flags ?? []),
-    '--end-of-options',
-    ...(spec.positionals ?? []),
+    ...(positionals.length > 0 ? ['--end-of-options', ...positionals] : []),
   ];
 
   const environment: NodeJS.ProcessEnv = {
