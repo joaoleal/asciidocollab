@@ -6,6 +6,7 @@ import {
   GetGitStatusUseCase,
   StageChangesUseCase,
   CommitChangesUseCase,
+  GitChangeReconciler,
   ProjectId,
   UserId,
   type Logger,
@@ -37,6 +38,7 @@ import { ensureCleanWorkingTree, resolveWorkingTreePath } from './git/working-tr
 import { createGitWorkerLoop, type GitWorkerLoop } from './worker-loop.js';
 import { createImportHandler } from './dispatch/import-handler.js';
 import { createPushHandler } from './dispatch/push-handler.js';
+import { createPullHandler } from './dispatch/pull-handler.js';
 import type { GitOperationHandlerRegistry } from './dispatch/git-operation-dispatcher.js';
 
 /**
@@ -72,7 +74,7 @@ export interface GitWorkerApp {
  * registered use-case handler needs) from config, and the run loop that polls/claims
  * `GitOperation` work, dispatches it, and records its outcome.
  *
- * `IMPORT` and `PUSH` are the only `GitOperationKind`s with a registered handler so far — every
+ * `IMPORT`, `PUSH`, and `PULL` are the `GitOperationKind`s with a registered handler so far — every
  * other kind is still a future story task's job (YAGNI). Until a story task registers one, a claimed operation
  * of an unregistered kind dispatches to the `UNHANDLED_GIT_OPERATION_KIND` failure path (see
  * `dispatch/git-operation-dispatcher.ts`), so it always reaches a terminal state — and releases
@@ -113,46 +115,25 @@ export async function compositionRoot() {
 
   // Hoisted so both the IMPORT handler (below) and the short-op use cases (status/stage/commit)
   // share one instance each, rather than each constructing its own redundant Prisma wrapper.
+  // `assetRepository` and `fileStore` are also shared with the PULL handler's `GitChangeReconciler`
+  // below, for the same reason.
   const fileNodeRepository = new PrismaFileNodeRepository(prisma);
   const documentRepository = new PrismaDocumentRepository(prisma);
+  const assetRepository = new PrismaAssetRepository(prisma);
+  // The CONTENT-BYTES projection path — deliberately `contentStorageRoot`, NOT `storageRoot`
+  // (that root is this worker's own git working-tree directory). See
+  // `config/git-worker-config.ts`'s docs on why the two must never be conflated.
+  const fileStore = new FilesystemProjectFileStore(config.get('contentStorageRoot'));
   const gitRepositoryRepository = new PrismaGitRepositoryRepository(prisma);
   const projectMemberRepository = new PrismaProjectMemberRepository(prisma);
 
-  const handlers: GitOperationHandlerRegistry = {
-    IMPORT: createImportHandler({
-      projectRepository: new PrismaProjectRepository(prisma),
-      fileNodeRepository,
-      documentRepository,
-      assetRepository: new PrismaAssetRepository(prisma),
-      // The CONTENT-BYTES projection path — deliberately `contentStorageRoot`, NOT `storageRoot`
-      // (that root is this worker's own git working-tree directory). See
-      // `config/git-worker-config.ts`'s docs on why the two must never be conflated.
-      fileStore: new FilesystemProjectFileStore(config.get('contentStorageRoot')),
-      gitRepositoryRepository,
-      commandRunner: gitCommandRunner,
-      projectMemberRepository,
-      auditLogRepository,
-      credentialSource: gitCredentialStore,
-      logger: useCaseLogger,
-    }),
-    PUSH: createPushHandler({
-      projectMemberRepository,
-      auditLogRepository,
-      gitRepositoryRepository,
-      commandRunner: gitCommandRunner,
-      credentialSource: gitCredentialStore,
-      logger: useCaseLogger,
-    }),
-  };
-
-  // The short git ops (status/stage/unstage/commit) run synchronously, worker-side, through the
-  // internal RPC server `src/index.ts` starts once this composition root resolves — see that
-  // file for the `startInternalGitServer` call. `CommitChangesUseCase` needs a live read of each
-  // staged open document's current collaborative text before it commits; `HttpCollaborativeContentEditor`
-  // (the same adapter `apps/api`'s DI container builds — `apps/api/src/di/stores.ts`) implements
-  // both the editor and reader ports, so it is passed here as the reader.
+  // Hoisted above the handlers map (moved up from beside the short-op use cases below) so the
+  // PULL handler's `PullChangesUseCase`/`GitChangeReconciler` can share these same instances too.
+  // `CommitChangesUseCase` (below) needs a live read of each staged open document's current
+  // collaborative text before it commits; `HttpCollaborativeContentEditor` (the same adapter
+  // apps/api's DI container builds — `apps/api/src/di/stores.ts`) implements both the editor and
+  // reader ports, so it is constructed here and passed as the reader everywhere one is needed.
   const collaborationSessionRepository = new PrismaCollaborationSessionRepository(prisma);
-  const userRepository = new PrismaUserRepository(prisma);
   const collabEditTls = config.get('collab.editTls');
   const useCollabEditMtls = Boolean(collabEditTls.cert && collabEditTls.key && collabEditTls.ca);
   const collaborativeContentReader = new HttpCollaborativeContentEditor({
@@ -168,6 +149,64 @@ export async function compositionRoot() {
         }
       : {}),
   });
+
+  // Lands a clean PULL merge's change-set into the project — reuses the exact per-file
+  // construction the IMPORT flow uses (id minting, path normalization, AsciiDoc/theme-versus-asset
+  // classification), so a file that arrives through a pull is indistinguishable from one that
+  // arrived through the original import. `HttpCollaborativeContentEditor` implements the writer
+  // port too, so the same `collaborativeContentReader` instance is passed as the writer.
+  const gitChangeReconciler = new GitChangeReconciler(
+    fileNodeRepository,
+    documentRepository,
+    assetRepository,
+    fileStore,
+    collaborationSessionRepository,
+    collaborativeContentReader,
+    useCaseLogger,
+  );
+
+  const handlers: GitOperationHandlerRegistry = {
+    IMPORT: createImportHandler({
+      projectRepository: new PrismaProjectRepository(prisma),
+      fileNodeRepository,
+      documentRepository,
+      assetRepository,
+      fileStore,
+      gitRepositoryRepository,
+      commandRunner: gitCommandRunner,
+      projectMemberRepository,
+      auditLogRepository,
+      credentialSource: gitCredentialStore,
+      logger: useCaseLogger,
+    }),
+    PUSH: createPushHandler({
+      projectMemberRepository,
+      auditLogRepository,
+      gitRepositoryRepository,
+      commandRunner: gitCommandRunner,
+      credentialSource: gitCredentialStore,
+      logger: useCaseLogger,
+    }),
+    PULL: createPullHandler({
+      projectMemberRepository,
+      auditLogRepository,
+      gitRepositoryRepository,
+      gitOperationRepository,
+      commandRunner: gitCommandRunner,
+      fileNodeRepository,
+      documentRepository,
+      collaborativeContentReader,
+      collaborationSessionRepository,
+      reconciler: gitChangeReconciler,
+      credentialSource: gitCredentialStore,
+      logger: useCaseLogger,
+    }),
+  };
+
+  // The short git ops (status/stage/unstage/commit) run synchronously, worker-side, through the
+  // internal RPC server `src/index.ts` starts once this composition root resolves — see that
+  // file for the `startInternalGitServer` call.
+  const userRepository = new PrismaUserRepository(prisma);
 
   const getGitStatusUseCase = new GetGitStatusUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
   const stageChangesUseCase = new StageChangesUseCase(
