@@ -3,7 +3,7 @@
 // user consent — verified against the sibling prisma-git-credential-store.test.ts, which fails the
 // same way here). Authored and believed correct against the real `GitOperation`/`GitConflict`/
 // `GitRepository` tables; exercise it in an environment with a real database (this is exactly the
-// FIFO/SKIP-LOCKED-concurrency/stale-reclaim/withGuard-concurrency coverage T010 calls for). The
+// FIFO/SKIP-LOCKED-concurrency/stale-reclaim/withGuard-concurrency coverage this suite needs). The
 // runnable equivalent — mapping + control-flow, against a fake Prisma client — lives in
 // prisma-git-operation.repository.unit.test.ts.
 import {

@@ -2,8 +2,8 @@
 -- until explicitly authorized (Database Migration Policy); this file exists so the constraint is
 -- not lost before that authorization happens.
 --
--- Enforces "at most one active GitOperation per project" (single-flight guard + write-lock,
--- FR-009): a partial UNIQUE index on projectId, scoped to the non-terminal states. Prisma 7.9's
+-- Enforces "at most one active GitOperation per project" (single-flight guard + write-lock):
+-- a partial UNIQUE index on projectId, scoped to the non-terminal states. Prisma 7.9's
 -- schema DSL cannot express a partial UNIQUE index (`@@index(..., where: ...)` needs the
 -- unreleased "partialIndexes" preview feature and only produces a non-unique filtered index;
 -- adding `unique: true` alongside `where` is rejected by the CLI), so this constraint currently
