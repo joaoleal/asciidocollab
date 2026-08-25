@@ -282,6 +282,14 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
     }
   }
 
+  /** Finds the project's current active (QUEUED/RUNNING/AWAITING_CONFLICT) operation, or null. */
+  async findActiveOperation(projectId: ProjectId): Promise<GitOperation | null> {
+    const record = await this.prisma.gitOperation.findFirst({
+      where: { projectId: projectId.value, state: { in: [...ACTIVE_GIT_OPERATION_STATES] } },
+    });
+    return record ? toDomainGitOperation(record) : null;
+  }
+
   /** Records a new, unresolved conflict for an operation. */
   async createConflict(input: CreateGitConflictInput): Promise<GitConflict> {
     const record = await this.prisma.gitConflict.create({

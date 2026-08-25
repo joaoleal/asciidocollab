@@ -13,6 +13,7 @@ import type {
   DocumentRepository,
   ProjectMemberRepository,
   GitRepositoryRepository,
+  GitOperationRepository,
   TemplateRepository,
   AssetRepository,
   AuditLogRepository,
@@ -76,6 +77,8 @@ export interface AppContainer {
     projectMember: ProjectMemberRepository;
     /** Repository for git-repository persistence. */
     gitRepository: GitRepositoryRepository;
+    /** Repository for whole-project git operations: the durable work-list, single-flight guard, and write-lock check. */
+    gitOperation: GitOperationRepository;
     /** Repository for template persistence. */
     template: TemplateRepository;
     /** Repository for asset persistence. */
@@ -303,6 +306,7 @@ declare module 'fastify' {
       document: DocumentRepository;
       projectMember: ProjectMemberRepository;
       gitRepository: GitRepositoryRepository;
+      gitOperation: GitOperationRepository;
       template: TemplateRepository;
       asset: AssetRepository;
       auditLog: AuditLogRepository;

@@ -4,6 +4,8 @@ import { YjsStateId } from '../../value-objects/ids/yjs-state-id';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { FileNodeRepository } from '../../ports/file-tree/file-node.repository';
 import { DocumentRepository } from '../../ports/file-tree/document.repository';
+import { GitOperationRepository } from '../../ports/git/git-operation-repository';
+import { CONTENT_CHANGING_GIT_OPERATION_KINDS } from '../../types/git-operation-kind';
 import { CollabConnectionDeniedError } from '../../errors/content/collab-connection-denied';
 import { CollabRole, toCollabRole } from './collab-role';
 import { Result } from '../../types/result';
@@ -25,6 +27,7 @@ export class AuthorizeCollabConnectionUseCase {
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly documentRepo: DocumentRepository,
+    private readonly gitOperationRepo: GitOperationRepository,
   ) {}
 
   /**
@@ -57,6 +60,14 @@ export class AuthorizeCollabConnectionUseCase {
     const member = await this.projectMemberRepo.findByCompositeKey(projectId, actorId);
     if (!member) {
       return { success: false, error: new CollabConnectionDeniedError('not_a_member') };
+    }
+
+    // Write-lock: a content-changing op (import/pull/checkout) is currently replacing this
+    // project's working tree, so no new edit session may open until it finishes — the same signal
+    // the file-tree mutation routes return as a 409.
+    const activeOperation = await this.gitOperationRepo.findActiveOperation(projectId);
+    if (activeOperation && CONTENT_CHANGING_GIT_OPERATION_KINDS.includes(activeOperation.kind)) {
+      return { success: false, error: new CollabConnectionDeniedError('git_operation_in_progress') };
     }
 
     return { success: true, value: { role: toCollabRole(member.role.value) } };

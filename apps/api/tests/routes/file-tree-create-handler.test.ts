@@ -27,6 +27,7 @@ type BuildOptions = {
   findByIdResult?: unknown;
   fileSaveError?: boolean;
   fileConflict?: boolean;
+  activeGitOperation?: { kind: string } | null;
 };
 
 function buildTestServer(options: BuildOptions = {}) {
@@ -54,6 +55,11 @@ function buildTestServer(options: BuildOptions = {}) {
     },
     auditLog: {
       save: jest.fn().mockResolvedValue(undefined),
+    },
+    gitOperation: {
+      findActiveOperation: jest.fn().mockResolvedValue(
+        options.activeGitOperation === undefined ? null : options.activeGitOperation,
+      ),
     },
   });
 
@@ -217,6 +223,31 @@ describe('POST /projects/:projectId/files — file creation', () => {
     });
     expect(response.statusCode).toBe(201);
   });
+
+  test('returns 409 git_operation_in_progress while a content-changing operation (PULL) is active', async () => {
+    const app = buildTestServer({ activeGitOperation: { kind: 'PULL' } });
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'file', parentId: PARENT_ID, name: 'doc.adoc' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error.code).toBe('git_operation_in_progress');
+    const stores = (app as unknown as { stores: { fileStore: { createExclusive: jest.Mock } } }).stores;
+    expect(stores.fileStore.createExclusive).not.toHaveBeenCalled();
+  });
+
+  test('does not block when the active operation is not content-changing (e.g. PUSH)', async () => {
+    const app = buildTestServer({ activeGitOperation: { kind: 'PUSH' } });
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'file', parentId: PARENT_ID, name: 'doc.adoc' },
+    });
+    expect(response.statusCode).toBe(201);
+  });
 });
 
 describe('POST /projects/:projectId/files — folder creation', () => {
@@ -325,5 +356,17 @@ describe('POST /projects/:projectId/files — folder creation', () => {
       payload: { type: 'folder', parentId: PARENT_ID, name: '.github' },
     });
     expect(response.statusCode).toBe(201);
+  });
+
+  test('returns 409 git_operation_in_progress while a content-changing operation (IMPORT) is active', async () => {
+    const app = buildTestServer({ activeGitOperation: { kind: 'IMPORT' } });
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'folder', parentId: PARENT_ID, name: 'my-folder' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error.code).toBe('git_operation_in_progress');
   });
 });

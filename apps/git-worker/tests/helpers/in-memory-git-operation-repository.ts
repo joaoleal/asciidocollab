@@ -138,6 +138,14 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return { success: true, value };
   }
 
+  async findActiveOperation(projectId: ProjectId): Promise<GitOperation | null> {
+    return (
+      [...this.operations.values()].find(
+        (op) => op.projectId.value === projectId.value && op.isActive,
+      ) ?? null
+    );
+  }
+
   async createConflict(input: CreateGitConflictInput): Promise<GitConflict> {
     const conflict = new GitConflict(
       GitConflictId.create(randomUUID()),

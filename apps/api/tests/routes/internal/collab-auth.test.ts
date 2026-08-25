@@ -24,6 +24,7 @@ function buildTestServer(options: {
   authenticated?: boolean;
   memberRole?: string | null;
   fileNodeProjectId?: string;
+  activeGitOperation?: { kind: string } | null;
 } = {}) {
   const { authenticated = true, memberRole = 'editor', fileNodeProjectId = PROJECT_ID } = options;
   const app = Fastify();
@@ -39,6 +40,11 @@ function buildTestServer(options: {
     document: { findByYjsStateId: jest.fn().mockResolvedValue(mockDocument) },
     fileNode: { findById: jest.fn().mockResolvedValue(fileNode) },
     projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(member) },
+    gitOperation: {
+      findActiveOperation: jest.fn().mockResolvedValue(
+        options.activeGitOperation === undefined ? null : options.activeGitOperation,
+      ),
+    },
   });
 
   app.register(collabAuthRoute);
@@ -105,6 +111,7 @@ describe('GET /internal/collab/auth/document', () => {
       document: { findByYjsStateId: jest.fn().mockResolvedValue(null) },
       fileNode: { findById: jest.fn().mockResolvedValue(null) },
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(null) },
+      gitOperation: { findActiveOperation: jest.fn().mockResolvedValue(null) },
     });
     app.register(collabAuthRoute);
 
@@ -138,6 +145,7 @@ describe('GET /internal/collab/auth/document', () => {
       document: { findByYjsStateId: jest.fn().mockResolvedValue(null) },
       fileNode: { findById: jest.fn().mockResolvedValue(null) },
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(null) },
+      gitOperation: { findActiveOperation: jest.fn().mockResolvedValue(null) },
     });
     app.register(collabAuthRoute);
     const response = await app.inject({ method: 'GET', url: DOCUMENT_URL });
@@ -147,6 +155,25 @@ describe('GET /internal/collab/auth/document', () => {
   test('cross-project bypass attempt → 403 (document belongs to a different project)', async () => {
     const OTHER_PROJECT_ID = '550e8400-e29b-41d4-a716-446655440099';
     const app = buildTestServer({ fileNodeProjectId: OTHER_PROJECT_ID, memberRole: 'editor' });
+    const response = await app.inject({ method: 'GET', url: DOCUMENT_URL });
+    expect(response.statusCode).toBe(403);
+  });
+
+  test('returns 409 git_operation_in_progress while a content-changing operation (PULL) is active', async () => {
+    const app = buildTestServer({ activeGitOperation: { kind: 'PULL' } });
+    const response = await app.inject({ method: 'GET', url: DOCUMENT_URL });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error.code).toBe('git_operation_in_progress');
+  });
+
+  test('does not block the connection when the active operation is not content-changing (e.g. PUSH)', async () => {
+    const app = buildTestServer({ activeGitOperation: { kind: 'PUSH' } });
+    const response = await app.inject({ method: 'GET', url: DOCUMENT_URL });
+    expect(response.statusCode).toBe(200);
+  });
+
+  test('a non-member is still denied 403 (checked first) even while a content-changing operation is active', async () => {
+    const app = buildTestServer({ memberRole: null, activeGitOperation: { kind: 'IMPORT' } });
     const response = await app.inject({ method: 'GET', url: DOCUMENT_URL });
     expect(response.statusCode).toBe(403);
   });
@@ -207,6 +234,7 @@ describe('GET /internal/collab/auth/presence', () => {
       document: { findByYjsStateId: jest.fn() },
       fileNode: { findById: jest.fn() },
       projectMember: { findByCompositeKey: jest.fn().mockResolvedValue(null) },
+      gitOperation: { findActiveOperation: jest.fn().mockResolvedValue(null) },
     });
     app.register(collabAuthRoute);
 

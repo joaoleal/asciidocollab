@@ -143,6 +143,18 @@ export interface GitOperationRepository {
   withGuard<T>(projectId: ProjectId, action: () => Promise<T>): Promise<Result<T, GitOperationInProgressError>>;
 
   /**
+   * Finds the project's current active operation — the one in `QUEUED`, `RUNNING`, or
+   * `AWAITING_CONFLICT` state, if any (at most one can exist per project). Used by the write-lock
+   * check on file-tree mutations and new collaboration/edit sessions to detect whether a
+   * content-changing operation is in progress, without running (or blocking on) `withGuard`'s
+   * conditional-insert path.
+   *
+   * @param projectId - The project to check.
+   * @returns The active operation, or null when the project has none.
+   */
+  findActiveOperation(projectId: ProjectId): Promise<GitOperation | null>;
+
+  /**
    * Records a new conflicting file discovered during an operation.
    *
    * @param input - The conflict to record.

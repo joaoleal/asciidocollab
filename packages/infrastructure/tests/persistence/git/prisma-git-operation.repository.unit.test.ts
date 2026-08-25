@@ -95,9 +95,19 @@ function fakePrismaClient() {
         },
       ),
       findFirst: jest.fn(
-        async ({ where }: { where: { projectId: string; state: { in: string[] } } }) => {
+        async ({
+          where,
+          select,
+        }: {
+          where: { projectId: string; state: { in: string[] } };
+          select?: { id: true };
+        }) => {
           for (const row of operations.values()) {
-            if (row.projectId === where.projectId && where.state.in.includes(row.state)) return { id: row.id };
+            if (row.projectId === where.projectId && where.state.in.includes(row.state)) {
+              // withGuard's active-op check passes `select: { id: true }`; findActiveOperation
+              // passes no select and needs the full row back to map into a domain `GitOperation`.
+              return select ? { id: row.id } : row;
+            }
           }
           return null;
         },
@@ -504,6 +514,85 @@ describe('PrismaGitOperationRepository', () => {
       await repo.withGuard(projA, async () => 'done');
 
       expect(getTransactionOptions()).toEqual({ isolationLevel: 'Serializable', maxWait: 1234, timeout: 5678 });
+    });
+  });
+
+  describe('findActiveOperation', () => {
+    it('returns null when the project has no operations at all', async () => {
+      const { client } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+
+      expect(await repo.findActiveOperation(projA)).toBeNull();
+    });
+
+    it('finds a QUEUED operation as active, mapped to a full domain GitOperation', async () => {
+      const { client } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+
+      const active = await repo.findActiveOperation(projA);
+
+      expect(active?.id.value).toBe(enqueued.id.value);
+      expect(active?.kind).toBe('PULL');
+      expect(active?.state).toBe('QUEUED');
+      expect(active?.projectId.value).toBe(projA.value);
+    });
+
+    it('finds a RUNNING operation as active', async () => {
+      // Set the row directly rather than via claimNextQueued, which relies on the raw-SQL
+      // FOR-UPDATE-SKIP-LOCKED path this fake does not model (see fakePrismaClient's header comment).
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const id = randomUUID();
+      operations.set(id, {
+        id,
+        projectId: projA.value,
+        kind: 'BRANCH_SWITCH',
+        state: 'RUNNING',
+        branch: null,
+        triggeredByUserId: user.value,
+        progress: 0,
+        heartbeatAt: new Date(),
+        errorCode: null,
+        startedAt: new Date(),
+        finishedAt: null,
+        createdAt: new Date(),
+      });
+
+      const active = await repo.findActiveOperation(projA);
+
+      expect(active?.state).toBe('RUNNING');
+      expect(active?.kind).toBe('BRANCH_SWITCH');
+    });
+
+    it('returns null once the project’s only operation has reached a terminal state', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const id = randomUUID();
+      operations.set(id, {
+        id,
+        projectId: projA.value,
+        kind: 'PULL',
+        state: 'SUCCEEDED',
+        branch: null,
+        triggeredByUserId: user.value,
+        progress: 100,
+        heartbeatAt: null,
+        errorCode: null,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        createdAt: new Date(),
+      });
+
+      expect(await repo.findActiveOperation(projA)).toBeNull();
+    });
+
+    it('does not let one project’s active operation surface for another project', async () => {
+      const { client } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+
+      expect(await repo.findActiveOperation(projB)).toBeNull();
     });
   });
 

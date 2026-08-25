@@ -11,6 +11,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
+import { isGitWriteLocked, sendGitOperationInProgressError } from '../../lib/git-write-lock';
 import { sendFileTreeError, isHiddenMetadataName, sendHiddenMetadataError } from './file-tree-errors';
 
 type CreateBody = { type: 'file' | 'folder'; parentId: string; name: string; mimeType?: string };
@@ -42,6 +43,12 @@ export async function fileTreeCreateRoutes(app: FastifyInstance): Promise<void> 
       // (security boundary): reject before touching the file store or the database.
       if (isHiddenMetadataName(name)) {
         return sendHiddenMetadataError(reply);
+      }
+
+      // Write-lock: a content-changing git operation (import/pull/checkout) is currently replacing
+      // this project's working tree, so no file-tree mutation may run concurrently with it.
+      if (await isGitWriteLocked(request.server.repos.gitOperation, projectId)) {
+        return sendGitOperationInProgressError(reply);
       }
 
       const parentFileNodeId = FileNodeId.create(parentId);

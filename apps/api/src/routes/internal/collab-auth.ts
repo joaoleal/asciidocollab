@@ -7,6 +7,7 @@ import {
   type CollabPresenceAuthResponse,
 } from '@asciidocollab/shared';
 import { logAuthorizationDenial } from '../audit-log-denial';
+import { sendGitOperationInProgressError } from '../../lib/git-write-lock';
 
 const uuidProperty = { type: 'string', format: 'uuid' } as const;
 
@@ -58,9 +59,18 @@ export async function collabAuthRoute(app: FastifyInstance): Promise<void> {
         request.server.repos.projectMember,
         request.server.repos.fileNode,
         request.server.repos.document,
+        request.server.repos.gitOperation,
       );
       const result = await useCase.execute(UserId.create(userId), ProjectId.create(projectId), YjsStateId.create(yjsStateId));
       if (!result.success) {
+        if (result.error.reason === 'git_operation_in_progress') {
+          logAuthorizationDenial(request.log, {
+            actor: userId,
+            resource: `document:${projectId}/${yjsStateId}`,
+            reason: result.error.reason,
+          });
+          return sendGitOperationInProgressError(reply);
+        }
         return denyForbidden(request, reply, userId, `document:${projectId}/${yjsStateId}`, result.error.reason);
       }
       return reply.status(200).send({ role: result.value.role, userId } satisfies CollabDocumentAuthResponse);

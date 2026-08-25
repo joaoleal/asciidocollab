@@ -10,6 +10,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
+import { isGitWriteLocked, sendGitOperationInProgressError } from '../../lib/git-write-lock';
 import { sendFileTreeError, toNodeType, isHiddenMetadataName, sendHiddenMetadataError } from './file-tree-errors';
 
 type PatchBody = { name?: string; parentId?: string };
@@ -40,6 +41,13 @@ export async function fileTreePatchRoutes(app: FastifyInstance): Promise<void> {
       // rename the node, so both are guarded here.
       if (name !== undefined && isHiddenMetadataName(name)) {
         return sendHiddenMetadataError(reply);
+      }
+
+      // Write-lock: a content-changing git operation (import/pull/checkout) is currently replacing
+      // this project's working tree, so no file-tree mutation may run concurrently with it — this
+      // covers every branch below (rename-only, move-only, and the combined rename+move).
+      if (await isGitWriteLocked(request.server.repos.gitOperation, projectId)) {
+        return sendGitOperationInProgressError(reply);
       }
 
       if (name !== undefined && parentId !== undefined) {

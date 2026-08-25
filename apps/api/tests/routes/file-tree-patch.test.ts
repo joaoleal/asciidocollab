@@ -55,6 +55,7 @@ function buildRenameServer(options: {
   memberResult?: unknown;
   /** If set, findById always returns this value. Otherwise returns mockFileNode. */
   findByIdOverride?: unknown;
+  activeGitOperation?: { kind: string } | null;
 } = {}) {
   const app = Fastify();
 
@@ -75,6 +76,11 @@ function buildRenameServer(options: {
     project: { findById: jest.fn().mockResolvedValue(null), save: jest.fn().mockResolvedValue(undefined) },
     auditLog: {
       save: jest.fn().mockResolvedValue(undefined),
+    },
+    gitOperation: {
+      findActiveOperation: jest.fn().mockResolvedValue(
+        options.activeGitOperation === undefined ? null : options.activeGitOperation,
+      ),
     },
   });
 
@@ -108,6 +114,7 @@ function buildMoveServer(options: {
   /** If set, the post-move findById (for event) returns this. */
   postMoveNode?: unknown;
   fileStoreMove?: { success: boolean; error?: Error };
+  activeGitOperation?: { kind: string } | null;
 } = {}) {
   const app = Fastify();
 
@@ -143,6 +150,11 @@ function buildMoveServer(options: {
     auditLog: {
       save: jest.fn().mockResolvedValue(undefined),
     },
+    gitOperation: {
+      findActiveOperation: jest.fn().mockResolvedValue(
+        options.activeGitOperation === undefined ? null : options.activeGitOperation,
+      ),
+    },
   });
 
   decorateApp(app, 'stores', {
@@ -175,6 +187,7 @@ function buildRenameMoveServer(options: {
   renameFileStoreMove?: { success: boolean; error?: Error };
   moveFileStoreMove?: { success: boolean; error?: Error };
   postOpNode?: unknown;
+  activeGitOperation?: { kind: string } | null;
 } = {}) {
   const app = Fastify();
 
@@ -206,6 +219,11 @@ function buildRenameMoveServer(options: {
     project: { findById: jest.fn().mockResolvedValue(null), save: jest.fn().mockResolvedValue(undefined) },
     auditLog: {
       save: jest.fn().mockResolvedValue(undefined),
+    },
+    gitOperation: {
+      findActiveOperation: jest.fn().mockResolvedValue(
+        options.activeGitOperation === undefined ? null : options.activeGitOperation,
+      ),
     },
   });
 
@@ -361,6 +379,31 @@ describe('PATCH /projects/:projectId/files/:fileNodeId', () => {
       const bus = (app as unknown as { fileTreeEventBus: { emit: jest.Mock } }).fileTreeEventBus;
       expect(bus.emit).not.toHaveBeenCalled();
     });
+
+    test('returns 409 git_operation_in_progress while a content-changing operation (PULL) is active', async () => {
+      const app = buildRenameServer({ activeGitOperation: { kind: 'PULL' } });
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: 'renamed.adoc' },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error.code).toBe('git_operation_in_progress');
+      const stores = (app as unknown as { stores: { fileStore: { move: jest.Mock } } }).stores;
+      expect(stores.fileStore.move).not.toHaveBeenCalled();
+    });
+
+    test('does not block rename when the active operation is not content-changing (e.g. FETCH)', async () => {
+      const app = buildRenameServer({ activeGitOperation: { kind: 'FETCH' } });
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: 'renamed.adoc' },
+      });
+      expect(response.statusCode).toBe(204);
+    });
   });
 
   describe('move-only (parentId set, name absent)', () => {
@@ -442,6 +485,18 @@ describe('PATCH /projects/:projectId/files/:fileNodeId', () => {
       expect(response.statusCode).toBe(204);
       const bus = (app as unknown as { fileTreeEventBus: { emit: jest.Mock } }).fileTreeEventBus;
       expect(bus.emit).not.toHaveBeenCalled();
+    });
+
+    test('returns 409 git_operation_in_progress while a content-changing operation (IMPORT) is active', async () => {
+      const app = buildMoveServer({ activeGitOperation: { kind: 'IMPORT' } });
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { parentId: PARENT_ID },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error.code).toBe('git_operation_in_progress');
     });
   });
 
@@ -538,6 +593,18 @@ describe('PATCH /projects/:projectId/files/:fileNodeId', () => {
       expect(response.statusCode).toBe(204);
       const bus = (app as unknown as { fileTreeEventBus: { emit: jest.Mock } }).fileTreeEventBus;
       expect(bus.emit).not.toHaveBeenCalled();
+    });
+
+    test('returns 409 git_operation_in_progress while a content-changing operation (BRANCH_SWITCH) is active', async () => {
+      const app = buildRenameMoveServer({ activeGitOperation: { kind: 'BRANCH_SWITCH' } });
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: 'newname.adoc', parentId: PARENT_ID },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error.code).toBe('git_operation_in_progress');
     });
   });
 

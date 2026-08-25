@@ -197,6 +197,62 @@ describe('InMemoryGitOperationRepository', () => {
     });
   });
 
+  describe('findActiveOperation', () => {
+    it('returns null when the project has no operations at all', async () => {
+      const repo = new InMemoryGitOperationRepository();
+
+      expect(await repo.findActiveOperation(projectA)).toBeNull();
+    });
+
+    it('finds a QUEUED operation as active', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const enqueued = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+
+      const active = await repo.findActiveOperation(projectA);
+
+      expect(active?.id.value).toBe(enqueued.id.value);
+      expect(active?.state).toBe('QUEUED');
+    });
+
+    it('finds a RUNNING operation as active', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'BRANCH_SWITCH', triggeredByUserId: user });
+      await repo.claimNextQueued(30_000);
+
+      const active = await repo.findActiveOperation(projectA);
+
+      expect(active?.state).toBe('RUNNING');
+      expect(active?.kind).toBe('BRANCH_SWITCH');
+    });
+
+    it('finds an AWAITING_CONFLICT operation as active', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      await repo.transition(claimed!.id, 'AWAITING_CONFLICT');
+
+      const active = await repo.findActiveOperation(projectA);
+
+      expect(active?.state).toBe('AWAITING_CONFLICT');
+    });
+
+    it('returns null once the project’s only operation has reached a terminal state', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      await repo.transition(claimed!.id, 'SUCCEEDED');
+
+      expect(await repo.findActiveOperation(projectA)).toBeNull();
+    });
+
+    it('does not let one project’s active operation surface for another project', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+
+      expect(await repo.findActiveOperation(projectB)).toBeNull();
+    });
+  });
+
   describe('transition', () => {
     it('moves a RUNNING operation to SUCCEEDED, setting progress to 100 and finishedAt', async () => {
       const { clock } = fakeClock('2026-01-01T00:00:00.000Z');

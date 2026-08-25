@@ -9,6 +9,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
+import { isGitWriteLocked, sendGitOperationInProgressError } from '../../lib/git-write-lock';
 import { sendFileTreeError, toNodeType, pathHasHiddenMetadataSegment, sendHiddenMetadataError } from './file-tree-errors';
 
 /** Registers DELETE /projects/:projectId/files/:fileNodeId. */
@@ -38,6 +39,12 @@ export async function fileTreeDeleteRoutes(app: FastifyInstance): Promise<void> 
       // renamed into one via this API — see file-tree-create.ts / file-tree-patch.ts).
       if (fileNodeBeforeDelete && pathHasHiddenMetadataSegment(fileNodeBeforeDelete.path.value)) {
         return sendHiddenMetadataError(reply);
+      }
+
+      // Write-lock: a content-changing git operation (import/pull/checkout) is currently replacing
+      // this project's working tree, so no file-tree mutation may run concurrently with it.
+      if (await isGitWriteLocked(request.server.repos.gitOperation, projectId)) {
+        return sendGitOperationInProgressError(reply);
       }
 
       const result = await useCase.execute(actorId, fileNodeId, projectId, requestContextFrom(request));

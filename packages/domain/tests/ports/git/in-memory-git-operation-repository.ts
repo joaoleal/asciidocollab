@@ -144,6 +144,15 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return { success: true, value };
   }
 
+  /** Finds the project's current active (QUEUED/RUNNING/AWAITING_CONFLICT) operation, or null. */
+  async findActiveOperation(projectId: ProjectId): Promise<GitOperation | null> {
+    return (
+      [...this.operations.values()].find(
+        (op) => op.projectId.value === projectId.value && op.isActive,
+      ) ?? null
+    );
+  }
+
   /** Records a new, unresolved conflict for an operation. */
   async createConflict(input: CreateGitConflictInput): Promise<GitConflict> {
     const conflict = new GitConflict(

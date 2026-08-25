@@ -11,7 +11,11 @@ jest.mock('../../src/plugins/require-auth', () => ({
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 const FILE_NODE_ID = '550e8400-e29b-41d4-a716-446655440003';
 
-function buildTestServer(options: { activeSession?: boolean; memberRole?: string } = {}) {
+function buildTestServer(options: {
+  activeSession?: boolean;
+  memberRole?: string;
+  activeGitOperation?: { kind: string } | null;
+} = {}) {
   const app = Fastify();
 
   decorateApp(app, 'repos', {
@@ -39,6 +43,11 @@ function buildTestServer(options: { activeSession?: boolean; memberRole?: string
     },
     collaborationSession: {
       isActive: jest.fn().mockResolvedValue(options.activeSession ?? false),
+    },
+    gitOperation: {
+      findActiveOperation: jest.fn().mockResolvedValue(
+        options.activeGitOperation === undefined ? null : options.activeGitOperation,
+      ),
     },
   });
 
@@ -159,6 +168,29 @@ describe('DELETE /projects/:projectId/files/:fileNodeId', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
+  });
+
+  test('returns 409 git_operation_in_progress while a content-changing operation (BRANCH_SWITCH) is active', async () => {
+    const app = buildTestServer({ activeGitOperation: { kind: 'BRANCH_SWITCH' } });
+    const executeSpy = jest.spyOn(DeleteFileUseCase.prototype, 'execute');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/projects/${PROJECT_ID}/files/${FILE_NODE_ID}`,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error.code).toBe('git_operation_in_progress');
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
+  test('does not block deletion when the active operation is not content-changing (e.g. COMMIT)', async () => {
+    const app = buildTestServer({ activeGitOperation: { kind: 'COMMIT' } });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/projects/${PROJECT_ID}/files/${FILE_NODE_ID}`,
+    });
+    expect(response.statusCode).toBe(204);
   });
 
   test('emits event with parentId=null when file node has no parent', async () => {
