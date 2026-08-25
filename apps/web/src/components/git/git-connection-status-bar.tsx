@@ -7,12 +7,13 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
+  GitPullRequestArrow,
   Unplug,
   type LucideIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatRelativeTime } from '@/lib/format-relative-time';
-import type { GitStatusDto, GitSyncStatus } from '@asciidocollab/shared';
+import type { BehindAheadDto, GitStatusDto, GitSyncStatus } from '@asciidocollab/shared';
 
 /** A sync status's rendered style: the tokenized text className plus its accessible label. */
 export interface SyncStatusStyle {
@@ -73,6 +74,18 @@ export interface GitConnectionStatusBarProperties {
   canCommit: boolean;
   /** Called when the Commit button is clicked. */
   onCommitClick: () => void;
+  /**
+   * The real ahead/behind commit counts from the behind-ahead endpoint, or null while unknown (not
+   * yet loaded, or not connected). `status.ahead`/`status.behind` are a fixed-`0` placeholder and are
+   * never rendered here.
+   */
+  behindAhead: BehindAheadDto | null;
+  /** Whether the viewer may pull — shows the Pull button (when a pull is available) when true. */
+  canPull: boolean;
+  /** Called when the Pull button is clicked. */
+  onPullClick: () => void;
+  /** True while a pull is in flight — disables the Pull button. */
+  pullPending?: boolean;
 }
 
 /**
@@ -89,6 +102,10 @@ export function GitConnectionStatusBar({
   loading = false,
   canCommit,
   onCommitClick,
+  behindAhead,
+  canPull,
+  onPullClick,
+  pullPending = false,
 }: GitConnectionStatusBarProperties): React.JSX.Element | null {
   if (!connected) return null;
   if (loading && !status) return null;
@@ -106,22 +123,34 @@ export function GitConnectionStatusBar({
       <span className={`flex items-center gap-1 ${syncStyle.className}`} title={syncStyle.label}>
         <SyncIcon className="h-3.5 w-3.5" aria-hidden="true" />
         {syncStyle.label}
-        {status.ahead > 0 && (
-          <span className="flex items-center gap-0.5 tabular-nums" aria-label={`${status.ahead} commits ahead`}>
+        {behindAhead !== null && behindAhead.ahead > 0 && (
+          <span className="flex items-center gap-0.5 tabular-nums" aria-label={`${behindAhead.ahead} commits ahead`}>
             <ArrowUp className="h-3 w-3" aria-hidden="true" />
-            {status.ahead}
+            {behindAhead.ahead}
           </span>
         )}
-        {status.behind > 0 && (
-          <span className="flex items-center gap-0.5 tabular-nums" aria-label={`${status.behind} commits behind`}>
+        {behindAhead !== null && behindAhead.behind > 0 && (
+          <span className="flex items-center gap-0.5 tabular-nums" aria-label={`${behindAhead.behind} commits behind`}>
             <ArrowDown className="h-3 w-3" aria-hidden="true" />
-            {status.behind}
+            {behindAhead.behind}
           </span>
         )}
       </span>
       <span className="text-muted-foreground">
         {status.lastSyncAt ? formatRelativeTime(status.lastSyncAt) : 'Never synced'}
       </span>
+      {canPull && behindAhead !== null && behindAhead.behind > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onPullClick}
+          disabled={pullPending}
+          aria-label={`behind by ${behindAhead.behind} — pull available`}
+        >
+          <GitPullRequestArrow className="mr-2 h-4 w-4" aria-hidden="true" />
+          {pullPending ? 'Pulling…' : 'Pull'}
+        </Button>
+      )}
       {canCommit && (
         <Button variant="outline" size="sm" onClick={onCommitClick}>
           <GitCommitHorizontal className="mr-2 h-4 w-4" aria-hidden="true" />

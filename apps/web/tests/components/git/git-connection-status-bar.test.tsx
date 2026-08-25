@@ -2,8 +2,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import {
   GitConnectionStatusBar,
   syncStatusStyle,
+  type GitConnectionStatusBarProperties,
 } from '@/components/git/git-connection-status-bar';
-import type { GitStatusDto, GitSyncStatus } from '@asciidocollab/shared';
+import type { BehindAheadDto, GitStatusDto, GitSyncStatus } from '@asciidocollab/shared';
 
 function status(overrides: Partial<GitStatusDto> = {}): GitStatusDto {
   return {
@@ -16,6 +17,20 @@ function status(overrides: Partial<GitStatusDto> = {}): GitStatusDto {
     unstaged: [],
     untracked: [],
     conflicted: [],
+    ...overrides,
+  };
+}
+
+/** Default props for the bar, so each test only overrides what it cares about. */
+function barProperties(overrides: Partial<GitConnectionStatusBarProperties> = {}): GitConnectionStatusBarProperties {
+  return {
+    status: status(),
+    connected: true,
+    canCommit: true,
+    onCommitClick: jest.fn(),
+    behindAhead: null,
+    canPull: true,
+    onPullClick: jest.fn(),
     ...overrides,
   };
 }
@@ -56,47 +71,29 @@ describe('syncStatusStyle', () => {
 
 describe('GitConnectionStatusBar', () => {
   test('renders nothing when not connected', () => {
-    const { container } = render(
-      <GitConnectionStatusBar status={null} connected={false} canCommit onCommitClick={jest.fn()} />,
-    );
+    const { container } = render(<GitConnectionStatusBar {...barProperties({ status: null, connected: false })} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   test('renders nothing when not connected even with a stale status object', () => {
-    const { container } = render(
-      <GitConnectionStatusBar status={status()} connected={false} canCommit onCommitClick={jest.fn()} />,
-    );
+    const { container } = render(<GitConnectionStatusBar {...barProperties({ connected: false })} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   test('shows the branch name and sync label when connected', () => {
-    render(<GitConnectionStatusBar status={status()} connected canCommit onCommitClick={jest.fn()} />);
+    render(<GitConnectionStatusBar {...barProperties()} />);
     expect(screen.getByText('main')).toBeInTheDocument();
     expect(screen.getByText('Up to date')).toBeInTheDocument();
   });
 
   test('shows "Never synced" when lastSyncAt is null', () => {
-    render(
-      <GitConnectionStatusBar
-        status={status({ lastSyncAt: null })}
-        connected
-        canCommit
-        onCommitClick={jest.fn()}
-      />,
-    );
+    render(<GitConnectionStatusBar {...barProperties({ status: status({ lastSyncAt: null }) })} />);
     expect(screen.getByText('Never synced')).toBeInTheDocument();
   });
 
   test('shows a relative last-sync time when lastSyncAt is set', () => {
     const recent = new Date(Date.now() - 5 * 60_000).toISOString();
-    render(
-      <GitConnectionStatusBar
-        status={status({ lastSyncAt: recent })}
-        connected
-        canCommit
-        onCommitClick={jest.fn()}
-      />,
-    );
+    render(<GitConnectionStatusBar {...barProperties({ status: status({ lastSyncAt: recent }) })} />);
     expect(screen.getByText('5m ago')).toBeInTheDocument();
   });
 
@@ -108,27 +105,84 @@ describe('GitConnectionStatusBar', () => {
     ['CONFLICTED', 'Conflicted'],
     ['DISCONNECTED', 'Disconnected'],
   ] as const)('renders the %s sync state label %s', (syncStatus, label) => {
-    render(
-      <GitConnectionStatusBar
-        status={status({ syncStatus })}
-        connected
-        canCommit
-        onCommitClick={jest.fn()}
-      />,
-    );
+    render(<GitConnectionStatusBar {...barProperties({ status: status({ syncStatus }) })} />);
     expect(screen.getByText(label)).toBeInTheDocument();
   });
 
   test('shows a Commit button and calls onCommitClick when canCommit is true', () => {
     const onCommitClick = jest.fn();
-    render(<GitConnectionStatusBar status={status()} connected canCommit onCommitClick={onCommitClick} />);
+    render(<GitConnectionStatusBar {...barProperties({ onCommitClick })} />);
     const button = screen.getByRole('button', { name: /commit/i });
     fireEvent.click(button);
     expect(onCommitClick).toHaveBeenCalledTimes(1);
   });
 
   test('hides the Commit button when canCommit is false', () => {
-    render(<GitConnectionStatusBar status={status()} connected canCommit={false} onCommitClick={jest.fn()} />);
+    render(<GitConnectionStatusBar {...barProperties({ canCommit: false })} />);
     expect(screen.queryByRole('button', { name: /commit/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('GitConnectionStatusBar real ahead/behind counts', () => {
+  const COUNTS: BehindAheadDto = { behind: 4, ahead: 2 };
+
+  test('renders the real behind count from behindAhead, not the status.behind placeholder', () => {
+    // `status.behind` is the fixed-0 placeholder; behindAhead carries the real count.
+    render(<GitConnectionStatusBar {...barProperties({ status: status({ behind: 0, ahead: 0 }), behindAhead: COUNTS })} />);
+    expect(screen.getByLabelText('4 commits behind')).toBeInTheDocument();
+    expect(screen.getByLabelText('2 commits ahead')).toBeInTheDocument();
+  });
+
+  test('renders nothing for ahead/behind when behindAhead is null', () => {
+    render(<GitConnectionStatusBar {...barProperties({ behindAhead: null })} />);
+    expect(screen.queryByLabelText(/commits behind/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/commits ahead/)).not.toBeInTheDocument();
+  });
+
+  test('renders nothing for a zero count even when behindAhead is loaded', () => {
+    render(<GitConnectionStatusBar {...barProperties({ behindAhead: { behind: 0, ahead: 0 } })} />);
+    expect(screen.queryByLabelText(/commits behind/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/commits ahead/)).not.toBeInTheDocument();
+  });
+});
+
+describe('GitConnectionStatusBar pull affordance', () => {
+  test('shows the Pull button only when canPull and behindAhead.behind > 0', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPull: true, behindAhead: { behind: 3, ahead: 0 } })} />);
+    expect(screen.getByRole('button', { name: /pull/i })).toBeInTheDocument();
+  });
+
+  test('hides the Pull button when behindAhead.behind is 0', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPull: true, behindAhead: { behind: 0, ahead: 1 } })} />);
+    expect(screen.queryByRole('button', { name: /pull/i })).not.toBeInTheDocument();
+  });
+
+  test('hides the Pull button when behindAhead is null', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPull: true, behindAhead: null })} />);
+    expect(screen.queryByRole('button', { name: /pull/i })).not.toBeInTheDocument();
+  });
+
+  test('hides the Pull button when canPull is false, even with a positive behind count', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPull: false, behindAhead: { behind: 3, ahead: 0 } })} />);
+    expect(screen.queryByRole('button', { name: /pull/i })).not.toBeInTheDocument();
+  });
+
+  test('calls onPullClick when the Pull button is clicked', () => {
+    const onPullClick = jest.fn();
+    render(<GitConnectionStatusBar {...barProperties({ behindAhead: { behind: 3, ahead: 0 }, onPullClick })} />);
+    fireEvent.click(screen.getByRole('button', { name: /pull/i }));
+    expect(onPullClick).toHaveBeenCalledTimes(1);
+  });
+
+  test('gives the Pull button an accessible label naming the behind count', () => {
+    render(<GitConnectionStatusBar {...barProperties({ behindAhead: { behind: 5, ahead: 0 } })} />);
+    expect(screen.getByRole('button', { name: 'behind by 5 — pull available' })).toBeInTheDocument();
+  });
+
+  test('disables the Pull button and shows a pending label while pullPending is true', () => {
+    render(<GitConnectionStatusBar {...barProperties({ behindAhead: { behind: 3, ahead: 0 }, pullPending: true })} />);
+    const button = screen.getByRole('button', { name: /pull/i });
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent('Pulling…');
   });
 });

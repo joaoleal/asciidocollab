@@ -5,11 +5,13 @@
 import { API_BASE_URL } from '@/lib/api/base-url';
 import {
   commitChanges,
+  getBehindAhead,
   getGitOperation,
   getGitStatus,
   getGitTreeStatus,
   importRepository,
   isGitOperationTerminal,
+  startPull,
 } from '@/lib/api/git';
 
 const fetchMock = jest.fn();
@@ -196,6 +198,60 @@ describe('commitChanges', () => {
     await expect(commitChanges('proj1', 'Fix typo')).rejects.toMatchObject({
       status: 409,
       code: 'nothing_staged',
+    });
+  });
+});
+
+describe('getBehindAhead', () => {
+  test('GETs the project-scoped behind-ahead endpoint', async () => {
+    const body = { behind: 3, ahead: 1 };
+    okOnce(body);
+
+    const result = await getBehindAhead('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/behind-ahead`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(body);
+  });
+
+  test('surfaces a not-connected refusal for a project with no git repo', async () => {
+    failOnce(404, { error: { code: 'NOT_FOUND', message: 'Project is not connected to a git repository' } });
+
+    await expect(getBehindAhead('proj1')).rejects.toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('startPull', () => {
+  test('POSTs to the project-scoped pull endpoint with an empty body by default', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    const result = await startPull('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/pull`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({});
+    expect(result).toEqual({ operationId: 'op1', projectId: 'proj1' });
+  });
+
+  test('includes confirmAffectsOpenFiles only when explicitly requested', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    await startPull('proj1', { confirmAffectsOpenFiles: true });
+
+    expect(requestBody()).toEqual({ confirmAffectsOpenFiles: true });
+  });
+
+  test('surfaces the open-files refusal', async () => {
+    failOnce(409, { error: { code: 'open_files_need_confirm', message: 'Files are open in live editing sessions' } });
+
+    await expect(startPull('proj1')).rejects.toMatchObject({
+      status: 409,
+      code: 'open_files_need_confirm',
     });
   });
 });

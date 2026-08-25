@@ -14,8 +14,11 @@ import { useProjectSymbolIndex } from '@/hooks/use-project-symbol-index';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import { useGitTreeStatus } from '@/hooks/use-git-tree-status';
 import { useGitStatus } from '@/hooks/use-git-status';
+import { useBehindAhead } from '@/hooks/use-behind-ahead';
+import { usePull } from '@/hooks/use-pull';
 import { CommitDialog } from '@/components/git/commit-dialog';
 import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
+import { PullDialog } from '@/components/git/pull-dialog';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
@@ -500,6 +503,20 @@ export function ProjectEditorLayout({
   // convention as the tree-status hook above: a 404 means `connected:false`, not an error.
   const { status: gitStatus, connected: gitConnected, refetch: refetchGitStatus } = useGitStatus(projectId);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+
+  // Real ahead/behind commit counts for the status bar's "Pull available" affordance — distinct from
+  // `gitStatus.ahead`/`.behind`, which are a fixed-`0` placeholder never rendered for this.
+  const { behindAhead, refetch: refetchBehindAhead } = useBehindAhead(projectId);
+  // A pull refetches the same three git read models a commit does, so its badges/counts/status all
+  // move together once it lands.
+  const handlePullSucceeded = useCallback(() => {
+    refetchGitTreeStatus();
+    refetchGitStatus();
+    void refetchBehindAhead();
+  }, [refetchGitTreeStatus, refetchGitStatus, refetchBehindAhead]);
+  const pull = usePull(projectId, handlePullSucceeded);
+  // Pulling requires the same editor capability as committing (see the route's requirement).
+  const canPull = canEdit;
 
   // ── Review comments & tasks (feature 038) ──────────────────────────────────────────────────
   // Comments are available only for a collaborative .adoc (a live Y.Doc + document id). The review
@@ -1310,6 +1327,10 @@ export function ProjectEditorLayout({
             connected={gitConnected}
             canCommit={canEdit}
             onCommitClick={() => setCommitDialogOpen(true)}
+            behindAhead={behindAhead}
+            canPull={canPull}
+            onPullClick={pull.start}
+            pullPending={pull.pending}
           />
           <PdfExportButton
             onExport={handleExportPdf}
@@ -1355,6 +1376,20 @@ export function ProjectEditorLayout({
           >
             Cancel
           </button>
+        </div>
+      )}
+
+      {/* Pull outcome: a synchronous start failure, or the polled operation settling into something
+          other than success. AWAITING_CONFLICT is deliberately neutral (`role="status"`), not an
+          error — resolving conflicts is a separate flow this task does not build. */}
+      {pull.message && pull.message.tone === 'error' && (
+        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {pull.message.text}
+        </div>
+      )}
+      {pull.message && pull.message.tone === 'neutral' && (
+        <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
+          {pull.message.text}
         </div>
       )}
 
@@ -1702,6 +1737,12 @@ export function ProjectEditorLayout({
           refetchGitTreeStatus();
           refetchGitStatus();
         }}
+      />
+      <PullDialog
+        projectId={projectId}
+        open={pull.confirmOpen}
+        onOpenChange={pull.closeConfirm}
+        onConfirmed={pull.handleConfirmed}
       />
     </div>
   );

@@ -3,7 +3,14 @@
  * and polls the long-running operation that clone runs as.
  */
 import { apiRequest } from '@/lib/api/transport';
-import type { CommitDto, FileGitStatus, GitOperationStatusDto, GitProvider, GitStatusDto } from '@asciidocollab/shared';
+import type {
+  BehindAheadDto,
+  CommitDto,
+  FileGitStatus,
+  GitOperationStatusDto,
+  GitProvider,
+  GitStatusDto,
+} from '@asciidocollab/shared';
 
 /** Request body for `POST /api/git/import`. */
 export interface ImportRepositoryInput {
@@ -80,6 +87,40 @@ export async function commitChanges(projectId: string, message: string): Promise
   return apiRequest(`/api/projects/${projectId}/git/commit`, {
     method: 'POST',
     body: JSON.stringify({ message }),
+  });
+}
+
+/**
+ * Reads how far the project's connected repository's current branch stands from its remote —
+ * ahead/behind commit counts, as of the last time the remote-tracking ref was updated (not a live
+ * network fetch). The status bar uses this for its real counts; `GitStatusDto.ahead`/`.behind` are a
+ * fixed-`0` placeholder and must not be used for this.
+ */
+export async function getBehindAhead(projectId: string): Promise<BehindAheadDto> {
+  return apiRequest(`/api/projects/${projectId}/git/behind-ahead`);
+}
+
+/** What starting a pull hands back: the operation to poll. */
+export interface StartPullResult {
+  /** Identifier of the newly queued pull operation. */
+  operationId: string;
+  /** Identifier of the project the pull applies to. */
+  projectId: string;
+}
+
+/**
+ * Starts pulling the connected repository's remote changes into the project. Resolves as soon as the
+ * server has queued the pull (`202`) — the returned identifier is for polling {@link getGitOperation},
+ * not a sign the pull itself has finished. Refused with a `409 open_files_need_confirm` when files are
+ * open in live editing sessions and `confirmAffectsOpenFiles` was not passed as `true`.
+ */
+export async function startPull(
+  projectId: string,
+  options?: { confirmAffectsOpenFiles?: boolean },
+): Promise<StartPullResult> {
+  return apiRequest(`/api/projects/${projectId}/git/pull`, {
+    method: 'POST',
+    body: JSON.stringify(options?.confirmAffectsOpenFiles ? { confirmAffectsOpenFiles: true } : {}),
   });
 }
 
