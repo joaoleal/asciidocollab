@@ -1891,3 +1891,374 @@ describe('RealGitCommandRunner.initializeAndPublish', () => {
     }
   });
 });
+
+describe('RealGitCommandRunner.log', () => {
+  it('returns commits newest-first with hash, subject, author email, and date', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440100');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\n');
+    await commitAll(cwd, 'first commit');
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\ntwo\n');
+    await commitAll(cwd, 'second commit');
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\ntwo\nthree\n');
+    await commitAll(cwd, 'third commit');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, {});
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.map((entry) => entry.message)).toEqual(['third commit', 'second commit', 'first commit']);
+    for (const entry of result.value) {
+      expect(entry.hash).toMatch(/^[0-9a-f]{40}$/);
+      expect(entry.authorEmail).toBe('test@example.com');
+      expect(entry.authoredAt).toBeInstanceOf(Date);
+      expect(Number.isNaN(entry.authoredAt.getTime())).toBe(false);
+    }
+  });
+
+  it('caps the number of commits returned with limit', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440101');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\n');
+    await commitAll(cwd, 'first');
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\ntwo\n');
+    await commitAll(cwd, 'second');
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\ntwo\nthree\n');
+    await commitAll(cwd, 'third');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, { limit: 2 });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.map((entry) => entry.message)).toEqual(['third', 'second']);
+  });
+
+  it('restricts to commits that touched the given path', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440102');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+
+    await writeFile(path.join(cwd, 'a.adoc'), 'a1\n');
+    await writeFile(path.join(cwd, 'b.adoc'), 'b1\n');
+    await commitAll(cwd, 'add both');
+    await writeFile(path.join(cwd, 'b.adoc'), 'b2\n');
+    await commitAll(cwd, 'touch b only');
+    await writeFile(path.join(cwd, 'a.adoc'), 'a2\n');
+    await commitAll(cwd, 'touch a only');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, { path: 'a.adoc' });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.map((entry) => entry.message)).toEqual(['touch a only', 'add both']);
+  });
+
+  it('returns a single entry for a repository with one commit', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440103');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'content\n');
+    await commitAll(cwd, 'only commit');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, {});
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value).toEqual([
+      expect.objectContaining({ message: 'only commit', authorEmail: 'test@example.com' }),
+    ]);
+  });
+
+  it('round-trips a distinct author email exactly', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440104');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await execFile('git', ['config', 'user.email', 'writer.name+tag@example.co.uk'], { cwd });
+    await writeFile(path.join(cwd, 'a.adoc'), 'content\n');
+    await commitAll(cwd, 'authored commit');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, {});
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value[0].authorEmail).toBe('writer.name+tag@example.co.uk');
+  });
+
+  it('returns an empty array for a path no commit ever touched', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440105');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'content\n');
+    await commitAll(cwd, 'init');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, { path: 'never-existed.adoc' });
+
+    expect(result).toEqual({ success: true, value: [] });
+  });
+
+  it('returns an empty array for a repository with no commits yet', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440106');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    // Deliberately never commit anything — a freshly-initialized, still commit-less repository.
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, {});
+
+    expect(result).toEqual({ success: true, value: [] });
+  });
+
+  it('returns a GitCommandFailedError without throwing when the working tree does not exist', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440107');
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-log-empty-storage-'));
+    // Deliberately never create `<storageRoot>/<projectId>/`.
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, {});
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(result.error.message).not.toMatch(/fatal:|ENOENT/i);
+  });
+});
+
+describe('RealGitCommandRunner.diff', () => {
+  it('returns a non-empty unified diff naming the changed file between two commits', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440110');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\n');
+    await commitAll(cwd, 'c1');
+    const from = await readReference(cwd, 'HEAD');
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\ntwo\n');
+    await commitAll(cwd, 'c2');
+    const to = await readReference(cwd, 'HEAD');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, { from, to });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified).toContain('a.adoc');
+    expect(result.value.unified).toContain('+two');
+  });
+
+  it('scopes a commit-vs-commit diff to the given path', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440111');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'a1\n');
+    await writeFile(path.join(cwd, 'b.adoc'), 'b1\n');
+    await commitAll(cwd, 'c1');
+    const from = await readReference(cwd, 'HEAD');
+    await writeFile(path.join(cwd, 'a.adoc'), 'a2\n');
+    await writeFile(path.join(cwd, 'b.adoc'), 'b2\n');
+    await commitAll(cwd, 'c2');
+    const to = await readReference(cwd, 'HEAD');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, { from, to, path: 'a.adoc' });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified).toContain('a.adoc');
+    expect(result.value.unified).not.toContain('b.adoc');
+  });
+
+  it('diffs uncommitted working changes against HEAD', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440112');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\n');
+    await commitAll(cwd, 'c1');
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\nuncommitted\n');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, {});
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified).toContain('+uncommitted');
+  });
+
+  it('returns an empty diff when there are no changes', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440113');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'one\n');
+    await commitAll(cwd, 'c1');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, {});
+
+    expect(result).toEqual({ success: true, value: { unified: '' } });
+  });
+
+  it('diffs HEAD against supplied live content rather than the stale on-disk copy', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440114');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'committed content\n');
+    await commitAll(cwd, 'c1');
+    // The on-disk copy is left exactly as committed — stale relative to the live override below.
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, {
+      currentContent: { path: 'a.adoc', content: 'live collaborative content\n' },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified).toContain('-committed content');
+    expect(result.value.unified).toContain('+live collaborative content');
+
+    const onDisk = await readFile(path.join(cwd, 'a.adoc'), 'utf8');
+    expect(onDisk).toBe('committed content\n');
+  });
+
+  it('treats the --no-index exit-1 "files differ" outcome as success, not an error', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440115');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'first\n');
+    await commitAll(cwd, 'c1');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, {
+      currentContent: { path: 'a.adoc', content: 'second\n' },
+    });
+
+    // A real difference must come back as a successful diff result, never a GitCommandFailedError —
+    // this is exactly the outcome `git diff --no-index` signals by exiting 1.
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified.length).toBeGreaterThan(0);
+  });
+
+  it('returns an empty string when the live override content matches HEAD exactly', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440116');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'identical\n');
+    await commitAll(cwd, 'c1');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, {
+      currentContent: { path: 'a.adoc', content: 'identical\n' },
+    });
+
+    expect(result).toEqual({ success: true, value: { unified: '' } });
+  });
+
+  it('treats a live override for a file absent at HEAD as a diff against an empty base', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440117');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'other.adoc'), 'unrelated\n');
+    await commitAll(cwd, 'c1');
+    // 'new-file.adoc' was never committed — absent at HEAD entirely.
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, {
+      currentContent: { path: 'new-file.adoc', content: 'brand new live text\n' },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified).toContain('+brand new live text');
+  });
+});
+
+describe('RealGitCommandRunner.blame', () => {
+  it('maps each line to the right commit hash, author email, line number, and content across two commits', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440120');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+
+    await writeFile(path.join(cwd, 'f.adoc'), 'line one\nline two\n');
+    await commitAll(cwd, 'first commit');
+    const firstHash = await readReference(cwd, 'HEAD');
+
+    await execFile('git', ['config', 'user.email', 'second-author@example.com'], { cwd });
+    await execFile('git', ['config', 'user.name', 'Second Author'], { cwd });
+    await writeFile(path.join(cwd, 'f.adoc'), 'line one\nline two\nline three\n');
+    await commitAll(cwd, 'second commit');
+    const secondHash = await readReference(cwd, 'HEAD');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.blame(projectId, { path: 'f.adoc' });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value).toEqual([
+      { lineNumber: 1, hash: firstHash, authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'line one' },
+      { lineNumber: 2, hash: firstHash, authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'line two' },
+      {
+        lineNumber: 3,
+        hash: secondHash,
+        authorEmail: 'second-author@example.com',
+        authoredAt: expect.any(Date),
+        content: 'line three',
+      },
+    ]);
+  });
+
+  it('blames a single-commit file entirely to that one commit', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440121');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'f.adoc'), 'only line\n');
+    await commitAll(cwd, 'only commit');
+    const hash = await readReference(cwd, 'HEAD');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.blame(projectId, { path: 'f.adoc' });
+
+    expect(result).toEqual({
+      success: true,
+      value: [{ lineNumber: 1, hash, authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'only line' }],
+    });
+  });
+
+  it('returns a GitCommandFailedError for a file absent at the given ref', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440122');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'content\n');
+    await commitAll(cwd, 'first');
+    const firstHash = await readReference(cwd, 'HEAD');
+    await writeFile(path.join(cwd, 'b.adoc'), 'other\n');
+    await commitAll(cwd, 'second');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.blame(projectId, { path: 'b.adoc', ref: firstHash });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(result.error.message).not.toMatch(/fatal:|ENOENT/i);
+  });
+
+  it('returns an empty array for an empty file', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440123');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'empty.adoc'), '');
+    await commitAll(cwd, 'add empty file');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.blame(projectId, { path: 'empty.adoc' });
+
+    expect(result).toEqual({ success: true, value: [] });
+  });
+});

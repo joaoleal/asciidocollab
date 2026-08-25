@@ -1,6 +1,8 @@
+import { execFile as execFileCallback } from 'node:child_process';
 import { mkdtemp, lstat, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import {
   AuthenticationFailedError,
   GitCommandFailedError,
@@ -11,6 +13,7 @@ import {
   type ClonedRepository,
   type ConflictStageStore,
   type GitBehindAhead,
+  type GitBlameLine,
   type GitBranchList,
   type GitCheckoutInput,
   type GitCheckoutOutcome,
@@ -20,11 +23,14 @@ import {
   type GitCommitResult,
   type GitCreateBranchInput,
   type GitCreatedBranch,
+  type GitDiffInput,
+  type GitDiffResult,
   type GitFetchInput,
   type GitFetchResult,
   type GitInitializeError,
   type GitInitializeInput,
   type GitInitializeOutcome,
+  type GitLogEntry,
   type GitMergeConflictPath,
   type GitMergeFileChange,
   type GitMergeInput,
@@ -478,6 +484,158 @@ async function computeMergeChanges(
   return changes;
 }
 
+const execFile = promisify(execFileCallback);
+
+/** Generous ceiling on {@link runNoIndexDiff}'s captured stdout — mirrors `run-git-command`'s own. */
+const NO_INDEX_DIFF_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
+/** Narrows an unknown value to one carrying a numeric child-process exit `code`. */
+function hasNumericExitCode(value: unknown): value is { code: number } {
+  if (typeof value !== 'object' || value === null || !('code' in value)) return false;
+  return typeof value.code === 'number';
+}
+
+/** Narrows an unknown value to one carrying the string `stdout` a failed `execFile` attaches to its rejection. */
+function hasStdoutText(value: unknown): value is { stdout: string } {
+  if (typeof value !== 'object' || value === null || !('stdout' in value)) return false;
+  return typeof value.stdout === 'string';
+}
+
+/**
+ * Runs `git diff --no-index <left> <right>` directly via `execFile`, bypassing
+ * {@link runGitCommand}'s throw-on-nonzero-exit contract: `--no-index` EXITS 1 when the two files
+ * DIFFER — the normal "there is a diff" outcome, never a failure — and the unified diff text IS
+ * that invocation's stdout, which `runGitCommand` discards on any nonzero exit. Only a spawn
+ * failure, or an exit code of 2 or greater (a genuine `--no-index` failure — for example, a missing
+ * input file), is treated as an error here; exit 0 (identical) and exit 1 (a diff) both resolve with
+ * the captured stdout.
+ *
+ * `left`/`right` are always this adapter's own scratch temp-file paths (never a caller-supplied
+ * string), so — unlike every other call site in this file — no `--end-of-options` positional guard
+ * is required for them; it is still passed for defense in depth, at no cost.
+ *
+ * @param left - Absolute path to the base file (HEAD's blob content, or empty if absent at HEAD).
+ * @param right - Absolute path to the file to compare it against (the live override text).
+ * @returns The unified diff text (empty when the two files are identical).
+ * @throws {Error} If `git` cannot be spawned, or exits with a code of 2 or greater.
+ */
+async function runNoIndexDiff(left: string, right: string): Promise<string> {
+  try {
+    const { stdout } = await execFile('git', ['diff', '--no-index', '--end-of-options', left, right], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', LC_ALL: 'C' },
+      maxBuffer: NO_INDEX_DIFF_MAX_BUFFER_BYTES,
+    });
+    return stdout;
+  } catch (error) {
+    if (hasNumericExitCode(error) && error.code === 1 && hasStdoutText(error)) {
+      return error.stdout;
+    }
+    throw error;
+  }
+}
+
+/**
+ * The `git log` machine-readable format {@link RealGitCommandRunner.log} runs: four `%x00`-NUL
+ * SEPARATED fields per commit (hash, author email, strict ISO author date, subject) — no trailing
+ * separator of its own. Combined with the `-z` flag, which makes `git log` terminate each whole
+ * commit RECORD with a single NUL instead of its usual trailing newline, the stream is
+ * unambiguously `<hash>\0<email>\0<date>\0<subject>\0<hash>\0...`: exactly `4 * <commit count>`
+ * NUL-separated tokens, plus one trailing empty token from the final record's NUL. A trailing
+ * `%x00` added to the format ITSELF would double up with `-z`'s own terminator (two NULs between
+ * records), which is why the format ends at `%s`, not `%s%x00`.
+ */
+const LOG_FORMAT = '%H%x00%ae%x00%aI%x00%s';
+
+/**
+ * Parses {@link LOG_FORMAT}'s `-z`-terminated stream into this port's domain type.
+ *
+ * @param stdout - The raw `-z`-terminated `git log --format=<LOG_FORMAT>` output.
+ * @returns One {@link GitLogEntry} per commit, in the stream's (newest-first) order.
+ */
+function parseLogOutput(stdout: string): GitLogEntry[] {
+  const fields = stdout.split('\0');
+  const entries: GitLogEntry[] = [];
+  for (let index = 0; index + 3 < fields.length; index += 4) {
+    const hash = fields[index];
+    if (hash.length === 0) continue;
+    entries.push({
+      hash,
+      authorEmail: fields[index + 1],
+      authoredAt: new Date(fields[index + 2]),
+      message: fields[index + 3],
+    });
+  }
+  return entries;
+}
+
+/**
+ * Matches one `git blame --line-porcelain` line-group header: `<40-hex-hash> <origLine>
+ * <finalLine> [<numLines>]`. Only the hash and the final (not original) line number are captured —
+ * the trailing `numLines` field (present only on a group's first line) is not needed.
+ */
+const BLAME_HEADER_LINE = /^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$/;
+
+/** Prefix of the `--line-porcelain` header line carrying the commit's author email. */
+const AUTHOR_MAIL_PREFIX = 'author-mail ';
+/** Prefix of the `--line-porcelain` header line carrying the commit's author time (unix seconds). */
+const AUTHOR_TIME_PREFIX = 'author-time ';
+
+/**
+ * Parses `git blame --line-porcelain` output into this port's domain type. `--line-porcelain`
+ * repeats every header field (including `author-mail`/`author-time`) on EVERY line's group, unlike
+ * plain `--porcelain`, which omits repeated headers for a commit already seen — so each group is
+ * self-contained and no state needs to persist across a TAB-prefixed content line into the next
+ * group.
+ *
+ * @param stdout - The raw `git blame --line-porcelain` output.
+ * @returns One {@link GitBlameLine} per line, in file order (the stream's own order).
+ */
+function parseBlameOutput(stdout: string): GitBlameLine[] {
+  const entries: GitBlameLine[] = [];
+
+  let currentHash: string | null = null;
+  let currentFinalLine: number | null = null;
+  let currentAuthorEmail: string | null = null;
+  let currentAuthorTime: number | null = null;
+
+  for (const line of stdout.split('\n')) {
+    const header = BLAME_HEADER_LINE.exec(line);
+    if (header) {
+      currentHash = header[1];
+      currentFinalLine = Number.parseInt(header[2], 10);
+      continue;
+    }
+
+    if (line.startsWith(AUTHOR_MAIL_PREFIX)) {
+      currentAuthorEmail = line.slice(AUTHOR_MAIL_PREFIX.length).replaceAll(/^<|>$/g, '');
+      continue;
+    }
+
+    if (line.startsWith(AUTHOR_TIME_PREFIX)) {
+      currentAuthorTime = Number.parseInt(line.slice(AUTHOR_TIME_PREFIX.length), 10);
+      continue;
+    }
+
+    if (line.startsWith('\t')) {
+      if (currentHash !== null && currentFinalLine !== null && currentAuthorEmail !== null && currentAuthorTime !== null) {
+        entries.push({
+          lineNumber: currentFinalLine,
+          hash: currentHash,
+          authorEmail: currentAuthorEmail,
+          authoredAt: new Date(currentAuthorTime * 1000),
+          content: line.slice(1),
+        });
+      }
+      continue;
+    }
+    // Every other header line (author, committer, committer-mail, committer-time, committer-tz,
+    // author-tz, summary, filename, boundary, previous) carries nothing this port's
+    // `GitBlameLine` needs.
+  }
+
+  return entries;
+}
+
 /**
  * Real `GitCommandRunner` adapter: runs the actual `git` CLI, through {@link runGitCommand}'s
  * secure `execFile` wrapper, against each project's working tree at
@@ -907,7 +1065,7 @@ export class RealGitCommandRunner implements GitCommandRunner {
    * Ordering (all against `resolveWorkingTreePath(this.storageRoot, projectId)` — the project's
    * OWN working tree, never a scratch directory: its files already exist, having never been
    * git-managed before this call):
-   * 1. {@link assertRemoteAllowed} gates the whole call before any network attempt.
+   * 1. {@link assertRemoteAllowed} Gates the whole call before any network attempt.
    * 2. `git ls-remote <input.remoteUrl>`, authenticated out-of-band exactly like {@link clone},
    *    checks whether the remote already has any ref/commit. Any output at all means the remote is
    *    non-empty: this returns {@link RemoteAlreadyInitializedError} immediately, WITHOUT running
@@ -918,7 +1076,7 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *    is needed.
    * 4. `git remote add origin <input.remoteUrl>` wires the remote — the URL as a positional after
    *    `--end-of-options`, with NO credential in this step (mirrors the port's documented contract).
-   * 5. {@link writeManagedGitignore} writes the working tree's managed `.gitignore` (with no project
+   * 5. {@link writeManagedGitignore} Writes the working tree's managed `.gitignore` (with no project
    *    user patterns — see the method body's inline note) so internal platform paths such as
    *    `.collab/` are excluded BEFORE anything is staged: this call is the only thing that
    *    provisions that file, since nothing else runs before it on a previously non-git project.
@@ -1403,7 +1561,7 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *
    * Ordering: `ensureCleanWorkingTree` (belt-and-braces — the tree should already be clean, per
    * `AWAITING_CONFLICT`'s own invariant) → capture `preHead` → re-run the merge (a non-zero exit
-   * with no unmerged paths is a genuine failure, e.g. the tracking ref no longer exists; a CLEAN
+   * with no unmerged paths is a genuine failure, e.g. The tracking ref no longer exists; a CLEAN
    * merge here — the remote resolved itself since detection — is also fine, nothing to apply) → for
    * each resolution, `ours`/`theirs` via `git checkout --ours/--theirs -- <path>` + `git add`, or
    * `merged` via the bytes {@link ConflictStageStore.readMerged} recorded, written then `git add`-ed
@@ -1565,6 +1723,176 @@ export class RealGitCommandRunner implements GitCommandRunner {
       return { success: true, value: { headCommit: snapshot.value.preOpHead, changes } };
     } catch {
       return { success: false, error: new GitCommandFailedError('The working tree could not be restored.') };
+    }
+  }
+
+  /**
+   * Reads a project's commit history via `git log -z --format=<LOG_FORMAT> [--max-count=<limit>]
+   * [-- <path>]`, newest first (git's own default order). Touches no network — a purely local read.
+   *
+   * `git log` itself FAILS (rather than printing empty output) on a repository with no commits
+   * yet ("does not have any commits yet"), so a thrown failure is first checked against two local
+   * probes before it is treated as a real error: `git rev-parse --is-inside-work-tree` confirms the
+   * working tree is a valid git repository at all (false here means the working tree does not exist
+   * or was never initialized — a genuine failure), and, only once that holds, `git rev-parse
+   * --verify -q HEAD` confirms whether any commit exists yet (false here is the empty-history case,
+   * `{ success: true, value: [] }`, NOT an error). A path that no commit ever touched needs none of
+   * this: `git log` itself exits 0 with empty output, which {@link parseLogOutput} already turns
+   * into an empty array.
+   *
+   * @param projectId - The project whose history to read.
+   * @param options - `path` restricts to a single project-relative file's history; `limit` caps the
+   *   number of commits returned.
+   * @returns Every matching commit, newest first; a `GitCommandFailedError` (generic message) when
+   *   the underlying git command fails for a reason other than an as-yet-commit-less repository.
+   */
+  async log(
+    projectId: ProjectId,
+    options: { readonly path?: string; readonly limit?: number },
+  ): Promise<Result<GitLogEntry[], GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    const flags = ['-z', `--format=${LOG_FORMAT}`];
+    if (options.limit !== undefined) flags.push(`--max-count=${options.limit}`);
+
+    try {
+      const { stdout } = await runGitCommand(cwd, {
+        command: 'log',
+        flags,
+        positionals: options.path ? ['--', options.path] : [],
+      });
+      return { success: true, value: parseLogOutput(stdout) };
+    } catch {
+      const isValidRepository = await runGitCommand(cwd, {
+        command: 'rev-parse',
+        flags: ['--is-inside-work-tree'],
+      })
+        .then(() => true)
+        .catch(() => false);
+      if (!isValidRepository) {
+        return { success: false, error: new GitCommandFailedError('The project history could not be read.') };
+      }
+
+      const hasAnyCommit = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--verify', '-q', 'HEAD'] })
+        .then(() => true)
+        .catch(() => false);
+      if (!hasAnyCommit) {
+        return { success: true, value: [] };
+      }
+
+      return { success: false, error: new GitCommandFailedError('The project history could not be read.') };
+    }
+  }
+
+  /**
+   * Produces a unified diff. Touches no network — a purely local read.
+   *
+   * - **Commit-vs-commit** (`input.from` and `input.to` both set): `git diff <from> <to> [-- <path>]`.
+   * - **Uncommitted, no live override**: `git diff HEAD [-- <path>]`.
+   * - **Uncommitted with `input.currentContent`** (the working-tree copy is stale — an open editor's
+   *   live text is authoritative instead): {@link diffLiveContentOverride} diffs HEAD's blob of that
+   *   one path against the supplied live text directly, never reading the stale on-disk copy.
+   *
+   * `from`/`to`/`path` are always POSITIONALS after `--end-of-options` (never interpolated into a
+   * flag).
+   *
+   * @param projectId - The project whose working tree (and/or history) to diff.
+   * @param input - What to diff — two commits, or the uncommitted working changes, optionally
+   *   scoped to one file, optionally overriding that file's content with live text.
+   * @returns The unified diff text (empty when there is no difference); a `GitCommandFailedError`
+   *   (generic message) when the underlying git command fails.
+   */
+  async diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      if (input.currentContent) {
+        return await this.diffLiveContentOverride(cwd, input.currentContent);
+      }
+
+      if (input.from !== undefined && input.to !== undefined) {
+        const positionals = input.path ? [input.from, input.to, '--', input.path] : [input.from, input.to];
+        const { stdout } = await runGitCommand(cwd, { command: 'diff', positionals });
+        return { success: true, value: { unified: stdout } };
+      }
+
+      const positionals = input.path ? ['HEAD', '--', input.path] : ['HEAD'];
+      const { stdout } = await runGitCommand(cwd, { command: 'diff', positionals });
+      return { success: true, value: { unified: stdout } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The diff could not be produced.') };
+    }
+  }
+
+  /**
+   * Diffs HEAD's blob of `currentContent.path` against the supplied live text — the D9-style live
+   * override an open editor's stale working-tree copy must never leak into: HEAD's blob is written
+   * to one scratch temp file, the live text to a second, and `git diff --no-index` compares the two
+   * (see {@link runNoIndexDiff} for why that call bypasses `runGitCommand`). `git show
+   * HEAD:<path>` failing (the path did not exist at HEAD yet) is tolerated — the base is treated as
+   * empty, so a brand-new file's live content still diffs cleanly against nothing.
+   *
+   * Both scratch files live under `tmpdir()` (never inside the working tree) and are always removed
+   * in a `finally`, regardless of outcome.
+   *
+   * @param cwd - The project's working tree (read only for HEAD's blob; never written to).
+   * @param currentContent - The live override: the project-relative path and its current live text.
+   * @returns The unified diff between HEAD's blob and the live text; a `GitCommandFailedError`
+   *   (generic message) on any other failure.
+   */
+  private async diffLiveContentOverride(
+    cwd: string,
+    currentContent: { readonly path: string; readonly content: string },
+  ): Promise<Result<GitDiffResult, GitCommandFailedError>> {
+    const scratchDirectory = await mkdtemp(path.join(tmpdir(), 'git-worker-diff-live-'));
+    try {
+      const headBytes = await runGitCommandForBytes(cwd, {
+        command: 'show',
+        positionals: [`HEAD:${currentContent.path}`],
+      }).catch(() => Buffer.alloc(0));
+
+      const baseName = path.basename(currentContent.path) || 'file';
+      const headTemporary = path.join(scratchDirectory, `head-${baseName}`);
+      const liveTemporary = path.join(scratchDirectory, `live-${baseName}`);
+      await writeFile(headTemporary, headBytes);
+      await writeFile(liveTemporary, currentContent.content, 'utf8');
+
+      const unified = await runNoIndexDiff(headTemporary, liveTemporary);
+      return { success: true, value: { unified } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The diff could not be produced.') };
+    } finally {
+      await rm(scratchDirectory, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Reads per-line authorship for a single project-relative file via `git blame --line-porcelain
+   * [<ref>] -- <path>`, parsed by {@link parseBlameOutput}. Touches no network — a purely local read.
+   *
+   * `ref` (when set) and `path` are always POSITIONALS after `--end-of-options`.
+   *
+   * @param projectId - The project whose file to blame.
+   * @param input - The project-relative file path, and the optional commit to blame it as of.
+   * @returns Every line's authorship, in file order; a `GitCommandFailedError` (generic message)
+   *   when the underlying git command fails (for example, the path does not exist at the given
+   *   ref).
+   */
+  async blame(
+    projectId: ProjectId,
+    input: { readonly path: string; readonly ref?: string },
+  ): Promise<Result<GitBlameLine[], GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      const { stdout } = await runGitCommand(cwd, {
+        command: 'blame',
+        flags: ['--line-porcelain'],
+        positionals: input.ref ? [input.ref, '--', input.path] : ['--', input.path],
+      });
+      return { success: true, value: parseBlameOutput(stdout) };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The file could not be blamed.') };
     }
   }
 }

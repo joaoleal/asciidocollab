@@ -66,6 +66,10 @@ export type {
   GitResolveMergeOutcome,
   GitRestoreToSnapshotInput,
   GitRestoreOutcome,
+  GitLogEntry,
+  GitDiffInput,
+  GitDiffResult,
+  GitBlameLine,
 } from './git/git-command-runner';
 
 // file-tree/
