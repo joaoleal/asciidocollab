@@ -1,7 +1,7 @@
 'use client';
 import { useLayoutEffect, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, GitCommitHorizontal, Settings, Users } from 'lucide-react';
+import { ChevronLeft, Settings, Users } from 'lucide-react';
 import type { CreateAnchorInput, ReviewItemDto } from '@asciidocollab/shared';
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels';
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,9 @@ import { AsciiDocEditor, type EditorGrammarState } from '@/components/editor/asc
 import { useProjectSymbolIndex } from '@/hooks/use-project-symbol-index';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import { useGitTreeStatus } from '@/hooks/use-git-tree-status';
+import { useGitStatus } from '@/hooks/use-git-status';
 import { CommitDialog } from '@/components/git/commit-dialog';
+import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
@@ -494,8 +496,9 @@ export function ProjectEditorLayout({
   // `refetch` is reused as the commit dialog's onCommitted callback below, so a commit's badges update
   // from the SAME hook instance rather than adding a second status subscription.
   const { statusByFileNodeId, refetch: refetchGitTreeStatus } = useGitTreeStatus(projectId);
-  // Commit dialog: a modest trigger for now — the full git status bar (branch, sync state, push) is a
-  // later addition that will absorb this trigger into a richer surface.
+  // Branch/sync/last-sync readout for the header's connection status bar. Same not-connected
+  // convention as the tree-status hook above: a 404 means `connected:false`, not an error.
+  const { status: gitStatus, connected: gitConnected, refetch: refetchGitStatus } = useGitStatus(projectId);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
 
   // ── Review comments & tasks (feature 038) ──────────────────────────────────────────────────
@@ -1302,10 +1305,12 @@ export function ProjectEditorLayout({
         </div>
         <div className="ml-auto flex items-center gap-2">
           <NonLiveIndicator active={nonLive} />
-          <Button variant="outline" size="sm" onClick={() => setCommitDialogOpen(true)}>
-            <GitCommitHorizontal className="mr-2 h-4 w-4" />
-            Commit…
-          </Button>
+          <GitConnectionStatusBar
+            status={gitStatus}
+            connected={gitConnected}
+            canCommit={canEdit}
+            onCommitClick={() => setCommitDialogOpen(true)}
+          />
           <PdfExportButton
             onExport={handleExportPdf}
             isExporting={isExportingPdf}
@@ -1693,7 +1698,10 @@ export function ProjectEditorLayout({
         projectId={projectId}
         open={commitDialogOpen}
         onOpenChange={setCommitDialogOpen}
-        onCommitted={refetchGitTreeStatus}
+        onCommitted={() => {
+          refetchGitTreeStatus();
+          refetchGitStatus();
+        }}
       />
     </div>
   );

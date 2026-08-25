@@ -20,6 +20,12 @@ jest.mock('@/hooks/use-project-render-config', () => ({
   useProjectRenderConfig: () => ({ config: {}, loading: false, saving: false, error: null, save: jest.fn() }),
 }));
 
+// The connection status bar isn't under test here; the blanket fetch mock below always resolves
+// with a file-tree shape, which isn't a valid GitStatusDto, so stub the hook to stay not-connected.
+jest.mock('@/hooks/use-git-status', () => ({
+  useGitStatus: () => ({ status: null, connected: false, loading: false, error: null, refetch: jest.fn() }),
+}));
+
 // Stub the live PDF preview hook AND its panel: both pull in the PDF worker/pdf.js, whose
 // `import.meta.url` is unloadable under the commonjs jest transform, so the real modules can never
 // be imported here (mocked by design).
