@@ -1,7 +1,20 @@
+import { readFileSync } from 'node:fs';
 import pino from 'pino';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
-import type { Logger } from '@asciidocollab/domain';
+import {
+  GetGitStatusUseCase,
+  StageChangesUseCase,
+  CommitChangesUseCase,
+  ProjectId,
+  UserId,
+  type Logger,
+  type GetGitStatusResult,
+  type StageChangesResult,
+  type CommitChangesResult,
+  type DomainError,
+  type Result,
+} from '@asciidocollab/domain';
 import {
   PrismaGitOperationRepository,
   PrismaGitCredentialStore,
@@ -12,7 +25,10 @@ import {
   PrismaAssetRepository,
   PrismaGitRepositoryRepository,
   PrismaProjectMemberRepository,
+  PrismaCollaborationSessionRepository,
+  PrismaUserRepository,
   FilesystemProjectFileStore,
+  HttpCollaborativeContentEditor,
   SessionEncryption,
 } from '@asciidocollab/infrastructure';
 import { createGitWorkerConfig } from './config/git-worker-config.js';
@@ -90,28 +106,108 @@ export async function compositionRoot() {
 
   // Adapts this app's structured pino logger to the domain's minimal `Logger` port (best-effort
   // `warn`-only sink), the same shape apps/api's `requestLogger` adapter presents.
-  const importUseCaseLogger: Logger = {
+  const useCaseLogger: Logger = {
     warn: (message, meta) => logger.warn(meta ?? {}, message),
   };
+
+  // Hoisted so both the IMPORT handler (below) and the short-op use cases (status/stage/commit)
+  // share one instance each, rather than each constructing its own redundant Prisma wrapper.
+  const fileNodeRepository = new PrismaFileNodeRepository(prisma);
+  const documentRepository = new PrismaDocumentRepository(prisma);
+  const gitRepositoryRepository = new PrismaGitRepositoryRepository(prisma);
+  const projectMemberRepository = new PrismaProjectMemberRepository(prisma);
 
   const handlers: GitOperationHandlerRegistry = {
     IMPORT: createImportHandler({
       projectRepository: new PrismaProjectRepository(prisma),
-      fileNodeRepository: new PrismaFileNodeRepository(prisma),
-      documentRepository: new PrismaDocumentRepository(prisma),
+      fileNodeRepository,
+      documentRepository,
       assetRepository: new PrismaAssetRepository(prisma),
       // The CONTENT-BYTES projection path — deliberately `contentStorageRoot`, NOT `storageRoot`
       // (that root is this worker's own git working-tree directory). See
       // `config/git-worker-config.ts`'s docs on why the two must never be conflated.
       fileStore: new FilesystemProjectFileStore(config.get('contentStorageRoot')),
-      gitRepositoryRepository: new PrismaGitRepositoryRepository(prisma),
+      gitRepositoryRepository,
       commandRunner: gitCommandRunner,
-      projectMemberRepository: new PrismaProjectMemberRepository(prisma),
+      projectMemberRepository,
       auditLogRepository,
       credentialSource: gitCredentialStore,
-      logger: importUseCaseLogger,
+      logger: useCaseLogger,
     }),
   };
+
+  // The short git ops (status/stage/unstage/commit) run synchronously, worker-side, through the
+  // internal RPC server `src/index.ts` starts once this composition root resolves — see that
+  // file for the `startInternalGitServer` call. `CommitChangesUseCase` needs a live read of each
+  // staged open document's current collaborative text before it commits; `HttpCollaborativeContentEditor`
+  // (the same adapter `apps/api`'s DI container builds — `apps/api/src/di/stores.ts`) implements
+  // both the editor and reader ports, so it is passed here as the reader.
+  const collaborationSessionRepository = new PrismaCollaborationSessionRepository(prisma);
+  const userRepository = new PrismaUserRepository(prisma);
+  const collabEditTls = config.get('collab.editTls');
+  const useCollabEditMtls = Boolean(collabEditTls.cert && collabEditTls.key && collabEditTls.ca);
+  const collaborativeContentReader = new HttpCollaborativeContentEditor({
+    baseUrl: config.get('collab.editUrl'),
+    ...(config.get('collab.editSecret') ? { secret: config.get('collab.editSecret') } : {}),
+    ...(useCollabEditMtls
+      ? {
+          tls: {
+            cert: readFileSync(collabEditTls.cert),
+            key: readFileSync(collabEditTls.key),
+            ca: readFileSync(collabEditTls.ca),
+          },
+        }
+      : {}),
+  });
+
+  const getGitStatusUseCase = new GetGitStatusUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
+  const stageChangesUseCase = new StageChangesUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitRepositoryRepository,
+    gitOperationRepository,
+    gitCommandRunner,
+    useCaseLogger,
+  );
+  const commitChangesUseCase = new CommitChangesUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitRepositoryRepository,
+    gitOperationRepository,
+    gitCommandRunner,
+    fileNodeRepository,
+    documentRepository,
+    collaborativeContentReader,
+    collaborationSessionRepository,
+    userRepository,
+    useCaseLogger,
+  );
+
+  // Bound as the internal RPC server's op fns (`src/index.ts`): each converts the raw UUID
+  // strings the transport validated into the domain's own `ProjectId`/`UserId` value objects at
+  // this boundary, then hands the request straight to the use case's own `execute`.
+  const getStatus = (input: { projectId: string; actorId: string }): Promise<Result<GetGitStatusResult, DomainError>> =>
+    getGitStatusUseCase.execute({ projectId: ProjectId.create(input.projectId) });
+  const stage = (input: { projectId: string; actorId: string; paths: readonly string[] }): Promise<Result<StageChangesResult, DomainError>> =>
+    stageChangesUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+      paths: input.paths,
+      action: 'stage',
+    });
+  const unstage = (input: { projectId: string; actorId: string; paths: readonly string[] }): Promise<Result<StageChangesResult, DomainError>> =>
+    stageChangesUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+      paths: input.paths,
+      action: 'unstage',
+    });
+  const commit = (input: { projectId: string; actorId: string; message: string }): Promise<Result<CommitChangesResult, DomainError>> =>
+    commitChangesUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+      message: input.message,
+    });
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
     gitOperationRepository,
@@ -149,5 +245,11 @@ export async function compositionRoot() {
     gitCommandRunner,
     auditLogRepository,
     config,
+    // The internal RPC server's op fns — `src/index.ts` passes these straight to
+    // `startInternalGitServer` once this composition root resolves.
+    getStatus,
+    stage,
+    unstage,
+    commit,
   };
 }

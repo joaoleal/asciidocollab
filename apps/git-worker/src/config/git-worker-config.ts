@@ -84,6 +84,45 @@ export interface GitWorkerConfig {
    * any network attempt. Defaults cover the supported providers (GitHub, GitLab, Bitbucket).
    */
   egressAllowedHosts: string[];
+
+  /**
+   * Configuration for reaching the collab server's internal edit endpoint — used by
+   * `CommitChangesUseCase` to read (and by a future flush) each staged open document's current
+   * collaborative text before recording a commit. Field shapes and env var names copy
+   * `apps/api`'s `collab.editUrl`/`editSecret`/`editTls` (`apps/api/src/config/schema-collab.ts`)
+   * exactly, so the worker and the API read identical values.
+   */
+  collab: {
+    /** Base URL of the collab server's internal edit endpoint. */
+    editUrl: string;
+    /** Optional shared secret sent to the collab edit endpoint (must match the collab server's). */
+    editSecret: string;
+    /** Client mTLS material for the collab edit endpoint. All fields empty disables mTLS (loopback HTTP). */
+    editTls: {
+      /** Path to the PEM file containing the client certificate presented to the collab edit server. */
+      cert: string;
+      /** Path to the PEM file containing the client private key. */
+      key: string;
+      /** Path to the PEM file containing the CA certificate used to verify the collab edit server. */
+      ca: string;
+    };
+  };
+
+  /** Interface the internal git-ops RPC server binds to (loopback by default for safety). */
+  internalGitHost: string;
+  /** Port for the internal HTTP server the API calls to run git short ops (status, stage, unstage, commit). */
+  internalGitPort: number;
+  /** Optional shared secret enforced on the internal git-ops endpoint. Empty disables the check (loopback-trust, development only — set this in production). */
+  internalGitSecret: string;
+  /** Server mTLS material for the internal git-ops endpoint. All fields empty disables mTLS (loopback HTTP). */
+  internalGitTls: {
+    /** Path to the PEM file containing the server certificate. */
+    cert: string;
+    /** Path to the PEM file containing the server private key. */
+    key: string;
+    /** Path to the PEM file containing the CA certificate used to verify the API client certificate. */
+    clientCa: string;
+  };
 }
 
 /** Creates a new convict configuration instance for the git-worker application. */
@@ -138,6 +177,80 @@ export function createGitWorkerConfig() {
       format: 'comma-separated-strings',
       default: [...DEFAULT_ALLOWED_GIT_HOSTS],
       env: 'ASCIIDOCOLLAB_GIT_EGRESS_ALLOWED_HOSTS',
+    },
+    collab: {
+      editUrl: {
+        doc: "Base URL of the collab server's internal edit endpoint. Must match apps/api's collab.editUrl.",
+        format: String,
+        default: 'http://127.0.0.1:4003',
+        env: 'ASCIIDOCOLLAB_COLLAB_EDIT_URL',
+      },
+      editSecret: {
+        doc: "Optional shared secret sent to the collab edit endpoint; must match the collab server's ASCIIDOCOLLAB_COLLAB_INTERNAL_EDIT_SECRET. Empty relies on loopback isolation.",
+        format: String,
+        default: '',
+        sensitive: true,
+        env: 'ASCIIDOCOLLAB_COLLAB_EDIT_SECRET',
+      },
+      editTls: {
+        cert: {
+          doc: 'Path to PEM file containing the client certificate presented to the collab edit server (mTLS). Empty disables mTLS.',
+          format: String,
+          default: '',
+          env: 'ASCIIDOCOLLAB_COLLAB_EDIT_TLS_CERT',
+        },
+        key: {
+          doc: 'Path to PEM file containing the client private key for the collab edit mTLS connection.',
+          format: String,
+          default: '',
+          env: 'ASCIIDOCOLLAB_COLLAB_EDIT_TLS_KEY',
+        },
+        ca: {
+          doc: 'Path to PEM file containing the CA certificate used to verify the collab edit server certificate.',
+          format: String,
+          default: '',
+          env: 'ASCIIDOCOLLAB_COLLAB_EDIT_TLS_CA',
+        },
+      },
+    },
+    internalGitHost: {
+      doc: 'Interface the internal git-ops RPC server binds to. Defaults to loopback; do not expose publicly.',
+      format: String,
+      default: '127.0.0.1',
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_INTERNAL_HOST',
+    },
+    internalGitPort: {
+      doc: 'Port for the internal HTTP server the API calls to run git short ops (status, stage, unstage, commit).',
+      format: 'port',
+      default: 4010,
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_INTERNAL_PORT',
+    },
+    internalGitSecret: {
+      doc: 'Optional shared secret enforced on the internal git-ops endpoint. Empty disables the check (loopback-trust, development only — set this in production).',
+      format: String,
+      default: '',
+      sensitive: true,
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_INTERNAL_SECRET',
+    },
+    internalGitTls: {
+      cert: {
+        doc: 'Path to PEM file containing the server certificate for the internal git-ops mTLS server. Empty disables mTLS (loopback HTTP only).',
+        format: String,
+        default: '',
+        env: 'ASCIIDOCOLLAB_GIT_WORKER_INTERNAL_TLS_CERT',
+      },
+      key: {
+        doc: 'Path to PEM file containing the server private key for the internal git-ops mTLS server.',
+        format: String,
+        default: '',
+        env: 'ASCIIDOCOLLAB_GIT_WORKER_INTERNAL_TLS_KEY',
+      },
+      clientCa: {
+        doc: 'Path to PEM file containing the CA certificate used to verify the API client certificate.',
+        format: String,
+        default: '',
+        env: 'ASCIIDOCOLLAB_GIT_WORKER_INTERNAL_TLS_CLIENT_CA',
+      },
     },
   });
 }
