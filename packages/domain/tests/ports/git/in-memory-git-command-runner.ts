@@ -20,6 +20,8 @@ import {
   GitPushInput,
   GitPushResult,
   GitRemoteAccessCheck,
+  GitStashOutcome,
+  GitStashRestoreOutcome,
   GitWorkingTreeStatus,
 } from '../../../src/ports/git/git-command-runner';
 import { Result } from '../../../src/types/result';
@@ -56,6 +58,10 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly createBranchResults = new Map<string, GitCreatedBranch>();
   private readonly branchListFailures = new Map<string, GitCommandFailedError>();
   private readonly branchLists = new Map<string, GitBranchList>();
+  private readonly stashFailures = new Map<string, GitCommandFailedError>();
+  private readonly stashOutcomes = new Map<string, GitStashOutcome>();
+  private readonly restoreStashFailures = new Map<string, GitCommandFailedError>();
+  private readonly restoreStashOutcomes = new Map<string, GitStashRestoreOutcome>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -92,6 +98,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `listBranches`, in call order, for asserting use-case interactions. */
   readonly listBranchesCalls: ProjectId[] = [];
+
+  /** Every call made to `stashChanges`, in call order, for asserting use-case interactions. */
+  readonly stashCalls: ProjectId[] = [];
+
+  /** Every call made to `restoreStash`, in call order, for asserting use-case interactions. */
+  readonly restoreStashCalls: ProjectId[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -428,5 +440,59 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     const list = this.branchLists.get(projectId.value) ?? { current: 'main', branches: ['main'] };
 
     return { success: true, value: list };
+  }
+
+  /** Configures the `GitStashOutcome` `stashChanges` returns for a project on success. */
+  seedStash(projectId: ProjectId, outcome: GitStashOutcome): void {
+    this.stashOutcomes.set(projectId.value, outcome);
+  }
+
+  /** Configures `stashChanges` to fail for a project, taking priority over any seeded outcome. */
+  seedStashFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.stashFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call and returns the seeded `GitStashOutcome` (defaulting to `{stashed: false}`
+   * when unseeded), unless a failure was seeded for this project via `seedStashFailure`.
+   */
+  async stashChanges(projectId: ProjectId): Promise<Result<GitStashOutcome, GitCommandFailedError>> {
+    this.stashCalls.push(projectId);
+
+    const failure = this.stashFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome = this.stashOutcomes.get(projectId.value) ?? { stashed: false };
+
+    return { success: true, value: outcome };
+  }
+
+  /** Configures the `GitStashRestoreOutcome` `restoreStash` returns for a project on success — a
+   * clean `{hadConflicts: false}` or a conflicted `{hadConflicts: true}`. A conflicted restore is a
+   * seeded happy-path outcome, not a failure — use `seedRestoreStashFailure` only for an actual git
+   * command failure. */
+  seedRestoreStash(projectId: ProjectId, outcome: GitStashRestoreOutcome): void {
+    this.restoreStashOutcomes.set(projectId.value, outcome);
+  }
+
+  /** Configures `restoreStash` to fail for a project, taking priority over any seeded outcome. */
+  seedRestoreStashFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.restoreStashFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call and returns the seeded `GitStashRestoreOutcome` (defaulting to
+   * `{hadConflicts: false}` when unseeded), unless a failure was seeded for this project via
+   * `seedRestoreStashFailure`.
+   */
+  async restoreStash(projectId: ProjectId): Promise<Result<GitStashRestoreOutcome, GitCommandFailedError>> {
+    this.restoreStashCalls.push(projectId);
+
+    const failure = this.restoreStashFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome = this.restoreStashOutcomes.get(projectId.value) ?? { hadConflicts: false };
+
+    return { success: true, value: outcome };
   }
 }

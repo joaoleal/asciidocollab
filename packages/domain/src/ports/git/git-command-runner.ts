@@ -246,6 +246,24 @@ export interface GitCreatedBranch {
   readonly name: string;
 }
 
+/** The outcome of shelving a project's uncommitted working-tree changes. */
+export interface GitStashOutcome {
+  /**
+   * True when there were changes to shelve (the real adapter ran `git stash push` and it stashed
+   * something); false when the working tree was clean and nothing was stashed.
+   */
+  readonly stashed: boolean;
+}
+
+/** The outcome of restoring previously-shelved changes back onto the working tree. */
+export interface GitStashRestoreOutcome {
+  /**
+   * True when applying the shelved changes (the real adapter ran `git stash pop`) produced merge
+   * conflicts the user must resolve; false when it restored cleanly.
+   */
+  readonly hadConflicts: boolean;
+}
+
 /**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
@@ -441,4 +459,32 @@ export interface GitCommandRunner {
    *   underlying git command fails.
    */
   listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>>;
+
+  /**
+   * Shelves the project's uncommitted working-tree changes (the real adapter runs `git stash push`
+   * inside the project's sandboxed working tree), so the working tree is left clean for a subsequent
+   * checkout. This is LOCAL — no network egress, like {@link commit} and {@link merge}.
+   *
+   * @param projectId - The project whose working tree to shelve changes from.
+   * @returns `{stashed: true}` when there were changes and they were shelved; `{stashed: false}` when
+   *   the working tree was already clean and nothing needed shelving. A `GitCommandFailedError` when
+   *   the underlying git command fails.
+   */
+  stashChanges(projectId: ProjectId): Promise<Result<GitStashOutcome, GitCommandFailedError>>;
+
+  /**
+   * Restores previously-shelved changes back onto the working tree (the real adapter runs `git stash
+   * pop` inside the project's sandboxed working tree). LOCAL — no network egress.
+   *
+   * A restore that leaves conflict markers in the working tree is an EXPECTED outcome, not a
+   * failure — it is represented here as `{hadConflicts: true}`, never as a `Result` error. A
+   * `GitCommandFailedError` is reserved for a genuine command failure (for example, there is nothing
+   * shelved to restore).
+   *
+   * @param projectId - The project whose working tree to restore shelved changes onto.
+   * @returns `{hadConflicts: false}` when the pop restored cleanly; `{hadConflicts: true}` when it
+   *   left conflict markers the user must resolve. A `GitCommandFailedError` when the underlying git
+   *   command itself fails.
+   */
+  restoreStash(projectId: ProjectId): Promise<Result<GitStashRestoreOutcome, GitCommandFailedError>>;
 }

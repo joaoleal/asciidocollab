@@ -48,6 +48,7 @@ export { PullChangesUseCase } from './git/pull-changes';
 export type { PullChangesInput, PullChangesResult, FileChangeReconciler } from './git/pull-changes';
 export { GitChangeReconciler } from './git/git-change-reconciler';
 export type { GitChangeReconcileResult } from './git/git-change-reconciler';
+export { StashChanges } from './git/stash-changes';
 export { GetBehindAheadUseCase } from './git/get-behind-ahead';
 export type { GetBehindAheadInput } from './git/get-behind-ahead';
 export { RefreshRemoteStatusUseCase } from './git/refresh-remote-status';

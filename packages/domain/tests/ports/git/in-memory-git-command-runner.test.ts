@@ -311,4 +311,82 @@ describe('InMemoryGitCommandRunner', () => {
       expect(runner.listBranchesCalls).toEqual([projectA, projectB]);
     });
   });
+
+  describe('stashChanges', () => {
+    it('returns the seeded stash outcome for a project', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      runner.seedStash(projectA, { stashed: true });
+
+      const result = await runner.stashChanges(projectA);
+
+      expect(result).toEqual({ success: true, value: { stashed: true } });
+    });
+
+    it('defaults to stashed: false when unseeded', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      const result = await runner.stashChanges(projectA);
+
+      expect(result).toEqual({ success: true, value: { stashed: false } });
+    });
+
+    it('returns a seeded failure instead of the happy-path outcome', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const failure = new GitCommandFailedError('stash push failed');
+      runner.seedStash(projectA, { stashed: true });
+      runner.seedStashFailure(projectA, failure);
+
+      const result = await runner.stashChanges(projectA);
+
+      expect(result).toEqual({ success: false, error: failure });
+    });
+
+    it('records every call made, in order', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      await runner.stashChanges(projectA);
+      await runner.stashChanges(projectB);
+
+      expect(runner.stashCalls).toEqual([projectA, projectB]);
+    });
+  });
+
+  describe('restoreStash', () => {
+    it('returns the seeded restore outcome for a project', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      runner.seedRestoreStash(projectA, { hadConflicts: true });
+
+      const result = await runner.restoreStash(projectA);
+
+      expect(result).toEqual({ success: true, value: { hadConflicts: true } });
+    });
+
+    it('defaults to hadConflicts: false when unseeded', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      const result = await runner.restoreStash(projectA);
+
+      expect(result).toEqual({ success: true, value: { hadConflicts: false } });
+    });
+
+    it('returns a seeded failure instead of the happy-path outcome', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const failure = new GitCommandFailedError('stash pop failed');
+      runner.seedRestoreStash(projectA, { hadConflicts: false });
+      runner.seedRestoreStashFailure(projectA, failure);
+
+      const result = await runner.restoreStash(projectA);
+
+      expect(result).toEqual({ success: false, error: failure });
+    });
+
+    it('records every call made, in order', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      await runner.restoreStash(projectA);
+      await runner.restoreStash(projectB);
+
+      expect(runner.restoreStashCalls).toEqual([projectA, projectB]);
+    });
+  });
 });
