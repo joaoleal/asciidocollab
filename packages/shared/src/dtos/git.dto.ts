@@ -284,3 +284,13 @@ export interface GitOperationStatusDto {
   /** Typed, safe error code recorded on failure, or null while not failed. */
   errorCode: string | null;
 }
+
+/**
+ * A project's current whole-project git operation, for a project member polling to learn whether
+ * ANY member's (or the system's) git activity is in progress — the read-only "git activity" signal
+ * derived from the same `GitOperation` row the progress-polling status read uses.
+ */
+export interface ActiveGitOperationDto {
+  /** The project's current active operation (`QUEUED`, `RUNNING`, or `AWAITING_CONFLICT`), or null when none is active. */
+  operation: GitOperationStatusDto | null;
+}

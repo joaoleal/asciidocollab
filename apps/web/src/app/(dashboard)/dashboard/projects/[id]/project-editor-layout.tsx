@@ -15,9 +15,11 @@ import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import { useGitTreeStatus } from '@/hooks/use-git-tree-status';
 import { useGitStatus } from '@/hooks/use-git-status';
 import { useBehindAhead } from '@/hooks/use-behind-ahead';
+import { useGitActivity } from '@/hooks/use-git-activity';
 import { usePull } from '@/hooks/use-pull';
 import { CommitDialog } from '@/components/git/commit-dialog';
 import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
+import { GitActivityIndicator } from '@/components/git/git-activity-indicator';
 import { PullDialog } from '@/components/git/pull-dialog';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
@@ -517,6 +519,11 @@ export function ProjectEditorLayout({
   const pull = usePull(projectId, handlePullSucceeded);
   // Pulling requires the same editor capability as committing (see the route's requirement).
   const canPull = canEdit;
+
+  // Collaboration-facing "git activity" signal: lets a member notice that ANOTHER member's (or the
+  // system's) whole-project git operation is running, purely from polling the same `GitOperation`
+  // row the progress read uses — no separate awareness channel.
+  const { activeOperation: activeGitOperation } = useGitActivity(projectId);
 
   // ── Review comments & tasks (feature 038) ──────────────────────────────────────────────────
   // Comments are available only for a collaborative .adoc (a live Y.Doc + document id). The review
@@ -1322,6 +1329,7 @@ export function ProjectEditorLayout({
         </div>
         <div className="ml-auto flex items-center gap-2">
           <NonLiveIndicator active={nonLive} />
+          <GitActivityIndicator activeOperation={activeGitOperation} />
           <GitConnectionStatusBar
             status={gitStatus}
             connected={gitConnected}

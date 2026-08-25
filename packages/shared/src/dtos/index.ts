@@ -71,6 +71,7 @@ export type {
   GitOperationKind,
   GitOperationState,
   GitOperationStatusDto,
+  ActiveGitOperationDto,
 } from './git.dto';
 export {
   GIT_PROVIDERS,

@@ -37,6 +37,7 @@ import { projectMainFileRoutes } from '../routes/projects/main-file';
 import { renderConfigRoutes } from '../routes/projects/render-config';
 import { gitIgnorePatternsRoutes } from '../routes/projects/git-ignore-patterns';
 import { gitOperationStatusRoutes } from '../routes/projects/git/operation-status';
+import { gitActiveOperationRoutes } from '../routes/projects/git/active-operation';
 import { gitStatusRoutes } from '../routes/projects/git/status';
 import { gitBehindAheadRoutes } from '../routes/projects/git/behind-ahead';
 import { gitTreeStatusRoutes } from '../routes/projects/git/tree-status';
@@ -105,6 +106,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(renderConfigRoutes);
       await innerApp.register(gitIgnorePatternsRoutes);
       await innerApp.register(gitOperationStatusRoutes);
+      await innerApp.register(gitActiveOperationRoutes);
       await innerApp.register(gitStatusRoutes);
       await innerApp.register(gitBehindAheadRoutes);
       await innerApp.register(gitTreeStatusRoutes);

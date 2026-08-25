@@ -4,6 +4,7 @@
  */
 import { apiRequest } from '@/lib/api/transport';
 import type {
+  ActiveGitOperationDto,
   BehindAheadDto,
   CommitDto,
   FileGitStatus,
@@ -122,6 +123,15 @@ export async function startPull(
     method: 'POST',
     body: JSON.stringify(options?.confirmAffectsOpenFiles ? { confirmAffectsOpenFiles: true } : {}),
   });
+}
+
+/**
+ * Reads the project's current whole-project git operation, if any — the collaboration-facing "git
+ * activity" signal: any member's or the system's `QUEUED`/`RUNNING`/`AWAITING_CONFLICT` operation,
+ * not just one the caller started. Callers poll this on an interval — see the `useGitActivity` hook.
+ */
+export async function getActiveGitOperation(projectId: string): Promise<ActiveGitOperationDto> {
+  return apiRequest(`/api/projects/${projectId}/git/active-operation`);
 }
 
 /** The `GitOperationStatusDto` states that mean polling should stop. */
