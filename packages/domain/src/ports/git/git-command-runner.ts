@@ -226,6 +226,35 @@ export type GitMergeOutcome =
   | { readonly status: 'merged'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
   | { readonly status: 'conflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
 
+/** Everything {@link GitCommandRunner.checkout} needs to switch a project's working tree to another local branch. */
+export interface GitCheckoutInput {
+  /** The local branch to switch the working tree to. */
+  readonly branch: string;
+  /**
+   * Live collaborative text written to the working tree and `git add`-ed BEFORE the switch,
+   * materializing current live edits as uncommitted working-tree state. Same contract and adapter
+   * ordering as {@link GitMergeInput.flush}.
+   */
+  readonly flush: readonly GitCommitFlushEntry[];
+  /**
+   * When true, the flushed live edits are shelved before the switch and re-applied after, carrying
+   * them onto the target branch. A no-op on a clean tree (nothing to shelve).
+   */
+  readonly stashLocal: boolean;
+}
+
+/**
+ * The outcome of a {@link GitCommandRunner.checkout} call. A conflict (the re-applied live edits did
+ * not merge cleanly onto the target branch) is an EXPECTED outcome, never a `Result` error — it is
+ * represented here as the `conflicted` variant, mirroring {@link GitMergeOutcome}. A switch that
+ * leaves the tree unchanged is `{status: 'switched', changes: []}`; there is no separate variant for
+ * it. The `switched` variant reuses {@link GitMergeFileChange}/{@link GitMergeConflictPath} so a
+ * switch's landed change-set is indistinguishable from a merge's.
+ */
+export type GitCheckoutOutcome =
+  | { readonly status: 'switched'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
+  | { readonly status: 'conflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
+
 /** A project's branches: the checked-out branch plus every local branch name. */
 export interface GitBranchList {
   /** The currently checked-out branch. */
@@ -244,24 +273,6 @@ export interface GitCreateBranchInput {
 export interface GitCreatedBranch {
   /** The new branch's name, as created. */
   readonly name: string;
-}
-
-/** The outcome of shelving a project's uncommitted working-tree changes. */
-export interface GitStashOutcome {
-  /**
-   * True when there were changes to shelve (the real adapter ran `git stash push` and it stashed
-   * something); false when the working tree was clean and nothing was stashed.
-   */
-  readonly stashed: boolean;
-}
-
-/** The outcome of restoring previously-shelved changes back onto the working tree. */
-export interface GitStashRestoreOutcome {
-  /**
-   * True when applying the shelved changes (the real adapter ran `git stash pop`) produced merge
-   * conflicts the user must resolve; false when it restored cleanly.
-   */
-  readonly hadConflicts: boolean;
 }
 
 /**
@@ -461,30 +472,35 @@ export interface GitCommandRunner {
   listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>>;
 
   /**
-   * Shelves the project's uncommitted working-tree changes (the real adapter runs `git stash push`
-   * inside the project's sandboxed working tree), so the working tree is left clean for a subsequent
-   * checkout. This is LOCAL — no network egress, like {@link commit} and {@link merge}.
+   * Switches the project's working tree to another local branch, landing that branch's content and
+   * carrying in-progress live edits across the switch. Touches no network — a purely LOCAL operation,
+   * like {@link merge}: no egress, no credential.
    *
-   * @param projectId - The project whose working tree to shelve changes from.
-   * @returns `{stashed: true}` when there were changes and they were shelved; `{stashed: false}` when
-   *   the working tree was already clean and nothing needed shelving. A `GitCommandFailedError` when
-   *   the underlying git command fails.
+   * Adapter contract (the real adapter must implement exactly this ordering, atomically):
+   *
+   * 1. For EACH `input.flush` entry, in order: write its `content` to the working-tree file at its
+   *    `path` and `git add` it, materializing the current live collaborative edits as uncommitted
+   *    working-tree state — the same flush contract and ordering as {@link commit} and {@link merge}.
+   * 2. When `input.stashLocal` is true, `git stash push` to shelve those flushed edits so the switch
+   *    can carry them onto the target branch. A no-op on a clean tree (nothing to shelve).
+   * 3. `git checkout <input.branch>` to switch the working tree to the target branch.
+   * 4. When step 2 stashed anything, `git stash pop` to re-apply the shelved edits onto the target
+   *    branch. A pop that leaves conflict markers is the `conflicted` outcome carrying those conflict
+   *    paths — an EXPECTED outcome, NEVER a `Result` error (mirrors {@link GitMergeOutcome}).
+   * 5. On a clean switch, compute `changes` as the delta between the editors' pre-switch flushed state
+   *    and the post-switch working tree, so the re-applied live edits are INCLUDED in `changes`, each
+   *    carrying its `Buffer` content per {@link GitMergeFileChange}. `{status: 'switched', changes: []}`
+   *    when the resulting tree is identical to the pre-switch flushed state.
+   *
+   * The runner does not decide what to flush or whether to stash; the caller resolves that and hands
+   * over a fully-formed {@link GitCheckoutInput}.
+   *
+   * @param projectId - The project whose working tree to switch.
+   * @param input - The target branch, the live-content flush list, and whether to carry local edits.
+   * @returns A {@link GitCheckoutOutcome} — `switched` with the resulting changes (empty when the tree
+   *   is unchanged) or `conflicted` with the files the stash-pop left in conflict; a conflict is an
+   *   expected outcome, never an error. Returns a `GitCommandFailedError` only when the underlying git
+   *   command itself fails (for example, the target branch does not exist).
    */
-  stashChanges(projectId: ProjectId): Promise<Result<GitStashOutcome, GitCommandFailedError>>;
-
-  /**
-   * Restores previously-shelved changes back onto the working tree (the real adapter runs `git stash
-   * pop` inside the project's sandboxed working tree). LOCAL — no network egress.
-   *
-   * A restore that leaves conflict markers in the working tree is an EXPECTED outcome, not a
-   * failure — it is represented here as `{hadConflicts: true}`, never as a `Result` error. A
-   * `GitCommandFailedError` is reserved for a genuine command failure (for example, there is nothing
-   * shelved to restore).
-   *
-   * @param projectId - The project whose working tree to restore shelved changes onto.
-   * @returns `{hadConflicts: false}` when the pop restored cleanly; `{hadConflicts: true}` when it
-   *   left conflict markers the user must resolve. A `GitCommandFailedError` when the underlying git
-   *   command itself fails.
-   */
-  restoreStash(projectId: ProjectId): Promise<Result<GitStashRestoreOutcome, GitCommandFailedError>>;
+  checkout(projectId: ProjectId, input: GitCheckoutInput): Promise<Result<GitCheckoutOutcome, GitCommandFailedError>>;
 }

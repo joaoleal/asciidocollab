@@ -4,6 +4,7 @@ import { RepositoryUnreachableError } from '../../../src/errors/git/repository-u
 import {
   GitBehindAhead,
   GitBranchList,
+  GitCheckoutOutcome,
   GitCreatedBranch,
   GitFetchResult,
   GitMergeOutcome,
@@ -312,81 +313,66 @@ describe('InMemoryGitCommandRunner', () => {
     });
   });
 
-  describe('stashChanges', () => {
-    it('returns the seeded stash outcome for a project', async () => {
+  describe('checkout', () => {
+    const checkoutInput = {
+      branch: 'develop',
+      flush: [{ path: 'docs/intro.adoc', content: 'live text' }],
+      stashLocal: true,
+    };
+
+    it('returns the seeded switched outcome with its changes', async () => {
       const runner = new InMemoryGitCommandRunner();
-      runner.seedStash(projectA, { stashed: true });
+      const seeded: GitCheckoutOutcome = {
+        status: 'switched',
+        headCommit: 'def456',
+        changes: [{ type: 'modified', path: 'docs/intro.adoc', content: Buffer.from('switched'), mimeType: 'text/asciidoc' }],
+      };
+      runner.seedCheckout(projectA, seeded);
 
-      const result = await runner.stashChanges(projectA);
+      const result = await runner.checkout(projectA, checkoutInput);
 
-      expect(result).toEqual({ success: true, value: { stashed: true } });
+      expect(result).toEqual({ success: true, value: seeded });
     });
 
-    it('defaults to stashed: false when unseeded', async () => {
+    it('returns the seeded conflicted outcome with its conflicts', async () => {
       const runner = new InMemoryGitCommandRunner();
+      const seeded: GitCheckoutOutcome = {
+        status: 'conflicted',
+        conflicts: [{ path: 'docs/intro.adoc', isBinary: false }],
+      };
+      runner.seedCheckout(projectA, seeded);
 
-      const result = await runner.stashChanges(projectA);
+      const result = await runner.checkout(projectA, checkoutInput);
 
-      expect(result).toEqual({ success: true, value: { stashed: false } });
+      expect(result).toEqual({ success: true, value: seeded });
     });
 
-    it('returns a seeded failure instead of the happy-path outcome', async () => {
-      const runner = new InMemoryGitCommandRunner();
-      const failure = new GitCommandFailedError('stash push failed');
-      runner.seedStash(projectA, { stashed: true });
-      runner.seedStashFailure(projectA, failure);
-
-      const result = await runner.stashChanges(projectA);
-
-      expect(result).toEqual({ success: false, error: failure });
-    });
-
-    it('records every call made, in order', async () => {
+    it('defaults to a clean switch with no changes when unseeded', async () => {
       const runner = new InMemoryGitCommandRunner();
 
-      await runner.stashChanges(projectA);
-      await runner.stashChanges(projectB);
+      const result = await runner.checkout(projectA, checkoutInput);
 
-      expect(runner.stashCalls).toEqual([projectA, projectB]);
-    });
-  });
-
-  describe('restoreStash', () => {
-    it('returns the seeded restore outcome for a project', async () => {
-      const runner = new InMemoryGitCommandRunner();
-      runner.seedRestoreStash(projectA, { hadConflicts: true });
-
-      const result = await runner.restoreStash(projectA);
-
-      expect(result).toEqual({ success: true, value: { hadConflicts: true } });
-    });
-
-    it('defaults to hadConflicts: false when unseeded', async () => {
-      const runner = new InMemoryGitCommandRunner();
-
-      const result = await runner.restoreStash(projectA);
-
-      expect(result).toEqual({ success: true, value: { hadConflicts: false } });
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.status).toBe('switched');
+      expect(result.success && result.value.status === 'switched' && result.value.changes).toEqual([]);
     });
 
     it('returns a seeded failure instead of the happy-path outcome', async () => {
       const runner = new InMemoryGitCommandRunner();
-      const failure = new GitCommandFailedError('stash pop failed');
-      runner.seedRestoreStash(projectA, { hadConflicts: false });
-      runner.seedRestoreStashFailure(projectA, failure);
+      const failure = new GitCommandFailedError('checkout failed');
+      runner.seedCheckoutFailure(projectA, failure);
 
-      const result = await runner.restoreStash(projectA);
+      const result = await runner.checkout(projectA, checkoutInput);
 
       expect(result).toEqual({ success: false, error: failure });
     });
 
-    it('records every call made, in order', async () => {
+    it('records every call made, including the flush, branch, and stash flag', async () => {
       const runner = new InMemoryGitCommandRunner();
 
-      await runner.restoreStash(projectA);
-      await runner.restoreStash(projectB);
+      await runner.checkout(projectA, checkoutInput);
 
-      expect(runner.restoreStashCalls).toEqual([projectA, projectB]);
+      expect(runner.checkoutCalls).toEqual([{ projectId: projectA, input: checkoutInput }]);
     });
   });
 });
