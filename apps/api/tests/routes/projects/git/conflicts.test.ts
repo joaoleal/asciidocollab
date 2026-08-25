@@ -5,7 +5,7 @@ import {
   gitConflictsRoutes,
   toConflictListDto,
   toConflictStagesDto,
-  decodeConflictPath,
+  validateConflictPath,
 } from '../../../../src/routes/projects/git/conflicts';
 import { errorHandler } from '../../../../src/plugins/error-handler';
 
@@ -51,26 +51,38 @@ describe('toConflictStagesDto (pure helper)', () => {
   });
 });
 
-describe('decodeConflictPath (pure helper)', () => {
-  it('decodes a percent-encoded relative path', () => {
-    expect(decodeConflictPath(encodeURIComponent('docs/a b.adoc'))).toBe('docs/a b.adoc');
+describe('validateConflictPath (pure helper)', () => {
+  // Fastify's router already percent-decodes the `:path` route param before a handler ever sees
+  // it, so this function receives the ALREADY-DECODED string — it must validate, not decode.
+
+  it('accepts an already-decoded relative path unchanged', () => {
+    expect(validateConflictPath('docs/a b.adoc')).toBe('docs/a b.adoc');
+  });
+
+  it('accepts a path containing a literal percent character (Fastify already decoded once; this function must not decode again)', () => {
+    expect(validateConflictPath('50%_done.adoc')).toBe('50%_done.adoc');
   });
 
   it('rejects an empty path', () => {
-    expect(decodeConflictPath('')).toBeNull();
+    expect(validateConflictPath('')).toBeNull();
   });
 
   it('rejects an absolute path', () => {
-    expect(decodeConflictPath(encodeURIComponent('/etc/passwd'))).toBeNull();
+    expect(validateConflictPath('/etc/passwd')).toBeNull();
   });
 
-  it('rejects a path containing a traversal segment', () => {
-    expect(decodeConflictPath(encodeURIComponent('../../etc/passwd'))).toBeNull();
-    expect(decodeConflictPath(encodeURIComponent('docs/../../../etc/passwd'))).toBeNull();
+  it('rejects a path with a leading backslash', () => {
+    expect(validateConflictPath('\\etc\\passwd')).toBeNull();
   });
 
-  it('rejects a malformed percent-encoding', () => {
-    expect(decodeConflictPath('%')).toBeNull();
+  it('rejects a path containing a forward-slash traversal segment', () => {
+    expect(validateConflictPath('../../etc/passwd')).toBeNull();
+    expect(validateConflictPath('docs/../../../etc/passwd')).toBeNull();
+  });
+
+  it('rejects a path containing an interior backslash traversal segment', () => {
+    expect(validateConflictPath('foo\\..\\bar')).toBeNull();
+    expect(validateConflictPath('..\\..\\x')).toBeNull();
   });
 });
 
@@ -205,6 +217,25 @@ describe('GET /projects/:projectId/git/conflicts/:path', () => {
       projectId: PROJECT_ID,
       actorId: ACTOR_ID,
       path: 'docs/a b.adoc',
+    });
+
+    await app.close();
+  });
+
+  it('accepts a filename containing a literal percent character instead of double-decoding it (regression)', async () => {
+    const { build, getConflictStages } = buildHarness({ role: 'viewer' });
+    const app = await build();
+
+    // The client sends the literal '%' in "50%_done.adoc" percent-encoded as '%25', so Fastify's
+    // own single decode delivers "50%_done.adoc" to the handler. The previous implementation
+    // decoded a SECOND time and threw on the bare '%', wrongly answering 400 for this valid path.
+    const response = await getConflictStagesAt(app, PROJECT_ID, '50%25_done.adoc');
+
+    expect(response.statusCode).toBe(200);
+    expect(getConflictStages).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      path: '50%_done.adoc',
     });
 
     await app.close();

@@ -24,26 +24,24 @@ export function toConflictStagesDto(data: GitWorkerConflictStagesData): Conflict
 }
 
 /**
- * Decodes and validates a URL-encoded `:path` route parameter for the conflict routes: it must
- * decode cleanly, be non-empty, relative (no leading slash), and contain no empty/`.`/`..`
- * segments (no traversal). Returns null when the raw parameter fails any of these checks — the
- * caller replies `400` rather than ever forwarding an unvalidated path to the git-worker.
+ * Validates an already-decoded `:path` route parameter for the conflict routes. Fastify's router
+ * percent-decodes route params itself before a handler ever sees them (that decode is what lets a
+ * single `:path` segment carry an embedded `/` as `%2F`), so this function must NOT decode again —
+ * a second `decodeURIComponent` would throw on (or mis-decode) a path that legitimately contains a
+ * literal `%`, e.g. `50%_done.adoc`. The param must be non-empty, relative (no leading `/` or
+ * `\`), and contain no empty/`.`/`..` segment on either `/` or `\` as a separator (no traversal).
+ * Returns null when the parameter fails any of these checks — the caller replies `400` rather than
+ * ever forwarding an unvalidated path to the git-worker.
  *
- * @param rawParam - The still-encoded `:path` route parameter, exactly as Fastify captured it.
- * @returns The decoded, validated project-relative path, or null when invalid.
+ * @param decodedParam - The already-decoded `:path` route parameter, exactly as Fastify captured it.
+ * @returns The validated project-relative path (unchanged), or null when invalid.
  */
-export function decodeConflictPath(rawParam: string): string | null {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(rawParam);
-  } catch {
-    return null;
-  }
-  if (decoded.length === 0) return null;
-  if (decoded.startsWith('/') || decoded.startsWith('\\')) return null;
-  const segments = decoded.split('/');
+export function validateConflictPath(decodedParam: string): string | null {
+  if (decodedParam.length === 0) return null;
+  if (decodedParam.startsWith('/') || decodedParam.startsWith('\\')) return null;
+  const segments = decodedParam.split(/[/\\]/);
   if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null;
-  return decoded;
+  return decodedParam;
 }
 
 /**
@@ -127,7 +125,7 @@ export async function gitConflictsRoutes(app: FastifyInstance): Promise<void> {
         return sendGitErrorResponse(reply, membershipCheck.error.name);
       }
 
-      const path = decodeConflictPath(request.params.path);
+      const path = validateConflictPath(request.params.path);
       if (path === null) {
         return reply.status(400).send({ error: { code: 'invalid_path', message: 'The file path is invalid' } });
       }
@@ -188,7 +186,7 @@ export async function gitConflictsRoutes(app: FastifyInstance): Promise<void> {
         return sendGitErrorResponse(reply, editorCheck.error.name);
       }
 
-      const path = decodeConflictPath(request.params.path);
+      const path = validateConflictPath(request.params.path);
       if (path === null) {
         return reply.status(400).send({ error: { code: 'invalid_path', message: 'The file path is invalid' } });
       }
