@@ -9,10 +9,15 @@ import {
   type ClonedFileEntry,
   type ClonedRepository,
   type GitBehindAhead,
+  type GitBranchList,
+  type GitCheckoutInput,
+  type GitCheckoutOutcome,
   type GitCloneInput,
   type GitCommandRunner,
   type GitCommitInput,
   type GitCommitResult,
+  type GitCreateBranchInput,
+  type GitCreatedBranch,
   type GitFetchInput,
   type GitFetchResult,
   type GitMergeConflictPath,
@@ -230,26 +235,31 @@ async function hasStagedChanges(workingDirectory: string): Promise<boolean> {
  * added and deleted counts rendered as a dash rather than a number). Used only to classify the
  * {@link GitMergeConflictPath.isBinary} flag on conflicted files.
  *
- * The comparison is deliberately the two-tree `HEAD` (ours) vs `MERGE_HEAD` (theirs) diff, NOT a
+ * The comparison is deliberately the two-tree `HEAD` (ours) vs `theirsReference` (theirs) diff, NOT a
  * plain `git diff` of the conflicted working tree: during a conflict, `git diff`'s combined output
  * reports a binary file as `0\t0` rather than `-\t-`, so it cannot distinguish binary from text —
  * whereas an ordinary two-tree diff reliably emits `-\t-` for a binary blob. Both refs exist for
- * the whole conflicted state, before `git merge --abort` runs. Extra (non-conflicted) paths in the
+ * the whole conflicted state, before the conflict is cleaned up. Extra (non-conflicted) paths in the
  * result are harmless: the caller only looks up the paths it already knows are conflicted.
+ *
+ * `theirsReference` is the incoming side of the conflict: `MERGE_HEAD` for a three-way merge conflict, or
+ * the stash commit (`stash@{0}`) for a branch-switch conflict where re-applying the shelved live
+ * edits onto the target branch did not apply cleanly. Both name the same kind of "theirs" tree.
  *
  * The `-z` numstat stream is NUL-delimited: a normal file is one record `added\tdeleted\tpath`; a
  * rename is a record `added\tdeleted\t` (empty path field) immediately followed by two further
  * NUL-separated tokens (old path, then new path). Both shapes are handled so the scan never
  * misaligns on a renamed entry.
  *
- * @param workingDirectory - The working tree whose in-progress merge to inspect.
- * @returns Every path git reports as a binary change between the two merge sides.
+ * @param workingDirectory - The working tree whose in-progress conflict to inspect.
+ * @param theirsReference - The incoming side to compare `HEAD` against (`MERGE_HEAD` by default).
+ * @returns Every path git reports as a binary change between the two conflict sides.
  */
-async function readBinaryDiffPaths(workingDirectory: string): Promise<Set<string>> {
+async function readBinaryDiffPaths(workingDirectory: string, theirsReference = 'MERGE_HEAD'): Promise<Set<string>> {
   const { stdout } = await runGitCommand(workingDirectory, {
     command: 'diff',
     flags: ['--numstat', '-z'],
-    positionals: ['HEAD', 'MERGE_HEAD'],
+    positionals: ['HEAD', theirsReference],
   });
   const tokens = stdout.split('\0');
   const binaryPaths = new Set<string>();
@@ -288,14 +298,17 @@ async function readBinaryDiffPaths(workingDirectory: string): Promise<Set<string
 }
 
 /**
- * Lists the files a merge in progress left unmerged (`git diff --name-only --diff-filter=U -z`) and
- * pairs each with its {@link GitMergeConflictPath.isBinary} flag. An empty result means the merge
- * failed for a reason other than a content conflict (its caller treats that as a genuine failure).
+ * Lists the files a conflict in progress left unmerged (`git diff --name-only --diff-filter=U -z`)
+ * and pairs each with its {@link GitMergeConflictPath.isBinary} flag. An empty result means the
+ * operation failed for a reason other than a content conflict (its caller treats that as a genuine
+ * failure). Serves both a three-way merge conflict and a branch-switch stash-pop conflict — only the
+ * `theirsReference` used for the binary classification differs (see {@link readBinaryDiffPaths}).
  *
- * @param workingDirectory - The working tree whose in-progress merge to inspect.
+ * @param workingDirectory - The working tree whose in-progress conflict to inspect.
+ * @param theirsReference - The incoming side to classify binary paths against (`MERGE_HEAD` by default).
  * @returns One {@link GitMergeConflictPath} per unmerged file.
  */
-async function readMergeConflicts(workingDirectory: string): Promise<GitMergeConflictPath[]> {
+async function readMergeConflicts(workingDirectory: string, theirsReference = 'MERGE_HEAD'): Promise<GitMergeConflictPath[]> {
   const { stdout } = await runGitCommand(workingDirectory, {
     command: 'diff',
     flags: ['--name-only', '--diff-filter=U', '-z'],
@@ -303,7 +316,7 @@ async function readMergeConflicts(workingDirectory: string): Promise<GitMergeCon
   const conflictedPaths = stdout.split('\0').filter((entry) => entry.length > 0);
   if (conflictedPaths.length === 0) return [];
 
-  const binaryPaths = await readBinaryDiffPaths(workingDirectory);
+  const binaryPaths = await readBinaryDiffPaths(workingDirectory, theirsReference);
   return conflictedPaths.map((conflictedPath) => ({
     path: conflictedPath,
     isBinary: binaryPaths.has(conflictedPath),
@@ -311,31 +324,36 @@ async function readMergeConflicts(workingDirectory: string): Promise<GitMergeCon
 }
 
 /**
- * Computes the file-level change-set a clean merge contributed, as the diff from `fromCommit` to
- * `toCommit` (`git diff --name-status -M -z <fromCommit> <toCommit>`) — with `fromCommit` being the
- * post-flush pre-merge `HEAD`, this is exactly the REMOTE's contribution, excluding the live local
- * edits the domain already holds. The added/modified/renamed bytes are read from the post-merge
- * working tree, which the domain's own `ProjectFileStore` cannot see.
+ * Computes the file-level change-set landed against `fromCommit`, as `git diff --name-status -M -z
+ * <fromCommit> [<toCommit>]`.
+ *
+ * A clean merge passes both commits (`fromCommit` = post-flush pre-merge `HEAD`, `toCommit` =
+ * post-merge `HEAD`), so the result is exactly the REMOTE's contribution, excluding the live local
+ * edits the domain already holds. A clean branch switch passes ONLY `fromCommit` (the pre-switch
+ * `HEAD`), diffing it against the CURRENT working tree instead of a second commit, so the re-applied
+ * live edits — which sit uncommitted in the working tree after the stash-pop — are INCLUDED in the
+ * result alongside the target branch's own content. Either way, the added/modified/renamed bytes are
+ * read from the working tree on disk, which the domain's own `ProjectFileStore` cannot see.
  *
  * The `-z` name-status stream is NUL-delimited: each record is `status` then its path(s) as
  * separate tokens — `A`/`M`/`D` take one path, `R<score>` takes two (old, then new). `-M` enables
  * rename detection; copy detection is not requested, so no `C` record can appear. `core.quotePath`
  * is globally disabled, so every path token is already raw bytes needing no unescaping.
  *
- * @param workingDirectory - The post-merge working tree the changed bytes are read from.
- * @param fromCommit - The pre-merge `HEAD` (the local side already committed).
- * @param toCommit - The post-merge `HEAD`.
+ * @param workingDirectory - The working tree the changed bytes are read from.
+ * @param fromCommit - The base commit to diff from.
+ * @param toCommit - The commit to diff to, or omitted to diff `fromCommit` against the working tree.
  * @returns One {@link GitMergeFileChange} per changed file.
  */
 async function computeMergeChanges(
   workingDirectory: string,
   fromCommit: string,
-  toCommit: string,
+  toCommit?: string,
 ): Promise<GitMergeFileChange[]> {
   const { stdout } = await runGitCommand(workingDirectory, {
     command: 'diff',
     flags: ['--name-status', '-M', '-z'],
-    positionals: [fromCommit, toCommit],
+    positionals: toCommit === undefined ? [fromCommit] : [fromCommit, toCommit],
   });
   const tokens = stdout.split('\0');
   const changes: GitMergeFileChange[] = [];
@@ -905,6 +923,171 @@ export class RealGitCommandRunner implements GitCommandRunner {
       return { success: true, value: { status: 'merged', headCommit: postMergeHead, changes } };
     } catch {
       return { success: false, error: new GitCommandFailedError('The merge could not be completed.') };
+    }
+  }
+
+  /**
+   * Lists the project's local branches and which one is currently checked out. Touches no network.
+   *
+   * `git for-each-ref --format=%(refname:short) refs/heads` yields one local branch name per line;
+   * `git rev-parse --abbrev-ref HEAD` names the checked-out branch. `refs/heads` is a fixed,
+   * code-authored ref pattern, never caller input.
+   *
+   * @param projectId - The project whose working tree to list branches for.
+   * @returns The current branch and every local branch name; a `GitCommandFailedError` (generic
+   *   message) when the underlying git command fails.
+   */
+  async listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      const currentResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--abbrev-ref', 'HEAD'] });
+      const current = readRevParseAnswer(currentResult.stdout);
+
+      const listResult = await runGitCommand(cwd, {
+        command: 'for-each-ref',
+        flags: ['--format=%(refname:short)', 'refs/heads'],
+      });
+      const branches = listResult.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      return { success: true, value: { current, branches } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The project branches could not be listed.') };
+    }
+  }
+
+  /**
+   * Creates a new local branch from the current branch tip WITHOUT switching to it (HEAD unchanged).
+   * Touches no network.
+   *
+   * `git branch <name>` with `name` as a positional AFTER `--end-of-options` (the option-injection
+   * guard `runGitCommand` applies to every positional), so a name beginning with `-` can never be
+   * reparsed as a flag. The name is not validated here: a duplicate name, or one git rejects as an
+   * invalid ref name, exits non-zero and becomes a generic `GitCommandFailedError`.
+   *
+   * @param projectId - The project whose working tree to create the branch in.
+   * @param input - The new branch's name.
+   * @returns The created branch on success; a `GitCommandFailedError` (generic message) when the
+   *   underlying git command fails (a duplicate or invalid name).
+   */
+  async createBranch(
+    projectId: ProjectId,
+    input: GitCreateBranchInput,
+  ): Promise<Result<GitCreatedBranch, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      await runGitCommand(cwd, { command: 'branch', positionals: [input.name] });
+      return { success: true, value: { name: input.name } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The branch could not be created.') };
+    }
+  }
+
+  /**
+   * Switches the project's working tree to another local branch, carrying in-progress live edits
+   * across the switch. Touches no network — a purely LOCAL operation, like {@link merge}: no egress,
+   * no credential. Follows the port's `checkout` adapter contract exactly, atomically:
+   *
+   * 1. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
+   *    write — an unsafe path fails the whole switch closed, with no partial write.
+   * 2. `preSwitchHead` (the source branch tip) is captured. It is NOT a flush commit: unlike
+   *    {@link merge}, the flushed edits are carried across by a stash, never committed on the source
+   *    branch.
+   * 3. Each flush entry is written then `git add`-ed, exactly as {@link commit}/{@link merge} do,
+   *    materializing the live edits as staged working-tree state on the source branch.
+   * 4. When `input.stashLocal` is true AND that flush actually staged something
+   *    ({@link hasStagedChanges}), `git stash push` shelves it so the switch can carry it across; a
+   *    clean tree shelves nothing, and the later pop is skipped.
+   * 5. `git checkout <input.branch>` switches to the target branch (the branch is a positional after
+   *    `--end-of-options`). A failure here — for example an unknown target branch — throws and
+   *    becomes a generic `GitCommandFailedError`.
+   * 6. When step 4 stashed, `git stash pop` re-applies the shelved edits. A non-zero exit is EXPECTED
+   *    when the edits collide with the target branch and is NOT immediately an error: unmerged paths
+   *    are inspected ({@link readMergeConflicts}, classifying binary against the stash commit) — if
+   *    there are none the exit was a genuine failure; if there are, the working tree is restored to a
+   *    clean checkout of the target branch (`git reset --hard`) and the now-unneeded stash is dropped,
+   *    leaving a defined, clean tree exactly as {@link merge}'s `--abort` does. The live edits are not
+   *    lost — they remain live in each collaborator's editor, which the later conflict-resolution flow
+   *    reconciles against the reported paths. The `conflicted` outcome is returned.
+   * 7. On a clean switch, `git add -A` stages the re-applied edits (so a flushed edit to a file absent
+   *    from the target branch is captured as an addition), and `changes` is the delta from
+   *    `preSwitchHead` to the post-switch working tree ({@link computeMergeChanges} with no second
+   *    commit) — the target branch's own content AND the re-applied live edits, per the port contract.
+   *    An identical tree yields empty `changes`.
+   *
+   * @param projectId - The project whose working tree to switch.
+   * @param input - The target branch, the live-content flush list, and whether to carry local edits.
+   * @returns A {@link GitCheckoutOutcome} — `switched` with the resulting changes (empty when the
+   *   tree is unchanged) or `conflicted` with the files the stash-pop left in conflict; a conflict is
+   *   an expected outcome, never an error. Returns a `GitCommandFailedError` (generic message) only
+   *   when the underlying git command itself fails or a flush path is unsafe.
+   */
+  async checkout(
+    projectId: ProjectId,
+    input: GitCheckoutInput,
+  ): Promise<Result<GitCheckoutOutcome, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    for (const entry of input.flush) {
+      if (!staysInsideWorkingTree(cwd, entry.path)) {
+        return {
+          success: false,
+          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
+        };
+      }
+    }
+
+    try {
+      const preSwitchHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const preSwitchHead = readRevParseAnswer(preSwitchHeadResult.stdout);
+
+      for (const entry of input.flush) {
+        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
+        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
+      }
+
+      const stashed = input.stashLocal && (await hasStagedChanges(cwd));
+      if (stashed) {
+        await runGitCommand(cwd, { command: 'stash', flags: ['push'] });
+      }
+
+      await runGitCommand(cwd, { command: 'checkout', positionals: [input.branch] });
+
+      if (stashed) {
+        try {
+          await runGitCommand(cwd, { command: 'stash', flags: ['pop'] });
+        } catch (error) {
+          // A failed pop is a content conflict only if it left unmerged paths; otherwise it is a
+          // genuine command failure. The stash commit (`stash@{0}`, kept by the failed pop) is the
+          // "theirs" side for the binary classification, mirroring how a merge uses `MERGE_HEAD`.
+          const conflicts = await readMergeConflicts(cwd, 'stash@{0}');
+          if (conflicts.length === 0) {
+            throw error;
+          }
+          // Restore a clean checkout of the target branch and drop the shelved edits, exactly as
+          // `merge --abort` leaves a clean tree. The edits are not lost: they stay live in each
+          // collaborator's editor, which the later conflict-resolution flow reconciles.
+          await runGitCommand(cwd, { command: 'reset', flags: ['--hard'] });
+          await runGitCommand(cwd, { command: 'stash', flags: ['drop'] });
+          return { success: true, value: { status: 'conflicted', conflicts } };
+        }
+      }
+
+      // Stage the re-applied edits so a flushed file absent from the target branch is captured as an
+      // addition in the change-set (a plain commit-to-worktree diff omits still-untracked files).
+      await runGitCommand(cwd, { command: 'add', flags: ['-A'] });
+
+      const postSwitchHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const postSwitchHead = readRevParseAnswer(postSwitchHeadResult.stdout);
+
+      const changes = await computeMergeChanges(cwd, preSwitchHead);
+      return { success: true, value: { status: 'switched', headCommit: postSwitchHead, changes } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The branch switch could not be completed.') };
     }
   }
 }

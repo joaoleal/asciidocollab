@@ -2,10 +2,15 @@ import type {
   AuthenticationFailedError,
   ClonedRepository,
   GitBehindAhead,
+  GitBranchList,
+  GitCheckoutInput,
+  GitCheckoutOutcome,
   GitCloneInput,
   GitCommandFailedError,
   GitCommandRunner,
   GitCommitResult,
+  GitCreateBranchInput,
+  GitCreatedBranch,
   GitFetchInput,
   GitFetchResult,
   GitMergeInput,
@@ -42,6 +47,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly behindAheadFailures = new Map<string, GitCommandFailedError>();
   private readonly mergeResults = new Map<string, GitMergeOutcome>();
   private readonly mergeFailures = new Map<string, GitCommandFailedError>();
+  private readonly checkoutResults = new Map<string, GitCheckoutOutcome>();
+  private readonly checkoutFailures = new Map<string, GitCommandFailedError>();
+  private readonly createBranchResults = new Map<string, GitCreatedBranch>();
+  private readonly createBranchFailures = new Map<string, GitCommandFailedError>();
+  private readonly listBranchesResults = new Map<string, GitBranchList>();
+  private readonly listBranchesFailures = new Map<string, GitCommandFailedError>();
 
   /** Every call made to `clone`, in call order, for asserting interactions. */
   readonly cloneCalls: GitCloneInput[] = [];
@@ -57,6 +68,15 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `merge`, in call order, for asserting interactions. */
   readonly mergeCalls: { projectId: ProjectId; input: GitMergeInput }[] = [];
+
+  /** Every call made to `checkout`, in call order, for asserting interactions. */
+  readonly checkoutCalls: { projectId: ProjectId; input: GitCheckoutInput }[] = [];
+
+  /** Every call made to `createBranch`, in call order, for asserting interactions. */
+  readonly createBranchCalls: { projectId: ProjectId; input: GitCreateBranchInput }[] = [];
+
+  /** Every call made to `listBranches`, in call order, for asserting interactions. */
+  readonly listBranchesCalls: ProjectId[] = [];
 
   /** Configures `clone` to return `repository` for a remote URL. */
   seedClone(remoteUrl: string, repository: ClonedRepository): void {
@@ -109,6 +129,36 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   /** Configures `merge` to fail for a project, taking priority over any seeded outcome. */
   seedMergeFailure(projectId: ProjectId, error: GitCommandFailedError): void {
     this.mergeFailures.set(projectId.value, error);
+  }
+
+  /** Configures `checkout` to return `outcome` (switched or conflicted) for a project. */
+  seedCheckout(projectId: ProjectId, outcome: GitCheckoutOutcome): void {
+    this.checkoutResults.set(projectId.value, outcome);
+  }
+
+  /** Configures `checkout` to fail for a project, taking priority over any seeded outcome. */
+  seedCheckoutFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.checkoutFailures.set(projectId.value, error);
+  }
+
+  /** Configures `createBranch` to return `result` for a project. */
+  seedCreateBranch(projectId: ProjectId, result: GitCreatedBranch): void {
+    this.createBranchResults.set(projectId.value, result);
+  }
+
+  /** Configures `createBranch` to fail for a project, taking priority over any seeded result. */
+  seedCreateBranchFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.createBranchFailures.set(projectId.value, error);
+  }
+
+  /** Configures `listBranches` to return `result` for a project. */
+  seedListBranches(projectId: ProjectId, result: GitBranchList): void {
+    this.listBranchesResults.set(projectId.value, result);
+  }
+
+  /** Configures `listBranches` to fail for a project, taking priority over any seeded result. */
+  seedListBranchesFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.listBranchesFailures.set(projectId.value, error);
   }
 
   async getStatus(): Promise<Result<GitWorkingTreeStatus, GitCommandFailedError>> {
@@ -204,5 +254,53 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: outcome };
+  }
+
+  async checkout(
+    projectId: ProjectId,
+    input: GitCheckoutInput,
+  ): Promise<Result<GitCheckoutOutcome, GitCommandFailedError>> {
+    this.checkoutCalls.push({ projectId, input });
+
+    const failure = this.checkoutFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome = this.checkoutResults.get(projectId.value);
+    if (!outcome) {
+      throw new Error(`no checkout outcome seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: outcome };
+  }
+
+  async createBranch(
+    projectId: ProjectId,
+    input: GitCreateBranchInput,
+  ): Promise<Result<GitCreatedBranch, GitCommandFailedError>> {
+    this.createBranchCalls.push({ projectId, input });
+
+    const failure = this.createBranchFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.createBranchResults.get(projectId.value);
+    if (!result) {
+      throw new Error(`no createBranch result seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: result };
+  }
+
+  async listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>> {
+    this.listBranchesCalls.push(projectId);
+
+    const failure = this.listBranchesFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.listBranchesResults.get(projectId.value);
+    if (!result) {
+      throw new Error(`no listBranches result seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: result };
   }
 }

@@ -52,6 +52,11 @@ export type {
   GitMergeFileChange,
   GitMergeConflictPath,
   GitMergeOutcome,
+  GitCheckoutInput,
+  GitCheckoutOutcome,
+  GitBranchList,
+  GitCreateBranchInput,
+  GitCreatedBranch,
 } from './git/git-command-runner';
 
 // file-tree/

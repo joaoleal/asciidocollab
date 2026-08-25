@@ -41,6 +41,7 @@ import { createGitWorkerLoop, type GitWorkerLoop } from './worker-loop.js';
 import { createImportHandler } from './dispatch/import-handler.js';
 import { createPushHandler } from './dispatch/push-handler.js';
 import { createPullHandler } from './dispatch/pull-handler.js';
+import { createSwitchBranchHandler } from './dispatch/switch-branch-handler.js';
 import type { GitOperationHandlerRegistry } from './dispatch/git-operation-dispatcher.js';
 
 /**
@@ -76,7 +77,8 @@ export interface GitWorkerApp {
  * registered use-case handler needs) from config, and the run loop that polls/claims
  * `GitOperation` work, dispatches it, and records its outcome.
  *
- * `IMPORT`, `PUSH`, and `PULL` are the `GitOperationKind`s with a registered handler so far — every
+ * `IMPORT`, `PUSH`, `PULL`, and `BRANCH_SWITCH` are the `GitOperationKind`s with a registered handler
+ * so far — every
  * other kind is still a future story task's job (YAGNI). Until a story task registers one, a claimed operation
  * of an unregistered kind dispatches to the `UNHANDLED_GIT_OPERATION_KIND` failure path (see
  * `dispatch/git-operation-dispatcher.ts`), so it always reaches a terminal state — and releases
@@ -201,6 +203,19 @@ export async function compositionRoot() {
       collaborationSessionRepository,
       reconciler: gitChangeReconciler,
       credentialSource: gitCredentialStore,
+      logger: useCaseLogger,
+    }),
+    BRANCH_SWITCH: createSwitchBranchHandler({
+      projectMemberRepository,
+      auditLogRepository,
+      gitRepositoryRepository,
+      gitOperationRepository,
+      commandRunner: gitCommandRunner,
+      fileNodeRepository,
+      documentRepository,
+      collaborativeContentReader,
+      collaborationSessionRepository,
+      reconciler: gitChangeReconciler,
       logger: useCaseLogger,
     }),
   };
