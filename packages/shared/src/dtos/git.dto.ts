@@ -107,14 +107,46 @@ export function isPendingChangeType(value: string): value is PendingChangeType {
   return types.includes(value);
 }
 
-/** A single working-tree change, staged or not, awaiting commit. */
+/**
+ * A single working-tree change, awaiting commit. Which of the four buckets on
+ * {@link GitStatusDto} (`staged`/`unstaged`/`untracked`/`conflicted`) a change appears in already
+ * encodes its state, so an element carries only what the bucket does not: the path and the kind
+ * of change.
+ */
 export interface PendingChangeDto {
   /** Project-relative path of the changed file. */
   path: string;
   /** The kind of change. */
   changeType: PendingChangeType;
-  /** Whether this change is currently staged for the next commit. */
-  staged: boolean;
+}
+
+/**
+ * A project's connected repository's working-tree status: the current branch, how it compares to
+ * its remote, and every pending change bucketed by where it stands.
+ */
+export interface GitStatusDto {
+  /** The currently checked-out branch. */
+  branch: string;
+  /** How the current branch compares to its remote counterpart. */
+  syncStatus: GitSyncStatus;
+  /**
+   * Commits the current branch is ahead of its remote counterpart by. A fixed `0` today — the
+   * underlying sync computation is qualitative only (see `syncStatus`); a dedicated numeric
+   * ahead/behind count is a later capability.
+   */
+  ahead: number;
+  /** Commits the current branch is behind its remote counterpart by. See `ahead`. */
+  behind: number;
+  /** ISO 8601 timestamp of the last successful sync, or null if never synced. */
+  lastSyncAt: string | null;
+  /** Changes staged for the next commit. */
+  staged: PendingChangeDto[];
+  /** Changes to tracked files not yet staged. */
+  unstaged: PendingChangeDto[];
+  /** Changes to files not yet tracked by git. */
+  untracked: PendingChangeDto[];
+  /** Changes with unresolved merge conflicts. */
+  conflicted: PendingChangeDto[];
 }
 
 /** Per-file git status used to decorate the project's file tree. */

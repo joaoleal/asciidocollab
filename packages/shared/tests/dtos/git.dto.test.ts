@@ -18,6 +18,7 @@ import type {
   CommitDto,
   PendingChangeType,
   PendingChangeDto,
+  GitStatusDto,
   FileGitStatus,
   ConflictResolution,
   ConflictDto,
@@ -116,11 +117,32 @@ describe('pending change type', () => {
 });
 
 describe('PendingChangeDto', () => {
-  test('takes the documented shape', () => {
+  test('takes the documented shape (no staged flag — a change`s bucket on GitStatusDto is its state)', () => {
     const type: PendingChangeType = 'modified';
-    const dto: PendingChangeDto = { path: 'docs/intro.adoc', changeType: type, staged: false };
-    expect(dto.staged).toBe(false);
+    const dto: PendingChangeDto = { path: 'docs/intro.adoc', changeType: type };
     expect(dto.changeType).toBe('modified');
+    expect(Object.keys(dto).sort()).toEqual(['changeType', 'path']);
+  });
+});
+
+describe('GitStatusDto', () => {
+  test('takes the documented shape, bucketing pending changes by state', () => {
+    const dto: GitStatusDto = {
+      branch: 'main',
+      syncStatus: 'UP_TO_DATE',
+      ahead: 0,
+      behind: 0,
+      lastSyncAt: '2026-08-24T00:00:00.000Z',
+      staged: [{ path: 'docs/intro.adoc', changeType: 'modified' }],
+      unstaged: [{ path: 'docs/other.adoc', changeType: 'modified' }],
+      untracked: [{ path: 'docs/new.adoc', changeType: 'added' }],
+      conflicted: [],
+    };
+    expect(dto.staged).toHaveLength(1);
+    expect(dto.conflicted).toEqual([]);
+
+    const neverSynced: GitStatusDto = { ...dto, lastSyncAt: null };
+    expect(neverSynced.lastSyncAt).toBeNull();
   });
 });
 
