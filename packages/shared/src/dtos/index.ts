@@ -66,6 +66,9 @@ export type {
   FileGitStatus,
   ConflictResolution,
   ConflictDto,
+  GitOperationKind,
+  GitOperationState,
+  GitOperationStatusDto,
 } from './git.dto';
 export {
   GIT_PROVIDERS,
@@ -78,6 +81,10 @@ export {
   isFileGitStatus,
   CONFLICT_RESOLUTIONS,
   isConflictResolution,
+  GIT_OPERATION_KINDS,
+  isGitOperationKind,
+  GIT_OPERATION_STATES,
+  isGitOperationState,
 } from './git.dto';
 export type { GitErrorCode, GitErrorDto } from './git-error.dto';
 export { GIT_ERROR_CODES, isGitErrorCode } from './git-error.dto';

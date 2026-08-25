@@ -290,6 +290,12 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
     return record ? toDomainGitOperation(record) : null;
   }
 
+  /** Reads back a single operation by id, in whatever state it currently holds, or null if none exists. */
+  async findById(operationId: GitOperationId): Promise<GitOperation | null> {
+    const record = await this.prisma.gitOperation.findUnique({ where: { id: operationId.value } });
+    return record ? toDomainGitOperation(record) : null;
+  }
+
   /** Records a new, unresolved conflict for an operation. */
   async createConflict(input: CreateGitConflictInput): Promise<GitConflict> {
     const record = await this.prisma.gitConflict.create({

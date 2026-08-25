@@ -253,6 +253,28 @@ describe('InMemoryGitOperationRepository', () => {
     });
   });
 
+  describe('findById', () => {
+    it('returns null for an operation id that does not exist', async () => {
+      const repo = new InMemoryGitOperationRepository();
+
+      expect(await repo.findById(GitOperationId.create(randomUUID()))).toBeNull();
+    });
+
+    it('reads back an operation regardless of its current state, including a terminal one', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const enqueued = await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      const finished = await repo.transition(claimed!.id, 'FAILED', { errorCode: 'remote_rejected' });
+
+      const found = await repo.findById(enqueued.id);
+
+      expect(found?.id.value).toBe(enqueued.id.value);
+      expect(found?.state).toBe('FAILED');
+      expect(found?.errorCode).toBe('remote_rejected');
+      expect(finished.success).toBe(true);
+    });
+  });
+
   describe('transition', () => {
     it('moves a RUNNING operation to SUCCEEDED, setting progress to 100 and finishedAt', async () => {
       const { clock } = fakeClock('2026-01-01T00:00:00.000Z');

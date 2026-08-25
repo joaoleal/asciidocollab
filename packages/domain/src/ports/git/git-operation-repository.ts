@@ -155,6 +155,16 @@ export interface GitOperationRepository {
   findActiveOperation(projectId: ProjectId): Promise<GitOperation | null>;
 
   /**
+   * Reads back a single operation by id, in whatever state it currently holds — active or
+   * terminal. Used by the progress-polling status read, which needs to see a finished operation's
+   * final `state`/`progress`/`errorCode` too, not just the currently-active one.
+   *
+   * @param operationId - The operation to read.
+   * @returns The operation, or null if none exists with that id.
+   */
+  findById(operationId: GitOperationId): Promise<GitOperation | null>;
+
+  /**
    * Records a new conflicting file discovered during an operation.
    *
    * @param input - The conflict to record.

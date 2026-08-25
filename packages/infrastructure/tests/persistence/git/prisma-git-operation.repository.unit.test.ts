@@ -596,6 +596,46 @@ describe('PrismaGitOperationRepository', () => {
     });
   });
 
+  describe('findById', () => {
+    it('returns null for an operation id that does not exist', async () => {
+      const { client } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+
+      expect(await repo.findById(GitOperationId.create(randomUUID()))).toBeNull();
+    });
+
+    it('reads back an operation regardless of its current state, including a terminal one', async () => {
+      // Row inserted directly as RUNNING (rather than via enqueue+claimNextQueued, which relies on
+      // the raw-SQL FOR-UPDATE-SKIP-LOCKED path this fake does not model) so `transition` has a
+      // legal RUNNING -> FAILED edge to take.
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const id = randomUUID();
+      operations.set(id, {
+        id,
+        projectId: projA.value,
+        kind: 'PUSH',
+        state: 'RUNNING',
+        branch: null,
+        triggeredByUserId: user.value,
+        progress: 40,
+        heartbeatAt: new Date(),
+        errorCode: null,
+        startedAt: new Date(),
+        finishedAt: null,
+        createdAt: new Date(),
+      });
+      const operationId = GitOperationId.create(id);
+      await repo.transition(operationId, 'FAILED', { errorCode: 'remote_rejected' });
+
+      const found = await repo.findById(operationId);
+
+      expect(found?.id.value).toBe(id);
+      expect(found?.state).toBe('FAILED');
+      expect(found?.errorCode).toBe('remote_rejected');
+    });
+  });
+
   describe('conflict CRUD', () => {
     it('round-trips a created conflict through list and get', async () => {
       const { client } = fakePrismaClient();

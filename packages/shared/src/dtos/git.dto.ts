@@ -166,3 +166,81 @@ export interface ConflictDto {
   /** The incoming branch's ("theirs") content. */
   theirs: string;
 }
+
+/** The kind of whole-project git action a `GitOperation` performs. */
+export type GitOperationKind =
+  | 'IMPORT'
+  | 'INITIALIZE'
+  | 'CONNECT'
+  | 'DISCONNECT'
+  | 'COMMIT'
+  | 'PUSH'
+  | 'PULL'
+  | 'FETCH'
+  | 'BRANCH_CREATE'
+  | 'BRANCH_SWITCH'
+  | 'RESOLVE'
+  | 'DISCARD'
+  | 'AMEND'
+  | 'UNDO_PULL';
+
+/** The kinds a whole-project git operation may take. */
+export const GIT_OPERATION_KINDS: readonly GitOperationKind[] = [
+  'IMPORT',
+  'INITIALIZE',
+  'CONNECT',
+  'DISCONNECT',
+  'COMMIT',
+  'PUSH',
+  'PULL',
+  'FETCH',
+  'BRANCH_CREATE',
+  'BRANCH_SWITCH',
+  'RESOLVE',
+  'DISCARD',
+  'AMEND',
+  'UNDO_PULL',
+];
+
+/** Narrows an arbitrary string to a {@link GitOperationKind}. */
+export function isGitOperationKind(value: string): value is GitOperationKind {
+  const kinds: readonly string[] = GIT_OPERATION_KINDS;
+  return kinds.includes(value);
+}
+
+/** The lifecycle state of a `GitOperation` — see the domain entity for the full state machine. */
+export type GitOperationState = 'QUEUED' | 'RUNNING' | 'AWAITING_CONFLICT' | 'SUCCEEDED' | 'FAILED' | 'ABORTED';
+
+/** The states a whole-project git operation may be in. */
+export const GIT_OPERATION_STATES: readonly GitOperationState[] = [
+  'QUEUED',
+  'RUNNING',
+  'AWAITING_CONFLICT',
+  'SUCCEEDED',
+  'FAILED',
+  'ABORTED',
+];
+
+/** Narrows an arbitrary string to a {@link GitOperationState}. */
+export function isGitOperationState(value: string): value is GitOperationState {
+  const states: readonly string[] = GIT_OPERATION_STATES;
+  return states.includes(value);
+}
+
+/**
+ * The polled progress/status of a whole-project `GitOperation` — what a client repeatedly reads
+ * back after a `202` to learn how a long-running action (import/pull/push/…) is progressing.
+ * Carries no credential or other sensitive material; only the fields a progress UI needs.
+ */
+export interface GitOperationStatusDto {
+  /** Unique identifier of the operation. */
+  id: string;
+  /** The kind of git action this operation performs. */
+  kind: GitOperationKind;
+  /** The operation's current lifecycle state. */
+  state: GitOperationState;
+  /** Progress percentage, 0 to 100. */
+  progress: number;
+  /** Typed, safe error code recorded on failure, or null while not failed. */
+  errorCode: string | null;
+}

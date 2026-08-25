@@ -153,6 +153,11 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     );
   }
 
+  /** Reads back a single operation by id, in whatever state it currently holds, or null. */
+  async findById(operationId: GitOperationId): Promise<GitOperation | null> {
+    return this.operations.get(operationId.value) ?? null;
+  }
+
   /** Records a new, unresolved conflict for an operation. */
   async createConflict(input: CreateGitConflictInput): Promise<GitConflict> {
     const conflict = new GitConflict(

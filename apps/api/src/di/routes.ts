@@ -36,6 +36,7 @@ import { fileTreeRoutes } from '../routes/projects/file-tree';
 import { projectMainFileRoutes } from '../routes/projects/main-file';
 import { renderConfigRoutes } from '../routes/projects/render-config';
 import { gitIgnorePatternsRoutes } from '../routes/projects/git-ignore-patterns';
+import { gitOperationStatusRoutes } from '../routes/projects/git/operation-status';
 import { cloneRoutes } from '../routes/projects/clone';
 import { gitImportRoutes } from '../routes/git/import';
 import { dictionaryRoutes } from '../routes/grammar/dictionary';
@@ -95,6 +96,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(projectMainFileRoutes);
       await innerApp.register(renderConfigRoutes);
       await innerApp.register(gitIgnorePatternsRoutes);
+      await innerApp.register(gitOperationStatusRoutes);
       await innerApp.register(cloneRoutes);
       await innerApp.register(gitImportRoutes);
       await innerApp.register(dictionaryRoutes);
