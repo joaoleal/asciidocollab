@@ -60,6 +60,7 @@ export type {
   GitSyncStatus,
   GitRepositoryDto,
   BranchDto,
+  BranchListDto,
   CommitDto,
   PendingChangeType,
   PendingChangeDto,

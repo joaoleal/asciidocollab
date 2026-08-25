@@ -18,10 +18,13 @@ import {
   GIT_STAGE_PATH,
   GIT_UNSTAGE_PATH,
   GIT_COMMIT_PATH,
+  GIT_BRANCHES_PATH,
+  GIT_BRANCH_CREATE_PATH,
   createGitOpsRequestHandler,
   parseGitStatusBody,
   parseStageChangesBody,
   parseCommitChangesBody,
+  parseCreateBranchBody,
   startInternalGitServer,
   type GitOpsHandlerDeps,
 } from '../src/internal-git-server.js';
@@ -89,6 +92,8 @@ interface HandlerDoubles {
   stage: jest.Mock;
   unstage: jest.Mock;
   commit: jest.Mock;
+  getBranches: jest.Mock;
+  createBranch: jest.Mock;
   logger: { info: jest.Mock; error: jest.Mock };
   secret?: string;
 }
@@ -100,6 +105,8 @@ function handlerDoubles(): HandlerDoubles {
     stage: jest.fn(async () => ({ success: true, value: { staged: ['a.adoc'] } })),
     unstage: jest.fn(async () => ({ success: true, value: { staged: [] } })),
     commit: jest.fn(async () => ({ success: true, value: { commit: { hash: 'abc123', message: 'msg', authoredAt: new Date('2026-01-01T00:00:00.000Z') } } })),
+    getBranches: jest.fn(async () => ({ success: true, value: { current: 'main', branches: ['main'] } })),
+    createBranch: jest.fn(async () => ({ success: true, value: { branch: { name: 'feature/x' } } })),
     logger: fakeLogger(),
   };
 }
@@ -215,10 +222,39 @@ describe('parseCommitChangesBody', () => {
   });
 });
 
+describe('parseCreateBranchBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID, name: 'feature/x' };
+
+  it('accepts a well-formed body', () => {
+    expect(parseCreateBranchBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts an empty name (the use case itself rejects an empty/whitespace name)', () => {
+    expect(parseCreateBranchBody(JSON.stringify({ ...valid, name: '' }))).toEqual({ ...valid, name: '' });
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseCreateBranchBody('{bad')).toBeNull();
+    expect(parseCreateBranchBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseCreateBranchBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseCreateBranchBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a missing or non-string name', () => {
+    const withoutName = { projectId: PROJECT_ID, actorId: ACTOR_ID };
+    expect(parseCreateBranchBody(JSON.stringify(withoutName))).toBeNull();
+    expect(parseCreateBranchBody(JSON.stringify({ ...valid, name: 5 }))).toBeNull();
+  });
+});
+
 describe('createGitOpsRequestHandler', () => {
   const statusBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID });
   const stageBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, paths: ['a.adoc'] });
   const commitBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, message: 'msg' });
+  const createBranchBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, name: 'feature/x' });
 
   it('answers status with {ok:true,data} on a success Result', async () => {
     const doubles = handlerDoubles();
@@ -290,6 +326,50 @@ describe('createGitOpsRequestHandler', () => {
       data: { commit: { hash: 'abc123', message: 'msg', authoredAt: '2026-01-01T00:00:00.000Z' } },
     });
     expect(doubles.commit).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, message: 'msg' });
+  });
+
+  it('answers branches with {ok:true,data} on a success Result', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_BRANCHES_PATH), recordingResponse(), statusBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({ ok: true, data: { current: 'main', branches: ['main'] } });
+    expect(doubles.getBranches).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID });
+  });
+
+  it('answers 400 for branches on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_BRANCHES_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.getBranches).not.toHaveBeenCalled();
+  });
+
+  it('answers branch-create with {ok:true,data} on a success Result', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_BRANCH_CREATE_PATH), recordingResponse(), createBranchBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({ ok: true, data: { branch: { name: 'feature/x' } } });
+    expect(doubles.createBranch).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, name: 'feature/x' });
+  });
+
+  it('answers 400 for branch-create on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_BRANCH_CREATE_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.createBranch).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for ValidationError from branch-create', async () => {
+    const doubles = handlerDoubles();
+    doubles.createBranch = jest.fn(async () => ({ success: false, error: new ValidationError('Branch name must not be empty') }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_BRANCH_CREATE_PATH), recordingResponse(), createBranchBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'ValidationError' });
+  });
+
+  it('answers {ok:false,error} for RepositoryNotConnectedError from branches', async () => {
+    const doubles = handlerDoubles();
+    doubles.getBranches = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_BRANCHES_PATH), recordingResponse(), statusBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
   });
 
   it('answers {ok:false,error} for InsufficientRoleError', async () => {
@@ -485,6 +565,8 @@ describe('internal git server (HTTP)', () => {
       stage: doubles.stage,
       unstage: doubles.unstage,
       commit: doubles.commit,
+      getBranches: doubles.getBranches,
+      createBranch: doubles.createBranch,
       ...options,
     });
     await waitListening(server);
@@ -541,6 +623,8 @@ describe('internal git server (HTTP)', () => {
         stage: doubles.stage,
         unstage: doubles.unstage,
         commit: doubles.commit,
+        getBranches: doubles.getBranches,
+        createBranch: doubles.createBranch,
       }),
     ).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
@@ -567,6 +651,8 @@ describe('startInternalGitServer wiring', () => {
       stage: doubles.stage,
       unstage: doubles.unstage,
       commit: doubles.commit,
+      getBranches: doubles.getBranches,
+      createBranch: doubles.createBranch,
     });
     listening = server;
     expect(logger.info).toHaveBeenCalledWith(

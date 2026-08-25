@@ -74,6 +74,17 @@ export interface BranchDto {
   isCurrent: boolean;
 }
 
+/**
+ * A project's local branches: the checked-out branch plus every local branch, each flagged
+ * whether it is the one currently checked out.
+ */
+export interface BranchListDto {
+  /** The currently checked-out branch. */
+  current: string;
+  /** Every local branch, in no particular order. */
+  branches: BranchDto[];
+}
+
 /** A single commit in the repository's history. */
 export interface CommitDto {
   /** The commit hash. */

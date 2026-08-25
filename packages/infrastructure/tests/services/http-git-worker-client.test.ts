@@ -6,6 +6,8 @@ import {
   GIT_WORKER_STAGE_PATH,
   GIT_WORKER_UNSTAGE_PATH,
   GIT_WORKER_COMMIT_PATH,
+  GIT_WORKER_BRANCHES_PATH,
+  GIT_WORKER_BRANCH_CREATE_PATH,
 } from '../../src/services/http-git-worker-client';
 
 describe('HttpGitWorkerClient', () => {
@@ -117,6 +119,65 @@ describe('HttpGitWorkerClient', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_COMMIT_PATH}`);
     expect(JSON.parse(init.body)).toEqual({ projectId, actorId, message: 'Fix typo' });
+  });
+
+  it('POSTs getBranches to the branches endpoint and returns the branch list', async () => {
+    const branchListData = { current: 'main', branches: ['main', 'feature/x'] };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: branchListData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      secret: 'w0rkersecret',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.getBranches({ projectId, actorId });
+
+    expect(result).toEqual({ ok: true, data: branchListData });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_BRANCHES_PATH}`);
+    expect(init.method).toBe('POST');
+    expect(init.headers['x-git-worker-internal-secret']).toBe('w0rkersecret');
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('POSTs createBranch to the branch-create endpoint with the name and returns the created branch', async () => {
+    const createdBranchData = { branch: { name: 'feature/x' } };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: createdBranchData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.createBranch({ projectId, actorId, name: 'feature/x' });
+
+    expect(result).toEqual({ ok: true, data: createdBranchData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_BRANCH_CREATE_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId, name: 'feature/x' });
+  });
+
+  it('surfaces a domain refusal from the branch-create endpoint as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'ValidationError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.createBranch({ projectId, actorId, name: '' });
+    expect(result).toEqual({ ok: false, error: 'ValidationError' });
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from getBranches on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.getBranches({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
   });
 
   it('omits the secret header when none is configured', async () => {

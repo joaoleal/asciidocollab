@@ -11,8 +11,9 @@ async function main() {
   logger.info('git-worker started');
 
   // Internal endpoint that lets the API run the git short ops (status, behind-ahead, stage,
-  // unstage, commit) worker-side, against the real git adapter — the synchronous RPC counterpart
-  // to the queue this worker otherwise polls. Bound to loopback; secret-gated when configured.
+  // unstage, commit, branches, branch-create) worker-side, against the real git adapter — the
+  // synchronous RPC counterpart to the queue this worker otherwise polls. Bound to loopback;
+  // secret-gated when configured.
   const gitSecret = app.config.get('internalGitSecret');
   const gitTlsCert = app.config.get('internalGitTls.cert');
   const gitTlsKey = app.config.get('internalGitTls.key');
@@ -31,6 +32,8 @@ async function main() {
     stage: app.stage,
     unstage: app.unstage,
     commit: app.commit,
+    getBranches: app.getBranches,
+    createBranch: app.createBranch,
   });
 
   async function shutdown() {

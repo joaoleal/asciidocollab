@@ -7,6 +7,8 @@ import {
   GetBehindAheadUseCase,
   StageChangesUseCase,
   CommitChangesUseCase,
+  GetBranchesUseCase,
+  CreateBranchUseCase,
   GitChangeReconciler,
   ProjectId,
   UserId,
@@ -15,6 +17,8 @@ import {
   type GitBehindAhead,
   type StageChangesResult,
   type CommitChangesResult,
+  type GetBranchesResult,
+  type CreateBranchResult,
   type DomainError,
   type Result,
 } from '@asciidocollab/domain';
@@ -248,6 +252,14 @@ export async function compositionRoot() {
     userRepository,
     useCaseLogger,
   );
+  const getBranchesUseCase = new GetBranchesUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
+  const createBranchUseCase = new CreateBranchUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitRepositoryRepository,
+    gitCommandRunner,
+    useCaseLogger,
+  );
 
   // Bound as the internal RPC server's op fns (`src/index.ts`): each converts the raw UUID
   // strings the transport validated into the domain's own `ProjectId`/`UserId` value objects at
@@ -275,6 +287,14 @@ export async function compositionRoot() {
       projectId: ProjectId.create(input.projectId),
       actorId: UserId.create(input.actorId),
       message: input.message,
+    });
+  const getBranches = (input: { projectId: string; actorId: string }): Promise<Result<GetBranchesResult, DomainError>> =>
+    getBranchesUseCase.execute({ projectId: ProjectId.create(input.projectId) });
+  const createBranch = (input: { projectId: string; actorId: string; name: string }): Promise<Result<CreateBranchResult, DomainError>> =>
+    createBranchUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+      name: input.name,
     });
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
@@ -320,5 +340,7 @@ export async function compositionRoot() {
     stage,
     unstage,
     commit,
+    getBranches,
+    createBranch,
   };
 }

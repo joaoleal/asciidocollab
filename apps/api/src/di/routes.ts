@@ -46,6 +46,8 @@ import { gitUnstageRoutes } from '../routes/projects/git/unstage';
 import { gitCommitRoutes } from '../routes/projects/git/commit';
 import { gitPushRoutes } from '../routes/projects/git/push';
 import { gitPullRoutes } from '../routes/projects/git/pull';
+import { gitBranchesRoutes } from '../routes/projects/git/branches';
+import { gitCheckoutRoutes } from '../routes/projects/git/checkout';
 import { cloneRoutes } from '../routes/projects/clone';
 import { gitImportRoutes } from '../routes/git/import';
 import { dictionaryRoutes } from '../routes/grammar/dictionary';
@@ -115,6 +117,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitCommitRoutes);
       await innerApp.register(gitPushRoutes);
       await innerApp.register(gitPullRoutes);
+      await innerApp.register(gitBranchesRoutes);
+      await innerApp.register(gitCheckoutRoutes);
       await innerApp.register(cloneRoutes);
       await innerApp.register(gitImportRoutes);
       await innerApp.register(dictionaryRoutes);

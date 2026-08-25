@@ -15,6 +15,12 @@ export const GIT_WORKER_UNSTAGE_PATH = '/internal/git/unstage';
 /** Path of the internal endpoint that commits the currently staged changes. */
 export const GIT_WORKER_COMMIT_PATH = '/internal/git/commit';
 
+/** Path of the internal endpoint that lists a project's local branches. */
+export const GIT_WORKER_BRANCHES_PATH = '/internal/git/branches';
+
+/** Path of the internal endpoint that creates a new local branch. */
+export const GIT_WORKER_BRANCH_CREATE_PATH = '/internal/git/branch-create';
+
 /** Header carrying the shared secret expected by the git-worker's internal endpoints. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
 
@@ -120,6 +126,23 @@ export interface GitWorkerCommitData {
   };
 }
 
+/** Wire shape of the branches endpoint's `data` field. */
+export interface GitWorkerBranchListData {
+  /** The currently checked-out branch. */
+  readonly current: string;
+  /** Every local branch name. */
+  readonly branches: readonly string[];
+}
+
+/** Wire shape of the branch-create endpoint's `data` field. */
+export interface GitWorkerCreatedBranchData {
+  /** The branch that was created. */
+  readonly branch: {
+    /** The new branch's name, as created. */
+    readonly name: string;
+  };
+}
+
 /** Input shared by every git-worker request: the project and the acting principal. */
 export interface GitWorkerRequestInput {
   /** The project the operation acts on, as a raw UUID v4 string. */
@@ -138,6 +161,12 @@ export interface GitWorkerStageInput extends GitWorkerRequestInput {
 export interface GitWorkerCommitInput extends GitWorkerRequestInput {
   /** The commit message. */
   readonly message: string;
+}
+
+/** Input for {@link GitWorkerClient.createBranch}. */
+export interface GitWorkerCreateBranchInput extends GitWorkerRequestInput {
+  /** The new branch's name. */
+  readonly name: string;
 }
 
 /**
@@ -164,6 +193,10 @@ export interface GitWorkerClient {
   unstageChanges(input: GitWorkerStageInput): Promise<GitWorkerResult<GitWorkerStageData>>;
   /** Commits the currently staged changes. */
   commitChanges(input: GitWorkerCommitInput): Promise<GitWorkerResult<GitWorkerCommitData>>;
+  /** Lists a project's local branches and the one currently checked out. */
+  getBranches(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBranchListData>>;
+  /** Creates a new branch from the working tree's current branch tip. */
+  createBranch(input: GitWorkerCreateBranchInput): Promise<GitWorkerResult<GitWorkerCreatedBranchData>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -288,6 +321,21 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       projectId: input.projectId,
       actorId: input.actorId,
       message: input.message,
+    });
+  }
+
+  async getBranches(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBranchListData>> {
+    return this.post<GitWorkerBranchListData>(GIT_WORKER_BRANCHES_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+    });
+  }
+
+  async createBranch(input: GitWorkerCreateBranchInput): Promise<GitWorkerResult<GitWorkerCreatedBranchData>> {
+    return this.post<GitWorkerCreatedBranchData>(GIT_WORKER_BRANCH_CREATE_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      name: input.name,
     });
   }
 }

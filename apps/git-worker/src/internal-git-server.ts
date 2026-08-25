@@ -7,6 +7,8 @@ import {
   DomainError,
   LiveContentFlushFailedError,
   type CommitChangesResult,
+  type CreateBranchResult,
+  type GetBranchesResult,
   type GetGitStatusResult,
   type GitBehindAhead,
   type Result,
@@ -27,6 +29,12 @@ export const GIT_UNSTAGE_PATH = '/internal/git/unstage';
 
 /** Path of the internal endpoint the API calls to commit the currently staged changes. */
 export const GIT_COMMIT_PATH = '/internal/git/commit';
+
+/** Path of the internal endpoint the API calls to list a project's local branches. */
+export const GIT_BRANCHES_PATH = '/internal/git/branches';
+
+/** Path of the internal endpoint the API calls to create a new local branch. */
+export const GIT_BRANCH_CREATE_PATH = '/internal/git/branch-create';
 
 /** Header carrying the optional shared secret. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
@@ -93,6 +101,16 @@ export interface CommitChangesRequest {
   readonly actorId: string;
   /** The commit message. */
   readonly message: string;
+}
+
+/** The raw (still-string) input for the branch-create endpoint, as parsed from the request body. */
+export interface CreateBranchRequest {
+  /** The project to create the branch in, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** The new branch's name. */
+  readonly name: string;
 }
 
 /**
@@ -166,6 +184,29 @@ export function parseCommitChangesBody(raw: string): CommitChangesRequest | null
   if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
   if (typeof message !== 'string') return null;
   return { projectId, actorId, message };
+}
+
+/**
+ * Validates and normalises a branch-create request body. Returns null on any malformed input —
+ * non-UUID ids, or a non-string name. An empty/whitespace name is accepted here: rejecting it is
+ * the use case's own `ValidationError` refusal, not a transport-level shape problem.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseCreateBranchBody(raw: string): CreateBranchRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, name } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (typeof name !== 'string') return null;
+  return { projectId, actorId, name };
 }
 
 function readBody(request: IncomingMessage): Promise<string> {
@@ -246,6 +287,20 @@ export interface GitOpsHandlerDeps {
    * @returns The use case's own `Result`.
    */
   commit: (request: CommitChangesRequest) => Promise<Result<CommitChangesResult, DomainError>>;
+  /**
+   * Lists a project's local branches and the one currently checked out.
+   *
+   * @param request - The validated status-shaped request (same fields as a status request).
+   * @returns The use case's own `Result`.
+   */
+  getBranches: (request: GitStatusRequest) => Promise<Result<GetBranchesResult, DomainError>>;
+  /**
+   * Creates a new branch from the working tree's current branch tip.
+   *
+   * @param request - The validated branch-create request.
+   * @returns The use case's own `Result`.
+   */
+  createBranch: (request: CreateBranchRequest) => Promise<Result<CreateBranchResult, DomainError>>;
   /** Optional shared secret; when set, requests without a matching header are rejected (401). */
   secret?: string;
   /** Logger for failures. */
@@ -254,8 +309,8 @@ export interface GitOpsHandlerDeps {
 
 /**
  * Builds the node HTTP request handler for the internal git short-op endpoints (status,
- * behind-ahead, stage, unstage, commit). Separated from the server so it can be unit-tested with
- * injected functions.
+ * behind-ahead, stage, unstage, commit, branches, branch-create). Separated from the server so it
+ * can be unit-tested with injected functions.
  *
  * @param deps - The op functions, optional secret, and logger.
  * @returns A node `http` request handler.
@@ -271,7 +326,9 @@ export function createGitOpsRequestHandler(
         path !== GIT_BEHIND_AHEAD_PATH &&
         path !== GIT_STAGE_PATH &&
         path !== GIT_UNSTAGE_PATH &&
-        path !== GIT_COMMIT_PATH)
+        path !== GIT_COMMIT_PATH &&
+        path !== GIT_BRANCHES_PATH &&
+        path !== GIT_BRANCH_CREATE_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -322,7 +379,7 @@ export function createGitOpsRequestHandler(
       const isStage = path === GIT_STAGE_PATH;
       call = () => (isStage ? deps.stage(parsed) : deps.unstage(parsed));
       label = isStage ? 'stage' : 'unstage';
-    } else {
+    } else if (path === GIT_COMMIT_PATH) {
       const parsed = parseCommitChangesBody(raw);
       if (!parsed) {
         response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
@@ -330,6 +387,22 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.commit(parsed);
       label = 'commit';
+    } else if (path === GIT_BRANCHES_PATH) {
+      const parsed = parseGitStatusBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.getBranches(parsed);
+      label = 'branches';
+    } else {
+      const parsed = parseCreateBranchBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.createBranch(parsed);
+      label = 'branch-create';
     }
 
     try {
@@ -364,15 +437,19 @@ export interface InternalGitServerOptions {
   unstage: GitOpsHandlerDeps['unstage'];
   /** Commits the currently staged changes. */
   commit: GitOpsHandlerDeps['commit'];
+  /** Lists a project's local branches and the one currently checked out. */
+  getBranches: GitOpsHandlerDeps['getBranches'];
+  /** Creates a new branch from the working tree's current branch tip. */
+  createBranch: GitOpsHandlerDeps['createBranch'];
 }
 
 /**
  * Starts the internal HTTP server that lets the API run the git short ops (status, behind-ahead,
- * stage, unstage, commit) worker-side, against the real git adapter. Binds to loopback by default;
- * pair with a shared secret and/or network policy in production. Returns the server so the caller
- * can close it on shutdown.
+ * stage, unstage, commit, branches, branch-create) worker-side, against the real git adapter.
+ * Binds to loopback by default; pair with a shared secret and/or network policy in production.
+ * Returns the server so the caller can close it on shutdown.
  *
- * @param options - Bind address, the five op fns, optional secret/mTLS, logger.
+ * @param options - Bind address, the seven op fns, optional secret/mTLS, logger.
  * @returns A promise resolving to the listening HTTP(S) server, or rejecting if the bind fails.
  */
 export function startInternalGitServer(options: InternalGitServerOptions): Promise<http.Server> {
@@ -382,6 +459,8 @@ export function startInternalGitServer(options: InternalGitServerOptions): Promi
     stage: options.stage,
     unstage: options.unstage,
     commit: options.commit,
+    getBranches: options.getBranches,
+    createBranch: options.createBranch,
     ...(options.secret ? { secret: options.secret } : {}),
     logger: options.logger,
   });
