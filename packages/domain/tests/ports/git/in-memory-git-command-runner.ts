@@ -6,6 +6,8 @@ import {
   ClonedRepository,
   GitCloneInput,
   GitCommandRunner,
+  GitCommitInput,
+  GitCommitResult,
   GitRemoteAccessCheck,
   GitWorkingTreeStatus,
 } from '../../../src/ports/git/git-command-runner';
@@ -26,6 +28,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   >();
   private readonly stageFailures = new Map<string, GitCommandFailedError>();
   private readonly unstageFailures = new Map<string, GitCommandFailedError>();
+  private readonly commitFailures = new Map<string, GitCommandFailedError>();
+  private readonly commitResults = new Map<string, GitCommitResult>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -41,6 +45,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `unstage`, in call order, for asserting use-case interactions. */
   readonly unstageCalls: { projectId: ProjectId; paths: readonly string[] }[] = [];
+
+  /** Every call made to `commit`, in call order, for asserting the flush list and author. */
+  readonly commitCalls: { projectId: ProjectId; input: GitCommitInput }[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -162,5 +169,37 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     if (failure) return { success: false, error: failure };
 
     return { success: true, value: undefined };
+  }
+
+  /** Configures `commit` to fail for a project, taking priority over its default success. */
+  seedCommitFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.commitFailures.set(projectId.value, error);
+  }
+
+  /** Configures the `GitCommitResult` `commit` returns for a project on success. */
+  seedCommitResult(projectId: ProjectId, result: GitCommitResult): void {
+    this.commitResults.set(projectId.value, result);
+  }
+
+  /**
+   * Records the call — including the exact flush list and author, so a test can assert them — and
+   * returns the seeded `GitCommitResult` (or a canned default), unless a failure was seeded for
+   * this project via `seedCommitFailure`. Records no working-tree writes: the flush list is
+   * captured verbatim for assertion only.
+   */
+  async commit(projectId: ProjectId, input: GitCommitInput): Promise<Result<GitCommitResult, GitCommandFailedError>> {
+    this.commitCalls.push({ projectId, input });
+
+    const failure = this.commitFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const seeded = this.commitResults.get(projectId.value);
+    const result: GitCommitResult = seeded ?? {
+      hash: '0000000000000000000000000000000000000000',
+      message: input.message,
+      authoredAt: new Date('2024-01-01T00:00:00.000Z'),
+    };
+
+    return { success: true, value: result };
   }
 }

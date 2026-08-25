@@ -85,6 +85,52 @@ export interface ClonedRepository {
   readonly entries: readonly ClonedFileEntry[];
 }
 
+/** The identity a commit is attributed to. */
+export interface GitCommitAuthor {
+  /** The author's display name, written into the commit's author/committer field. */
+  readonly name: string;
+  /** The author's email address, written into the commit's author/committer field. */
+  readonly email: string;
+}
+
+/**
+ * A single file whose live collaborative content must overwrite its working-tree copy before the
+ * commit is taken. `path` is the workspace-relative POSIX path with NO leading slash (e.g.
+ * `chapters/intro.adoc`); `content` is the current live UTF-8 text captured from the file's
+ * collaborative room.
+ */
+export interface GitCommitFlushEntry {
+  /** Workspace-relative POSIX path, no leading slash, of the file to overwrite then re-stage. */
+  readonly path: string;
+  /** The live UTF-8 text to write to that file before committing. */
+  readonly content: string;
+}
+
+/** Everything {@link GitCommandRunner.commit} needs to record one commit. */
+export interface GitCommitInput {
+  /** The commit message. The caller guarantees it is non-empty. */
+  readonly message: string;
+  /** The identity to attribute the commit to (the triggering user). */
+  readonly author: GitCommitAuthor;
+  /**
+   * The staged files whose live collaborative text must replace their working-tree copy before the
+   * commit, so the commit captures what collaborators currently see rather than the older bytes the
+   * index already holds. Only staged files with live content appear here; a staged file with no
+   * live session, and every unstaged file, is absent — the adapter must not touch those.
+   */
+  readonly flush: readonly GitCommitFlushEntry[];
+}
+
+/** What a completed commit produced. */
+export interface GitCommitResult {
+  /** The new commit's hash. */
+  readonly hash: string;
+  /** The commit message, as recorded. */
+  readonly message: string;
+  /** When the commit was authored. */
+  readonly authoredAt: Date;
+}
+
 /**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
@@ -164,4 +210,32 @@ export interface GitCommandRunner {
    *   command fails.
    */
   unstage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>>;
+
+  /**
+   * Records a commit of the currently staged index — a whole-project mutating action.
+   *
+   * Adapter contract (the real adapter must implement exactly this ordering, so the commit
+   * captures live collaborative content rather than stale staged bytes):
+   *
+   * 1. For EACH `input.flush` entry, in order: write its `content` to the working-tree file at its
+   *    `path`, THEN run `git add -- <path>` to re-stage it. Re-adding is mandatory: the file was
+   *    already staged, so its live text only reaches the commit if the index is refreshed after the
+   *    write. A naive flush-then-commit that writes the files but skips the `git add` would commit
+   *    the STALE bytes the index captured when the file was first staged — the exact stale-content
+   *    bug this flush exists to prevent.
+   * 2. Run `git commit` with `input.message` and `input.author` as the author/committer. This
+   *    commits the INDEX, which means: only staged files are committed (staged-only); a staged file
+   *    absent from `flush` keeps the version already in its index; and unstaged/untracked files —
+   *    never written and never added here — stay out of the commit entirely.
+   *
+   * The runner does not decide what to flush or which files are staged; the caller resolves that and
+   * hands over a fully-formed `flush` list. The runner only writes those bytes, re-stages them, and
+   * commits.
+   *
+   * @param projectId - The project whose staged index to commit.
+   * @param input - The message, author, and the live-content flush list described above.
+   * @returns The new commit on success; a `GitCommandFailedError` when the underlying git
+   *   command (write, add, or commit) fails.
+   */
+  commit(projectId: ProjectId, input: GitCommitInput): Promise<Result<GitCommitResult, GitCommandFailedError>>;
 }
