@@ -18,12 +18,14 @@ import { useBehindAhead } from '@/hooks/use-behind-ahead';
 import { useGitActivity } from '@/hooks/use-git-activity';
 import { usePull } from '@/hooks/use-pull';
 import { useBranches } from '@/hooks/use-branches';
+import { useConflicts } from '@/hooks/use-conflicts';
 import { CommitDialog } from '@/components/git/commit-dialog';
 import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
 import { GitActivityIndicator } from '@/components/git/git-activity-indicator';
 import { PullDialog } from '@/components/git/pull-dialog';
 import { BranchSwitcher } from '@/components/git/branch-switcher';
 import { BranchSwitchDialog } from '@/components/git/branch-switch-dialog';
+import { ConflictPanel } from '@/components/git/conflict-panel';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
@@ -529,6 +531,17 @@ export function ProjectEditorLayout({
   // Creating/switching branches requires the same editor capability as committing/pulling; reading
   // the list does not (the route allows any project member), but the switcher is editor-only here.
   const canSwitchBranches = canEdit;
+
+  // Conflict resolution panel: shown once a pull/branch-switch pauses in AWAITING_CONFLICT (surfaced
+  // as the status bar's CONFLICTED sync status). Completing or undoing changes the working tree the
+  // same way a pull does, so it reuses the same refresh callback — and additionally closes the panel,
+  // since there is nothing left to resolve once it succeeds.
+  const [conflictPanelOpen, setConflictPanelOpen] = useState(false);
+  const handleConflictsResolved = useCallback(() => {
+    handlePullSucceeded();
+    setConflictPanelOpen(false);
+  }, [handlePullSucceeded]);
+  const conflicts = useConflicts(projectId, handleConflictsResolved);
 
   // Collaboration-facing "git activity" signal: lets a member notice that ANOTHER member's (or the
   // system's) whole-project git operation is running, purely from polling the same `GitOperation`
@@ -1360,6 +1373,11 @@ export function ProjectEditorLayout({
             onPullClick={pull.start}
             pullPending={pull.pending}
           />
+          {gitStatus?.syncStatus === 'CONFLICTED' && (
+            <Button variant="destructive" size="sm" onClick={() => setConflictPanelOpen(true)}>
+              Resolve conflicts
+            </Button>
+          )}
           <PdfExportButton
             onExport={handleExportPdf}
             isExporting={isExportingPdf}
@@ -1792,6 +1810,20 @@ export function ProjectEditorLayout({
         code={branches.confirmCode}
         onOpenChange={branches.closeConfirm}
         onConfirmed={branches.handleConfirmed}
+      />
+      <ConflictPanel
+        projectId={projectId}
+        open={conflictPanelOpen}
+        onOpenChange={setConflictPanelOpen}
+        files={conflicts.files}
+        loading={conflicts.loading}
+        error={conflicts.error}
+        allResolved={conflicts.allResolved}
+        resolve={conflicts.resolve}
+        complete={conflicts.complete}
+        undo={conflicts.undo}
+        completing={conflicts.completing}
+        message={conflicts.message}
       />
     </div>
   );

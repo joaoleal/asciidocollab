@@ -6,15 +6,20 @@ import { API_BASE_URL } from '@/lib/api/base-url';
 import {
   checkoutBranch,
   commitChanges,
+  completePull,
   createBranch,
   getBehindAhead,
   getBranches,
+  getConflicts,
+  getConflictStages,
   getGitOperation,
   getGitStatus,
   getGitTreeStatus,
   importRepository,
   isGitOperationTerminal,
+  resolveConflict,
   startPull,
+  undoPull,
 } from '@/lib/api/git';
 
 const fetchMock = jest.fn();
@@ -358,6 +363,166 @@ describe('checkoutBranch', () => {
     await expect(checkoutBranch('proj1', { name: 'dev', stashLocal: true })).rejects.toMatchObject({
       status: 409,
       code: 'open_files_need_confirm',
+    });
+  });
+});
+
+describe('getConflicts', () => {
+  test('GETs the project-scoped conflicts endpoint', async () => {
+    const body = {
+      operationId: 'op1',
+      files: [
+        { path: 'a.adoc', isBinary: false, resolved: false },
+        { path: 'assets/logo.png', isBinary: true, resolved: true },
+      ],
+    };
+    okOnce(body);
+
+    const result = await getConflicts('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/conflicts`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(body);
+  });
+
+  test('surfaces a not-connected refusal for a project with no conflicts', async () => {
+    failOnce(404, { error: { code: 'NOT_FOUND', message: 'No conflicts awaiting resolution' } });
+
+    await expect(getConflicts('proj1')).rejects.toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('getConflictStages', () => {
+  test('GETs the project-scoped conflict-stages endpoint, URL-encoding the path', async () => {
+    const body = { base: 'base text', ours: 'ours text', theirs: 'theirs text', isBinary: false };
+    okOnce(body);
+
+    const result = await getConflictStages('proj1', 'docs/getting started.adoc');
+
+    expect(requestUrl()).toBe(
+      `${API_BASE_URL}/api/projects/proj1/git/conflicts/${encodeURIComponent('docs/getting started.adoc')}`,
+    );
+    expect(requestUrl()).toContain('docs%2Fgetting%20started.adoc');
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(body);
+  });
+
+  test('surfaces a not-found refusal', async () => {
+    failOnce(404, { error: { code: 'NOT_FOUND', message: 'No such conflicting file' } });
+
+    await expect(getConflictStages('proj1', 'missing.adoc')).rejects.toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('resolveConflict', () => {
+  test('POSTs ours/theirs resolutions without a mergedContent field, URL-encoding the path', async () => {
+    okOnce({ resolved: true });
+
+    const result = await resolveConflict('proj1', 'a folder/file.adoc', { resolution: 'ours' });
+
+    expect(requestUrl()).toBe(
+      `${API_BASE_URL}/api/projects/proj1/git/conflicts/${encodeURIComponent('a folder/file.adoc')}`,
+    );
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({ resolution: 'ours' });
+    expect(result).toEqual({ resolved: true });
+  });
+
+  test('includes mergedContent only for a merged resolution', async () => {
+    okOnce({ resolved: true });
+
+    await resolveConflict('proj1', 'a.adoc', { resolution: 'merged', mergedContent: '= Final\n' });
+
+    expect(requestBody()).toEqual({ resolution: 'merged', mergedContent: '= Final\n' });
+  });
+
+  test('omits mergedContent for theirs even when one was passed', async () => {
+    okOnce({ resolved: true });
+
+    await resolveConflict('proj1', 'a.adoc', { resolution: 'theirs', mergedContent: 'ignored' });
+
+    expect(requestBody()).toEqual({ resolution: 'theirs' });
+  });
+
+  test('surfaces a permission refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'nope' } });
+
+    await expect(resolveConflict('proj1', 'a.adoc', { resolution: 'ours' })).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
+    });
+  });
+
+  test('surfaces a validation refusal', async () => {
+    failOnce(422, { error: { code: 'validation_error', message: 'mergedContent is required' } });
+
+    await expect(resolveConflict('proj1', 'a.adoc', { resolution: 'merged' })).rejects.toMatchObject({
+      status: 422,
+      code: 'validation_error',
+    });
+  });
+});
+
+describe('completePull', () => {
+  test('POSTs an empty body to the project-scoped complete endpoint', async () => {
+    okOnce({ operationId: 'op1' });
+
+    const result = await completePull('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/pull/complete`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({});
+    expect(result).toEqual({ operationId: 'op1' });
+  });
+
+  test('surfaces the unresolved-conflicts refusal', async () => {
+    failOnce(409, { error: { code: 'unresolved_conflicts', message: 'files remain unresolved' } });
+
+    await expect(completePull('proj1')).rejects.toMatchObject({
+      status: 409,
+      code: 'unresolved_conflicts',
+    });
+  });
+});
+
+describe('undoPull', () => {
+  test('POSTs an empty body to the project-scoped undo-pull endpoint', async () => {
+    okOnce({ operationId: 'op1' });
+
+    const result = await undoPull('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/undo-pull`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({});
+    expect(result).toEqual({ operationId: 'op1' });
+  });
+
+  test('surfaces the nothing-to-undo refusal', async () => {
+    failOnce(409, { error: { code: 'nothing_to_undo', message: 'nothing to undo' } });
+
+    await expect(undoPull('proj1')).rejects.toMatchObject({
+      status: 409,
+      code: 'nothing_to_undo',
+    });
+  });
+
+  test('surfaces a permission refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'nope' } });
+
+    await expect(undoPull('proj1')).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
     });
   });
 });

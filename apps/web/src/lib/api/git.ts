@@ -9,6 +9,9 @@ import type {
   BranchDto,
   BranchListDto,
   CommitDto,
+  ConflictListDto,
+  ConflictResolution,
+  ConflictStagesDto,
   FileGitStatus,
   GitOperationStatusDto,
   GitProvider,
@@ -213,4 +216,88 @@ const TERMINAL_STATES: ReadonlySet<GitOperationStatusDto['state']> = new Set([
 /** Whether a git operation has reached a terminal state (won't change on further polling). */
 export function isGitOperationTerminal(state: GitOperationStatusDto['state']): boolean {
   return TERMINAL_STATES.has(state);
+}
+
+/**
+ * Reads the project's currently conflicting files, for the conflict resolution panel — the awaiting
+ * operation's `operationId` plus one summary per conflicting file (path, whether it's binary, and
+ * whether it has already been resolved). A project with no conflicts awaiting resolution refuses
+ * with `404`; see {@link useConflicts} for how that resolves to "not in conflict" rather than an error.
+ */
+export async function getConflicts(projectId: string): Promise<ConflictListDto> {
+  return apiRequest(`/api/projects/${projectId}/git/conflicts`);
+}
+
+/**
+ * Reads one conflicting file's three-way content — the merge-base, "ours", and "theirs" versions —
+ * for the inline merge editor. The path is URL-encoded, since a project-relative path may itself
+ * contain `/` or other characters that would otherwise be read as additional path segments.
+ */
+export async function getConflictStages(projectId: string, path: string): Promise<ConflictStagesDto> {
+  return apiRequest(`/api/projects/${projectId}/git/conflicts/${encodeURIComponent(path)}`);
+}
+
+/** Request body for {@link resolveConflict}. */
+export interface ResolveConflictInput {
+  /** How this file's conflict is being resolved. */
+  resolution: ConflictResolution;
+  /** The final merged text. Required (and only sent) when `resolution` is `'merged'`. */
+  mergedContent?: string;
+}
+
+/**
+ * Resolves one conflicting file: keep "ours", take "theirs", or apply the caller's merged text. The
+ * path is URL-encoded, same as {@link getConflictStages}. `mergedContent` is included in the request
+ * body only when `resolution` is `'merged'` — sending it for `'ours'`/`'theirs'` would suggest content
+ * neither of those resolutions uses.
+ */
+export async function resolveConflict(
+  projectId: string,
+  path: string,
+  input: ResolveConflictInput,
+): Promise<{ resolved: true }> {
+  const body: ResolveConflictInput =
+    input.resolution === 'merged' ? { resolution: input.resolution, mergedContent: input.mergedContent } : { resolution: input.resolution };
+  return apiRequest(`/api/projects/${projectId}/git/conflicts/${encodeURIComponent(path)}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** What completing a paused pull hands back: the operation to poll. */
+export interface CompletePullResult {
+  /** Identifier of the newly queued completion operation. */
+  operationId: string;
+}
+
+/**
+ * Completes a pull that paused on conflicts, once every conflicting file has been resolved.
+ * Resolves as soon as the server has queued the completion (`202`) — the returned identifier is for
+ * polling {@link getGitOperation}, not a sign completion itself has finished. Refused with
+ * `409 unresolved_conflicts` when a file is still unresolved.
+ */
+export async function completePull(projectId: string): Promise<CompletePullResult> {
+  return apiRequest(`/api/projects/${projectId}/git/pull/complete`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+/** What undoing a paused pull hands back: the operation to poll. */
+export interface UndoPullResult {
+  /** Identifier of the newly queued undo operation. */
+  operationId: string;
+}
+
+/**
+ * Abandons a pull that paused on conflicts, reverting the working tree to its state before the pull
+ * started. Resolves as soon as the server has queued the undo (`202`) — the returned identifier is
+ * for polling {@link getGitOperation}, not a sign the undo itself has finished. Refused with
+ * `409 nothing_to_undo` when there is no paused pull to undo.
+ */
+export async function undoPull(projectId: string): Promise<UndoPullResult> {
+  return apiRequest(`/api/projects/${projectId}/git/undo-pull`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
 }
