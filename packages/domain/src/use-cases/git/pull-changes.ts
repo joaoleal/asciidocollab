@@ -22,8 +22,6 @@ import { LiveContentFlushFailedError } from '../../errors/git/live-content-flush
 import { requireGitRole } from './git-role-guard';
 import { resolveDownloadContentSource } from '../project/download-content-source';
 import { GitChangeReconcileResult } from './git-change-reconciler';
-import { recordAuditSuccess } from '../audit-recording';
-import { AUDIT_GIT_OPERATION_SUCCEEDED } from '../../audit-actions';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 // Referenced only from this file's own JSDoc @link tags — raised inside GitCommandRunner.fetch;
@@ -101,7 +99,8 @@ export type PullChangesResult =
 export class PullChangesUseCase {
   /**
    * @param projectMemberRepo - Resolves the actor's role for the authorization check.
-   * @param auditLogRepo - Records the authorization denial and the success outcome.
+   * @param auditLogRepo - Records the authorization denial (via `requireGitRole`). Not used on the
+   *   success path: the git-worker run loop records the terminal SUCCEEDED audit for an async op.
    * @param gitRepositoryRepo - Loads the project's repository link and writes it back after the merge.
    * @param gitOperationRepo - Records a `GitConflict` per conflicting file on a conflicted merge.
    * @param commandRunner - Runs the fetch and the merge.
@@ -200,20 +199,9 @@ export class PullChangesUseCase {
 
     await this.refreshRow(gitRepository, 'UP_TO_DATE', fetchResult.value.remoteHead);
 
-    await recordAuditSuccess(
-      this.auditLogRepo,
-      {
-        actorId: input.actorId,
-        projectId: input.projectId,
-        action: AUDIT_GIT_OPERATION_SUCCEEDED,
-        resourceType: 'GitRepository',
-        resourceId: gitRepository.id.value,
-        metadata: { kind: 'PULL' },
-        context: input.context,
-      },
-      this.logger,
-    );
-
+    // No terminal success audit here: the git-worker run loop records the SUCCEEDED transition for
+    // an async op. This use case's auditLogRepo is used only for the authorization-denial path
+    // (inside requireGitRole), matching PushChanges.
     return {
       success: true,
       value: { status: 'merged', headCommit: merge.value.headCommit, changedPaths: landed.value.changedPaths },

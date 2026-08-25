@@ -21,7 +21,6 @@ import { FileNodeType } from '../../../src/value-objects/files/file-node-type';
 import { FilePath } from '../../../src/value-objects/files/file-path';
 import { MimeType } from '../../../src/value-objects/files/mime-type';
 import { Role } from '../../../src/value-objects/identity/role';
-import { AUDIT_GIT_OPERATION_SUCCEEDED } from '../../../src/audit-actions';
 import type { CollaborativeContentReader } from '../../../src/ports/storage/collaborative-content-reader';
 import type { GitMergeFileChange, GitMergeOutcome } from '../../../src/ports/git/git-command-runner';
 import type { FileChangeReconciler } from '../../../src/use-cases/git/pull-changes';
@@ -205,8 +204,10 @@ describe('PullChangesUseCase', () => {
     expect(saved?.currentBranch).toBe(CURRENT_BRANCH);
     expect(saved?.remoteUrl).toBe(REMOTE_URL);
 
+    // No success audit is emitted here — auditLogRepo is used only for the denial path (via
+    // requireGitRole); the git-worker run loop records the terminal SUCCEEDED audit for an async op.
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    expect(audits.some((a) => a.action === AUDIT_GIT_OPERATION_SUCCEEDED)).toBe(true);
+    expect(audits).toHaveLength(0);
   });
 
   test('the fetch is authenticated with the token and the remote URL and branch of the row', async () => {
@@ -274,10 +275,8 @@ describe('PullChangesUseCase', () => {
     expect(saved?.syncStatus).toBe('CONFLICTED');
     expect(saved?.lastKnownRemoteHead).toBe(REMOTE_HEAD);
 
-    // A conflict is not a clean merge: the reconciler never runs and no success is audited.
+    // A conflict is not a clean merge: the reconciler never runs.
     expect(harness.reconciler.apply).not.toHaveBeenCalled();
-    const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    expect(audits.some((a) => a.action === AUDIT_GIT_OPERATION_SUCCEEDED)).toBe(false);
   });
 
   test('a live read that fails aborts with LiveContentFlushFailedError before fetch or merge', async () => {
@@ -335,8 +334,6 @@ describe('PullChangesUseCase', () => {
 
     const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
     expect(saved?.syncStatus).toBe('BEHIND');
-    const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    expect(audits.some((a) => a.action === AUDIT_GIT_OPERATION_SUCCEEDED)).toBe(false);
   });
 
   test('a project with no connected repository refuses with RepositoryNotConnectedError before any git call', async () => {
