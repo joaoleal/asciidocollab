@@ -46,6 +46,7 @@ export { InsufficientRoleError } from './git/insufficient-role';
 export { RepositoryUnreachableError } from './git/repository-unreachable';
 export { AuthenticationFailedError } from './git/authentication-failed';
 export { RepositoryAlreadyConnectedError } from './git/repository-already-connected';
+export { RemoteAlreadyInitializedError } from './git/remote-already-initialized';
 export { RepositoryNotConnectedError } from './git/repository-not-connected';
 export { EmptyCommitMessageError } from './git/empty-commit-message';
 export { NothingStagedError } from './git/nothing-staged';

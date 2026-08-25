@@ -3,6 +3,7 @@ import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
 import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
+import { RemoteAlreadyInitializedError } from '../../errors/git/remote-already-initialized';
 import { NonFastForwardError } from '../../errors/git/non-fast-forward';
 import { ConflictResolution } from '../../types/conflict-resolution';
 import { Result } from '../../types/result';
@@ -156,6 +157,31 @@ export type GitPushError =
   | NonFastForwardError
   | RepositoryUnreachableError
   | AuthenticationFailedError;
+
+/** Everything {@link GitCommandRunner.initializeAndPublish} needs to publish an existing project onto a fresh, empty remote. */
+export interface GitInitializeInput {
+  /** The remote's URL to publish onto. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
+  readonly token: string;
+  /** The branch to publish under. Defaults to the project's current branch (or `'main'`) when omitted. */
+  readonly branch?: string;
+}
+
+/** What a completed {@link GitCommandRunner.initializeAndPublish} call produced. */
+export interface GitInitializeOutcome {
+  /** The hash of the initial commit now at the tip of the pushed branch. */
+  readonly headCommit: string;
+  /** The branch the project was published under. */
+  readonly defaultBranch: string;
+}
+
+/** Every typed way {@link GitCommandRunner.initializeAndPublish} can fail. */
+export type GitInitializeError =
+  | RemoteAlreadyInitializedError
+  | RepositoryUnreachableError
+  | AuthenticationFailedError
+  | GitCommandFailedError;
 
 /** Everything {@link GitCommandRunner.fetch} needs to update a project's remote-tracking ref. */
 export interface GitFetchInput {
@@ -463,6 +489,45 @@ export interface GitCommandRunner {
    *   {@link GitCommandFailedError} for any other failure.
    */
   push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>>;
+
+  /**
+   * Initializes git on an existing (previously non-git) project's real working tree and publishes
+   * it to a fresh, empty remote, atomically: the whole init → remote-add → initial-commit → push
+   * sequence is one adapter call so the all-or-nothing boundary between "not published" and
+   * "published" stays in a single place, rather than being split across several port calls a
+   * use case would otherwise have to sequence and unwind itself.
+   *
+   * Adapter contract (the real adapter must implement exactly this ordering):
+   *
+   * 1. FIRST verify the remote has no commits at all (e.g. `git ls-remote <remoteUrl>`, authenticated
+   *    out-of-band with `input.token`). If it reports ANY ref/commit, do NOTHING else — no local
+   *    `git init`, no working-tree mutation — and return {@link RemoteAlreadyInitializedError}. A
+   *    non-empty remote must never be overwritten; the caller is expected to guide the user to
+   *    import/pull that remote's existing history instead.
+   * 2. Otherwise: `git init` the project's own working tree (not a scratch directory — this project
+   *    was never git-managed before this call).
+   * 3. `git remote add origin <input.remoteUrl>` (no credential in this step — the URL alone).
+   * 4. Stage and commit every file currently in the working tree as the project's initial commit.
+   * 5. `git push` that commit to `input.branch` (defaulting to the project's current branch, or
+   *    `'main'` when that too is unset), authenticating out-of-band with `input.token` — never via
+   *    argv, config, or logs, the same convention {@link clone} and {@link push} follow.
+   *
+   * On ANY failure at step 2 or later, the adapter leaves nothing half-published (no lingering
+   * `origin` remote pointed at a repository this call did not finish publishing to); this is the
+   * adapter's own responsibility, not something the caller can undo from the outside.
+   *
+   * @param projectId - The project whose working tree to initialize and publish.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
+   *   publish under.
+   * @returns The initial commit's hash and the branch it was published under; a
+   *   {@link RemoteAlreadyInitializedError} when the remote already has commits, a
+   *   {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} on the same terms as
+   *   {@link checkRemoteAccess}, or a {@link GitCommandFailedError} for any other failure.
+   */
+  initializeAndPublish(
+    projectId: ProjectId,
+    input: GitInitializeInput,
+  ): Promise<Result<GitInitializeOutcome, GitInitializeError>>;
 
   /**
    * Fetches a remote branch, updating only the local remote-tracking ref (`origin/<branch>`) — the

@@ -16,6 +16,9 @@ import {
   GitCreatedBranch,
   GitFetchInput,
   GitFetchResult,
+  GitInitializeError,
+  GitInitializeInput,
+  GitInitializeOutcome,
   GitMergeInput,
   GitMergeOutcome,
   GitPushError,
@@ -49,6 +52,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly commitResults = new Map<string, GitCommitResult>();
   private readonly pushFailures = new Map<string, GitPushError>();
   private readonly pushResults = new Map<string, GitPushResult>();
+  private readonly initializeAndPublishFailures = new Map<string, GitInitializeError>();
+  private readonly initializeAndPublishOutcomes = new Map<string, GitInitializeOutcome>();
   private readonly fetchFailures = new Map<
     string,
     RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError
@@ -89,6 +94,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `push`, in call order, for asserting the remote URL, token, and branch pushed. */
   readonly pushCalls: { projectId: ProjectId; input: GitPushInput }[] = [];
+
+  /** Every call made to `initializeAndPublish`, in call order, for asserting the remote URL, token, and branch published. */
+  readonly initializeAndPublishCalls: { projectId: ProjectId; input: GitInitializeInput }[] = [];
 
   /** Every call made to `fetch`, in call order, for asserting the remote URL, token, and branch fetched. */
   readonly fetchCalls: { projectId: ProjectId; input: GitFetchInput }[] = [];
@@ -299,6 +307,46 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: result };
+  }
+
+  /** Configures the `GitInitializeOutcome` `initializeAndPublish` returns for a project on success. */
+  seedInitializeAndPublish(projectId: ProjectId, outcome: GitInitializeOutcome): void {
+    this.initializeAndPublishOutcomes.set(projectId.value, outcome);
+  }
+
+  /**
+   * Configures `initializeAndPublish` to fail for a project, taking priority over any seeded
+   * outcome — seed with a `RemoteAlreadyInitializedError`, `RepositoryUnreachableError`,
+   * `AuthenticationFailedError`, or a generic `GitCommandFailedError` to exercise each of
+   * `initializeAndPublish`'s typed refusals.
+   */
+  seedInitializeAndPublishFailure(projectId: ProjectId, error: GitInitializeError): void {
+    this.initializeAndPublishFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact remote URL, token, and branch, so a test can assert
+   * them — and returns the seeded `GitInitializeOutcome`, unless a failure was seeded for this
+   * project via `seedInitializeAndPublishFailure`, in which case that failure takes priority.
+   */
+  async initializeAndPublish(
+    projectId: ProjectId,
+    input: GitInitializeInput,
+  ): Promise<Result<GitInitializeOutcome, GitInitializeError>> {
+    this.initializeAndPublishCalls.push({ projectId, input });
+
+    const failure = this.initializeAndPublishFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome = this.initializeAndPublishOutcomes.get(projectId.value);
+    if (!outcome) {
+      return {
+        success: false,
+        error: new GitCommandFailedError('No initialize-and-publish outcome configured for this project'),
+      };
+    }
+
+    return { success: true, value: outcome };
   }
 
   /** Configures the `GitFetchResult` `fetch` returns for a project on success. */
