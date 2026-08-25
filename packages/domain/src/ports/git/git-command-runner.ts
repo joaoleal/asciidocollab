@@ -142,4 +142,26 @@ export interface GitCommandRunner {
   clone(
     input: GitCloneInput,
   ): Promise<Result<ClonedRepository, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>>;
+
+  /**
+   * Stages the given files for the next commit (the real adapter runs `git add -- <paths>` inside
+   * the project's sandboxed working tree).
+   *
+   * @param projectId - The project whose working tree to stage files in.
+   * @param paths - Workspace-relative POSIX paths, no leading slash, of the files to stage.
+   * @returns Success once the files are staged; a `GitCommandFailedError` when the underlying git
+   *   command fails (for example, a path does not exist in the working tree).
+   */
+  stage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>>;
+
+  /**
+   * Unstages the given files, leaving their working-tree contents untouched (the real adapter runs
+   * `git reset -- <paths>` inside the project's sandboxed working tree).
+   *
+   * @param projectId - The project whose working tree to unstage files in.
+   * @param paths - Workspace-relative POSIX paths, no leading slash, of the files to unstage.
+   * @returns Success once the files are unstaged; a `GitCommandFailedError` when the underlying git
+   *   command fails.
+   */
+  unstage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>>;
 }

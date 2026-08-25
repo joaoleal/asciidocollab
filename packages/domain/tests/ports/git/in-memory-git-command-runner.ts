@@ -24,6 +24,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     string,
     RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError
   >();
+  private readonly stageFailures = new Map<string, GitCommandFailedError>();
+  private readonly unstageFailures = new Map<string, GitCommandFailedError>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -33,6 +35,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `clone`, in call order, for asserting use-case interactions. */
   readonly cloneCalls: GitCloneInput[] = [];
+
+  /** Every call made to `stage`, in call order, for asserting use-case interactions. */
+  readonly stageCalls: { projectId: ProjectId; paths: readonly string[] }[] = [];
+
+  /** Every call made to `unstage`, in call order, for asserting use-case interactions. */
+  readonly unstageCalls: { projectId: ProjectId; paths: readonly string[] }[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -116,5 +124,43 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: repository };
+  }
+
+  /** Configures `stage` to fail for a project, taking priority over its default success. */
+  seedStageFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.stageFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call and reports success, unless a failure was seeded for this project via
+   * `seedStageFailure`. Does not itself mutate any seeded `getStatus` result — seed the status a
+   * test expects `getStatus` to return after staging via `seedStatus`.
+   */
+  async stage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>> {
+    this.stageCalls.push({ projectId, paths });
+
+    const failure = this.stageFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    return { success: true, value: undefined };
+  }
+
+  /** Configures `unstage` to fail for a project, taking priority over its default success. */
+  seedUnstageFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.unstageFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call and reports success, unless a failure was seeded for this project via
+   * `seedUnstageFailure`. Does not itself mutate any seeded `getStatus` result — seed the status a
+   * test expects `getStatus` to return after unstaging via `seedStatus`.
+   */
+  async unstage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>> {
+    this.unstageCalls.push({ projectId, paths });
+
+    const failure = this.unstageFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    return { success: true, value: undefined };
   }
 }
