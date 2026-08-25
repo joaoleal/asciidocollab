@@ -1,5 +1,6 @@
 import { GitRepositoryId } from '../value-objects/ids/git-repository-id';
 import { ProjectId } from '../value-objects/ids/project-id';
+import { UserId } from '../value-objects/ids/user-id';
 import { GitProvider } from '../value-objects/project/git-provider';
 import { GitSyncStatus, DEFAULT_GIT_SYNC_STATUS } from '../types/git-sync-status';
 
@@ -40,5 +41,7 @@ export class GitRepository {
      *  time.
      */
     public readonly createdAt: Date = new Date(),
+    /** The user who connected this repository link, or null if unknown (e.g. a legacy row). */
+    public readonly connectedByUserId: UserId | null = null,
   ) {}
 }

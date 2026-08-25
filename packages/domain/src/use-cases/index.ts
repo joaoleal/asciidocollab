@@ -28,6 +28,8 @@ export {
 export type { GitIgnorePatternsAuthzContext } from './project/git-ignore-patterns-authorization';
 export { requireGitRole, GIT_RESOURCE_TYPE } from './git/git-role-guard';
 export type { GitRoleAuthzContext, GitRoleTier } from './git/git-role-guard';
+export { ConnectRepositoryUseCase } from './git/connect-repository';
+export type { ConnectRepositoryInput, ConnectRepositoryResult } from './git/connect-repository';
 export { CheckSystemSetupUseCase } from './settings/check-system-setup';
 export { UpdateDisplayNameUseCase } from './auth/update-display-name';
 export type { UpdateDisplayNameResult } from './auth/update-display-name';

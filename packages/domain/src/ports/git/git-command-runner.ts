@@ -1,5 +1,7 @@
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
+import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
+import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
 import { Result } from '../../types/result';
 
 /**
@@ -30,6 +32,14 @@ export interface GitWorkingTreeStatus {
   readonly changes: readonly GitPendingChange[];
 }
 
+/** Input for {@link GitCommandRunner.checkRemoteAccess}. */
+export interface GitRemoteAccessCheck {
+  /** The remote's URL, exactly as the caller supplied it. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Used only for this check, never persisted. */
+  readonly token: string;
+}
+
 /**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
@@ -54,4 +64,19 @@ export interface GitCommandRunner {
    *   the working tree cannot be read (for example, it has not been initialized yet).
    */
   getStatus(projectId: ProjectId): Promise<Result<GitWorkingTreeStatus, GitCommandFailedError>>;
+
+  /**
+   * Verifies that a remote can be reached and that the given token authenticates against it,
+   * without cloning or otherwise materializing a working tree. This is the connectivity/auth check
+   * `ConnectRepository` (and other remote-connecting use cases) runs before a credential is ever
+   * stored, so a bad remote URL or a rejected token is never persisted.
+   *
+   * @param check - The remote URL and the plaintext token to check it with.
+   * @returns Success once the remote is reachable and the token was accepted; a
+   *   `RepositoryUnreachableError` when the remote itself could not be reached, or an
+   *   `AuthenticationFailedError` when it was reached but rejected the token.
+   */
+  checkRemoteAccess(
+    check: GitRemoteAccessCheck,
+  ): Promise<Result<void, RepositoryUnreachableError | AuthenticationFailedError>>;
 }

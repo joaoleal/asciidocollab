@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
-import { GitRepository, GitRepositoryId, ProjectId, GitProvider, GitRepositoryRepository } from '@asciidocollab/domain';
+import { GitRepository, GitRepositoryId, ProjectId, UserId, GitProvider, GitRepositoryRepository } from '@asciidocollab/domain';
 import type { GitSyncStatus } from '@asciidocollab/domain';
 
 /**
@@ -41,10 +41,14 @@ export class PrismaGitRepositoryRepository implements GitRepositoryRepository {
    */
   async save(gitRepository: GitRepository): Promise<void> {
     const data = toPersistenceGitRepository(gitRepository);
+    // connectedByUserId is left out of `update`: a routine re-save must never overwrite who
+    // originally connected the repository (mirrors createdByUserId in
+    // prisma-git-credential-store.ts's save).
+    const { connectedByUserId: _connectedByUserId, ...updateData } = data;
     await this.prisma.gitRepository.upsert({
       where: { id: gitRepository.id.value },
       create: data,
-      update: data,
+      update: updateData,
     });
   }
 
@@ -60,7 +64,7 @@ type GitRepositoryRecord = {
   id: string; projectId: string; provider: string; remoteUrl: string;
   credentialRef: string; currentBranch: string; syncStatus: string;
   defaultBranch: string | null; lastKnownRemoteHead: string | null;
-  lastSyncAt: Date | null; createdAt: Date;
+  lastSyncAt: Date | null; createdAt: Date; connectedByUserId: string | null;
 };
 
 function toDomainGitRepository(record: GitRepositoryRecord): GitRepository {
@@ -76,6 +80,7 @@ function toDomainGitRepository(record: GitRepositoryRecord): GitRepository {
     record.lastKnownRemoteHead,
     record.lastSyncAt,
     record.createdAt,
+    record.connectedByUserId ? UserId.create(record.connectedByUserId) : null,
   );
 }
 
@@ -98,12 +103,6 @@ function toPersistenceGitRepository(gitRepository: GitRepository): Prisma.GitRep
     lastKnownRemoteHead: gitRepository.lastKnownRemoteHead,
     lastSyncAt: gitRepository.lastSyncAt,
     createdAt: gitRepository.createdAt,
-    // connectedByUserId is not carried by the domain entity — data-model.md lists only
-    // syncStatus/defaultBranch/lastKnownRemoteHead as GitRepository entity extensions, and
-    // GitRepositoryRepository#save(gitRepository) has no request context to source a user id
-    // from. Omitting the key here means upsert leaves it untouched on update (and null on
-    // create), so a routine save() never clobbers who connected the repository. The
-    // ConnectRepository/DisconnectRepository use case (not part of this task) should set it
-    // directly when it lands.
+    connectedByUserId: gitRepository.connectedByUserId?.value ?? null,
   };
 }

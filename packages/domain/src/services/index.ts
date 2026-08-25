@@ -18,3 +18,4 @@ export type { PasswordResetNotifier } from './password-reset-notifier';
 export type { EmailChangeNotifier } from './email-change-notifier';
 export type { RegistrationInvitationNotifier } from './registration-invitation-notifier';
 export type { EmailVerificationNotifier } from './email-verification-notifier';
+export type { GitCredentialEncryptor, EncryptedGitCredential } from './git-credential-encryptor';

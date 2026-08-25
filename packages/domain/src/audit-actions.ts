@@ -51,5 +51,8 @@ export const AUDIT_GIT_OPERATION_SUCCEEDED = 'git.operation_succeeded';
 export const AUDIT_GIT_OPERATION_FAILED = 'git.operation_failed';
 export const AUDIT_GIT_OPERATION_ABORTED = 'git.operation_aborted';
 
+// Git repository connection lifecycle
+export const AUDIT_GIT_REPOSITORY_CONNECTED = 'git.repository_connected';
+
 // Project-level maintainer-editable git-ignore patterns
 export const AUDIT_PROJECT_GIT_IGNORE_PATTERNS_UPDATED = 'project.git_ignore_patterns_updated';

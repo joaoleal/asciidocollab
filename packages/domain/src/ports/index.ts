@@ -33,6 +33,7 @@ export type {
   GitWorkingTreeStatus,
   GitPendingChange,
   GitPendingChangeType,
+  GitRemoteAccessCheck,
 } from './git/git-command-runner';
 
 // file-tree/
