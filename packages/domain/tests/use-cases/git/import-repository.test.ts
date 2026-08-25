@@ -1,14 +1,21 @@
+import { randomUUID } from 'crypto';
 import { ImportRepositoryUseCase } from '../../../src/use-cases/git/import-repository';
 import { ValidationError } from '../../../src/errors/common/validation-error';
 import { RepositoryUnreachableError } from '../../../src/errors/git/repository-unreachable';
 import { ClonedRepository } from '../../../src/ports/git/git-command-runner';
+import { Project } from '../../../src/entities/project';
+import { GitRepository } from '../../../src/entities/git-repository';
 import { UserId } from '../../../src/value-objects/ids/user-id';
+import { ProjectId } from '../../../src/value-objects/ids/project-id';
+import { GitRepositoryId } from '../../../src/value-objects/ids/git-repository-id';
+import { FileNodeId } from '../../../src/value-objects/ids/file-node-id';
 import { FilePath } from '../../../src/value-objects/files/file-path';
+import { ProjectName } from '../../../src/value-objects/project/project-name';
+import { GitProvider } from '../../../src/value-objects/project/git-provider';
 import { InMemoryProjectRepository } from '../../ports/project/in-memory-project.repository';
 import { InMemoryProjectMemberRepository } from '../../ports/project/in-memory-project-member.repository';
 import { InMemoryAuditLogRepository } from '../../ports/admin/in-memory-audit-log.repository';
 import { InMemoryGitRepositoryRepository } from '../../ports/project/in-memory-git-repository.repository';
-import { InMemoryGitCredentialStore } from '../../ports/git/in-memory-git-credential-store';
 import { InMemoryGitCommandRunner } from '../../ports/git/in-memory-git-command-runner';
 import { InMemoryFileNodeRepository } from '../../ports/file-tree/in-memory-file-node.repository';
 import { InMemoryDocumentRepository } from '../../ports/file-tree/in-memory-document.repository';
@@ -41,7 +48,6 @@ interface Harness {
   assetRepo: InMemoryAssetRepository;
   fileStore: InMemoryProjectFileStore;
   gitRepositoryRepo: InMemoryGitRepositoryRepository;
-  credentialStore: InMemoryGitCredentialStore;
   commandRunner: InMemoryGitCommandRunner;
   memberRepo: InMemoryProjectMemberRepository;
   auditRepo: InMemoryAuditLogRepository;
@@ -54,7 +60,6 @@ function buildHarness(): Harness {
   const assetRepo = new InMemoryAssetRepository();
   const fileStore = new InMemoryProjectFileStore();
   const gitRepositoryRepo = new InMemoryGitRepositoryRepository();
-  const credentialStore = new InMemoryGitCredentialStore();
   const commandRunner = new InMemoryGitCommandRunner();
   const memberRepo = new InMemoryProjectMemberRepository();
   const auditRepo = new InMemoryAuditLogRepository();
@@ -66,7 +71,6 @@ function buildHarness(): Harness {
     assetRepo,
     fileStore,
     gitRepositoryRepo,
-    credentialStore,
     commandRunner,
     memberRepo,
     auditRepo,
@@ -80,11 +84,64 @@ function buildHarness(): Harness {
     assetRepo,
     fileStore,
     gitRepositoryRepo,
-    credentialStore,
     commandRunner,
     memberRepo,
     auditRepo,
   };
+}
+
+/**
+ * Seeds the fakes with exactly what a route allocating an import synchronously would have
+ * written before ever enqueuing the operation this use case now runs: a memberless (and so
+ * invisible) `Project` row, and its `GitRepository` link in its pre-import state — connected to
+ * nothing yet, `DISCONNECTED` and with no observed branch/head.
+ */
+async function seedPendingImport(harness: Harness, projectId: ProjectId, actorId: UserId): Promise<void> {
+  await harness.projectRepo.save(new Project(projectId, ProjectName.create('Handbook'), null, [], null));
+  await harness.gitRepositoryRepo.save(
+    new GitRepository(
+      GitRepositoryId.create(randomUUID()),
+      projectId,
+      GitProvider.create('github'),
+      REMOTE_URL,
+      projectId.value,
+      'main',
+      'DISCONNECTED',
+      null,
+      null,
+      null,
+      new Date(),
+      actorId,
+    ),
+  );
+}
+
+/**
+ * Wraps `fileNodeRepo.save` to also record every id it is asked to save, without changing its
+ * behavior — the only way, given the fakes' interface, to know afterward exactly which rows a run
+ * wrote and so exactly which ids must have no trace left once cleanup has run.
+ */
+function captureFileNodeIds(harness: Harness): FileNodeId[] {
+  const ids: FileNodeId[] = [];
+  const originalSave = harness.fileNodeRepo.save.bind(harness.fileNodeRepo);
+  jest.spyOn(harness.fileNodeRepo, 'save').mockImplementation(async (node) => {
+    ids.push(node.id);
+    await originalSave(node);
+  });
+  return ids;
+}
+
+/**
+ * Asserts that none of `nodeIds` (and nothing else under the project) survives: no `FileNode`, and
+ * for each, no `Document` or `Asset` keyed to it either.
+ */
+async function expectNoMaterializedTree(harness: Harness, projectId: ProjectId, nodeIds: readonly FileNodeId[]): Promise<void> {
+  expect(await harness.fileNodeRepo.findByProjectId(projectId)).toHaveLength(0);
+  for (const id of nodeIds) {
+    expect(await harness.fileNodeRepo.findById(id)).toBeNull();
+    expect(await harness.documentRepo.findByFileNodeId(id)).toBeNull();
+    expect(await harness.assetRepo.findById(id)).toBeNull();
+  }
 }
 
 describe('ImportRepositoryUseCase', () => {
@@ -92,12 +149,15 @@ describe('ImportRepositoryUseCase', () => {
     jest.restoreAllMocks();
   });
 
-  test('any authenticated user imports a remote: a new project is created and the user owns it', async () => {
+  test('runs a pre-allocated import: the actor becomes the project owner', async () => {
     const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingImport(harness, projectId, ANOTHER_USER_ID);
     harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
 
     const result = await harness.useCase.execute({
       actorId: ANOTHER_USER_ID,
+      projectId,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -107,20 +167,20 @@ describe('ImportRepositoryUseCase', () => {
     if (!result.success) return;
 
     const { project, repository } = result.value;
+    expect(project.id).toEqual(projectId);
     expect(repository.projectId).toEqual(project.id);
     expect(repository.provider.value).toBe('github');
     expect(repository.remoteUrl).toBe(REMOTE_URL);
     expect(repository.defaultBranch).toBe('main');
     expect(repository.lastKnownRemoteHead).toBe(CLONED_REPOSITORY.headCommit);
+    expect(repository.syncStatus).toBe('UP_TO_DATE');
+    // Carried over untouched from the row the route had already connected it under.
     expect(repository.connectedByUserId).toEqual(ANOTHER_USER_ID);
 
-    // No pre-existing membership, role, or project was required — the actor becomes OWNER of the
-    // project this call itself created.
+    // The project and its repository link already existed, memberless — this run's own
+    // commit point is what grants the actor OWNER access, not either row's mere existence.
     const membership = await harness.memberRepo.findByCompositeKey(project.id, ANOTHER_USER_ID);
     expect(membership?.role.value).toBe('owner');
-
-    const saved = await harness.projectRepo.findById(project.id);
-    expect(saved).not.toBeNull();
 
     const entries = await harness.auditRepo.findByProjectId(project.id);
     expect(entries.some((entry) => entry.action === 'git.operation_succeeded')).toBe(true);
@@ -128,10 +188,13 @@ describe('ImportRepositoryUseCase', () => {
 
   test('builds the tree correctly: fresh ids, .git/.collab excluded', async () => {
     const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingImport(harness, projectId, OWNER_ID);
     harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
 
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
+      projectId,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -139,7 +202,6 @@ describe('ImportRepositoryUseCase', () => {
 
     expect(result.success).toBe(true);
     if (!result.success) return;
-    const projectId = result.value.project.id;
 
     const nodes = await harness.fileNodeRepo.findByProjectId(projectId);
     const paths = nodes.map((node) => node.path.value).toSorted();
@@ -172,18 +234,17 @@ describe('ImportRepositoryUseCase', () => {
     expect(await harness.fileStore.read(projectId, FilePath.create('/images/logo.png'))).toEqual(
       CLONED_REPOSITORY.entries[2].content,
     );
-
-    const storedCredential = await harness.credentialStore.load(projectId);
-    expect(storedCredential).not.toBeNull();
-    expect(storedCredential!.encryptedToken).not.toBe(TOKEN);
   });
 
   test('clones the remote with the given credential and branch', async () => {
     const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingImport(harness, projectId, OWNER_ID);
     harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
 
     await harness.useCase.execute({
       actorId: OWNER_ID,
+      projectId,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -200,6 +261,7 @@ describe('ImportRepositoryUseCase', () => {
 
       const result = await harness.useCase.execute({
         actorId: OWNER_ID,
+        projectId: ProjectId.create(randomUUID()),
         provider: 'not-a-real-provider',
         remoteUrl: REMOTE_URL,
         token: TOKEN,
@@ -215,6 +277,7 @@ describe('ImportRepositoryUseCase', () => {
 
       const result = await harness.useCase.execute({
         actorId: OWNER_ID,
+        projectId: ProjectId.create(randomUUID()),
         provider: 'github',
         remoteUrl: 'not a url; rm -rf /',
         token: TOKEN,
@@ -227,10 +290,13 @@ describe('ImportRepositoryUseCase', () => {
 
     test('a remote that cannot be reached surfaces RepositoryUnreachableError, and nothing is left behind', async () => {
       const harness = buildHarness();
+      const projectId = ProjectId.create(randomUUID());
+      await seedPendingImport(harness, projectId, OWNER_ID);
       harness.commandRunner.seedCloneFailure(REMOTE_URL, new RepositoryUnreachableError());
 
       const result = await harness.useCase.execute({
         actorId: OWNER_ID,
+        projectId,
         provider: 'github',
         remoteUrl: REMOTE_URL,
         token: TOKEN,
@@ -243,13 +309,15 @@ describe('ImportRepositoryUseCase', () => {
   });
 
   describe('all-or-nothing: a forced mid-import failure', () => {
-    test('leaves no orphan or partial project behind', async () => {
+    test('leaves no owner membership and no partial tree behind', async () => {
       const harness = buildHarness();
+      const projectId = ProjectId.create(randomUUID());
+      await seedPendingImport(harness, projectId, OWNER_ID);
       harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
-      const saveSpy = jest.spyOn(harness.projectRepo, 'save');
       const removeProjectSpy = jest.spyOn(harness.fileStore, 'removeProject');
+      const savedNodeIds = captureFileNodeIds(harness);
       // Let the tree start building, then force a failure partway through — proving a partially
-      // materialized project is rolled back entirely, not just one that never started.
+      // materialized tree is rolled back entirely, not just one that never started.
       let documentSaves = 0;
       jest.spyOn(harness.documentRepo, 'save').mockImplementation(async () => {
         documentSaves += 1;
@@ -258,6 +326,7 @@ describe('ImportRepositoryUseCase', () => {
 
       const result = await harness.useCase.execute({
         actorId: OWNER_ID,
+        projectId,
         provider: 'github',
         remoteUrl: REMOTE_URL,
         token: TOKEN,
@@ -265,25 +334,27 @@ describe('ImportRepositoryUseCase', () => {
 
       expect(result.success).toBe(false);
 
-      const projectId = saveSpy.mock.calls[0][0].id;
-      // No owner-visible project survives the failure: it is unreachable both by id...
-      expect(await harness.projectRepo.findById(projectId)).toBeNull();
-      // ...and, equivalently, has no membership row for the actor who attempted the import.
+      // The invisible project and its repository link persist (a route-created row this use
+      // case never deletes), but no owner membership exists for it — unreachable both by the
+      // composite key...
       expect(await harness.memberRepo.findByCompositeKey(projectId, OWNER_ID)).toBeNull();
+      // ...and, equivalently, has no membership row for the actor who attempted the import.
       expect(await harness.memberRepo.findByUserId(OWNER_ID)).toHaveLength(0);
 
-      expect(await harness.gitRepositoryRepo.findByProjectId(projectId)).toBeNull();
-      expect(await harness.credentialStore.load(projectId)).toBeNull();
+      await expectNoMaterializedTree(harness, projectId, savedNodeIds);
       expect(removeProjectSpy).toHaveBeenCalledWith(projectId);
     });
 
     test('reports the forced failure rather than throwing it', async () => {
       const harness = buildHarness();
+      const projectId = ProjectId.create(randomUUID());
+      await seedPendingImport(harness, projectId, OWNER_ID);
       harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
       jest.spyOn(harness.fileNodeRepo, 'save').mockRejectedValue(new Error('storage unavailable'));
 
       const result = await harness.useCase.execute({
         actorId: OWNER_ID,
+        projectId,
         provider: 'github',
         remoteUrl: REMOTE_URL,
         token: TOKEN,
@@ -293,27 +364,31 @@ describe('ImportRepositoryUseCase', () => {
       expect(await harness.memberRepo.findByUserId(OWNER_ID)).toHaveLength(0);
     });
 
-    test('cleans up when the owner-membership row itself cannot be written', async () => {
+    test('cleans up the whole tree when the owner-membership row itself cannot be written', async () => {
       const harness = buildHarness();
+      const projectId = ProjectId.create(randomUUID());
+      await seedPendingImport(harness, projectId, OWNER_ID);
       harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
-      const saveSpy = jest.spyOn(harness.projectRepo, 'save');
-      const deleteSpy = jest.spyOn(harness.projectRepo, 'delete');
+      const savedNodeIds = captureFileNodeIds(harness);
       jest.spyOn(harness.memberRepo, 'addMember').mockRejectedValue(new Error('deadlock detected'));
 
       const result = await harness.useCase.execute({
         actorId: OWNER_ID,
+        projectId,
         provider: 'github',
         remoteUrl: REMOTE_URL,
         token: TOKEN,
       });
 
-      // The membership row is the commit point, so an import that fails to write it is exactly
-      // the residue nothing can ever surface: invisible to every read path, and so never found by
-      // anything that walks visible projects.
+      // The membership row is the commit point, so an import that fails to write it — after
+      // the whole tree and the repository link have already been built — is exactly the
+      // residue nothing can ever surface: invisible to every read path, and so never found by
+      // anything that walks visible projects. The project row itself legitimately persists;
+      // what must not persist is the tree this run built on top of it.
       expect(result.success).toBe(false);
-      const projectId = saveSpy.mock.calls[0][0].id;
-      expect(deleteSpy).toHaveBeenCalledWith(projectId);
-      expect(await harness.projectRepo.findById(projectId)).toBeNull();
+      expect(await harness.projectRepo.findById(projectId)).not.toBeNull();
+      expect(await harness.memberRepo.findByUserId(OWNER_ID)).toHaveLength(0);
+      await expectNoMaterializedTree(harness, projectId, savedNodeIds);
     });
   });
 });
