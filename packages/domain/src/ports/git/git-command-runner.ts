@@ -232,6 +232,21 @@ export interface GitLogEntry {
   readonly authoredAt: Date;
 }
 
+/** One line of a file's blame: which commit last touched it, by whom (a raw git author email — mapping it to a
+ *  platform user is a domain concern, not the runner's), when, and the line's text. */
+export interface GitBlameLine {
+  /** 1-based line number in the blamed file. */
+  readonly lineNumber: number;
+  /** The full hash of the commit that last modified this line. */
+  readonly hash: string;
+  /** The author email recorded on that commit (may map to no platform user). */
+  readonly authorEmail: string;
+  /** When that commit was authored. */
+  readonly authoredAt: Date;
+  /** The line's text content. */
+  readonly content: string;
+}
+
 /** What to diff. `from`+`to` → between two commits; neither → uncommitted working changes vs HEAD.
  *  `path` scopes to one project-relative file (whole tree when absent). `currentContent`, only meaningful
  *  in the uncommitted mode, overrides that single file's working-tree content with the live editor content
@@ -661,6 +676,26 @@ export interface GitCommandRunner {
    * @returns The unified diff text; a `GitCommandFailedError` when the underlying git command fails.
    */
   diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>>;
+
+  /**
+   * Reads per-line authorship for a single project-relative file: for each line, the commit that last modified it,
+   * its author email and date, and the line text. With `ref`, blames the file as of that commit; without it, the
+   * current working-tree file. A purely local read — no network.
+   *
+   * Adapter contract (implemented later in the worker): run `git blame` in a machine-readable form (e.g.
+   * `--porcelain`) for the file, passing the file path (and `ref` when set) as positionals after
+   * `--end-of-options`; parse each line's commit hash, author email, author time, and text. Returns the lines in
+   * file order (line 1 first).
+   *
+   * @param projectId - The project whose file to blame.
+   * @param input - The project-relative file path, and the optional commit to blame it as of.
+   * @returns Every line's authorship, in file order; a `GitCommandFailedError` when the underlying git command
+   *   fails (for example, the path does not exist at the given ref).
+   */
+  blame(
+    projectId: ProjectId,
+    input: { readonly path: string; readonly ref?: string },
+  ): Promise<Result<GitBlameLine[], GitCommandFailedError>>;
 
   /**
    * Runs a local three-way merge of the already-fetched remote-tracking ref into `input.branch`.

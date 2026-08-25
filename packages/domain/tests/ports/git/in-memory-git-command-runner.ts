@@ -7,6 +7,7 @@ import {
   GitAmendError,
   GitAmendInput,
   GitBehindAhead,
+  GitBlameLine,
   GitBranchList,
   GitCheckoutInput,
   GitCheckoutOutcome,
@@ -74,6 +75,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly logResults = new Map<string, GitLogEntry[]>();
   private readonly diffFailures = new Map<string, GitCommandFailedError>();
   private readonly diffResults = new Map<string, GitDiffResult>();
+  private readonly blameFailures = new Map<string, GitCommandFailedError>();
+  private readonly blameResults = new Map<string, GitBlameLine[]>();
   private readonly mergeFailures = new Map<string, GitCommandFailedError>();
   private readonly mergeOutcomes = new Map<string, GitMergeOutcome>();
   private readonly createBranchFailures = new Map<string, GitCommandFailedError>();
@@ -127,6 +130,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `diff`, in call order, for asserting the exact input passed. */
   readonly diffCalls: { projectId: ProjectId; input: GitDiffInput }[] = [];
+
+  /** Every call made to `blame`, in call order, for asserting the exact path/ref passed. */
+  readonly blameCalls: { projectId: ProjectId; input: { readonly path: string; readonly ref?: string } }[] = [];
 
   /** Every call made to `merge`, in call order, for asserting the flush list and branch merged. */
   readonly mergeCalls: { projectId: ProjectId; input: GitMergeInput }[] = [];
@@ -524,6 +530,35 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     const result = this.diffResults.get(projectId.value) ?? { unified: '' };
 
     return { success: true, value: result };
+  }
+
+  /** Configures the `GitBlameLine[]` `blame` returns for a project on success. */
+  seedBlame(projectId: ProjectId, lines: GitBlameLine[]): void {
+    this.blameResults.set(projectId.value, lines);
+  }
+
+  /** Configures `blame` to fail for a project, taking priority over any seeded lines. */
+  seedBlameFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.blameFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact `path`/`ref` options, so a test can assert them — and
+   * returns the seeded `GitBlameLine[]` (defaulting to an empty blame when unseeded), unless a
+   * failure was seeded for this project via `seedBlameFailure`.
+   */
+  async blame(
+    projectId: ProjectId,
+    input: { readonly path: string; readonly ref?: string },
+  ): Promise<Result<GitBlameLine[], GitCommandFailedError>> {
+    this.blameCalls.push({ projectId, input });
+
+    const failure = this.blameFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const lines = this.blameResults.get(projectId.value) ?? [];
+
+    return { success: true, value: lines };
   }
 
   /**
