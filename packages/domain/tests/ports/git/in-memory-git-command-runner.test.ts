@@ -3,6 +3,8 @@ import { GitCommandFailedError } from '../../../src/errors/git/git-command-faile
 import { RepositoryUnreachableError } from '../../../src/errors/git/repository-unreachable';
 import {
   GitBehindAhead,
+  GitBranchList,
+  GitCreatedBranch,
   GitFetchResult,
   GitMergeOutcome,
   GitWorkingTreeStatus,
@@ -213,6 +215,100 @@ describe('InMemoryGitCommandRunner', () => {
       await runner.merge(projectA, mergeInput);
 
       expect(runner.mergeCalls).toEqual([{ projectId: projectA, input: mergeInput }]);
+    });
+  });
+
+  describe('createBranch', () => {
+    const createBranchInput = { name: 'feature/new-chapter' };
+
+    it('returns the seeded GitCreatedBranch for a project', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const seeded: GitCreatedBranch = { name: 'feature/new-chapter' };
+      runner.seedCreateBranch(projectA, seeded);
+
+      const result = await runner.createBranch(projectA, createBranchInput);
+
+      expect(result).toEqual({ success: true, value: seeded });
+    });
+
+    it('defaults to a branch named exactly as requested when unseeded', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      const result = await runner.createBranch(projectA, createBranchInput);
+
+      expect(result).toEqual({ success: true, value: { name: 'feature/new-chapter' } });
+    });
+
+    it('returns a seeded failure instead of the happy-path result', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const failure = new GitCommandFailedError('a branch by that name already exists');
+      runner.seedCreateBranchFailure(projectA, failure);
+
+      const result = await runner.createBranch(projectA, createBranchInput);
+
+      expect(result).toEqual({ success: false, error: failure });
+    });
+
+    it('records every call made, including the requested name', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      await runner.createBranch(projectA, createBranchInput);
+
+      expect(runner.createBranchCalls).toEqual([{ projectId: projectA, input: createBranchInput }]);
+    });
+  });
+
+  describe('listBranches', () => {
+    it('returns the seeded GitBranchList for a project', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const seeded: GitBranchList = { current: 'main', branches: ['main', 'feature/x'] };
+      runner.seedBranches(projectA, seeded);
+
+      const result = await runner.listBranches(projectA);
+
+      expect(result).toEqual({ success: true, value: seeded });
+    });
+
+    it('defaults to a single main branch when unseeded', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      const result = await runner.listBranches(projectA);
+
+      expect(result).toEqual({ success: true, value: { current: 'main', branches: ['main'] } });
+    });
+
+    it('returns a seeded failure instead of the happy-path list', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const failure = new GitCommandFailedError('working tree is not initialized');
+      runner.seedBranchesFailure(projectA, failure);
+
+      const result = await runner.listBranches(projectA);
+
+      expect(result).toEqual({ success: false, error: failure });
+    });
+
+    it('keeps seeded branch lists independent per project', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      runner.seedBranches(projectA, { current: 'main', branches: ['main'] });
+      runner.seedBranches(projectB, { current: 'develop', branches: ['develop', 'main'] });
+
+      expect(await runner.listBranches(projectA)).toEqual({
+        success: true,
+        value: { current: 'main', branches: ['main'] },
+      });
+      expect(await runner.listBranches(projectB)).toEqual({
+        success: true,
+        value: { current: 'develop', branches: ['develop', 'main'] },
+      });
+    });
+
+    it('records every call made, in order', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      await runner.listBranches(projectA);
+      await runner.listBranches(projectB);
+
+      expect(runner.listBranchesCalls).toEqual([projectA, projectB]);
     });
   });
 });

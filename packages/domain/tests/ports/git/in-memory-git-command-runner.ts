@@ -5,10 +5,13 @@ import { AuthenticationFailedError } from '../../../src/errors/git/authenticatio
 import {
   ClonedRepository,
   GitBehindAhead,
+  GitBranchList,
   GitCloneInput,
   GitCommandRunner,
   GitCommitInput,
   GitCommitResult,
+  GitCreateBranchInput,
+  GitCreatedBranch,
   GitFetchInput,
   GitFetchResult,
   GitMergeInput,
@@ -49,6 +52,10 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly behindAheadResults = new Map<string, GitBehindAhead>();
   private readonly mergeFailures = new Map<string, GitCommandFailedError>();
   private readonly mergeOutcomes = new Map<string, GitMergeOutcome>();
+  private readonly createBranchFailures = new Map<string, GitCommandFailedError>();
+  private readonly createBranchResults = new Map<string, GitCreatedBranch>();
+  private readonly branchListFailures = new Map<string, GitCommandFailedError>();
+  private readonly branchLists = new Map<string, GitBranchList>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -79,6 +86,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `merge`, in call order, for asserting the flush list and branch merged. */
   readonly mergeCalls: { projectId: ProjectId; input: GitMergeInput }[] = [];
+
+  /** Every call made to `createBranch`, in call order, for asserting the requested name. */
+  readonly createBranchCalls: { projectId: ProjectId; input: GitCreateBranchInput }[] = [];
+
+  /** Every call made to `listBranches`, in call order, for asserting use-case interactions. */
+  readonly listBranchesCalls: ProjectId[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -361,5 +374,59 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     };
 
     return { success: true, value: outcome };
+  }
+
+  /** Configures the `GitCreatedBranch` `createBranch` returns for a project on success. */
+  seedCreateBranch(projectId: ProjectId, result: GitCreatedBranch): void {
+    this.createBranchResults.set(projectId.value, result);
+  }
+
+  /** Configures `createBranch` to fail for a project, taking priority over any seeded result. */
+  seedCreateBranchFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.createBranchFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact requested name, so a test can assert it — and returns
+   * the seeded `GitCreatedBranch` (defaulting to a branch named exactly as requested when
+   * unseeded), unless a failure was seeded for this project via `seedCreateBranchFailure`.
+   */
+  async createBranch(
+    projectId: ProjectId,
+    input: GitCreateBranchInput,
+  ): Promise<Result<GitCreatedBranch, GitCommandFailedError>> {
+    this.createBranchCalls.push({ projectId, input });
+
+    const failure = this.createBranchFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.createBranchResults.get(projectId.value) ?? { name: input.name };
+
+    return { success: true, value: result };
+  }
+
+  /** Configures the `GitBranchList` `listBranches` returns for a project on success. */
+  seedBranches(projectId: ProjectId, list: GitBranchList): void {
+    this.branchLists.set(projectId.value, list);
+  }
+
+  /** Configures `listBranches` to fail for a project, taking priority over any seeded list. */
+  seedBranchesFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.branchListFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call and returns the seeded `GitBranchList` (defaulting to a single `main`
+   * branch when unseeded), unless a failure was seeded for this project via `seedBranchesFailure`.
+   */
+  async listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>> {
+    this.listBranchesCalls.push(projectId);
+
+    const failure = this.branchListFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const list = this.branchLists.get(projectId.value) ?? { current: 'main', branches: ['main'] };
+
+    return { success: true, value: list };
   }
 }

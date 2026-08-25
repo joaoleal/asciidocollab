@@ -226,6 +226,26 @@ export type GitMergeOutcome =
   | { readonly status: 'merged'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
   | { readonly status: 'conflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
 
+/** A project's branches: the checked-out branch plus every local branch name. */
+export interface GitBranchList {
+  /** The currently checked-out branch. */
+  readonly current: string;
+  /** Every local branch name. */
+  readonly branches: readonly string[];
+}
+
+/** Input for {@link GitCommandRunner.createBranch}. */
+export interface GitCreateBranchInput {
+  /** The new branch's name. */
+  readonly name: string;
+}
+
+/** The branch a {@link GitCommandRunner.createBranch} call produced. */
+export interface GitCreatedBranch {
+  /** The new branch's name, as created. */
+  readonly name: string;
+}
+
 /**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
@@ -397,4 +417,28 @@ export interface GitCommandRunner {
    *   fails.
    */
   merge(projectId: ProjectId, input: GitMergeInput): Promise<Result<GitMergeOutcome, GitCommandFailedError>>;
+
+  /**
+   * Creates a new local branch from the working tree's current branch tip (the real adapter runs
+   * `git branch <name>` inside the project's sandboxed working tree). This does not check the new
+   * branch out — it only creates the ref; switching to it is a separate, later operation.
+   *
+   * @param projectId - The project whose working tree to create the branch in.
+   * @param input - The new branch's name.
+   * @returns The created branch on success; a `GitCommandFailedError` when the underlying git
+   *   command fails (for example, a branch by that name already exists, or the name is not a
+   *   valid git ref name).
+   */
+  createBranch(projectId: ProjectId, input: GitCreateBranchInput): Promise<Result<GitCreatedBranch, GitCommandFailedError>>;
+
+  /**
+   * Lists every local branch in the project's working tree, along with which one is currently
+   * checked out (the real adapter runs something like `git branch --list` inside the project's
+   * sandboxed working tree).
+   *
+   * @param projectId - The project whose working tree to list branches for.
+   * @returns The current branch and every local branch name; a `GitCommandFailedError` when the
+   *   underlying git command fails.
+   */
+  listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>>;
 }
