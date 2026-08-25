@@ -4,6 +4,8 @@ import { RepositoryUnreachableError } from '../../../src/errors/git/repository-u
 import { AuthenticationFailedError } from '../../../src/errors/git/authentication-failed';
 import {
   ClonedRepository,
+  GitAmendError,
+  GitAmendInput,
   GitBehindAhead,
   GitBranchList,
   GitCheckoutInput,
@@ -55,6 +57,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly unstageFailures = new Map<string, GitCommandFailedError>();
   private readonly commitFailures = new Map<string, GitCommandFailedError>();
   private readonly commitResults = new Map<string, GitCommitResult>();
+  private readonly amendCommitFailures = new Map<string, GitAmendError>();
+  private readonly amendCommitResults = new Map<string, GitCommitResult>();
   private readonly pushFailures = new Map<string, GitPushError>();
   private readonly pushResults = new Map<string, GitPushResult>();
   private readonly initializeAndPublishFailures = new Map<string, GitInitializeError>();
@@ -102,6 +106,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `commit`, in call order, for asserting the flush list and author. */
   readonly commitCalls: { projectId: ProjectId; input: GitCommitInput }[] = [];
+
+  /** Every call made to `amendCommit`, in call order, for asserting the flush list, author, and optional message. */
+  readonly amendCommitCalls: { projectId: ProjectId; input: GitAmendInput }[] = [];
 
   /** Every call made to `push`, in call order, for asserting the remote URL, token, and branch pushed. */
   readonly pushCalls: { projectId: ProjectId; input: GitPushInput }[] = [];
@@ -290,6 +297,40 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     const result: GitCommitResult = seeded ?? {
       hash: '0000000000000000000000000000000000000000',
       message: input.message,
+      authoredAt: new Date('2024-01-01T00:00:00.000Z'),
+    };
+
+    return { success: true, value: result };
+  }
+
+  /** Configures `amendCommit` to fail for a project, taking priority over its default success — seed with a
+   *  `CommitAlreadyPushedError` or a generic `GitCommandFailedError` to exercise each of `amendCommit`'s typed
+   *  refusals. */
+  seedAmendCommitFailure(projectId: ProjectId, error: GitAmendError): void {
+    this.amendCommitFailures.set(projectId.value, error);
+  }
+
+  /** Configures the `GitCommitResult` `amendCommit` returns for a project on success. */
+  seedAmendCommitResult(projectId: ProjectId, result: GitCommitResult): void {
+    this.amendCommitResults.set(projectId.value, result);
+  }
+
+  /**
+   * Records the call — including the exact flush list, author, and optional message, so a test can assert
+   * them — and returns the seeded `GitCommitResult` (or a canned default), unless a failure was seeded for
+   * this project via `seedAmendCommitFailure`. Records no working-tree writes: the flush list is captured
+   * verbatim for assertion only.
+   */
+  async amendCommit(projectId: ProjectId, input: GitAmendInput): Promise<Result<GitCommitResult, GitAmendError>> {
+    this.amendCommitCalls.push({ projectId, input });
+
+    const failure = this.amendCommitFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const seeded = this.amendCommitResults.get(projectId.value);
+    const result: GitCommitResult = seeded ?? {
+      hash: '0000000000000000000000000000000000000000',
+      message: input.message ?? 'the original commit message',
       authoredAt: new Date('2024-01-01T00:00:00.000Z'),
     };
 

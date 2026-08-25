@@ -5,6 +5,7 @@ import { RepositoryUnreachableError } from '../../errors/git/repository-unreacha
 import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
 import { RemoteAlreadyInitializedError } from '../../errors/git/remote-already-initialized';
 import { NonFastForwardError } from '../../errors/git/non-fast-forward';
+import { CommitAlreadyPushedError } from '../../errors/git/commit-already-pushed';
 import { ConflictResolution } from '../../types/conflict-resolution';
 import { Result } from '../../types/result';
 
@@ -134,6 +135,17 @@ export interface GitCommitResult {
   /** When the commit was authored. */
   readonly authoredAt: Date;
 }
+
+/** What an amend records. Like a commit, but `message` is optional — absent means keep the amended
+ *  commit's existing message. `flush` carries the live text of any staged open documents, same as commit. */
+export interface GitAmendInput {
+  readonly message?: string;
+  readonly author: GitCommitAuthor;
+  readonly flush: readonly GitCommitFlushEntry[];
+}
+
+/** Amend can be refused because the target commit is already published (peer of GitCommandFailedError). */
+export type GitAmendError = GitCommandFailedError | CommitAlreadyPushedError;
 
 /** Everything {@link GitCommandRunner.push} needs to push a branch to its remote. */
 export interface GitPushInput {
@@ -507,6 +519,23 @@ export interface GitCommandRunner {
    *   command (write, add, or commit) fails.
    */
   commit(projectId: ProjectId, input: GitCommitInput): Promise<Result<GitCommitResult, GitCommandFailedError>>;
+
+  /**
+   * Amends the most-recent commit — folding the currently-staged changes (with any live text supplied via
+   * `flush`) into it and, when `message` is given, replacing its message. A purely local operation — no network.
+   *
+   * Adapter contract (implemented later in the worker): first verify the current HEAD is NOT already present on
+   * the remote-tracking branch; if it is, make no change and return {@link CommitAlreadyPushedError}. Otherwise
+   * flush the supplied live content over the staged files, then `git commit --amend` (keeping the existing
+   * message when `message` is absent, `--message` it when present) with the given author identity. Returns the
+   * amended commit's new hash/message/authored date.
+   *
+   * @param projectId - The project whose most-recent commit to amend.
+   * @param input - The optional replacement message, the author, and the live-content flush list.
+   * @returns The amended commit on success; a {@link CommitAlreadyPushedError} when the current commit is
+   *   already present on the remote-tracking branch, or a `GitCommandFailedError` for any other failure.
+   */
+  amendCommit(projectId: ProjectId, input: GitAmendInput): Promise<Result<GitCommitResult, GitAmendError>>;
 
   /**
    * Pushes the project's current branch to its remote (the real adapter runs `git push` inside the
