@@ -37,7 +37,7 @@ export interface GitWorkerLoopDeps {
   handlers: GitOperationHandlerRegistry;
   /**
    * Restores the claimed operation's project working tree to a known-clean state before its
-   * handler runs — the per-job clean-start guarantee (T011's `ensureCleanWorkingTree`).
+   * handler runs — the working-tree clean-start step (`ensureCleanWorkingTree`).
    *
    * @param operation - The claimed operation whose project working tree to clean.
    */

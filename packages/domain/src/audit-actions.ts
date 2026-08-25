@@ -46,7 +46,7 @@ export const AUDIT_REVIEW_ITEM_DELETED = 'review.item_deleted';
 export const AUDIT_REVIEW_DOCUMENT_CLEARED = 'review.document_cleared';
 export const AUDIT_REVIEW_PROJECT_CLEARED = 'review.project_cleared';
 
-// Git operation terminal outcomes (feature 048), recorded by the git-worker run loop
+// Git operation terminal outcomes, recorded by the git-worker run loop
 export const AUDIT_GIT_OPERATION_SUCCEEDED = 'git.operation_succeeded';
 export const AUDIT_GIT_OPERATION_FAILED = 'git.operation_failed';
 export const AUDIT_GIT_OPERATION_ABORTED = 'git.operation_aborted';
