@@ -1,6 +1,9 @@
+import { randomUUID } from 'crypto';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { UserId } from '../../../src/value-objects/ids/user-id';
+import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
 import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
+import { IllegalGitOperationTransitionError } from '../../../src/errors/git/illegal-git-operation-transition';
 import { InMemoryGitOperationRepository } from './in-memory-git-operation-repository';
 
 /** A mutable clock so tests can advance time deterministically without sleeping. */
@@ -178,9 +181,125 @@ describe('InMemoryGitOperationRepository', () => {
       expect(action).not.toHaveBeenCalled();
     });
 
-    // AWAITING_CONFLICT is not reachable through this fake's public API: no method here transitions an
-    // operation into that state (only enqueue → QUEUED and claimNextQueued → RUNNING exist). A future
-    // task that adds the conflict-detection/state-transition surface should add the matching case here.
+    it('fails with GitOperationInProgressError without calling the action when the active operation is AWAITING_CONFLICT', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      const transitioned = await repo.transition(claimed!.id, 'AWAITING_CONFLICT');
+      expect(transitioned.success && transitioned.value.state).toBe('AWAITING_CONFLICT'); // sanity
+      const action = jest.fn(async () => 'should not run');
+
+      const result = await repo.withGuard(projectA, action);
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(GitOperationInProgressError);
+      expect(action).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('transition', () => {
+    it('moves a RUNNING operation to SUCCEEDED, setting progress to 100 and finishedAt', async () => {
+      const { clock } = fakeClock('2026-01-01T00:00:00.000Z');
+      const repo = new InMemoryGitOperationRepository(clock);
+      await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+
+      const result = await repo.transition(claimed!.id, 'SUCCEEDED');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('SUCCEEDED');
+      expect(result.success && result.value.progress).toBe(100);
+      expect(result.success && result.value.finishedAt).toEqual(new Date('2026-01-01T00:00:00.000Z'));
+      expect(result.success && result.value.errorCode).toBeNull();
+    });
+
+    it('moves a RUNNING operation to FAILED, recording the given errorCode', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+
+      const result = await repo.transition(claimed!.id, 'FAILED', { errorCode: 'REPOSITORY_UNREACHABLE' });
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('FAILED');
+      expect(result.success && result.value.progress).toBe(100);
+      expect(result.success && result.value.errorCode).toBe('REPOSITORY_UNREACHABLE');
+      expect(result.success && result.value.finishedAt).not.toBeNull();
+    });
+
+    it('moves a RUNNING operation to ABORTED', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+
+      const result = await repo.transition(claimed!.id, 'ABORTED');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('ABORTED');
+      expect(result.success && result.value.finishedAt).not.toBeNull();
+    });
+
+    it('moves a RUNNING operation to AWAITING_CONFLICT without setting finishedAt or progress', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+
+      const result = await repo.transition(claimed!.id, 'AWAITING_CONFLICT');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('AWAITING_CONFLICT');
+      expect(result.success && result.value.finishedAt).toBeNull();
+      expect(result.success && result.value.progress).toBe(0);
+    });
+
+    it('moves an AWAITING_CONFLICT operation back to RUNNING on resolve', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      await repo.transition(claimed!.id, 'AWAITING_CONFLICT');
+
+      const result = await repo.transition(claimed!.id, 'RUNNING');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('RUNNING');
+      expect(result.success && result.value.finishedAt).toBeNull();
+    });
+
+    it('rejects an illegal transition, leaving the operation state unchanged', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const enqueued = await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+
+      // Still QUEUED: SUCCEEDED is only legal from RUNNING.
+      const result = await repo.transition(enqueued.id, 'SUCCEEDED');
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(IllegalGitOperationTransitionError);
+      expect(!result.success && result.error.fromState).toBe('QUEUED');
+      expect(!result.success && result.error.toState).toBe('SUCCEEDED');
+    });
+
+    it('rejects a transition out of an already-terminal state', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      await repo.transition(claimed!.id, 'SUCCEEDED');
+
+      const result = await repo.transition(claimed!.id, 'FAILED', { errorCode: 'X' });
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(IllegalGitOperationTransitionError);
+    });
+
+    it('rejects a transition on an operation id that does not exist', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const unknownId = GitOperationId.create(randomUUID());
+
+      const result = await repo.transition(unknownId, 'SUCCEEDED');
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error.fromState).toBeNull();
+      expect(!result.success && result.error.toState).toBe('SUCCEEDED');
+    });
   });
 
   describe('conflict CRUD', () => {

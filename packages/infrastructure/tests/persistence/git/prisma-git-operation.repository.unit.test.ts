@@ -1,7 +1,14 @@
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
-import { ProjectId, UserId, GitOperationId, GitConflictId, GitOperationInProgressError } from '@asciidocollab/domain';
+import {
+  ProjectId,
+  UserId,
+  GitOperationId,
+  GitConflictId,
+  GitOperationInProgressError,
+  IllegalGitOperationTransitionError,
+} from '@asciidocollab/domain';
 import { PrismaGitOperationRepository } from '../../../src/persistence/git/prisma-git-operation.repository';
 
 type OperationRow = {
@@ -33,7 +40,13 @@ type RepositoryRow = { projectId: string; currentBranch: string };
 
 /** Explicit shape for the fake client so `$transaction`'s closure over `client` doesn't force TS to infer its type from its own initializer (a circularity TS rejects). */
 type FakeGitPrismaClient = {
-  gitOperation: { create: jest.Mock; findFirst: jest.Mock; updateMany: jest.Mock };
+  gitOperation: {
+    create: jest.Mock;
+    findFirst: jest.Mock;
+    updateMany: jest.Mock;
+    findUnique: jest.Mock;
+    findUniqueOrThrow: jest.Mock;
+  };
   gitConflict: { create: jest.Mock; findMany: jest.Mock; findUnique: jest.Mock; deleteMany: jest.Mock };
   gitRepository: { findUnique: jest.Mock; update: jest.Mock };
   $queryRaw: jest.Mock;
@@ -89,11 +102,26 @@ function fakePrismaClient() {
           return null;
         },
       ),
-      updateMany: jest.fn(async ({ where, data }: { where: { id: string }; data: Partial<OperationRow> }) => {
+      updateMany: jest.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; state?: { in: string[] } };
+          data: Partial<OperationRow>;
+        }) => {
+          const row = operations.get(where.id);
+          if (!row) return { count: 0 };
+          if (where.state && !where.state.in.includes(row.state)) return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        },
+      ),
+      findUnique: jest.fn(async ({ where }: { where: { id: string } }) => operations.get(where.id) ?? null),
+      findUniqueOrThrow: jest.fn(async ({ where }: { where: { id: string } }) => {
         const row = operations.get(where.id);
-        if (!row) return { count: 0 };
-        Object.assign(row, data);
-        return { count: 1 };
+        if (!row) throw new Error('gitOperation row not found in fake');
+        return row;
       }),
     },
     gitConflict: {
@@ -284,6 +312,87 @@ describe('PrismaGitOperationRepository', () => {
       const repo = new PrismaGitOperationRepository(client);
 
       await expect(repo.heartbeat(GitOperationId.create(randomUUID()))).resolves.toBeUndefined();
+    });
+  });
+
+  describe('transition', () => {
+    it('moves a RUNNING operation to SUCCEEDED, setting progress to 100 and finishedAt', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PUSH', triggeredByUserId: user });
+      operations.get(enqueued.id.value)!.state = 'RUNNING';
+
+      const result = await repo.transition(enqueued.id, 'SUCCEEDED');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('SUCCEEDED');
+      expect(result.success && result.value.progress).toBe(100);
+      expect(result.success && result.value.finishedAt).toBeInstanceOf(Date);
+      expect(result.success && result.value.errorCode).toBeNull();
+    });
+
+    it('moves a RUNNING operation to FAILED, recording the given errorCode', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PUSH', triggeredByUserId: user });
+      operations.get(enqueued.id.value)!.state = 'RUNNING';
+
+      const result = await repo.transition(enqueued.id, 'FAILED', { errorCode: 'REPOSITORY_UNREACHABLE' });
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('FAILED');
+      expect(result.success && result.value.progress).toBe(100);
+      expect(result.success && result.value.errorCode).toBe('REPOSITORY_UNREACHABLE');
+    });
+
+    it('moves a RUNNING operation to AWAITING_CONFLICT without touching progress or finishedAt', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+      operations.get(enqueued.id.value)!.state = 'RUNNING';
+      operations.get(enqueued.id.value)!.progress = 40;
+
+      const result = await repo.transition(enqueued.id, 'AWAITING_CONFLICT');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('AWAITING_CONFLICT');
+      expect(result.success && result.value.progress).toBe(40);
+      expect(result.success && result.value.finishedAt).toBeNull();
+    });
+
+    it('moves an AWAITING_CONFLICT operation back to RUNNING on resolve', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+      operations.get(enqueued.id.value)!.state = 'AWAITING_CONFLICT';
+
+      const result = await repo.transition(enqueued.id, 'RUNNING');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('RUNNING');
+    });
+
+    it('rejects an illegal transition (still QUEUED), leaving the row unchanged', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PUSH', triggeredByUserId: user });
+
+      const result = await repo.transition(enqueued.id, 'SUCCEEDED');
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(IllegalGitOperationTransitionError);
+      expect(!result.success && result.error.fromState).toBe('QUEUED');
+      expect(operations.get(enqueued.id.value)?.state).toBe('QUEUED');
+    });
+
+    it('rejects a transition on an operation id that does not exist', async () => {
+      const { client } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+
+      const result = await repo.transition(GitOperationId.create(randomUUID()), 'SUCCEEDED');
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error.fromState).toBeNull();
     });
   });
 

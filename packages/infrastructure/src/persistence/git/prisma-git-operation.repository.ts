@@ -7,7 +7,10 @@ import {
   ProjectId,
   UserId,
   ACTIVE_GIT_OPERATION_STATES,
+  TERMINAL_GIT_OPERATION_STATES,
+  GIT_OPERATION_LEGAL_TRANSITIONS,
   GitOperationInProgressError,
+  IllegalGitOperationTransitionError,
 } from '@asciidocollab/domain';
 import type {
   GitOperationKind,
@@ -16,6 +19,8 @@ import type {
   CreateGitConflictInput,
   EnqueueGitOperationInput,
   GitOperationRepository,
+  GitOperationTransitionInput,
+  GitOperationTransitionTarget,
   Result,
 } from '@asciidocollab/domain';
 
@@ -194,6 +199,44 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
   }
 
   /**
+   * Moves an operation to a new state, validating the move with a single conditional `updateMany`
+   * (`WHERE id = … AND state IN (<legal source states for toState>)`) — race-safe against a
+   * concurrent transition attempt on the same row without needing a transaction, the same
+   * `GIT_OPERATION_LEGAL_TRANSITIONS` table the in-memory fake validates against.
+   */
+  async transition(
+    operationId: GitOperationId,
+    toState: GitOperationTransitionTarget,
+    input: GitOperationTransitionInput = {},
+  ): Promise<Result<GitOperation, IllegalGitOperationTransitionError>> {
+    const legalFromStates = legalSourceStatesFor(toState);
+    const isTerminal = TERMINAL_GIT_OPERATION_STATES.includes(toState);
+    const now = new Date();
+
+    const updated = await this.prisma.gitOperation.updateMany({
+      where: { id: operationId.value, state: { in: legalFromStates } },
+      data: {
+        state: toState,
+        errorCode: toState === 'FAILED' ? (input.errorCode ?? null) : null,
+        // Only set on a terminal move; a non-terminal move (e.g. into AWAITING_CONFLICT, or back
+        // to RUNNING on resolve) never touches progress/finishedAt.
+        ...(isTerminal ? { progress: 100, finishedAt: now } : {}),
+      },
+    });
+
+    if (updated.count === 0) {
+      const existing = await this.prisma.gitOperation.findUnique({
+        where: { id: operationId.value },
+        select: { state: true },
+      });
+      return { success: false, error: new IllegalGitOperationTransitionError(existing?.state ?? null, toState) };
+    }
+
+    const record = await this.prisma.gitOperation.findUniqueOrThrow({ where: { id: operationId.value } });
+    return { success: true, value: toDomainGitOperation(record) };
+  }
+
+  /**
    * Runs `action` only if the project has no active operation. See the class docs for the full
    * concurrency design (SERIALIZABLE transaction + a self-touch of the project's `GitRepository`
    * row standing in for the not-yet-existing partial-unique index).
@@ -270,6 +313,13 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
   async clearConflicts(operationId: GitOperationId): Promise<void> {
     await this.prisma.gitConflict.deleteMany({ where: { operationId: operationId.value } });
   }
+}
+
+/** Every `GitOperationState` from which `GIT_OPERATION_LEGAL_TRANSITIONS` allows a legal move to `toState`. */
+function legalSourceStatesFor(toState: GitOperationTransitionTarget): GitOperationState[] {
+  return (Object.entries(GIT_OPERATION_LEGAL_TRANSITIONS) as [GitOperationState, GitOperationTransitionTarget[]][])
+    .filter(([, targets]) => targets.includes(toState))
+    .map(([fromState]) => fromState);
 }
 
 /** True when `error` is Postgres's "could not serialize access due to concurrent update" surfaced by Prisma as P2034. */

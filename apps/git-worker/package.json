@@ -12,7 +12,11 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@asciidocollab/db": "workspace:*",
     "@asciidocollab/domain": "workspace:*",
+    "@asciidocollab/infrastructure": "workspace:*",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
     "convict": "^6.2.5",
     "pino": "^10.3.1"
   },

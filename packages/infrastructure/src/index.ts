@@ -13,6 +13,10 @@ export { PrismaProjectRepository } from './persistence/project/prisma-project.re
 export { PrismaProjectMemberRepository } from './persistence/project/prisma-project-member.repository';
 export { PrismaTemplateRepository } from './persistence/project/prisma-template.repository';
 export { PrismaGitRepositoryRepository } from './persistence/project/prisma-git-repository.repository';
+
+// git/
+export { PrismaGitOperationRepository, type PrismaGitOperationRepositoryOptions } from './persistence/git/prisma-git-operation.repository';
+export { PrismaGitCredentialStore, type DecryptedGitCredential } from './persistence/git/prisma-git-credential-store';
 export { PrismaCollaborationSessionRepository } from './persistence/project/prisma-collaboration-session-repository';
 export { PrismaProjectRenderConfigRepository } from './persistence/project/prisma-project-render-config.repository';
 export { PrismaProjectDictionaryRepository } from './persistence/grammar/prisma-project-dictionary.repository';

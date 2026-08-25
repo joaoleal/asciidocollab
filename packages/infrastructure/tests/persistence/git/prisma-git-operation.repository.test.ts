@@ -184,6 +184,69 @@ describe('PrismaGitOperationRepository', () => {
     });
   });
 
+  describe('transition', () => {
+    it('moves a RUNNING operation to SUCCEEDED, setting progress to 100 and finishedAt', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const enqueued = await repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id });
+      await repo.claimNextQueued(30_000);
+
+      const result = await repo.transition(enqueued.id, 'SUCCEEDED');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('SUCCEEDED');
+      expect(result.success && result.value.progress).toBe(100);
+      expect(result.success && result.value.finishedAt).not.toBeNull();
+      expect(result.success && result.value.errorCode).toBeNull();
+    });
+
+    it('moves a RUNNING operation to FAILED, recording the given errorCode', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const enqueued = await repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id });
+      await repo.claimNextQueued(30_000);
+
+      const result = await repo.transition(enqueued.id, 'FAILED', { errorCode: 'REPOSITORY_UNREACHABLE' });
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.state).toBe('FAILED');
+      expect(result.success && result.value.errorCode).toBe('REPOSITORY_UNREACHABLE');
+    });
+
+    it('moves a RUNNING operation to AWAITING_CONFLICT, then back to RUNNING on resolve', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const enqueued = await repo.enqueue({ projectId: project.id, kind: 'PULL', triggeredByUserId: owner.id });
+      await repo.claimNextQueued(30_000);
+
+      const toConflict = await repo.transition(enqueued.id, 'AWAITING_CONFLICT');
+      expect(toConflict.success && toConflict.value.state).toBe('AWAITING_CONFLICT');
+      expect(toConflict.success && toConflict.value.finishedAt).toBeNull();
+
+      const resumed = await repo.transition(enqueued.id, 'RUNNING');
+      expect(resumed.success && resumed.value.state).toBe('RUNNING');
+    });
+
+    it('rejects an illegal transition (still QUEUED), leaving the row unchanged', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const enqueued = await repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id });
+
+      const result = await repo.transition(enqueued.id, 'SUCCEEDED');
+
+      expect(result.success).toBe(false);
+      const row = await client.gitOperation.findUniqueOrThrow({ where: { id: enqueued.id.value } });
+      expect(row.state).toBe('QUEUED');
+    });
+
+    it('rejects a transition on an operation id that does not exist', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const enqueued = await repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id });
+      await client.gitOperation.delete({ where: { id: enqueued.id.value } });
+
+      const result = await repo.transition(enqueued.id, 'SUCCEEDED');
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error.fromState).toBeNull();
+    });
+  });
+
   describe('withGuard', () => {
     it('runs the action and returns its value when the project has no active operation', async () => {
       const { project } = await setupConnectedProject();

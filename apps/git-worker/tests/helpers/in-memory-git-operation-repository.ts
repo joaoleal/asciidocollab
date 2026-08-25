@@ -1,36 +1,42 @@
 import { randomUUID } from 'crypto';
-import { GitOperation } from '../../../src/entities/git-operation';
-import { GitConflict } from '../../../src/entities/git-conflict';
-import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
-import { GitConflictId } from '../../../src/value-objects/ids/git-conflict-id';
-import { ProjectId } from '../../../src/value-objects/ids/project-id';
-import { Result } from '../../../src/types/result';
-import { TERMINAL_GIT_OPERATION_STATES } from '../../../src/types/git-operation-state';
 import {
+  GitOperation,
+  GitConflict,
+  GitOperationId,
+  GitConflictId,
+  GitOperationInProgressError,
+  IllegalGitOperationTransitionError,
+  GIT_OPERATION_LEGAL_TRANSITIONS,
+  TERMINAL_GIT_OPERATION_STATES,
+} from '@asciidocollab/domain';
+import type {
   CreateGitConflictInput,
   EnqueueGitOperationInput,
-  GIT_OPERATION_LEGAL_TRANSITIONS,
   GitOperationRepository,
   GitOperationTransitionInput,
   GitOperationTransitionTarget,
-} from '../../../src/ports/git/git-operation-repository';
-import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
-import { IllegalGitOperationTransitionError } from '../../../src/errors/git/illegal-git-operation-transition';
+  ProjectId,
+  Result,
+} from '@asciidocollab/domain';
 
-/** Produces the current time; injectable so tests can simulate stale heartbeats deterministically. */
-export type Clock = () => Date;
-
-/** In-memory implementation of GitOperationRepository for use in tests. */
+/**
+ * A local, minimal in-memory `GitOperationRepository` fake for this app's run-loop tests.
+ *
+ * Not a re-export of `packages/domain/tests/ports/git/in-memory-git-operation-repository.ts`:
+ * that file imports domain's value objects/entities from its own package's `src/` (nominally
+ * typed via private/protected fields), which is a different module instance than the compiled
+ * `@asciidocollab/domain` (`dist/`) this app itself imports — TypeScript treats the two as
+ * incompatible types across that boundary. So this app keeps its own small fake, built only
+ * against the public `@asciidocollab/domain` package, mirroring the domain fake's semantics
+ * (FIFO claim, opportunistic stale-heartbeat reclaim, `transition` validated against the same
+ * `GIT_OPERATION_LEGAL_TRANSITIONS` table) closely enough to exercise the run loop faithfully.
+ */
 export class InMemoryGitOperationRepository implements GitOperationRepository {
   private readonly operations = new Map<string, GitOperation>();
   private readonly insertionOrder = new Map<string, number>();
   private readonly conflicts = new Map<string, GitConflict>();
   private nextSequence = 0;
 
-  /** @param clock - Time source for timestamps; defaults to the wall clock. */
-  constructor(private readonly clock: Clock = () => new Date()) {}
-
-  /** Enqueues a new operation in the QUEUED state, oldest-first for later FIFO claiming. */
   async enqueue(input: EnqueueGitOperationInput): Promise<GitOperation> {
     const operation = new GitOperation(
       GitOperationId.create(randomUUID()),
@@ -44,19 +50,14 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
       null,
       null,
       null,
-      this.clock(),
+      new Date(),
     );
     this.store(operation);
     return operation;
   }
 
-  /**
-   * Claims the oldest QUEUED operation, or — if none is queued — the oldest
-   * RUNNING operation whose heartbeat has gone stale. Returns null when
-   * neither exists.
-   */
   async claimNextQueued(staleHeartbeatAfterMs: number): Promise<GitOperation | null> {
-    const now = this.clock();
+    const now = new Date();
 
     const queued = this.oldestFirst((op) => op.state === 'QUEUED');
     if (queued) return this.claim(queued, now);
@@ -69,7 +70,6 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return null;
   }
 
-  /** Refreshes the heartbeat of a running operation. No-op if it does not exist. */
   async heartbeat(operationId: GitOperationId): Promise<void> {
     const operation = this.operations.get(operationId.value);
     if (!operation) return;
@@ -83,7 +83,7 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
         operation.triggeredByUserId,
         operation.branch,
         operation.progress,
-        this.clock(),
+        new Date(),
         operation.errorCode,
         operation.startedAt,
         operation.finishedAt,
@@ -92,11 +92,6 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     );
   }
 
-  /**
-   * Moves an operation to a new state, validating the move against
-   * `GIT_OPERATION_LEGAL_TRANSITIONS` — the same table the Prisma adapter validates against, so
-   * the two stay in sync.
-   */
   async transition(
     operationId: GitOperationId,
     toState: GitOperationTransitionTarget,
@@ -110,7 +105,7 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     }
 
     const isTerminal = TERMINAL_GIT_OPERATION_STATES.includes(toState);
-    const now = this.clock();
+    const now = new Date();
     const transitioned = new GitOperation(
       operation.id,
       operation.projectId,
@@ -129,7 +124,6 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return { success: true, value: transitioned };
   }
 
-  /** Runs `action` only when the project has no active operation; otherwise reports it is busy. */
   async withGuard<T>(
     projectId: ProjectId,
     action: () => Promise<T>,
@@ -144,7 +138,6 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return { success: true, value };
   }
 
-  /** Records a new, unresolved conflict for an operation. */
   async createConflict(input: CreateGitConflictInput): Promise<GitConflict> {
     const conflict = new GitConflict(
       GitConflictId.create(randomUUID()),
@@ -153,43 +146,37 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
       input.isBinary ?? false,
       false,
       null,
-      this.clock(),
+      new Date(),
     );
     this.conflicts.set(conflict.id.value, conflict);
     return conflict;
   }
 
-  /** Lists every conflict recorded for an operation, in recording order. */
   async listConflicts(operationId: GitOperationId): Promise<GitConflict[]> {
     return [...this.conflicts.values()].filter((conflict) => conflict.operationId.value === operationId.value);
   }
 
-  /** Reads back a single conflict by id, or null if it does not exist. */
   async getConflict(conflictId: GitConflictId): Promise<GitConflict | null> {
     return this.conflicts.get(conflictId.value) ?? null;
   }
 
-  /** Removes every conflict recorded for an operation. */
   async clearConflicts(operationId: GitOperationId): Promise<void> {
     for (const [id, conflict] of this.conflicts) {
       if (conflict.operationId.value === operationId.value) this.conflicts.delete(id);
     }
   }
 
-  /** Finds the oldest (by enqueue order) stored operation matching `predicate`, or undefined. */
   private oldestFirst(predicate: (op: GitOperation) => boolean): GitOperation | undefined {
     return [...this.operations.values()]
       .filter(predicate)
       .toSorted((a, b) => this.sequenceOf(a) - this.sequenceOf(b))[0];
   }
 
-  /** A RUNNING operation is stale once its heartbeat is missing or older than the threshold. */
   private isStale(operation: GitOperation, now: Date, staleHeartbeatAfterMs: number): boolean {
     if (operation.heartbeatAt === null) return true;
     return now.getTime() - operation.heartbeatAt.getTime() >= staleHeartbeatAfterMs;
   }
 
-  /** Marks an operation RUNNING with a fresh heartbeat, preserving its original start time. */
   private claim(operation: GitOperation, now: Date): GitOperation {
     const claimed = new GitOperation(
       operation.id,

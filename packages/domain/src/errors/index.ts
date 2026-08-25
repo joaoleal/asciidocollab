@@ -41,3 +41,4 @@ export { ReviewOperationInvalidError } from './review/review-operation-invalid';
 export { ReviewCountConflictError } from './review/review-count-conflict';
 export { GitOperationInProgressError } from './git/git-operation-in-progress';
 export { GitCommandFailedError } from './git/git-command-failed';
+export { IllegalGitOperationTransitionError } from './git/illegal-git-operation-transition';

@@ -24,7 +24,10 @@ export type {
   GitOperationRepository,
   EnqueueGitOperationInput,
   CreateGitConflictInput,
+  GitOperationTransitionTarget,
+  GitOperationTransitionInput,
 } from './git/git-operation-repository';
+export { GIT_OPERATION_LEGAL_TRANSITIONS } from './git/git-operation-repository';
 export type {
   GitCommandRunner,
   GitWorkingTreeStatus,
