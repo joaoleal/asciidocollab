@@ -40,6 +40,8 @@ export { CommitChangesUseCase } from './git/commit-changes';
 export type { CommitChangesInput, CommitChangesResult } from './git/commit-changes';
 export { PushChangesUseCase } from './git/push-changes';
 export type { PushChangesInput, PushChangesResult } from './git/push-changes';
+export { PullChangesUseCase } from './git/pull-changes';
+export type { PullChangesInput, PullChangesResult, FileChangeReconciler } from './git/pull-changes';
 export { CheckSystemSetupUseCase } from './settings/check-system-setup';
 export { UpdateDisplayNameUseCase } from './auth/update-display-name';
 export type { UpdateDisplayNameResult } from './auth/update-display-name';
