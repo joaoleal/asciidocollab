@@ -14,6 +14,8 @@ import {
   GitCommitResult,
   GitCreateBranchInput,
   GitCreatedBranch,
+  GitDiffInput,
+  GitDiffResult,
   GitFetchInput,
   GitFetchResult,
   GitInitializeError,
@@ -64,6 +66,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly behindAheadResults = new Map<string, GitBehindAhead>();
   private readonly logFailures = new Map<string, GitCommandFailedError>();
   private readonly logResults = new Map<string, GitLogEntry[]>();
+  private readonly diffFailures = new Map<string, GitCommandFailedError>();
+  private readonly diffResults = new Map<string, GitDiffResult>();
   private readonly mergeFailures = new Map<string, GitCommandFailedError>();
   private readonly mergeOutcomes = new Map<string, GitMergeOutcome>();
   private readonly createBranchFailures = new Map<string, GitCommandFailedError>();
@@ -109,6 +113,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `log`, in call order, for asserting the path/limit options. */
   readonly logCalls: { projectId: ProjectId; options: { readonly path?: string; readonly limit?: number } }[] = [];
+
+  /** Every call made to `diff`, in call order, for asserting the exact input passed. */
+  readonly diffCalls: { projectId: ProjectId; input: GitDiffInput }[] = [];
 
   /** Every call made to `merge`, in call order, for asserting the flush list and branch merged. */
   readonly mergeCalls: { projectId: ProjectId; input: GitMergeInput }[] = [];
@@ -443,6 +450,32 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     const entries = this.logResults.get(projectId.value) ?? [];
 
     return { success: true, value: entries };
+  }
+
+  /** Configures the `GitDiffResult` `diff` returns for a project on success. */
+  seedDiff(projectId: ProjectId, result: GitDiffResult): void {
+    this.diffResults.set(projectId.value, result);
+  }
+
+  /** Configures `diff` to fail for a project, taking priority over any seeded result. */
+  seedDiffFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.diffFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact input, so a test can assert `from`/`to`/`path`/
+   * `currentContent` — and returns the seeded `GitDiffResult` (defaulting to an empty unified diff
+   * when unseeded), unless a failure was seeded for this project via `seedDiffFailure`.
+   */
+  async diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>> {
+    this.diffCalls.push({ projectId, input });
+
+    const failure = this.diffFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.diffResults.get(projectId.value) ?? { unified: '' };
+
+    return { success: true, value: result };
   }
 
   /**

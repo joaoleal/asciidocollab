@@ -220,6 +220,22 @@ export interface GitLogEntry {
   readonly authoredAt: Date;
 }
 
+/** What to diff. `from`+`to` → between two commits; neither → uncommitted working changes vs HEAD.
+ *  `path` scopes to one project-relative file (whole tree when absent). `currentContent`, only meaningful
+ *  in the uncommitted mode, overrides that single file's working-tree content with the live editor content
+ *  so an open file diffs its live text rather than its stale on-disk copy. */
+export interface GitDiffInput {
+  readonly path?: string;
+  readonly from?: string;
+  readonly to?: string;
+  readonly currentContent?: { readonly path: string; readonly content: string };
+}
+
+/** A rendered diff. Rendering is a client concern: the runner supplies only the raw unified-diff text. */
+export interface GitDiffResult {
+  readonly unified: string;
+}
+
 /** Everything {@link GitCommandRunner.merge} needs to merge a fetched remote-tracking ref into a branch. */
 export interface GitMergeInput {
   /** The local branch to merge the remote-tracking ref into. */
@@ -590,6 +606,24 @@ export interface GitCommandRunner {
     projectId: ProjectId,
     options: { readonly path?: string; readonly limit?: number },
   ): Promise<Result<GitLogEntry[], GitCommandFailedError>>;
+
+  /**
+   * Produces a unified diff. With `from` and `to`, diffs between those two commits; with neither, diffs the
+   * uncommitted working changes against HEAD. `path`, when set, scopes the diff to that single project-relative
+   * file (passed as a positional after `--end-of-options`). `currentContent` (uncommitted mode only) replaces
+   * that one file's working-tree content with the given live text before diffing. A purely local read — no network.
+   *
+   * Adapter contract (implemented later in the worker): commit-vs-commit → `git diff <from> <to> [-- <path>]`;
+   * uncommitted → `git diff HEAD [-- <path>]`; when `currentContent` is present, diff HEAD's blob of that path
+   * against the supplied live text (e.g. via a temp file / `git diff --no-index`, worker's choice) so no stale
+   * working-tree copy is read. An empty diff is an empty string, not an error.
+   *
+   * @param projectId - The project whose working tree (and/or history) to diff.
+   * @param input - What to diff — two commits, or the uncommitted working changes, optionally scoped to one
+   *   file, optionally overriding that file's content with live text.
+   * @returns The unified diff text; a `GitCommandFailedError` when the underlying git command fails.
+   */
+  diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>>;
 
   /**
    * Runs a local three-way merge of the already-fetched remote-tracking ref into `input.branch`.
