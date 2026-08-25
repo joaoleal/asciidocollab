@@ -130,7 +130,7 @@ describe('POST /projects/:projectId/git/commit', () => {
     const response = await commit(app, PROJECT_ID, 'Fix typo');
 
     expect(response.statusCode).toBe(409);
-    expect(response.json().path).toBe('docs/broken.adoc');
+    expect(response.json().error.details.path).toBe('docs/broken.adoc');
 
     await app.close();
   });

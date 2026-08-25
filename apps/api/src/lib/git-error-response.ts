@@ -2,12 +2,11 @@ import type { FastifyReply } from 'fastify';
 
 /**
  * Shared response envelope a git route sends for a domain refusal: the repo-standard
- * `{ error: { code, message } }` shape (matches `file-tree-errors.ts`), plus an optional top-level
- * `path` naming the file a `LiveContentFlushFailedError` could not read.
+ * `{ error: { code, message } }` shape (matches `file-tree-errors.ts`), plus an optional
+ * `error.details.path` naming the file a `LiveContentFlushFailedError` could not read.
  */
 export interface GitErrorResponseBody {
-  error: { code: string; message: string };
-  path?: string;
+  error: { code: string; message: string; details?: { path?: string } };
 }
 
 /** The HTTP status and response body a git route should send for a mapped domain refusal. */
@@ -84,8 +83,11 @@ export function gitErrorResponse(errorName: string, path?: string): GitErrorResp
     return {
       status: 409,
       body: {
-        error: { code: 'live_content_flush_failed', message },
-        ...(path ? { path } : {}),
+        error: {
+          code: 'live_content_flush_failed',
+          message,
+          ...(path ? { details: { path } } : {}),
+        },
       },
     };
   }

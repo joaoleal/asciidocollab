@@ -28,14 +28,15 @@ describe('gitErrorResponse', () => {
     expect(result.status).toBe(409);
     expect(result.body.error.code).toBe('live_content_flush_failed');
     expect(result.body.error.message).toContain('/docs/intro.adoc');
-    expect(result.body.path).toBe('/docs/intro.adoc');
+    expect(result.body.error.details?.path).toBe('/docs/intro.adoc');
+    expect((result.body as unknown as Record<string, unknown>).path).toBeUndefined();
   });
 
   test('maps LiveContentFlushFailedError to a safe generic message when no path is given', () => {
     const result = gitErrorResponse('LiveContentFlushFailedError');
     expect(result.status).toBe(409);
     expect(result.body.error.code).toBe('live_content_flush_failed');
-    expect(result.body.path).toBeUndefined();
+    expect(result.body.error.details).toBeUndefined();
   });
 
   test('never echoes a worker secret or token even if smuggled in as the error name', () => {
