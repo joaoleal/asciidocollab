@@ -5,6 +5,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { GitCommandFailedError, ProjectId } from '@asciidocollab/domain';
 import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
+import { RemoteHostNotAllowedError } from '../../src/git/egress-allowlist.js';
 import { commitAll, createTemporaryStorageRootWithProject } from '../helpers/temporary-git-repo.js';
 
 const execFile = promisify(execFileCallback);
@@ -156,5 +157,34 @@ describe('RealGitCommandRunner.getStatus', () => {
 
     expect(resultA.success).toBe(true);
     expect(resultB.success).toBe(false);
+  });
+});
+
+describe('RealGitCommandRunner.assertRemoteAllowed', () => {
+  it('permits a remote whose host is on the configured egress allowlist', async () => {
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-egress-'));
+    // A public IP literal, so this resolves via the real (default) resolver without any
+    // network dependency or DNS lookup.
+    const runner = new RealGitCommandRunner(storageRoot, ['93.184.216.34']);
+
+    await expect(runner.assertRemoteAllowed('https://93.184.216.34/org/repo.git')).resolves.toBeUndefined();
+  });
+
+  it('rejects a remote whose host is not on the configured egress allowlist', async () => {
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-egress-'));
+    const runner = new RealGitCommandRunner(storageRoot, ['git.example.com']);
+
+    await expect(runner.assertRemoteAllowed('https://not-allowed.example.com/org/repo.git')).rejects.toBeInstanceOf(
+      RemoteHostNotAllowedError,
+    );
+  });
+
+  it('denies every remote when constructed without an explicit allowlist (deny-by-default)', async () => {
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-egress-'));
+    const runner = new RealGitCommandRunner(storageRoot);
+
+    await expect(runner.assertRemoteAllowed('https://github.com/org/repo.git')).rejects.toBeInstanceOf(
+      RemoteHostNotAllowedError,
+    );
   });
 });

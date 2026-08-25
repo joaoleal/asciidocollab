@@ -7,6 +7,7 @@ import {
   type ProjectId,
   type Result,
 } from '@asciidocollab/domain';
+import { assertRemoteHostAllowed } from './egress-allowlist.js';
 import { runGitCommand } from './run-git-command.js';
 import { resolveWorkingTreePath } from './working-tree.js';
 
@@ -18,8 +19,33 @@ import { resolveWorkingTreePath } from './working-tree.js';
  * shells out to `git` for the operations it implements.
  */
 export class RealGitCommandRunner implements GitCommandRunner {
-  /** @param storageRoot - Root directory for per-project storage (see {@link resolveWorkingTreePath}). */
-  constructor(private readonly storageRoot: string) {}
+  /**
+   * @param storageRoot - Root directory for per-project storage (see {@link resolveWorkingTreePath}).
+   * @param allowedHosts - The configured git network egress allowlist (`git.egress.allowedHosts`).
+   *   Defaults to empty (deny-by-default) so a caller that omits it can never reach a remote.
+   *   Every method that reaches a remote (clone, fetch, push, ...) must call
+   *   {@link RealGitCommandRunner.assertRemoteAllowed} with that remote's URL before running any
+   *   network `git` command.
+   */
+  constructor(
+    private readonly storageRoot: string,
+    private readonly allowedHosts: readonly string[] = [],
+  ) {}
+
+  /**
+   * Gates a git network operation on the configured egress allowlist, resolving `remoteUrl`'s
+   * host and rejecting before any `git` process is spawned when that host is not allowed, or
+   * resolves to a private/link-local address (closing a DNS-rebinding path around an otherwise
+   * allowlisted hostname).
+   *
+   * @param remoteUrl - The remote URL the caller is about to contact.
+   * @returns Resolves if the remote is allowed to be contacted; otherwise rejects.
+   * @throws {RemoteHostNotAllowedError} If the remote host is not allowlisted, or resolves to a
+   *   private/link-local address.
+   */
+  async assertRemoteAllowed(remoteUrl: string): Promise<void> {
+    await assertRemoteHostAllowed(remoteUrl, this.allowedHosts);
+  }
 
   /**
    * Reads the working tree's current branch and its pending (uncommitted) changes via

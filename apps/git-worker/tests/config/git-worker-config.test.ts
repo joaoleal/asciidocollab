@@ -8,6 +8,7 @@ describe('createGitWorkerConfig', () => {
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_POLL_INTERVAL_MS;
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_HEARTBEAT_INTERVAL_MS;
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_STALE_HEARTBEAT_AFTER_MS;
+    delete process.env.ASCIIDOCOLLAB_GIT_EGRESS_ALLOWED_HOSTS;
   });
 
   it('defaults storageRoot to ./storage', () => {
@@ -65,5 +66,19 @@ describe('createGitWorkerConfig', () => {
     expect(config.get('pollIntervalMs')).toBe(500);
     expect(config.get('heartbeatIntervalMs')).toBe(5000);
     expect(config.get('staleHeartbeatAfterMs')).toBe(30_000);
+  });
+
+  it('defaults egressAllowedHosts to the supported providers (GitHub, GitLab, Bitbucket)', () => {
+    const config = createGitWorkerConfig();
+
+    expect(config.get('egressAllowedHosts')).toEqual(['github.com', 'gitlab.com', 'bitbucket.org']);
+  });
+
+  it('reads egressAllowedHosts from ASCIIDOCOLLAB_GIT_EGRESS_ALLOWED_HOSTS as a comma-separated list', () => {
+    process.env.ASCIIDOCOLLAB_GIT_EGRESS_ALLOWED_HOSTS = 'git.example.com, self-hosted.internal';
+
+    const config = createGitWorkerConfig();
+
+    expect(config.get('egressAllowedHosts')).toEqual(['git.example.com', 'self-hosted.internal']);
   });
 });

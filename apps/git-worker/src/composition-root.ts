@@ -71,7 +71,7 @@ export async function compositionRoot() {
   // call either yet (see this function's docs).
   const gitCredentialStore = new PrismaGitCredentialStore(prisma, credentialEncryption);
   const storageRoot = config.get('storageRoot');
-  const gitCommandRunner = new RealGitCommandRunner(storageRoot);
+  const gitCommandRunner = new RealGitCommandRunner(storageRoot, config.get('egressAllowedHosts'));
 
   const handlers: GitOperationHandlerRegistry = {};
 

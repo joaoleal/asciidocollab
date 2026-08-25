@@ -10,6 +10,7 @@ Everything Docker-related lives in this folder:
 | `Dockerfile`              | Multi-stage build; one image per service             |
 | `Caddyfile`               | Edge proxy: TLS, security headers, path routing      |
 | `generate-secrets.sh`     | Generates `docker/.env` and the internal mTLS PKI    |
+| `git-worker-egress-policy.md` | Network-layer egress allowlist for the git-worker container |
 
 ---
 
