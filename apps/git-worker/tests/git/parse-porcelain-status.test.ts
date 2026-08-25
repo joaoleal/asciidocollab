@@ -24,12 +24,15 @@ describe('parsePorcelainStatus', () => {
     expect(status).toEqual({ currentBranch: 'main', changes: [] });
   });
 
-  it('ignores a `u` (unmerged/conflict) line', () => {
+  it('maps an unmerged (`u`) conflict line to state "conflicted"', () => {
     const status = parsePorcelainStatus(
       '# branch.head main\nu UU N... 100644 100644 100644 100644 aaaa bbbb cccc conflicted.adoc\n',
     );
 
-    expect(status).toEqual({ currentBranch: 'main', changes: [] });
+    expect(status).toEqual({
+      currentBranch: 'main',
+      changes: [{ path: 'conflicted.adoc', changeType: 'modified', state: 'conflicted' }],
+    });
   });
 
   it('maps a type-change code (T) to "modified"', () => {
@@ -39,7 +42,31 @@ describe('parsePorcelainStatus', () => {
 
     expect(status).toEqual({
       currentBranch: 'main',
-      changes: [{ path: 'link-turned-file', changeType: 'modified', staged: true }],
+      changes: [{ path: 'link-turned-file', changeType: 'modified', state: 'staged' }],
     });
+  });
+
+  it('maps an untracked (`?`) line to state "untracked" (not "unstaged")', () => {
+    const status = parsePorcelainStatus('# branch.head main\n? brand-new.adoc\n');
+
+    expect(status).toEqual({
+      currentBranch: 'main',
+      changes: [{ path: 'brand-new.adoc', changeType: 'added', state: 'untracked' }],
+    });
+  });
+
+  it('reports both sides of a file staged AND unstaged as two separate entries', () => {
+    const status = parsePorcelainStatus(
+      '# branch.head main\n1 MM N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb both.adoc\n',
+    );
+
+    expect(status).toEqual({
+      currentBranch: 'main',
+      changes: expect.arrayContaining([
+        { path: 'both.adoc', changeType: 'modified', state: 'staged' },
+        { path: 'both.adoc', changeType: 'modified', state: 'unstaged' },
+      ]),
+    });
+    expect(status?.changes).toHaveLength(2);
   });
 });

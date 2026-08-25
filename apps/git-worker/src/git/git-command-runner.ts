@@ -1,16 +1,22 @@
-import { mkdtemp, lstat, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, lstat, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   AuthenticationFailedError,
   GitCommandFailedError,
+  NonFastForwardError,
   RepositoryUnreachableError,
   type ClonedFileEntry,
   type ClonedRepository,
   type GitCloneInput,
   type GitCommandRunner,
+  type GitCommitInput,
+  type GitCommitResult,
   type GitPendingChange,
   type GitPendingChangeType,
+  type GitPushError,
+  type GitPushInput,
+  type GitPushResult,
   type GitRemoteAccessCheck,
   type GitWorkingTreeStatus,
   type ProjectId,
@@ -58,6 +64,38 @@ function toRemoteAccessFailure(error: unknown): RepositoryUnreachableError | Aut
     return new AuthenticationFailedError();
   }
   return new RepositoryUnreachableError();
+}
+
+/**
+ * Maps a failure from {@link RealGitCommandRunner.push}'s `git push` invocation to this port's
+ * typed push error union, using {@link GitProcessError.networkFailureKind} — a rejected
+ * non-fast-forward push is distinguished from the remote being unreachable or rejecting the
+ * credential, and anything unclassified falls back to a generic `GitCommandFailedError`.
+ */
+function toPushFailure(
+  error: unknown,
+): NonFastForwardError | RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError {
+  if (error instanceof GitProcessError) {
+    if (error.networkFailureKind === 'non-fast-forward') return new NonFastForwardError();
+    if (error.networkFailureKind === 'unreachable') return new RepositoryUnreachableError();
+    if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
+  }
+  return new GitCommandFailedError('The push could not be completed.');
+}
+
+/**
+ * Reports whether `relativePath` resolves to a location inside `workingDirectory` once joined to
+ * it — mirrors the symlink-escape check {@link materializeEntries} performs on a clone's tracked
+ * files, applied here to a commit flush entry's caller-supplied path instead, and checked BEFORE
+ * any byte of that entry is written (fail closed: an absolute path is rejected outright, and a
+ * relative path that walks out via `..` is caught by resolving it and checking whether the result
+ * still lives under `workingDirectory`).
+ */
+function staysInsideWorkingTree(workingDirectory: string, relativePath: string): boolean {
+  if (path.isAbsolute(relativePath)) return false;
+  const resolved = path.resolve(workingDirectory, relativePath);
+  const relativeToRoot = path.relative(workingDirectory, resolved);
+  return !relativeToRoot.startsWith('..') && !path.isAbsolute(relativeToRoot);
 }
 
 /**
@@ -337,6 +375,142 @@ export class RealGitCommandRunner implements GitCommandRunner {
       await rm(scratchParent, { recursive: true, force: true });
     }
   }
+
+  /**
+   * Stages the given files for the next commit (`git add <paths>`).
+   *
+   * The paths are passed as plain positionals, with no extra leading `--` separator: unlike `git
+   * reset`, a real `git add` invoked after `--end-of-options` (which already disables all option
+   * parsing) treats a subsequent bare `--` as a literal, nonexistent pathspec rather than as a
+   * separator, and fails outright — confirmed against real `git` here, not merely inferred.
+   *
+   * @param projectId - The project whose working tree to stage files in.
+   * @param paths - Workspace-relative POSIX paths of the files to stage.
+   * @returns Success once staged; a `GitCommandFailedError` when the underlying git command fails.
+   */
+  async stage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+    try {
+      await runGitCommand(cwd, { command: 'add', positionals: [...paths] });
+      return { success: true, value: undefined };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The files could not be staged.') };
+    }
+  }
+
+  /**
+   * Unstages the given files, leaving their working-tree contents untouched (`git reset -- <paths>`).
+   *
+   * @param projectId - The project whose working tree to unstage files in.
+   * @param paths - Workspace-relative POSIX paths of the files to unstage.
+   * @returns Success once unstaged; a `GitCommandFailedError` when the underlying git command fails
+   *   (for example, unstaging in a repository with no `HEAD` commit yet).
+   */
+  async unstage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+    try {
+      await runGitCommand(cwd, { command: 'reset', positionals: ['--', ...paths] });
+      return { success: true, value: undefined };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The files could not be unstaged.') };
+    }
+  }
+
+  /**
+   * Records a commit of the currently staged index, first overwriting and re-staging every
+   * `input.flush` entry so the commit captures live collaborative content rather than stale staged
+   * bytes (see the port's JSDoc for the full write→add→commit contract).
+   *
+   * Every flush entry's path is validated with {@link staysInsideWorkingTree} BEFORE any entry is
+   * written — an absolute path, or one that escapes the working tree via `..`, fails the whole
+   * commit closed, with no partial write.
+   *
+   * @param projectId - The project whose staged index to commit.
+   * @param input - The message, author, and live-content flush list.
+   * @returns The new commit on success; a `GitCommandFailedError` when a flush path is unsafe, or
+   *   when the underlying write/add/commit git command fails.
+   */
+  async commit(projectId: ProjectId, input: GitCommitInput): Promise<Result<GitCommitResult, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    for (const entry of input.flush) {
+      if (!staysInsideWorkingTree(cwd, entry.path)) {
+        return {
+          success: false,
+          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
+        };
+      }
+    }
+
+    try {
+      for (const entry of input.flush) {
+        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
+        // No leading `--` here either — see `stage`'s docs for why a bare `git add` rejects one.
+        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
+      }
+
+      // `-m` takes its value from the very next argv element regardless of what it contains (no
+      // shell is ever involved), so this is safe even though `input.message` is caller-supplied —
+      // unlike a bare positional, it can never be misread as a new option. The author/committer
+      // identity rides out-of-band via `identity` (mirrors `credential`), never as a `--author`
+      // flag built from caller text.
+      await runGitCommand(cwd, {
+        command: 'commit',
+        flags: ['-m', input.message],
+        identity: { name: input.author.name, email: input.author.email },
+      });
+
+      const hashOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const hash = readRevParseAnswer(hashOutput.stdout);
+
+      let authoredAt = new Date();
+      try {
+        const dateOutput = await runGitCommand(cwd, { command: 'log', flags: ['-1', '--format=%aI', 'HEAD'] });
+        const parsed = new Date(dateOutput.stdout.trim());
+        if (!Number.isNaN(parsed.getTime())) authoredAt = parsed;
+      } catch {
+        // Falls back to the `new Date()` set above — the commit itself already succeeded.
+      }
+
+      return { success: true, value: { hash, message: input.message, authoredAt } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The commit could not be recorded.') };
+    }
+  }
+
+  /**
+   * Pushes the project's current branch to its remote, authenticating out-of-band with
+   * `input.token` exactly as {@link clone} does — the token rides `GIT_ASKPASS`, never argv.
+   *
+   * @param projectId - The project whose working tree to push from.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to push.
+   * @returns The remote branch's new tip commit on success; a {@link NonFastForwardError} when the
+   *   remote has commits this branch does not, a {@link RepositoryUnreachableError}/
+   *   {@link AuthenticationFailedError} on the same terms as {@link checkRemoteAccess}, or a
+   *   {@link GitCommandFailedError} for any other failure.
+   */
+  async push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      await this.assertRemoteAllowed(input.remoteUrl);
+    } catch {
+      return { success: false, error: new RepositoryUnreachableError() };
+    }
+
+    try {
+      await runGitCommand(cwd, {
+        command: 'push',
+        positionals: [input.remoteUrl, input.branch],
+        credential: { username: CREDENTIAL_USERNAME, token: input.token },
+      });
+    } catch (error) {
+      return { success: false, error: toPushFailure(error) };
+    }
+
+    const headCommitOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+    return { success: true, value: { headCommit: readRevParseAnswer(headCommitOutput.stdout) } };
+  }
 }
 
 /**
@@ -347,9 +521,7 @@ export class RealGitCommandRunner implements GitCommandRunner {
  * an unrecognized code falls through to null exactly like `C` would.
  *
  * @param code - A single porcelain v2 XY status character.
- * @returns The mapped change type, or null when the character means "no change" on that side
- *   (`.`) or is an unmerged/conflict marker (`U`) — conflict presentation is a separate,
- *   story-specific concern (`packages/shared`'s `ConflictDto`), not this foundational status read.
+ * @returns The mapped change type, or null when the character means "no change" on that side (`.`).
  */
 function mapChangeCode(code: string): GitPendingChangeType | null {
   switch (code) {
@@ -375,14 +547,20 @@ function mapChangeCode(code: string): GitPendingChangeType | null {
 /** Appends up to two `GitPendingChange` entries — one staged, one unstaged — for one path's XY code pair. */
 function pushChanges(changes: GitPendingChange[], path: string, indexCode: string, worktreeCode: string): void {
   const staged = mapChangeCode(indexCode);
-  if (staged) changes.push({ path, changeType: staged, staged: true });
+  if (staged) changes.push({ path, changeType: staged, state: 'staged' });
 
   const unstaged = mapChangeCode(worktreeCode);
-  if (unstaged) changes.push({ path, changeType: unstaged, staged: false });
+  if (unstaged) changes.push({ path, changeType: unstaged, state: 'unstaged' });
 }
 
 const ORDINARY_ENTRY = /^1 (.)(.) \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/;
 const RENAME_ENTRY = /^2 (.)(.) \S+ \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/;
+/**
+ * Matches a porcelain v2 unmerged (conflict) record: `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2>
+ * <h3> <path>` — the `sub`, four mode, and three object-hash fields between the XY code and the
+ * path are captured only to be skipped; only the path is used.
+ */
+const UNMERGED_ENTRY = /^u (.)(.) \S+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/;
 const BRANCH_HEAD_PREFIX = '# branch.head ';
 
 /**
@@ -412,7 +590,7 @@ export function parsePorcelainStatus(stdout: string): GitWorkingTreeStatus | nul
     if (line.startsWith('# ')) continue; // other branch.* headers (oid, upstream, ab) — unused here
 
     if (line.startsWith('? ')) {
-      changes.push({ path: line.slice(2), changeType: 'added', staged: false });
+      changes.push({ path: line.slice(2), changeType: 'added', state: 'untracked' });
       continue;
     }
     if (line.startsWith('! ')) continue; // ignored files — never requested (no --ignored flag)
@@ -432,7 +610,15 @@ export function parsePorcelainStatus(stdout: string): GitWorkingTreeStatus | nul
       continue;
     }
 
-    // 'u' (unmerged/conflict) lines are intentionally unhandled here — see mapChangeCode's note.
+    const unmerged = UNMERGED_ENTRY.exec(line);
+    if (unmerged) {
+      const [, , , path] = unmerged;
+      // The domain type has no dedicated "conflict" changeType; 'modified' is the closest fit and
+      // covers the common case (both sides edited the same file) — `state: 'conflicted'` is what
+      // actually signals the conflict to callers.
+      changes.push({ path, changeType: 'modified', state: 'conflicted' });
+      continue;
+    }
   }
 
   if (currentBranch === null) return null;

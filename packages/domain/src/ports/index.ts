@@ -38,6 +38,13 @@ export type {
   GitCloneInput,
   ClonedFileEntry,
   ClonedRepository,
+  GitCommitAuthor,
+  GitCommitFlushEntry,
+  GitCommitInput,
+  GitCommitResult,
+  GitPushInput,
+  GitPushResult,
+  GitPushError,
 } from './git/git-command-runner';
 
 // file-tree/

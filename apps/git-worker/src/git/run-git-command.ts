@@ -47,6 +47,20 @@ export interface GitCredential {
   readonly token: string;
 }
 
+/**
+ * The commit author/committer identity for a single `git commit` invocation.
+ *
+ * Passed the same out-of-band way as {@link GitCredential} (environment variables scoped to that
+ * one child process, never argv) — not because a name/email is secret, but because it lets
+ * `commit`'s caller avoid building a `--author="<name> <email>"` flag out of caller-supplied text.
+ */
+export interface GitCommitIdentity {
+  /** Written as both `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` for this invocation. */
+  readonly name: string;
+  /** Written as both `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` for this invocation. */
+  readonly email: string;
+}
+
 /** A single `git` invocation: a fixed subcommand plus its arguments and optional credential. */
 export interface GitCommandSpec {
   /** The git subcommand to run (e.g. `'status'`, `'fetch'`). Never derived from user input. */
@@ -66,6 +80,8 @@ export interface GitCommandSpec {
   readonly positionals?: readonly string[];
   /** An out-of-band credential to supply for this invocation only, or omit for none needed. */
   readonly credential?: GitCredential;
+  /** The author/committer identity to record for this invocation only (only meaningful for `commit`). */
+  readonly identity?: GitCommitIdentity;
   /** Overrides {@link DEFAULT_TIMEOUT_MS} for this invocation. */
   readonly timeoutMs?: number;
 }
@@ -126,7 +142,7 @@ function hasStderrText(value: unknown): value is { stderr: string } {
  * a failure to the right typed domain error without ever handling — or being handed — the raw
  * process output itself.
  */
-export type NetworkFailureKind = 'unreachable' | 'authentication-failed';
+export type NetworkFailureKind = 'unreachable' | 'authentication-failed' | 'non-fast-forward';
 
 /**
  * Stderr substrings (matched case-insensitively, against English text — see this file's `LC_ALL`
@@ -157,6 +173,13 @@ const AUTHENTICATION_FAILED_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * Stderr substrings indicating `push` refused a ref update because the remote already has commits
+ * this branch does not — git's `! [rejected] ... (non-fast-forward)` / `(fetch first)` — as
+ * opposed to the push never reaching the remote, or the remote rejecting the credential.
+ */
+const NON_FAST_FORWARD_PATTERNS: readonly RegExp[] = [/\[rejected\][^\n]*(non-fast-forward|fetch first)/i];
+
+/**
  * Classifies a failed network `git` invocation's stderr into a {@link NetworkFailureKind}, or
  * undefined when the text matches neither known pattern (a failure unrelated to reachability or
  * credentials — a missing branch, a disk-full working tree, and so on).
@@ -170,6 +193,7 @@ const AUTHENTICATION_FAILED_PATTERNS: readonly RegExp[] = [
 export function classifyNetworkFailure(stderr: string): NetworkFailureKind | undefined {
   if (UNREACHABLE_PATTERNS.some((pattern) => pattern.test(stderr))) return 'unreachable';
   if (AUTHENTICATION_FAILED_PATTERNS.some((pattern) => pattern.test(stderr))) return 'authentication-failed';
+  if (NON_FAST_FORWARD_PATTERNS.some((pattern) => pattern.test(stderr))) return 'non-fast-forward';
   return undefined;
 }
 
@@ -226,6 +250,13 @@ export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<
       environment.GIT_WORKER_ASKPASS_TOKEN = spec.credential.token;
     }
 
+    if (spec.identity) {
+      environment.GIT_AUTHOR_NAME = spec.identity.name;
+      environment.GIT_AUTHOR_EMAIL = spec.identity.email;
+      environment.GIT_COMMITTER_NAME = spec.identity.name;
+      environment.GIT_COMMITTER_EMAIL = spec.identity.email;
+    }
+
     const { stdout, stderr } = await execFile('git', arguments_, {
       cwd,
       env: environment,
@@ -247,6 +278,10 @@ export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<
     // outlives the single invocation it was created for.
     delete environment.GIT_WORKER_ASKPASS_USERNAME;
     delete environment.GIT_WORKER_ASKPASS_TOKEN;
+    delete environment.GIT_AUTHOR_NAME;
+    delete environment.GIT_AUTHOR_EMAIL;
+    delete environment.GIT_COMMITTER_NAME;
+    delete environment.GIT_COMMITTER_EMAIL;
     if (askpassDirectory) {
       await rm(askpassDirectory, { recursive: true, force: true });
     }

@@ -2,9 +2,15 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import path from 'node:path';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { AuthenticationFailedError, GitCommandFailedError, ProjectId, RepositoryUnreachableError } from '@asciidocollab/domain';
+import {
+  AuthenticationFailedError,
+  GitCommandFailedError,
+  NonFastForwardError,
+  ProjectId,
+  RepositoryUnreachableError,
+} from '@asciidocollab/domain';
 import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
 import { RemoteHostNotAllowedError, type HostAddressResolver } from '../../src/git/egress-allowlist.js';
 import {
@@ -95,10 +101,10 @@ describe('RealGitCommandRunner.getStatus', () => {
     expect(result.value.currentBranch).toBe('main');
     expect(result.value.changes).toEqual(
       expect.arrayContaining([
-        { path: 'kept.adoc', changeType: 'modified', staged: false },
-        { path: 'to-remove.adoc', changeType: 'removed', staged: true },
-        { path: 'new-staged.adoc', changeType: 'added', staged: true },
-        { path: 'untracked.adoc', changeType: 'added', staged: false },
+        { path: 'kept.adoc', changeType: 'modified', state: 'unstaged' },
+        { path: 'to-remove.adoc', changeType: 'removed', state: 'staged' },
+        { path: 'new-staged.adoc', changeType: 'added', state: 'staged' },
+        { path: 'untracked.adoc', changeType: 'added', state: 'untracked' },
       ]),
     );
     expect(result.value.changes).toHaveLength(4);
@@ -124,8 +130,8 @@ describe('RealGitCommandRunner.getStatus', () => {
       value: {
         currentBranch: 'main',
         changes: expect.arrayContaining([
-          { path: 'both.adoc', changeType: 'modified', staged: true },
-          { path: 'both.adoc', changeType: 'modified', staged: false },
+          { path: 'both.adoc', changeType: 'modified', state: 'staged' },
+          { path: 'both.adoc', changeType: 'modified', state: 'unstaged' },
         ]),
       },
     });
@@ -147,7 +153,7 @@ describe('RealGitCommandRunner.getStatus', () => {
       success: true,
       value: {
         currentBranch: 'main',
-        changes: [{ path: 'new-name.adoc', changeType: 'renamed', staged: true }],
+        changes: [{ path: 'new-name.adoc', changeType: 'renamed', state: 'staged' }],
       },
     });
   });
@@ -496,5 +502,353 @@ describe('RealGitCommandRunner.checkRemoteAccess', () => {
     if (capture.result.success) throw new Error('expected failure');
     expect(capture.result.error).toBeInstanceOf(RepositoryUnreachableError);
     expect(capture.calls).toEqual([]);
+  });
+});
+
+describe('RealGitCommandRunner.getStatus — conflicted state', () => {
+  it('reports a file left conflicted by an unresolved merge as state "conflicted"', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440060');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+
+    await writeFile(path.join(cwd, 'conflict.adoc'), 'base\n');
+    await commitAll(cwd, 'base');
+
+    await execFile('git', ['checkout', '-q', '-b', 'other'], { cwd });
+    await writeFile(path.join(cwd, 'conflict.adoc'), 'other change\n');
+    await commitAll(cwd, 'other change');
+
+    await execFile('git', ['checkout', '-q', 'main'], { cwd });
+    await writeFile(path.join(cwd, 'conflict.adoc'), 'main change\n');
+    await commitAll(cwd, 'main change');
+
+    // Merging necessarily conflicts here (both branches touched the same lines) and exits
+    // non-zero — expected, so this deliberately swallows that failure.
+    await execFile('git', ['merge', 'other'], { cwd }).catch(() => undefined);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.getStatus(projectId);
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.changes).toEqual(
+      expect.arrayContaining([{ path: 'conflict.adoc', changeType: 'modified', state: 'conflicted' }]),
+    );
+  });
+});
+
+describe('RealGitCommandRunner.stage / unstage', () => {
+  it('stages an untracked file (visible as staged in getStatus), then unstage reverts it to untracked', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440061');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'content\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'new.adoc'), 'new file\n');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+
+    const stageResult = await runner.stage(projectId, ['new.adoc']);
+    expect(stageResult).toEqual({ success: true, value: undefined });
+
+    const stagedStatus = await runner.getStatus(projectId);
+    expect(stagedStatus).toEqual({
+      success: true,
+      value: { currentBranch: 'main', changes: [{ path: 'new.adoc', changeType: 'added', state: 'staged' }] },
+    });
+
+    const unstageResult = await runner.unstage(projectId, ['new.adoc']);
+    expect(unstageResult).toEqual({ success: true, value: undefined });
+
+    const unstagedStatus = await runner.getStatus(projectId);
+    expect(unstagedStatus).toEqual({
+      success: true,
+      value: { currentBranch: 'main', changes: [{ path: 'new.adoc', changeType: 'added', state: 'untracked' }] },
+    });
+  });
+
+  it('returns GitCommandFailedError from stage/unstage when the working tree does not exist', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440062');
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-empty-storage-'));
+    const runner = new RealGitCommandRunner(storageRoot);
+
+    const stageResult = await runner.stage(projectId, ['whatever.adoc']);
+    expect(stageResult.success).toBe(false);
+    if (stageResult.success) throw new Error('expected failure');
+    expect(stageResult.error).toBeInstanceOf(GitCommandFailedError);
+
+    const unstageResult = await runner.unstage(projectId, ['whatever.adoc']);
+    expect(unstageResult.success).toBe(false);
+    if (unstageResult.success) throw new Error('expected failure');
+    expect(unstageResult.error).toBeInstanceOf(GitCommandFailedError);
+  });
+});
+
+describe('RealGitCommandRunner.commit', () => {
+  it('commits the staged index with FLUSHED content (not stale staged bytes), the given author, staged-only', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440063');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'v1\n');
+    await writeFile(path.join(cwd, 'sibling.adoc'), 'sibling v1\n');
+    await commitAll(cwd, 'init');
+
+    // Staged with STALE bytes — the flush entry below must override these before the commit.
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'stale staged bytes\n');
+    await stage(cwd, 'tracked.adoc');
+
+    // An unstaged sibling edit — must stay OUT of the commit entirely.
+    await writeFile(path.join(cwd, 'sibling.adoc'), 'sibling unstaged edit\n');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.commit(projectId, {
+      message: 'flush test',
+      author: { name: 'Ada Lovelace', email: 'ada@example.com' },
+      flush: [{ path: 'tracked.adoc', content: 'live flushed content\n' }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.message).toBe('flush test');
+    expect(result.value.hash).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.value.authoredAt).toBeInstanceOf(Date);
+
+    const { stdout: committedTracked } = await execFile('git', ['show', 'HEAD:tracked.adoc'], { cwd });
+    expect(committedTracked).toBe('live flushed content\n');
+
+    const { stdout: authorLine } = await execFile('git', ['log', '-1', '--format=%an <%ae>'], { cwd });
+    expect(authorLine.trim()).toBe('Ada Lovelace <ada@example.com>');
+
+    // Staged-only: the unstaged sibling edit is not part of this commit...
+    const { stdout: committedSibling } = await execFile('git', ['show', 'HEAD:sibling.adoc'], { cwd });
+    expect(committedSibling).toBe('sibling v1\n');
+    // ...and its unstaged edit is still sitting untouched in the working tree.
+    const siblingWorkingTreeContent = await readFile(path.join(cwd, 'sibling.adoc'), 'utf8');
+    expect(siblingWorkingTreeContent).toBe('sibling unstaged edit\n');
+  });
+
+  it('rejects an absolute flush path, writing nothing and recording no commit', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440064');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const headBefore = await readHeadCommit(cwd);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.commit(projectId, {
+      message: 'malicious',
+      author: { name: 'Eve', email: 'eve@example.com' },
+      flush: [{ path: '/etc/pwned-by-test.adoc', content: 'pwned' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    await expect(stat('/etc/pwned-by-test.adoc')).rejects.toThrow();
+    expect(await readHeadCommit(cwd)).toBe(headBefore);
+  });
+
+  it('rejects a flush path escaping the working tree via ".." — fail-closed, no partial write', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440065');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const headBefore = await readHeadCommit(cwd);
+
+    // A second, otherwise-valid flush entry must ALSO not be written — proves the guard checks
+    // every entry before writing any of them, not just the one that ends up escaping.
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'staged bytes\n');
+    await stage(cwd, 'tracked.adoc');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.commit(projectId, {
+      message: 'malicious',
+      author: { name: 'Eve', email: 'eve@example.com' },
+      flush: [
+        { path: 'tracked.adoc', content: 'should never reach disk' },
+        { path: '../escaped-by-test.adoc', content: 'pwned' },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    await expect(stat(path.join(storageRoot, 'escaped-by-test.adoc'))).rejects.toThrow();
+    expect(await readHeadCommit(cwd)).toBe(headBefore);
+    // The in-tree file's staged bytes were left alone — the safe flush entry was never written either.
+    const trackedContent = await readFile(path.join(cwd, 'tracked.adoc'), 'utf8');
+    expect(trackedContent).toBe('staged bytes\n');
+  });
+});
+
+describe('RealGitCommandRunner.push', () => {
+  it('pushes local commits to the remote, returning the new head commit', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440066');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'content\n');
+    await commitAll(cwd, 'init');
+    const expectedHead = await readHeadCommit(cwd);
+
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.push(projectId, { remoteUrl: `${server.url}/repo.git`, token: 'unused', branch: 'main' });
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('expected success');
+      expect(result.value.headCommit).toBe(expectedHead);
+
+      const { stdout: remoteHead } = await execFile('git', ['rev-parse', 'refs/heads/main'], { cwd: remotePath });
+      expect(remoteHead.trim()).toBe(expectedHead);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns NonFastForwardError when the remote has commits this branch does not', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440067');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+
+      const firstPush = await runner.push(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+        branch: 'main',
+      });
+      expect(firstPush.success).toBe(true);
+
+      // A different clone of the same remote advances it out from under this local branch.
+      const otherWorkingTree = await createTemporaryWorkingTree();
+      await execFile('git', ['remote', 'add', 'origin', `${server.url}/repo.git`], { cwd: otherWorkingTree });
+      await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd: otherWorkingTree });
+      await execFile('git', ['checkout', '-q', '-b', 'main', 'origin/main'], { cwd: otherWorkingTree });
+      await writeFile(path.join(otherWorkingTree, 'b.adoc'), 'other change\n');
+      await commitAll(otherWorkingTree, 'other change');
+      await execFile('git', ['push', '-q', 'origin', 'HEAD:refs/heads/main'], { cwd: otherWorkingTree });
+
+      const result = await runner.push(projectId, { remoteUrl: `${server.url}/repo.git`, token: 'unused', branch: 'main' });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(NonFastForwardError);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns AuthenticationFailedError when the remote rejects the token', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440068');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({
+      projectRoot: path.join(remotePath, '..'),
+      requireAuth: { username: 'x-access-token', password: 'the-real-token' },
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.push(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'wrong-token',
+        branch: 'main',
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(AuthenticationFailedError);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns RepositoryUnreachableError when the remote cannot be reached', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440069');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const port = await unusedLoopbackPort();
+    const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+    const result = await runner.push(projectId, { remoteUrl: `http://127.0.0.1:${port}/repo.git`, token: 'x', branch: 'main' });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(RepositoryUnreachableError);
+  });
+
+  it('rejects a push to a non-allowlisted host before attempting any network operation', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440070');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const runner = new RealGitCommandRunner(storageRoot, ['git.example.com']);
+
+    const capture = await withArgvCapturingGit(async (getCalls) => {
+      const result = await runner.push(projectId, {
+        remoteUrl: 'https://not-allowed.example.com/org/repo.git',
+        token: 'x',
+        branch: 'main',
+      });
+      return { result, calls: await getCalls() };
+    });
+
+    expect(capture.result.success).toBe(false);
+    if (capture.result.success) throw new Error('expected failure');
+    expect(capture.result.error).toBeInstanceOf(RepositoryUnreachableError);
+    expect(capture.calls).toEqual([]);
+  });
+
+  it('never leaks the token into argv across the push operation', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440071');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const token = 'super-secret-push-test-token-DO-NOT-LEAK-42fe';
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({
+      projectRoot: path.join(remotePath, '..'),
+      requireAuth: { username: 'x-access-token', password: token },
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        const result = await runner.push(projectId, { remoteUrl: `${server.url}/repo.git`, token, branch: 'main' });
+        return { result, calls: await getCalls() };
+      });
+
+      expect(capture.result.success).toBe(true);
+      expect(server.authorizationHeadersSeen.length).toBeGreaterThan(0);
+
+      for (const call of capture.calls) {
+        for (const argument of call) {
+          expect(argument).not.toContain(token);
+        }
+      }
+    } finally {
+      await server.close();
+    }
   });
 });

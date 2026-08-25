@@ -138,6 +138,10 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return { success: true, value };
   }
 
+  async findById(operationId: GitOperationId): Promise<GitOperation | null> {
+    return this.operations.get(operationId.value) ?? null;
+  }
+
   async findActiveOperation(projectId: ProjectId): Promise<GitOperation | null> {
     return (
       [...this.operations.values()].find(

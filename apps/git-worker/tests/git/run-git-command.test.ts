@@ -243,6 +243,20 @@ describe('runGitCommand', () => {
     it('returns undefined for a failure unrelated to reachability or credentials', () => {
       expect(classifyNetworkFailure("fatal: pathspec 'nope' did not match any files")).toBeUndefined();
     });
+
+    it('classifies a rejected non-fast-forward push as non-fast-forward', () => {
+      const stderr = [
+        'To http://127.0.0.1/repo.git',
+        ' ! [rejected]        main -> main (fetch first)',
+        "error: failed to push some refs to 'http://127.0.0.1/repo.git'",
+      ].join('\n');
+      expect(classifyNetworkFailure(stderr)).toBe('non-fast-forward');
+    });
+
+    it('classifies the non-fast-forward wording variant too', () => {
+      const stderr = ' ! [rejected]        main -> main (non-fast-forward)';
+      expect(classifyNetworkFailure(stderr)).toBe('non-fast-forward');
+    });
   });
 
   describe('network failure classification, against real git failures', () => {

@@ -4,6 +4,9 @@ import type {
   GitCloneInput,
   GitCommandFailedError,
   GitCommandRunner,
+  GitCommitResult,
+  GitPushError,
+  GitPushResult,
   GitWorkingTreeStatus,
   RepositoryUnreachableError,
   Result,
@@ -59,5 +62,21 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: repository };
+  }
+
+  async stage(): Promise<Result<void, GitCommandFailedError>> {
+    throw new Error('not used by these tests');
+  }
+
+  async unstage(): Promise<Result<void, GitCommandFailedError>> {
+    throw new Error('not used by these tests');
+  }
+
+  async commit(): Promise<Result<GitCommitResult, GitCommandFailedError>> {
+    throw new Error('not used by these tests');
+  }
+
+  async push(): Promise<Result<GitPushResult, GitPushError>> {
+    throw new Error('not used by these tests');
   }
 }
