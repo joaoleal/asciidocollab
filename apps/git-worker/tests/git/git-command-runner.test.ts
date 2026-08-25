@@ -10,6 +10,7 @@ import {
   GitOperationId,
   NonFastForwardError,
   ProjectId,
+  RemoteAlreadyInitializedError,
   RepositoryUnreachableError,
 } from '@asciidocollab/domain';
 import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
@@ -18,7 +19,9 @@ import { RemoteHostNotAllowedError, type HostAddressResolver } from '../../src/g
 import {
   commitAll,
   createTemporaryBareRemote,
+  createTemporaryReadOnlyBareRemote,
   createTemporaryStorageRootWithProject,
+  createTemporaryStorageRootWithUninitializedProject,
   createTemporaryWorkingTree,
   createPushedRepoPair,
   pushBranch,
@@ -1615,6 +1618,220 @@ describe('RealGitCommandRunner.push', () => {
 
       const capture = await withArgvCapturingGit(async (getCalls) => {
         const result = await runner.push(projectId, { remoteUrl: `${server.url}/repo.git`, token, branch: 'main' });
+        return { result, calls: await getCalls() };
+      });
+
+      expect(capture.result.success).toBe(true);
+      expect(server.authorizationHeadersSeen.length).toBeGreaterThan(0);
+
+      for (const call of capture.calls) {
+        for (const argument of call) {
+          expect(argument).not.toContain(token);
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('RealGitCommandRunner.initializeAndPublish', () => {
+  it('initializes the working tree, records the initial commit, and publishes it to an empty remote', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440090');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+    });
+    const cwd = path.join(storageRoot, projectId.value);
+
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('expected success');
+      expect(result.value.defaultBranch).toBe('main');
+      expect(result.value.headCommit).toBe(await readHeadCommit(cwd));
+
+      // The remote received exactly the initial commit, on the published branch.
+      const { stdout: remoteHead } = await execFile('git', ['rev-parse', 'refs/heads/main'], { cwd: remotePath });
+      expect(remoteHead.trim()).toBe(result.value.headCommit);
+
+      // The project's own files are unchanged, not touched by the publish.
+      expect(await readFile(path.join(cwd, 'index.adoc'), 'utf8')).toBe('= Handbook\n');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('publishes under a requested non-default branch', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440091');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+    });
+
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+        branch: 'trunk',
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('expected success');
+      expect(result.value.defaultBranch).toBe('trunk');
+
+      const { stdout: remoteHead } = await execFile('git', ['rev-parse', 'refs/heads/trunk'], { cwd: remotePath });
+      expect(remoteHead.trim()).toBe(result.value.headCommit);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("never stages or commits the internal .collab/ path, honoring the working tree's own .gitignore", async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440092');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, '.gitignore'), '.collab/\n');
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+      await mkdir(path.join(tree, '.collab'), { recursive: true });
+      await writeFile(path.join(tree, '.collab', 'session.bin'), 'internal state');
+    });
+    const cwd = path.join(storageRoot, projectId.value);
+
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+      });
+
+      expect(result.success).toBe(true);
+
+      const { stdout } = await execFile('git', ['ls-files'], { cwd });
+      const trackedPaths = stdout.split('\n').filter((line) => line.length > 0);
+      expect(trackedPaths).toEqual(expect.arrayContaining(['.gitignore', 'index.adoc']));
+      expect(trackedPaths.some((trackedPath) => trackedPath.startsWith('.collab/'))).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('refuses to publish onto a remote that already has commits, without creating a local repository', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440093');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+    });
+    const cwd = path.join(storageRoot, projectId.value);
+
+    // A remote that already has one commit — via createPushedRepoPair's own working tree/remote.
+    const { remoteProjectRoot } = await createPushedRepoPair();
+    const server = await startGitHttpServer({ projectRoot: remoteProjectRoot });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(RemoteAlreadyInitializedError);
+
+      // Nothing was created locally: no `.git`, and the project's own file is still there untouched.
+      await expect(stat(path.join(cwd, '.git'))).rejects.toThrow();
+      expect(await readFile(path.join(cwd, 'index.adoc'), 'utf8')).toBe('= Handbook\n');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('leaves the working tree non-git, with the project files intact, when the push is rejected', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440094');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+    });
+    const cwd = path.join(storageRoot, projectId.value);
+
+    // http.receivepack left at its default (false): ls-remote/clone still work, push is refused.
+    const remotePath = await createTemporaryReadOnlyBareRemote();
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(
+        result.error instanceof GitCommandFailedError ||
+          result.error instanceof AuthenticationFailedError ||
+          result.error instanceof RepositoryUnreachableError,
+      ).toBe(true);
+
+      // The failed publish left no `.git` behind — the working tree is back to non-git — and the
+      // project's own file is untouched.
+      await expect(stat(path.join(cwd, '.git'))).rejects.toThrow();
+      expect(await readFile(path.join(cwd, 'index.adoc'), 'utf8')).toBe('= Handbook\n');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects a disallowed remote host before running any git command', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440095');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+    });
+    const runner = new RealGitCommandRunner(storageRoot, ['git.example.com']);
+
+    const capture = await withArgvCapturingGit(async (getCalls) => {
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: 'https://not-allowed.example.com/org/repo.git',
+        token: 'x',
+      });
+      return { result, calls: await getCalls() };
+    });
+
+    expect(capture.result.success).toBe(false);
+    if (capture.result.success) throw new Error('expected failure');
+    expect(capture.result.error).toBeInstanceOf(RepositoryUnreachableError);
+    expect(capture.calls).toEqual([]);
+  });
+
+  it('never leaks the token into argv across the whole publish', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440096');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+    });
+
+    const token = 'super-secret-initialize-test-token-DO-NOT-LEAK-71ab';
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({
+      projectRoot: path.join(remotePath, '..'),
+      requireAuth: { username: 'x-access-token', password: token },
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        const result = await runner.initializeAndPublish(projectId, { remoteUrl: `${server.url}/repo.git`, token });
         return { result, calls: await getCalls() };
       });
 

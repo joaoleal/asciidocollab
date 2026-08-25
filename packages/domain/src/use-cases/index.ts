@@ -32,6 +32,8 @@ export { ConnectRepositoryUseCase } from './git/connect-repository';
 export type { ConnectRepositoryInput, ConnectRepositoryResult } from './git/connect-repository';
 export { ImportRepositoryUseCase } from './git/import-repository';
 export type { ImportRepositoryInput, ImportRepositoryResult } from './git/import-repository';
+export { InitializeRepositoryUseCase } from './git/initialize-repository';
+export type { InitializeRepositoryInput, InitializeRepositoryResult } from './git/initialize-repository';
 export { GetGitStatusUseCase } from './git/get-git-status';
 export type { GetGitStatusInput, GetGitStatusResult } from './git/get-git-status';
 export { CreateBranchUseCase } from './git/create-branch';

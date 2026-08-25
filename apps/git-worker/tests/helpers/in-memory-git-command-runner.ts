@@ -13,6 +13,9 @@ import type {
   GitCreatedBranch,
   GitFetchInput,
   GitFetchResult,
+  GitInitializeError,
+  GitInitializeInput,
+  GitInitializeOutcome,
   GitMergeInput,
   GitMergeOutcome,
   GitPushError,
@@ -45,6 +48,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   >();
   private readonly pushResults = new Map<string, GitPushResult>();
   private readonly pushFailures = new Map<string, GitPushError>();
+  private readonly initializeResults = new Map<string, GitInitializeOutcome>();
+  private readonly initializeFailures = new Map<string, GitInitializeError>();
   private readonly fetchResults = new Map<string, GitFetchResult>();
   private readonly fetchFailures = new Map<string, FetchError>();
   private readonly behindAheadResults = new Map<string, GitBehindAhead>();
@@ -67,6 +72,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `push`, in call order, for asserting interactions. */
   readonly pushCalls: { projectId: ProjectId; input: GitPushInput }[] = [];
+
+  /** Every call made to `initializeAndPublish`, in call order, for asserting interactions. */
+  readonly initializeAndPublishCalls: { projectId: ProjectId; input: GitInitializeInput }[] = [];
 
   /** Every call made to `fetch`, in call order, for asserting interactions. */
   readonly fetchCalls: { projectId: ProjectId; input: GitFetchInput }[] = [];
@@ -113,6 +121,16 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   /** Configures `push` to fail for a project, taking priority over any seeded result. */
   seedPushFailure(projectId: ProjectId, error: GitPushError): void {
     this.pushFailures.set(projectId.value, error);
+  }
+
+  /** Configures `initializeAndPublish` to return `outcome` for a project. */
+  seedInitializeAndPublish(projectId: ProjectId, outcome: GitInitializeOutcome): void {
+    this.initializeResults.set(projectId.value, outcome);
+  }
+
+  /** Configures `initializeAndPublish` to fail for a project, taking priority over any seeded outcome. */
+  seedInitializeAndPublishFailure(projectId: ProjectId, error: GitInitializeError): void {
+    this.initializeFailures.set(projectId.value, error);
   }
 
   /** Configures `fetch` to return `result` for a project. */
@@ -243,6 +261,23 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: result };
+  }
+
+  async initializeAndPublish(
+    projectId: ProjectId,
+    input: GitInitializeInput,
+  ): Promise<Result<GitInitializeOutcome, GitInitializeError>> {
+    this.initializeAndPublishCalls.push({ projectId, input });
+
+    const failure = this.initializeFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome = this.initializeResults.get(projectId.value);
+    if (!outcome) {
+      throw new Error(`no initializeAndPublish outcome seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: outcome };
   }
 
   async fetch(

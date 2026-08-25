@@ -59,6 +59,43 @@ export async function createTemporaryBareRemote(): Promise<string> {
 }
 
 /**
+ * Creates a temporary bare git repository exactly like {@link createTemporaryBareRemote}, except
+ * it leaves `http.receivepack` at git's own default (`false`) — smart-HTTP push is refused, while
+ * `ls-remote`/clone/fetch (which only need `upload-pack`) still work. Used to simulate a
+ * read-only/rejecting remote for a forced push-failure test.
+ *
+ * @returns The absolute path to the new bare repository.
+ */
+export async function createTemporaryReadOnlyBareRemote(): Promise<string> {
+  const parent = await mkdtemp(path.join(tmpdir(), 'git-worker-test-remote-readonly-'));
+  const bareDirectory = path.join(parent, 'repo.git');
+  await mkdir(bareDirectory, { recursive: true });
+  await git(bareDirectory, ['init', '-q', '--bare']);
+  return bareDirectory;
+}
+
+/**
+ * Creates a fresh temporary `storageRoot` directory with a project working-tree directory at
+ * `<storageRoot>/<projectId>/` that is a PLAIN directory — never `git init`-ed — mirroring a
+ * project that has never been git-managed. `seed` writes whatever project files should already be
+ * there before a test's `initializeAndPublish` call runs.
+ *
+ * @param projectId - The project id whose working-tree segment to create.
+ * @param seed - Writes the project's pre-existing files into the working tree.
+ * @returns The storage root directory (NOT the working tree itself).
+ */
+export async function createTemporaryStorageRootWithUninitializedProject(
+  projectId: string,
+  seed: (workingTree: string) => Promise<void>,
+): Promise<string> {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-storage-nogit-'));
+  const workingTree = path.join(storageRoot, projectId);
+  await mkdir(workingTree, { recursive: true });
+  await seed(workingTree);
+  return storageRoot;
+}
+
+/**
  * Writes a file's content and creates a commit for it in one step (test setup helper).
  *
  * @param workingTree - The working tree to commit into.

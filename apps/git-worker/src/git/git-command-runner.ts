@@ -5,6 +5,7 @@ import {
   AuthenticationFailedError,
   GitCommandFailedError,
   NonFastForwardError,
+  RemoteAlreadyInitializedError,
   RepositoryUnreachableError,
   type ClonedFileEntry,
   type ClonedRepository,
@@ -21,6 +22,9 @@ import {
   type GitCreatedBranch,
   type GitFetchInput,
   type GitFetchResult,
+  type GitInitializeError,
+  type GitInitializeInput,
+  type GitInitializeOutcome,
   type GitMergeConflictPath,
   type GitMergeFileChange,
   type GitMergeInput,
@@ -58,6 +62,15 @@ const CREDENTIAL_USERNAME = 'x-access-token';
  * edits into a commit before running the three-way merge.
  */
 const FLUSH_COMMIT_MESSAGE = 'Flush live edits before pull';
+
+/**
+ * The commit message recorded for {@link RealGitCommandRunner.initializeAndPublish}'s initial
+ * commit — the first commit an existing, previously non-git project ever gets.
+ */
+const INITIAL_COMMIT_MESSAGE = 'Initial commit';
+
+/** The branch {@link RealGitCommandRunner.initializeAndPublish} publishes under when `input.branch` is omitted. */
+const DEFAULT_INITIALIZE_BRANCH = 'main';
 
 /**
  * The fixed, non-personal identity attributed to the automated commits {@link RealGitCommandRunner.merge}
@@ -130,6 +143,24 @@ function toPushFailure(
     if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
   }
   return new GitCommandFailedError('The push could not be completed.');
+}
+
+/**
+ * Maps a failure from {@link RealGitCommandRunner.initializeAndPublish}'s init→remote-add→
+ * commit→push sequence to this port's typed initialize error union (excluding
+ * {@link RemoteAlreadyInitializedError}, which is only ever returned by the earlier, separate
+ * remote-empty check) — the same reachability/credential classification {@link toCloneFailure}
+ * performs, with a generic `GitCommandFailedError` fallback for a local failure (for example, the
+ * initial commit itself failing) or an unclassified network failure.
+ */
+function toInitializeFailure(
+  error: unknown,
+): RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError {
+  if (error instanceof GitProcessError) {
+    if (error.networkFailureKind === 'unreachable') return new RepositoryUnreachableError();
+    if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
+  }
+  return new GitCommandFailedError('The project could not be initialized and published.');
 }
 
 /**
@@ -865,6 +896,105 @@ export class RealGitCommandRunner implements GitCommandRunner {
 
     const headCommitOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
     return { success: true, value: { headCommit: readRevParseAnswer(headCommitOutput.stdout) } };
+  }
+
+  /**
+   * Initializes git on an existing, previously non-git project's real working tree and publishes
+   * it to a fresh, empty remote. This is the atomic init → remote-add → initial-commit → push
+   * sequence this port's JSDoc documents.
+   *
+   * Ordering (all against `resolveWorkingTreePath(this.storageRoot, projectId)` — the project's
+   * OWN working tree, never a scratch directory: its files already exist, having never been
+   * git-managed before this call):
+   * 1. {@link assertRemoteAllowed} gates the whole call before any network attempt.
+   * 2. `git ls-remote <input.remoteUrl>`, authenticated out-of-band exactly like {@link clone},
+   *    checks whether the remote already has any ref/commit. Any output at all means the remote is
+   *    non-empty: this returns {@link RemoteAlreadyInitializedError} immediately, WITHOUT running
+   *    `git init` or touching the working tree in any way — a non-empty remote is never overwritten.
+   * 3. `git init -b <branch>` (`input.branch`, defaulting to `'main'`) creates the local repository
+   *    with the published branch already checked out, so the branch this call returns as
+   *    `defaultBranch` is exactly the one `git init` created — no separate rename/symbolic-ref step
+   *    is needed.
+   * 4. `git remote add origin <input.remoteUrl>` wires the remote — the URL as a positional after
+   *    `--end-of-options`, with NO credential in this step (mirrors the port's documented contract).
+   * 5. `git add -A` stages every file currently in the working tree. This relies on the working
+   *    tree's own `.gitignore` (written before this call ever runs) to already exclude internal
+   *    platform paths such as `.collab/` — `git add -A` never stages an ignored path, so no
+   *    additional pathspec exclusion is needed here.
+   * 6. `git commit` records the initial commit under {@link SERVICE_COMMIT_IDENTITY} (the port's
+   *    input carries no per-user author — this is a platform bootstrap action, not an edit
+   *    attributable to one collaborator).
+   * 7. `git push` publishes that commit to `origin`/`input.branch`, authenticated out-of-band
+   *    exactly like {@link push}.
+   *
+   * All-or-nothing: any failure from step 3 onward removes the working tree's `.git` directory
+   * (never its actual files) before returning, so a failed publish leaves the project exactly as
+   * non-git as it was before this call, ready for a clean retry. A failure in step 2 needs no such
+   * cleanup — nothing was created yet.
+   *
+   * @param projectId - The project whose working tree to initialize and publish.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
+   *   publish under (defaults to `'main'`).
+   * @returns The initial commit's hash and the branch it was published under; a
+   *   {@link RemoteAlreadyInitializedError} when the remote already has commits, a
+   *   {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} on the same terms as
+   *   {@link checkRemoteAccess}, or a {@link GitCommandFailedError} for any other failure.
+   */
+  async initializeAndPublish(
+    projectId: ProjectId,
+    input: GitInitializeInput,
+  ): Promise<Result<GitInitializeOutcome, GitInitializeError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      await this.assertRemoteAllowed(input.remoteUrl);
+    } catch {
+      return { success: false, error: new RepositoryUnreachableError() };
+    }
+
+    try {
+      const { stdout } = await runGitCommand(cwd, {
+        command: 'ls-remote',
+        positionals: [input.remoteUrl],
+        credential: { username: CREDENTIAL_USERNAME, token: input.token },
+      });
+      if (stdout.trim().length > 0) {
+        return { success: false, error: new RemoteAlreadyInitializedError() };
+      }
+    } catch (error) {
+      return { success: false, error: toRemoteAccessFailure(error) };
+    }
+
+    const branch = input.branch ?? DEFAULT_INITIALIZE_BRANCH;
+
+    try {
+      await runGitCommand(cwd, { command: 'init', flags: ['-b', branch] });
+      await runGitCommand(cwd, {
+        command: 'remote',
+        flags: ['add', 'origin'],
+        positionals: [input.remoteUrl],
+      });
+      await runGitCommand(cwd, { command: 'add', flags: ['-A'] });
+      await runGitCommand(cwd, {
+        command: 'commit',
+        flags: ['-m', INITIAL_COMMIT_MESSAGE],
+        identity: SERVICE_COMMIT_IDENTITY,
+      });
+      await runGitCommand(cwd, {
+        command: 'push',
+        positionals: [input.remoteUrl, branch],
+        credential: { username: CREDENTIAL_USERNAME, token: input.token },
+      });
+
+      const headCommitOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      return {
+        success: true,
+        value: { headCommit: readRevParseAnswer(headCommitOutput.stdout), defaultBranch: branch },
+      };
+    } catch (error) {
+      await rm(path.join(cwd, '.git'), { recursive: true, force: true });
+      return { success: false, error: toInitializeFailure(error) };
+    }
   }
 
   /**
