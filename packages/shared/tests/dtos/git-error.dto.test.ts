@@ -6,6 +6,7 @@ describe('git error codes', () => {
     expect(GIT_ERROR_CODES).toEqual([
       'repository_unreachable',
       'authentication_failed',
+      'already_connected',
       'non_fast_forward',
       'merge_conflict',
       'git_operation_in_progress',
@@ -27,6 +28,11 @@ describe('git error codes', () => {
     expect(isGitErrorCode('merge_conflict')).toBe(true);
     expect(isGitErrorCode('MERGE_CONFLICT')).toBe(false);
     expect(isGitErrorCode('not_a_code')).toBe(false);
+  });
+
+  test('already_connected narrows via isGitErrorCode and is part of the vocabulary', () => {
+    expect(isGitErrorCode('already_connected')).toBe(true);
+    expect(GIT_ERROR_CODES).toContain('already_connected');
   });
 
   test('GitErrorDto pairs a stable code with a safe, human-readable message', () => {

@@ -9,6 +9,7 @@
 export type GitErrorCode =
   | 'repository_unreachable'
   | 'authentication_failed'
+  | 'already_connected'
   | 'non_fast_forward'
   | 'merge_conflict'
   | 'git_operation_in_progress'
@@ -24,6 +25,7 @@ export type GitErrorCode =
 export const GIT_ERROR_CODES: readonly GitErrorCode[] = [
   'repository_unreachable',
   'authentication_failed',
+  'already_connected',
   'non_fast_forward',
   'merge_conflict',
   'git_operation_in_progress',

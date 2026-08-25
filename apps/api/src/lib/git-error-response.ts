@@ -33,6 +33,11 @@ const GIT_ERROR_TABLE: Readonly<Record<string, GitErrorTableEntry>> = {
     code: 'repository_not_connected',
     message: 'This project has no connected Git repository',
   },
+  RepositoryAlreadyConnectedError: {
+    status: 409,
+    code: 'already_connected',
+    message: 'This project is already connected to a Git repository',
+  },
   GitOperationInProgressError: {
     status: 409,
     code: 'git_operation_in_progress',

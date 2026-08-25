@@ -39,6 +39,9 @@ import { gitIgnorePatternsRoutes } from '../routes/projects/git-ignore-patterns'
 import { gitOperationStatusRoutes } from '../routes/projects/git/operation-status';
 import { gitActiveOperationRoutes } from '../routes/projects/git/active-operation';
 import { gitStatusRoutes } from '../routes/projects/git/status';
+import { gitInitializeRoutes } from '../routes/projects/git/initialize';
+import { gitDisconnectRoutes } from '../routes/projects/git/disconnect';
+import { gitCredentialRoutes } from '../routes/projects/git/credential';
 import { gitBehindAheadRoutes } from '../routes/projects/git/behind-ahead';
 import { gitTreeStatusRoutes } from '../routes/projects/git/tree-status';
 import { gitStageRoutes } from '../routes/projects/git/stage';
@@ -113,6 +116,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitOperationStatusRoutes);
       await innerApp.register(gitActiveOperationRoutes);
       await innerApp.register(gitStatusRoutes);
+      await innerApp.register(gitInitializeRoutes);
+      await innerApp.register(gitDisconnectRoutes);
+      await innerApp.register(gitCredentialRoutes);
       await innerApp.register(gitBehindAheadRoutes);
       await innerApp.register(gitTreeStatusRoutes);
       await innerApp.register(gitStageRoutes);

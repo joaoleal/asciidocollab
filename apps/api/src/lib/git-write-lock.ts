@@ -89,6 +89,34 @@ export async function requireEditorRole(
 }
 
 /**
+ * The OWNER-tier gate every repository-lifecycle route (initialize/disconnect/credential rotation)
+ * calls FIRST, before any pre-check, worker RPC, or async enqueue. Mirrors {@link requireEditorRole}
+ * exactly but with `requiredRole: 'owner'` — the tier data-model.md's git authorization matrix
+ * requires for connect/import/initialize/disconnect/credential rotation.
+ *
+ * This is defense-in-depth, not the only check: the underlying use case (disconnect) or the
+ * worker's own handler (initialize) self-gates owner again once it runs. Both checks are
+ * intentional — this one rejects a non-owner before any worker call/enqueue is even made.
+ *
+ * @param request - The current Fastify request (source of the membership and audit-log repos).
+ * @param actorId - The authenticated caller.
+ * @param projectId - The project the lifecycle action targets.
+ * @returns `{ success: true }` for an owner, otherwise `{ success: false, error: InsufficientRoleError }`.
+ */
+export async function requireOwnerRole(
+  request: FastifyRequest,
+  actorId: UserId,
+  projectId: ProjectId,
+): Promise<Result<void, InsufficientRoleError>> {
+  return requireGitRole(
+    request.server.repos.projectMember,
+    request.server.repos.auditLog,
+    { actorId, projectId, requiredRole: 'owner', context: requestContextFrom(request) },
+    requestLogger(request),
+  );
+}
+
+/**
  * Sends the standard `409` response for a mutation (or new edit session) refused because a
  * content-changing git operation is currently running for the project.
  */
