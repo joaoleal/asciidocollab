@@ -42,6 +42,10 @@ step "API unit tests with coverage …"
 step "Collaboration server unit tests with coverage …"
 (cd apps/collab && NODE_OPTIONS=--experimental-vm-modules npx jest --coverage --coverageReporters=text lcov)
 
+# git-worker also runs under ESM (same reason as collab, above).
+step "Git-worker unit tests with coverage …"
+(cd apps/git-worker && NODE_OPTIONS=--experimental-vm-modules npx jest --coverage --coverageReporters=text lcov)
+
 step "Web unit tests with coverage …"
 pnpm --filter @asciidocollab/web test:ci
 

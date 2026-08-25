@@ -102,6 +102,9 @@ npx tsc -p apps/api/tsconfig.eslint.json --noEmit
 step "Type-checking collab (src + tests) …"
 npx tsc -p apps/collab/tsconfig.eslint.json --noEmit
 
+step "Type-checking git-worker (src + tests) …"
+npx tsc -p apps/git-worker/tsconfig.eslint.json --noEmit
+
 # Web needs BOTH projects, because neither covers the other. tsconfig.eslint.json adds tests/ and
 # e2e/; tsconfig.json adds what Next GENERATES into .next/types (the route table and the page-prop
 # `validator.ts`, present because `pnpm -r build` ran above) plus the root-level configs. Running only
