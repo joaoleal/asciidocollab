@@ -64,6 +64,7 @@ export type {
   PendingChangeType,
   PendingChangeDto,
   GitStatusDto,
+  BehindAheadDto,
   FileGitStatus,
   ConflictResolution,
   ConflictDto,

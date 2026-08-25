@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   GetGitStatusUseCase,
+  GetBehindAheadUseCase,
   StageChangesUseCase,
   CommitChangesUseCase,
   GitChangeReconciler,
@@ -11,6 +12,7 @@ import {
   UserId,
   type Logger,
   type GetGitStatusResult,
+  type GitBehindAhead,
   type StageChangesResult,
   type CommitChangesResult,
   type DomainError,
@@ -203,12 +205,13 @@ export async function compositionRoot() {
     }),
   };
 
-  // The short git ops (status/stage/unstage/commit) run synchronously, worker-side, through the
+  // The short git ops (status/behind-ahead/stage/unstage/commit) run synchronously, worker-side, through the
   // internal RPC server `src/index.ts` starts once this composition root resolves — see that
   // file for the `startInternalGitServer` call.
   const userRepository = new PrismaUserRepository(prisma);
 
   const getGitStatusUseCase = new GetGitStatusUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
+  const getBehindAheadUseCase = new GetBehindAheadUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
   const stageChangesUseCase = new StageChangesUseCase(
     projectMemberRepository,
     auditLogRepository,
@@ -236,6 +239,8 @@ export async function compositionRoot() {
   // this boundary, then hands the request straight to the use case's own `execute`.
   const getStatus = (input: { projectId: string; actorId: string }): Promise<Result<GetGitStatusResult, DomainError>> =>
     getGitStatusUseCase.execute({ projectId: ProjectId.create(input.projectId) });
+  const getBehindAhead = (input: { projectId: string; actorId: string }): Promise<Result<GitBehindAhead, DomainError>> =>
+    getBehindAheadUseCase.execute({ projectId: ProjectId.create(input.projectId) });
   const stage = (input: { projectId: string; actorId: string; paths: readonly string[] }): Promise<Result<StageChangesResult, DomainError>> =>
     stageChangesUseCase.execute({
       projectId: ProjectId.create(input.projectId),
@@ -296,6 +301,7 @@ export async function compositionRoot() {
     // The internal RPC server's op fns — `src/index.ts` passes these straight to
     // `startInternalGitServer` once this composition root resolves.
     getStatus,
+    getBehindAhead,
     stage,
     unstage,
     commit,

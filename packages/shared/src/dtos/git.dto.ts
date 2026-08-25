@@ -149,6 +149,14 @@ export interface GitStatusDto {
   conflicted: PendingChangeDto[];
 }
 
+/** How far the current branch is ahead of / behind its remote counterpart, as of the last fetch. */
+export interface BehindAheadDto {
+  /** Commits the remote has that the local branch does not. */
+  readonly behind: number;
+  /** Commits the local branch has that the remote does not. */
+  readonly ahead: number;
+}
+
 /** Per-file git status used to decorate the project's file tree. */
 export type FileGitStatus = 'unchanged' | 'modified' | 'staged' | 'untracked' | 'removed' | 'conflicted';
 

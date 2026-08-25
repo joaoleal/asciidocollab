@@ -2,6 +2,7 @@ import {
   HttpGitWorkerClient,
   GitWorkerTransportError,
   GIT_WORKER_STATUS_PATH,
+  GIT_WORKER_BEHIND_AHEAD_PATH,
   GIT_WORKER_STAGE_PATH,
   GIT_WORKER_UNSTAGE_PATH,
   GIT_WORKER_COMMIT_PATH,
@@ -36,6 +37,49 @@ describe('HttpGitWorkerClient', () => {
     expect(init.method).toBe('POST');
     expect(init.headers['x-git-worker-internal-secret']).toBe('w0rkersecret');
     expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('POSTs the behind-ahead request to the behind-ahead endpoint with the secret header and returns the data on a success envelope', async () => {
+    const behindAheadData = { behind: 2, ahead: 5 };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: behindAheadData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010/',
+      secret: 'w0rkersecret',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.getBehindAhead({ projectId, actorId });
+
+    expect(result).toEqual({ ok: true, data: behindAheadData });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_BEHIND_AHEAD_PATH}`);
+    expect(init.method).toBe('POST');
+    expect(init.headers['x-git-worker-internal-secret']).toBe('w0rkersecret');
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('surfaces a domain refusal envelope from the behind-ahead endpoint as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'RepositoryNotConnectedError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.getBehindAhead({ projectId, actorId });
+    expect(result).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from the behind-ahead endpoint on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.getBehindAhead({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
   });
 
   it('POSTs stageChanges to the stage endpoint with the paths, and unstageChanges to the unstage endpoint', async () => {

@@ -8,12 +8,16 @@ import {
   LiveContentFlushFailedError,
   type CommitChangesResult,
   type GetGitStatusResult,
+  type GitBehindAhead,
   type Result,
   type StageChangesResult,
 } from '@asciidocollab/domain';
 
 /** Path of the internal endpoint the API calls to read a project's working-tree git status. */
 export const GIT_STATUS_PATH = '/internal/git/status';
+
+/** Path of the internal endpoint the API calls to compare the current branch to its remote. */
+export const GIT_BEHIND_AHEAD_PATH = '/internal/git/behind-ahead';
 
 /** Path of the internal endpoint the API calls to stage files for the next commit. */
 export const GIT_STAGE_PATH = '/internal/git/stage';
@@ -215,6 +219,13 @@ export interface GitOpsHandlerDeps {
    */
   getStatus: (request: GitStatusRequest) => Promise<Result<GetGitStatusResult, DomainError>>;
   /**
+   * Compares the current branch to its already-fetched remote-tracking ref.
+   *
+   * @param request - The validated behind/ahead request (same shape as the status request).
+   * @returns The use case's own `Result`.
+   */
+  getBehindAhead: (request: GitStatusRequest) => Promise<Result<GitBehindAhead, DomainError>>;
+  /**
    * Stages the given files.
    *
    * @param request - The validated stage request.
@@ -242,8 +253,9 @@ export interface GitOpsHandlerDeps {
 }
 
 /**
- * Builds the node HTTP request handler for the internal git short-op endpoints (status, stage,
- * unstage, commit). Separated from the server so it can be unit-tested with injected functions.
+ * Builds the node HTTP request handler for the internal git short-op endpoints (status,
+ * behind-ahead, stage, unstage, commit). Separated from the server so it can be unit-tested with
+ * injected functions.
  *
  * @param deps - The op functions, optional secret, and logger.
  * @returns A node `http` request handler.
@@ -255,7 +267,11 @@ export function createGitOpsRequestHandler(
     const path = (request.url ?? '').split('?')[0];
     if (
       request.method !== 'POST' ||
-      (path !== GIT_STATUS_PATH && path !== GIT_STAGE_PATH && path !== GIT_UNSTAGE_PATH && path !== GIT_COMMIT_PATH)
+      (path !== GIT_STATUS_PATH &&
+        path !== GIT_BEHIND_AHEAD_PATH &&
+        path !== GIT_STAGE_PATH &&
+        path !== GIT_UNSTAGE_PATH &&
+        path !== GIT_COMMIT_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -289,6 +305,14 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.getStatus(parsed);
       label = 'status';
+    } else if (path === GIT_BEHIND_AHEAD_PATH) {
+      const parsed = parseGitStatusBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.getBehindAhead(parsed);
+      label = 'behind-ahead';
     } else if (path === GIT_STAGE_PATH || path === GIT_UNSTAGE_PATH) {
       const parsed = parseStageChangesBody(raw);
       if (!parsed) {
@@ -332,6 +356,8 @@ export interface InternalGitServerOptions {
   logger: Logger;
   /** Reads a project's working-tree git status. */
   getStatus: GitOpsHandlerDeps['getStatus'];
+  /** Compares the current branch to its already-fetched remote-tracking ref. */
+  getBehindAhead: GitOpsHandlerDeps['getBehindAhead'];
   /** Stages the given files. */
   stage: GitOpsHandlerDeps['stage'];
   /** Unstages the given files. */
@@ -341,17 +367,18 @@ export interface InternalGitServerOptions {
 }
 
 /**
- * Starts the internal HTTP server that lets the API run the git short ops (status, stage, unstage,
- * commit) worker-side, against the real git adapter. Binds to loopback by default; pair with a
- * shared secret and/or network policy in production. Returns the server so the caller can close it
- * on shutdown.
+ * Starts the internal HTTP server that lets the API run the git short ops (status, behind-ahead,
+ * stage, unstage, commit) worker-side, against the real git adapter. Binds to loopback by default;
+ * pair with a shared secret and/or network policy in production. Returns the server so the caller
+ * can close it on shutdown.
  *
- * @param options - Bind address, the four op fns, optional secret/mTLS, logger.
+ * @param options - Bind address, the five op fns, optional secret/mTLS, logger.
  * @returns A promise resolving to the listening HTTP(S) server, or rejecting if the bind fails.
  */
 export function startInternalGitServer(options: InternalGitServerOptions): Promise<http.Server> {
   const handler = createGitOpsRequestHandler({
     getStatus: options.getStatus,
+    getBehindAhead: options.getBehindAhead,
     stage: options.stage,
     unstage: options.unstage,
     commit: options.commit,

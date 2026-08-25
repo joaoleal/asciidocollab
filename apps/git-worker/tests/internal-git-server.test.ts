@@ -14,6 +14,7 @@ import {
 } from '@asciidocollab/domain';
 import {
   GIT_STATUS_PATH,
+  GIT_BEHIND_AHEAD_PATH,
   GIT_STAGE_PATH,
   GIT_UNSTAGE_PATH,
   GIT_COMMIT_PATH,
@@ -84,6 +85,7 @@ function asLogger(logger: { info: jest.Mock; error: jest.Mock }): Logger {
 
 interface HandlerDoubles {
   getStatus: jest.Mock;
+  getBehindAhead: jest.Mock;
   stage: jest.Mock;
   unstage: jest.Mock;
   commit: jest.Mock;
@@ -94,6 +96,7 @@ interface HandlerDoubles {
 function handlerDoubles(): HandlerDoubles {
   return {
     getStatus: jest.fn(async () => ({ success: true, value: { currentBranch: 'main', changes: [], syncStatus: 'up_to_date', defaultBranch: 'main', lastKnownRemoteHead: null, lastSyncAt: null } })),
+    getBehindAhead: jest.fn(async () => ({ success: true, value: { behind: 0, ahead: 0 } })),
     stage: jest.fn(async () => ({ success: true, value: { staged: ['a.adoc'] } })),
     unstage: jest.fn(async () => ({ success: true, value: { staged: [] } })),
     commit: jest.fn(async () => ({ success: true, value: { commit: { hash: 'abc123', message: 'msg', authoredAt: new Date('2026-01-01T00:00:00.000Z') } } })),
@@ -227,6 +230,39 @@ describe('createGitOpsRequestHandler', () => {
       data: { currentBranch: 'main', changes: [], syncStatus: 'up_to_date', defaultBranch: 'main', lastKnownRemoteHead: null, lastSyncAt: null },
     });
     expect(doubles.getStatus).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID });
+  });
+
+  it('answers behind-ahead with {ok:true,data} on a success Result', async () => {
+    const doubles = handlerDoubles();
+    doubles.getBehindAhead = jest.fn(async () => ({ success: true, value: { behind: 2, ahead: 5 } }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_BEHIND_AHEAD_PATH), recordingResponse(), statusBody);
+    expect(response.statusCode).toBe(200);
+    expect(response.headers).toEqual(JSON_HEADERS);
+    expect(JSON.parse(response.body!)).toEqual({ ok: true, data: { behind: 2, ahead: 5 } });
+    expect(doubles.getBehindAhead).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID });
+  });
+
+  it('answers 400 for behind-ahead on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_BEHIND_AHEAD_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toBe('{"error":"Invalid body"}');
+    expect(doubles.getBehindAhead).not.toHaveBeenCalled();
+  });
+
+  it('rejects a behind-ahead request without the shared secret, same guard as the other endpoints', async () => {
+    const doubles = handlerDoubles();
+    doubles.secret = 'top-secret';
+    const response = await handle(doubles, fakeRequest('POST', GIT_BEHIND_AHEAD_PATH), recordingResponse(), statusBody);
+    expect(response.statusCode).toBe(401);
+    expect(doubles.getBehindAhead).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for RepositoryNotConnectedError from behind-ahead', async () => {
+    const doubles = handlerDoubles();
+    doubles.getBehindAhead = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_BEHIND_AHEAD_PATH), recordingResponse(), statusBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
   });
 
   it('answers stage with {ok:true,data} on a success Result', async () => {
@@ -445,6 +481,7 @@ describe('internal git server (HTTP)', () => {
       port: 0,
       logger: silentLogger,
       getStatus: doubles.getStatus,
+      getBehindAhead: doubles.getBehindAhead,
       stage: doubles.stage,
       unstage: doubles.unstage,
       commit: doubles.commit,
@@ -480,6 +517,16 @@ describe('internal git server (HTTP)', () => {
     });
   });
 
+  it('answers a real behind-ahead request end to end', async () => {
+    await startWith();
+    const response = await fetch(`${baseUrl}${GIT_BEHIND_AHEAD_PATH}`, {
+      method: 'POST',
+      body: JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, data: { behind: 0, ahead: 0 } });
+  });
+
   it('rejects (does not crash) when the port is already in use', async () => {
     await startWith();
     const inUsePort = (server.address() as AddressInfo).port;
@@ -490,6 +537,7 @@ describe('internal git server (HTTP)', () => {
         port: inUsePort,
         logger: silentLogger,
         getStatus: doubles.getStatus,
+        getBehindAhead: doubles.getBehindAhead,
         stage: doubles.stage,
         unstage: doubles.unstage,
         commit: doubles.commit,
@@ -515,6 +563,7 @@ describe('startInternalGitServer wiring', () => {
       port: 0,
       logger: asLogger(logger),
       getStatus: doubles.getStatus,
+      getBehindAhead: doubles.getBehindAhead,
       stage: doubles.stage,
       unstage: doubles.unstage,
       commit: doubles.commit,

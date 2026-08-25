@@ -3,6 +3,9 @@ import { createMtlsFetch } from './mtls-fetch';
 /** Path of the internal endpoint that reads a project's working-tree git status. */
 export const GIT_WORKER_STATUS_PATH = '/internal/git/status';
 
+/** Path of the internal endpoint that compares the current branch to its remote. */
+export const GIT_WORKER_BEHIND_AHEAD_PATH = '/internal/git/behind-ahead';
+
 /** Path of the internal endpoint that stages files for the next commit. */
 export const GIT_WORKER_STAGE_PATH = '/internal/git/stage';
 
@@ -90,6 +93,14 @@ export interface GitWorkerStatusData {
   readonly lastSyncAt: string | null;
 }
 
+/** Wire shape of the behind-ahead endpoint's `data` field. */
+export interface GitWorkerBehindAheadData {
+  /** Commits the remote has that the local branch does not. */
+  readonly behind: number;
+  /** Commits the local branch has that the remote does not. */
+  readonly ahead: number;
+}
+
 /** Wire shape of the stage/unstage endpoints' `data` field. */
 export interface GitWorkerStageData {
   /** Every path currently staged for the next commit. */
@@ -139,12 +150,14 @@ export type GitWorkerResult<T> = { ok: true; data: T } | { ok: false; error: str
 
 /**
  * Transport-only client interface for the git-worker's synchronous internal RPC endpoints (status,
- * stage, unstage, commit). Defined so routes can be exercised against a fake in tests without an
- * HTTP dependency.
+ * behind-ahead, stage, unstage, commit). Defined so routes can be exercised against a fake in
+ * tests without an HTTP dependency.
  */
 export interface GitWorkerClient {
   /** Reads a project's working-tree git status. */
   getStatus(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerStatusData>>;
+  /** Compares the current branch to its already-fetched remote-tracking ref. */
+  getBehindAhead(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBehindAheadData>>;
   /** Stages the given files for the next commit. */
   stageChanges(input: GitWorkerStageInput): Promise<GitWorkerResult<GitWorkerStageData>>;
   /** Unstages the given files. */
@@ -242,6 +255,13 @@ export class HttpGitWorkerClient implements GitWorkerClient {
 
   async getStatus(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerStatusData>> {
     return this.post<GitWorkerStatusData>(GIT_WORKER_STATUS_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+    });
+  }
+
+  async getBehindAhead(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBehindAheadData>> {
+    return this.post<GitWorkerBehindAheadData>(GIT_WORKER_BEHIND_AHEAD_PATH, {
       projectId: input.projectId,
       actorId: input.actorId,
     });
