@@ -1,6 +1,7 @@
 import type { FastifyReply } from 'fastify';
 import {
   PermissionDeniedError,
+  InsufficientRoleError,
   FileConflictError,
   FileNodeNotFoundError,
   CannotDeleteRootFolderError,
@@ -46,7 +47,7 @@ export function sendHiddenMetadataError(reply: FastifyReply) {
  * helper only maps the error to its HTTP status.
  */
 export function sendFileTreeError(reply: FastifyReply, error: Error) {
-  if (error instanceof PermissionDeniedError) {
+  if (error instanceof PermissionDeniedError || error instanceof InsufficientRoleError) {
     return reply.status(403).send({ error: { code: 'FORBIDDEN', message: error.message } });
   }
   if (error instanceof FileConflictError) {

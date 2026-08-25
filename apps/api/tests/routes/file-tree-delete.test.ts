@@ -193,6 +193,21 @@ describe('DELETE /projects/:projectId/files/:fileNodeId', () => {
     expect(response.statusCode).toBe(204);
   });
 
+  test('returns 403 (not 409) for a non-member while a content-changing operation (BRANCH_SWITCH) is active', async () => {
+    const app = buildTestServer({ memberRole: undefined, activeGitOperation: { kind: 'BRANCH_SWITCH' } });
+    const repos = (app as unknown as { repos: { projectMember: { findByCompositeKey: jest.Mock } } }).repos;
+    repos.projectMember.findByCompositeKey.mockResolvedValue(null);
+    const executeSpy = jest.spyOn(DeleteFileUseCase.prototype, 'execute');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/projects/${PROJECT_ID}/files/${FILE_NODE_ID}`,
+    });
+    expect(response.statusCode).toBe(403);
+    expect(JSON.parse(response.body).error.code).toBe('FORBIDDEN');
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
   test('emits event with parentId=null when file node has no parent', async () => {
     jest.spyOn(DeleteFileUseCase.prototype, 'execute').mockResolvedValue({
       success: true,

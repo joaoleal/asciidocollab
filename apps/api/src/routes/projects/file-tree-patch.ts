@@ -10,7 +10,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
-import { isGitWriteLocked, sendGitOperationInProgressError } from '../../lib/git-write-lock';
+import { isGitWriteLocked, requireProjectMembership, sendGitOperationInProgressError } from '../../lib/git-write-lock';
 import { sendFileTreeError, toNodeType, isHiddenMetadataName, sendHiddenMetadataError } from './file-tree-errors';
 
 type PatchBody = { name?: string; parentId?: string };
@@ -41,6 +41,14 @@ export async function fileTreePatchRoutes(app: FastifyInstance): Promise<void> {
       // rename the node, so both are guarded here.
       if (name !== undefined && isHiddenMetadataName(name)) {
         return sendHiddenMetadataError(reply);
+      }
+
+      // Membership gate: a non-member must be refused (403) before the write-lock check below, or
+      // its 409 would leak that the project exists and has active git activity. Covers every branch
+      // below, same as the write-lock check.
+      const membershipCheck = await requireProjectMembership(request, actorId, projectId);
+      if (!membershipCheck.success) {
+        return sendFileTreeError(reply, membershipCheck.error);
       }
 
       // Write-lock: a content-changing git operation (import/pull/checkout) is currently replacing

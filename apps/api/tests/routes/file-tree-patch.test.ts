@@ -404,6 +404,18 @@ describe('PATCH /projects/:projectId/files/:fileNodeId', () => {
       });
       expect(response.statusCode).toBe(204);
     });
+
+    test('returns 403 (not 409) for a non-member while a content-changing operation (PULL) is active', async () => {
+      const app = buildRenameServer({ memberResult: null, activeGitOperation: { kind: 'PULL' } });
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: 'renamed.adoc' },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error.code).toBe('FORBIDDEN');
+    });
   });
 
   describe('move-only (parentId set, name absent)', () => {

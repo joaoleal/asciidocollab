@@ -248,6 +248,18 @@ describe('POST /projects/:projectId/files — file creation', () => {
     });
     expect(response.statusCode).toBe(201);
   });
+
+  test('returns 403 (not 409) for a non-member while a content-changing operation (PULL) is active', async () => {
+    const app = buildTestServer({ memberResult: null, activeGitOperation: { kind: 'PULL' } });
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'file', parentId: PARENT_ID, name: 'doc.adoc' },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(JSON.parse(response.body).error.code).toBe('FORBIDDEN');
+  });
 });
 
 describe('POST /projects/:projectId/files — folder creation', () => {

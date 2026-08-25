@@ -9,7 +9,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
-import { isGitWriteLocked, sendGitOperationInProgressError } from '../../lib/git-write-lock';
+import { isGitWriteLocked, requireProjectMembership, sendGitOperationInProgressError } from '../../lib/git-write-lock';
 import { sendFileTreeError, toNodeType, pathHasHiddenMetadataSegment, sendHiddenMetadataError } from './file-tree-errors';
 
 /** Registers DELETE /projects/:projectId/files/:fileNodeId. */
@@ -39,6 +39,13 @@ export async function fileTreeDeleteRoutes(app: FastifyInstance): Promise<void> 
       // renamed into one via this API — see file-tree-create.ts / file-tree-patch.ts).
       if (fileNodeBeforeDelete && pathHasHiddenMetadataSegment(fileNodeBeforeDelete.path.value)) {
         return sendHiddenMetadataError(reply);
+      }
+
+      // Membership gate: a non-member must be refused (403) before the write-lock check below, or
+      // its 409 would leak that the project exists and has active git activity.
+      const membershipCheck = await requireProjectMembership(request, actorId, projectId);
+      if (!membershipCheck.success) {
+        return sendFileTreeError(reply, membershipCheck.error);
       }
 
       // Write-lock: a content-changing git operation (import/pull/checkout) is currently replacing

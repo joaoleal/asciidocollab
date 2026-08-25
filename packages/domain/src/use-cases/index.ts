@@ -26,6 +26,8 @@ export {
   GIT_IGNORE_PATTERNS_RESOURCE_TYPE,
 } from './project/git-ignore-patterns-authorization';
 export type { GitIgnorePatternsAuthzContext } from './project/git-ignore-patterns-authorization';
+export { requireGitRole, GIT_RESOURCE_TYPE } from './git/git-role-guard';
+export type { GitRoleAuthzContext, GitRoleTier } from './git/git-role-guard';
 export { CheckSystemSetupUseCase } from './settings/check-system-setup';
 export { UpdateDisplayNameUseCase } from './auth/update-display-name';
 export type { UpdateDisplayNameResult } from './auth/update-display-name';

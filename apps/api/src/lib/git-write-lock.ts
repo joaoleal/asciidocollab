@@ -1,5 +1,15 @@
-import type { FastifyReply } from 'fastify';
-import { CONTENT_CHANGING_GIT_OPERATION_KINDS, type GitOperationRepository, type ProjectId } from '@asciidocollab/domain';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import {
+  CONTENT_CHANGING_GIT_OPERATION_KINDS,
+  requireGitRole,
+  type GitOperationRepository,
+  type ProjectId,
+  type UserId,
+  type InsufficientRoleError,
+  type Result,
+} from '@asciidocollab/domain';
+import { requestContextFrom } from './request-context';
+import { requestLogger } from './request-logger';
 
 /**
  * The write-lock check shared by file-tree mutation routes and the collab edit-session gate: while
@@ -17,6 +27,35 @@ export async function isGitWriteLocked(
 ): Promise<boolean> {
   const active = await gitOperationRepo.findActiveOperation(projectId);
   return active !== null && CONTENT_CHANGING_GIT_OPERATION_KINDS.includes(active.kind);
+}
+
+/**
+ * Rejects a caller who is not a project member at all — the pre-check every file-tree mutation
+ * route runs BEFORE {@link isGitWriteLocked}. Ordering matters for information disclosure: without
+ * it, a non-member hitting a mutation route on someone else's project during an active
+ * content-changing operation would see the write-lock's `409`, leaking that the project exists and
+ * has git activity, instead of the `403` a non-member gets on every other path.
+ *
+ * This does not duplicate the finer-grained editor/owner check the mutating use case still performs
+ * on its own: `'viewer'` is the lowest role tier, so any real member (including a VIEWER, who the
+ * use case will still deny) passes this gate unchanged and falls through to that check.
+ *
+ * @param request - The current Fastify request (source of the membership and audit-log repos).
+ * @param actorId - The authenticated caller.
+ * @param projectId - The project the mutation targets.
+ * @returns `{ success: true }` for any project member, otherwise `{ success: false, error: InsufficientRoleError }`.
+ */
+export async function requireProjectMembership(
+  request: FastifyRequest,
+  actorId: UserId,
+  projectId: ProjectId,
+): Promise<Result<void, InsufficientRoleError>> {
+  return requireGitRole(
+    request.server.repos.projectMember,
+    request.server.repos.auditLog,
+    { actorId, projectId, requiredRole: 'viewer', context: requestContextFrom(request) },
+    requestLogger(request),
+  );
 }
 
 /**
