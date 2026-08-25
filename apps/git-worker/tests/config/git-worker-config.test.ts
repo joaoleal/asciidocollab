@@ -25,6 +25,21 @@ describe('createGitWorkerConfig', () => {
     expect(config.get('storageRoot')).toBe('/mnt/project-storage');
   });
 
+  it('defaults contentStorageRoot to ./storage', () => {
+    const config = createGitWorkerConfig();
+
+    expect(config.get('contentStorageRoot')).toBe('./storage');
+  });
+
+  it('reads contentStorageRoot from the same ASCIIDOCOLLAB_STORAGE_PATH variable as storageRoot and apps/api storage.path, so the two can never drift apart', () => {
+    process.env.ASCIIDOCOLLAB_STORAGE_PATH = '/mnt/project-storage';
+
+    const config = createGitWorkerConfig();
+
+    expect(config.get('contentStorageRoot')).toBe('/mnt/project-storage');
+    expect(config.get('contentStorageRoot')).toBe(config.get('storageRoot'));
+  });
+
   it('defaults databaseUrl and credentialEncryptionKey to empty strings', () => {
     const config = createGitWorkerConfig();
 

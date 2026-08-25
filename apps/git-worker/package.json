@@ -15,6 +15,7 @@
     "@asciidocollab/db": "workspace:*",
     "@asciidocollab/domain": "workspace:*",
     "@asciidocollab/infrastructure": "workspace:*",
+    "@asciidocollab/shared": "workspace:*",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "convict": "^6.2.5",

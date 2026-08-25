@@ -42,6 +42,20 @@ export interface GitWorkerConfig {
    */
   storageRoot: string;
 
+  /**
+   * Root directory for the CONTENT-BYTES projection of project files — what a `ProjectFileStore`
+   * reads and writes, and what `apps/api`/`apps/collab` serve file content from. This is a
+   * DIFFERENT concern from `storageRoot` above (this worker's own git working-tree root): an
+   * import writes the cloned bytes through this path, not through the working tree. It MUST
+   * resolve to the exact same filesystem location as `apps/api`'s `storage.path`
+   * (`apps/api/src/config/schema-storage.ts`), or a worker-imported file lands somewhere the rest
+   * of the application can never read it back from — hence it is wired to the same
+   * `ASCIIDOCOLLAB_STORAGE_PATH` environment variable that config reads, so the two can never
+   * drift apart by default. Deliberately its own config key rather than a reuse of `storageRoot`,
+   * so the two concerns stay independently nameable even though they coincide today.
+   */
+  contentStorageRoot: string;
+
   /** PostgreSQL connection URL, shared with `apps/api`, `apps/collab`, and `packages/db`. */
   databaseUrl: string;
 
@@ -77,6 +91,12 @@ export function createGitWorkerConfig() {
   return convict<GitWorkerConfig>({
     storageRoot: {
       doc: "Root directory for per-project file storage (shared with apps/api and apps/collab). Each project's git working tree lives at `<storageRoot>/<projectId>/`.",
+      format: String,
+      default: './storage',
+      env: 'ASCIIDOCOLLAB_STORAGE_PATH',
+    },
+    contentStorageRoot: {
+      doc: "Root directory for the content-bytes projection of project files (what ProjectFileStore reads/writes). MUST match apps/api's storage.path exactly — wired to the same ASCIIDOCOLLAB_STORAGE_PATH env var so it cannot drift from storageRoot or from apps/api's own configuration.",
       format: String,
       default: './storage',
       env: 'ASCIIDOCOLLAB_STORAGE_PATH',

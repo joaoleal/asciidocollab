@@ -1,16 +1,25 @@
 import pino from 'pino';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
+import type { Logger } from '@asciidocollab/domain';
 import {
   PrismaGitOperationRepository,
   PrismaGitCredentialStore,
   PrismaAuditLogRepository,
+  PrismaProjectRepository,
+  PrismaFileNodeRepository,
+  PrismaDocumentRepository,
+  PrismaAssetRepository,
+  PrismaGitRepositoryRepository,
+  PrismaProjectMemberRepository,
+  FilesystemProjectFileStore,
   SessionEncryption,
 } from '@asciidocollab/infrastructure';
 import { createGitWorkerConfig } from './config/git-worker-config.js';
 import { RealGitCommandRunner } from './git/git-command-runner.js';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './git/working-tree.js';
 import { createGitWorkerLoop, type GitWorkerLoop } from './worker-loop.js';
+import { createImportHandler } from './dispatch/import-handler.js';
 import type { GitOperationHandlerRegistry } from './dispatch/git-operation-dispatcher.js';
 
 /**
@@ -42,18 +51,20 @@ export interface GitWorkerApp {
 
 /**
  * Wires up the git-worker application: constructs the real adapters (`GitOperationRepository`,
- * `GitCredentialStore`, `GitCommandRunner`, `AuditLogRepository`) from config, and the run loop
- * that polls/claims `GitOperation` work, dispatches it, and records its outcome.
+ * `GitCredentialStore`, `GitCommandRunner`, `AuditLogRepository`, and the persistence stack each
+ * registered use-case handler needs) from config, and the run loop that polls/claims
+ * `GitOperation` work, dispatches it, and records its outcome.
  *
- * No `GitOperationKind` has a registered handler yet — each git use case is a story task's job,
- * not this one's (YAGNI). Until a story task registers one, every claimed operation dispatches
- * to the `UNHANDLED_GIT_OPERATION_KIND` failure path (see `dispatch/git-operation-dispatcher.ts`),
- * so a claimed op always reaches a terminal state — and releases the single-flight lock it
- * holds — rather than hanging forever. `gitCredentialStore` and `gitCommandRunner` are already
- * constructed here, ready for those handlers to close over once they exist. Likewise,
- * `writeManagedGitignore` (`git/managed-gitignore.ts`) is ready for a future init/commit handler
- * to call — after `ensureCleanWorkingTree`, with the project's current `gitIgnorePatterns` — so
- * the managed `.gitignore` (and its merged owner-set patterns) stays current on every job.
+ * `IMPORT` is the only `GitOperationKind` with a registered handler so far — every other kind is
+ * still a future story task's job (YAGNI). Until a story task registers one, a claimed operation
+ * of an unregistered kind dispatches to the `UNHANDLED_GIT_OPERATION_KIND` failure path (see
+ * `dispatch/git-operation-dispatcher.ts`), so it always reaches a terminal state — and releases
+ * the single-flight lock it holds — rather than hanging forever. `gitCredentialStore` and
+ * `gitCommandRunner` are already constructed here, ready for those future handlers to close over
+ * too. Likewise, `writeManagedGitignore` (`git/managed-gitignore.ts`) is ready for a future
+ * init/commit handler to call — after `ensureCleanWorkingTree`, with the project's current
+ * `gitIgnorePatterns` — so the managed `.gitignore` (and its merged owner-set patterns) stays
+ * current on every job.
  *
  * @returns The composed application, ready to start. Structurally satisfies `GitWorkerApp` plus a
  *   few extra fields (below) exposed for tests and future use-case wiring — no explicit
@@ -70,13 +81,37 @@ export async function compositionRoot() {
   const gitOperationRepository = new PrismaGitOperationRepository(prisma);
   const auditLogRepository = new PrismaAuditLogRepository(prisma);
   const credentialEncryption = new SessionEncryption({ encryptionKey: config.get('credentialEncryptionKey') });
-  // Constructed for future use-case handlers to close over; the empty registry below doesn't
-  // call either yet (see this function's docs).
+  // gitCredentialStore.loadDecrypted() is the IMPORT handler's execution-time credential source
+  // (below); gitCommandRunner is likewise reused there, and both stay constructed here for future
+  // handlers to close over too.
   const gitCredentialStore = new PrismaGitCredentialStore(prisma, credentialEncryption);
   const storageRoot = config.get('storageRoot');
   const gitCommandRunner = new RealGitCommandRunner(storageRoot, config.get('egressAllowedHosts'));
 
-  const handlers: GitOperationHandlerRegistry = {};
+  // Adapts this app's structured pino logger to the domain's minimal `Logger` port (best-effort
+  // `warn`-only sink), the same shape apps/api's `requestLogger` adapter presents.
+  const importUseCaseLogger: Logger = {
+    warn: (message, meta) => logger.warn(meta ?? {}, message),
+  };
+
+  const handlers: GitOperationHandlerRegistry = {
+    IMPORT: createImportHandler({
+      projectRepository: new PrismaProjectRepository(prisma),
+      fileNodeRepository: new PrismaFileNodeRepository(prisma),
+      documentRepository: new PrismaDocumentRepository(prisma),
+      assetRepository: new PrismaAssetRepository(prisma),
+      // The CONTENT-BYTES projection path — deliberately `contentStorageRoot`, NOT `storageRoot`
+      // (that root is this worker's own git working-tree directory). See
+      // `config/git-worker-config.ts`'s docs on why the two must never be conflated.
+      fileStore: new FilesystemProjectFileStore(config.get('contentStorageRoot')),
+      gitRepositoryRepository: new PrismaGitRepositoryRepository(prisma),
+      commandRunner: gitCommandRunner,
+      projectMemberRepository: new PrismaProjectMemberRepository(prisma),
+      auditLogRepository,
+      credentialSource: gitCredentialStore,
+      logger: importUseCaseLogger,
+    }),
+  };
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
     gitOperationRepository,
