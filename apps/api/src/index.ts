@@ -5,6 +5,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import type {
   SessionEncryption,
   PrismaSessionStore,
+  GitWorkerClient,
 } from '@asciidocollab/infrastructure';
 import type {
   UserRepository,
@@ -131,6 +132,8 @@ export interface AppContainer {
     regexEngine: RegexEngine;
     /** Reads administrator-provided PDF converter extensions; the only route to that folder. */
     pdfExtensionSource: PdfExtensionSourcePort;
+    /** Transport-only client for the git-worker's synchronous internal RPC endpoints (status, stage, unstage, commit). */
+    gitWorkerClient: GitWorkerClient;
   };
   /** Collection of domain service implementations. */
   services: {
@@ -341,6 +344,8 @@ declare module 'fastify' {
       regexEngine: RegexEngine;
     /** Reads administrator-provided PDF converter extensions; the only route to that folder. */
     pdfExtensionSource: PdfExtensionSourcePort;
+    /** Transport-only client for the git-worker's synchronous internal RPC endpoints (status, stage, unstage, commit). */
+    gitWorkerClient: GitWorkerClient;
     };
     services: {
       passwordHasher: PasswordHasher;

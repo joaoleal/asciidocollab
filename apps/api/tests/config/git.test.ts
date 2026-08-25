@@ -17,6 +17,11 @@ describe('git config', () => {
     'ASCIIDOCOLLAB_GIT_RATE_LIMIT_WINDOW',
     'ASCIIDOCOLLAB_GIT_MAX_REPO_SIZE_MB',
     'ASCIIDOCOLLAB_GIT_LFS_THRESHOLD_BYTES',
+    'ASCIIDOCOLLAB_GIT_WORKER_URL',
+    'ASCIIDOCOLLAB_GIT_WORKER_SECRET',
+    'ASCIIDOCOLLAB_GIT_WORKER_TLS_CERT',
+    'ASCIIDOCOLLAB_GIT_WORKER_TLS_KEY',
+    'ASCIIDOCOLLAB_GIT_WORKER_TLS_CA',
   ] as const;
 
   const saved: Record<string, string | undefined> = {};
@@ -46,6 +51,9 @@ describe('git config', () => {
       rateLimitWindow: 60_000,
       maxRepoSizeMB: 500,
       lfsThresholdBytes: 10_485_760,
+      workerUrl: 'http://127.0.0.1:4010',
+      workerSecret: '',
+      workerTls: { cert: '', key: '', ca: '' },
     });
   });
 
@@ -78,6 +86,24 @@ describe('git config', () => {
       rateLimitWindow: 30_000,
       maxRepoSizeMB: 250,
       lfsThresholdBytes: 5_242_880,
+    });
+  });
+
+  it('binds the git-worker RPC client fields to their env vars', () => {
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_URL = 'https://git-worker.internal:4010';
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_SECRET = 'w0rker-secret';
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_TLS_CERT = '/certs/git-worker-client.pem';
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_TLS_KEY = '/certs/git-worker-client-key.pem';
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_TLS_CA = '/certs/git-worker-ca.pem';
+
+    expect(createConfig().get('git')).toMatchObject({
+      workerUrl: 'https://git-worker.internal:4010',
+      workerSecret: 'w0rker-secret',
+      workerTls: {
+        cert: '/certs/git-worker-client.pem',
+        key: '/certs/git-worker-client-key.pem',
+        ca: '/certs/git-worker-ca.pem',
+      },
     });
   });
 

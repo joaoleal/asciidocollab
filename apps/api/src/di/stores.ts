@@ -4,6 +4,7 @@ import {
   FilesystemProjectFileStore,
   FilesystemYjsStateStore,
   HttpCollaborativeContentEditor,
+  HttpGitWorkerClient,
   HttpStructuredCollaborativeEditor,
   Re2RegexEngine,
 } from '@asciidocollab/infrastructure';
@@ -31,12 +32,22 @@ export function createStores(
       ? { tls: { cert: readFileSync(editTls.cert), key: readFileSync(editTls.key), ca: readFileSync(editTls.ca) } }
       : {}),
   };
+  const workerTls = appConfig.git.workerTls;
+  const useWorkerMtls = Boolean(workerTls.cert && workerTls.key && workerTls.ca);
+  const gitWorkerClient = new HttpGitWorkerClient({
+    baseUrl: appConfig.git.workerUrl,
+    ...(appConfig.git.workerSecret ? { secret: appConfig.git.workerSecret } : {}),
+    ...(useWorkerMtls
+      ? { tls: { cert: readFileSync(workerTls.cert), key: readFileSync(workerTls.key), ca: readFileSync(workerTls.ca) } }
+      : {}),
+  });
   return {
     fileStore: new FilesystemProjectFileStore(storagePath),
     yjsStateStore: new FilesystemYjsStateStore(storagePath),
     collaborativeContentEditor: new HttpCollaborativeContentEditor(collabConfig),
     structuredCollaborativeEditor: new HttpStructuredCollaborativeEditor(collabConfig),
     regexEngine: new Re2RegexEngine(),
+    gitWorkerClient,
     // The ONLY route to the administrator's extension drop folder. Its bounds come from config, so
     // no call site can decide for itself how much work a catalogue read may cost.
     pdfExtensionSource: new FilesystemPdfExtensionSource({

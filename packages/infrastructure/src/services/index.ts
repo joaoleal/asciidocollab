@@ -24,3 +24,24 @@ export {
   COLLAB_APPLY_STRUCTURED_REPLACEMENT_PATH,
 } from './http-structured-collaborative-editor';
 export { InMemoryActiveCloneRegistry } from './in-memory-active-clone-registry';
+export {
+  HttpGitWorkerClient,
+  GitWorkerTransportError,
+  GIT_WORKER_STATUS_PATH,
+  GIT_WORKER_STAGE_PATH,
+  GIT_WORKER_UNSTAGE_PATH,
+  GIT_WORKER_COMMIT_PATH,
+  type GitWorkerClient,
+  type HttpGitWorkerClientConfig,
+  type GitWorkerResult,
+  type GitWorkerRequestInput,
+  type GitWorkerStageInput,
+  type GitWorkerCommitInput,
+  type GitWorkerStatusData,
+  type GitWorkerStageData,
+  type GitWorkerCommitData,
+  type GitWorkerPendingChange,
+  type GitWorkerChangeType,
+  type GitWorkerChangeState,
+  type GitWorkerSyncStatus,
+} from './http-git-worker-client';

@@ -29,6 +29,19 @@ export interface GitConfig {
   maxRepoSizeMB: number;
   /** File size (bytes) at or above which a tracked binary asset is handled as a Git LFS object rather than stored inline. */
   lfsThresholdBytes: number;
+  /** Base URL of the git-worker's internal RPC endpoint (status/stage/unstage/commit short ops). */
+  workerUrl: string;
+  /** Optional shared secret sent to the git-worker's internal endpoint (must match the worker's own secret). */
+  workerSecret: string;
+  /** Client mTLS material for the git-worker's internal endpoint. All fields empty disables mTLS (loopback HTTP). */
+  workerTls: {
+    /** Path to the PEM file containing the client certificate presented to the git-worker. */
+    cert: string;
+    /** Path to the PEM file containing the client private key. */
+    key: string;
+    /** Path to the PEM file containing the CA certificate used to verify the git-worker server. */
+    ca: string;
+  };
 }
 
 /** Convict schema fragment for the git repository sync domain. */
@@ -77,5 +90,38 @@ export const gitSchema: convict.Schema<GitConfig> = {
     format: 'positive-int',
     default: 10_485_760, // 10 MiB
     env: 'ASCIIDOCOLLAB_GIT_LFS_THRESHOLD_BYTES',
+  },
+  workerUrl: {
+    doc: "Base URL of the git-worker's internal RPC endpoint. Used to run the short git ops (status, stage, unstage, commit) synchronously against a project's working tree.",
+    format: String,
+    default: 'http://127.0.0.1:4010',
+    env: 'ASCIIDOCOLLAB_GIT_WORKER_URL',
+  },
+  workerSecret: {
+    doc: "Optional shared secret sent to the git-worker's internal endpoint; must match the worker's own ASCIIDOCOLLAB_GIT_WORKER_INTERNAL_SECRET. Empty relies on loopback isolation.",
+    format: String,
+    default: '',
+    sensitive: true,
+    env: 'ASCIIDOCOLLAB_GIT_WORKER_SECRET',
+  },
+  workerTls: {
+    cert: {
+      doc: 'Path to PEM file containing the client certificate presented to the git-worker (mTLS). Empty disables mTLS.',
+      format: String,
+      default: '',
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_TLS_CERT',
+    },
+    key: {
+      doc: 'Path to PEM file containing the client private key for the git-worker mTLS connection.',
+      format: String,
+      default: '',
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_TLS_KEY',
+    },
+    ca: {
+      doc: 'Path to PEM file containing the CA certificate used to verify the git-worker server certificate.',
+      format: String,
+      default: '',
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_TLS_CA',
+    },
   },
 };

@@ -14,6 +14,11 @@ function fakeConfig(): ReturnType<typeof getConfig> {
       editSecret: '',
       editTls: { cert: '', key: '', ca: '' },
     },
+    git: {
+      workerUrl: 'http://127.0.0.1:4010',
+      workerSecret: '',
+      workerTls: { cert: '', key: '', ca: '' },
+    },
     // The extension source reads its folder and its bounds from configuration — nothing is hardcoded
     // at the call site — so the composition root cannot be exercised without them.
     project: {
@@ -55,5 +60,14 @@ describe('createStores', () => {
     const stores = createStores(fakeConfig());
     const compiled = stores.regexEngine.compile('(unterminated', { caseSensitive: true, multiline: false });
     expect(compiled.success).toBe(false);
+  });
+
+  it('wires a git-worker RPC client, the only route to the git-worker internal endpoints', () => {
+    const stores = createStores(fakeConfig());
+    expect(stores.gitWorkerClient).toBeDefined();
+    expect(typeof stores.gitWorkerClient.getStatus).toBe('function');
+    expect(typeof stores.gitWorkerClient.stageChanges).toBe('function');
+    expect(typeof stores.gitWorkerClient.unstageChanges).toBe('function');
+    expect(typeof stores.gitWorkerClient.commitChanges).toBe('function');
   });
 });
