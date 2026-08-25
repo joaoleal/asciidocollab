@@ -36,6 +36,7 @@ import { RealGitCommandRunner } from './git/git-command-runner.js';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './git/working-tree.js';
 import { createGitWorkerLoop, type GitWorkerLoop } from './worker-loop.js';
 import { createImportHandler } from './dispatch/import-handler.js';
+import { createPushHandler } from './dispatch/push-handler.js';
 import type { GitOperationHandlerRegistry } from './dispatch/git-operation-dispatcher.js';
 
 /**
@@ -71,8 +72,8 @@ export interface GitWorkerApp {
  * registered use-case handler needs) from config, and the run loop that polls/claims
  * `GitOperation` work, dispatches it, and records its outcome.
  *
- * `IMPORT` is the only `GitOperationKind` with a registered handler so far — every other kind is
- * still a future story task's job (YAGNI). Until a story task registers one, a claimed operation
+ * `IMPORT` and `PUSH` are the only `GitOperationKind`s with a registered handler so far — every
+ * other kind is still a future story task's job (YAGNI). Until a story task registers one, a claimed operation
  * of an unregistered kind dispatches to the `UNHANDLED_GIT_OPERATION_KIND` failure path (see
  * `dispatch/git-operation-dispatcher.ts`), so it always reaches a terminal state — and releases
  * the single-flight lock it holds — rather than hanging forever. `gitCredentialStore` and
@@ -131,6 +132,14 @@ export async function compositionRoot() {
       commandRunner: gitCommandRunner,
       projectMemberRepository,
       auditLogRepository,
+      credentialSource: gitCredentialStore,
+      logger: useCaseLogger,
+    }),
+    PUSH: createPushHandler({
+      projectMemberRepository,
+      auditLogRepository,
+      gitRepositoryRepository,
+      commandRunner: gitCommandRunner,
       credentialSource: gitCredentialStore,
       logger: useCaseLogger,
     }),
