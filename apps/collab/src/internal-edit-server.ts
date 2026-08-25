@@ -9,7 +9,9 @@ import {
   applyEditsToDocument,
   applyStructuredReplacementToDocument,
   readDocumentContent,
+  replaceDocumentContent,
   type ApplyEditsRequest,
+  type ApplyFullContentRequest,
   type ReadContentRequest,
   type StructuredApplyRequest,
 } from './apply-edits.js';
@@ -19,6 +21,9 @@ export const APPLY_EDITS_PATH = '/internal/collab/apply-edits';
 
 /** Path of the internal endpoint the API calls for a selection-/regex-aware replace in live documents. */
 export const APPLY_STRUCTURED_REPLACEMENT_PATH = '/internal/collab/apply-structured-replacement';
+
+/** Path of the internal endpoint the API calls to replace a live document's entire content. */
+export const APPLY_FULL_CONTENT_PATH = '/internal/collab/apply-full-content';
 
 /** Path of the internal endpoint the API calls to read live document content. */
 export const READ_CONTENT_PATH = '/internal/collab/read-content';
@@ -142,6 +147,29 @@ export function parseReadContentBody(raw: string): ReadContentRequest | null {
   return { projectId, yjsStateId };
 }
 
+/**
+ * Validates and normalises an apply-full-content request body. Returns null on any malformed
+ * input — including non-UUID ids and a missing/non-string `content`. An empty string IS a valid
+ * `content` (it legitimately clears the document), so it is not treated as missing.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseApplyFullContentBody(raw: string): ApplyFullContentRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, yjsStateId, content } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof yjsStateId !== 'string' || !UUID_REGEX.test(yjsStateId)) return null;
+  if (typeof content !== 'string') return null;
+  return { projectId, yjsStateId, content };
+}
+
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -181,6 +209,12 @@ export interface ApplyEditsHandlerDeps {
    */
   applyStructuredReplacement: (request: StructuredApplyRequest) => Promise<number>;
   /**
+   * Replaces the entire content of the live document identified by the request via a minimal diff.
+   *
+   * @param request - The validated apply-full-content request.
+   */
+  applyFullContent: (request: ApplyFullContentRequest) => Promise<void>;
+  /**
    * Reads the live text of the document identified by the request.
    *
    * @param request - The validated read-content request.
@@ -207,7 +241,10 @@ export function createApplyEditsRequestHandler(
     const path = (request.url ?? '').split('?')[0];
     if (
       request.method !== 'POST' ||
-      (path !== APPLY_EDITS_PATH && path !== APPLY_STRUCTURED_REPLACEMENT_PATH && path !== READ_CONTENT_PATH)
+      (path !== APPLY_EDITS_PATH &&
+        path !== APPLY_STRUCTURED_REPLACEMENT_PATH &&
+        path !== APPLY_FULL_CONTENT_PATH &&
+        path !== READ_CONTENT_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -243,6 +280,22 @@ export function createApplyEditsRequestHandler(
       } catch (error) {
         deps.logger.error({ err: error }, 'read-content failed');
         response.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'read-content failed' }));
+      }
+      return;
+    }
+
+    if (path === APPLY_FULL_CONTENT_PATH) {
+      const parsed = parseApplyFullContentBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      try {
+        await deps.applyFullContent(parsed);
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }));
+      } catch (error) {
+        deps.logger.error({ err: error }, 'apply-full-content failed');
+        response.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'apply-full-content failed' }));
       }
       return;
     }
@@ -312,6 +365,7 @@ export function startInternalEditServer(options: InternalEditServerOptions): Pro
     applyEdits: (request) => applyEditsToDocument(options.hocuspocus, request),
     applyStructuredReplacement: (request) =>
       applyStructuredReplacementToDocument(options.hocuspocus, options.regexEngine, request),
+    applyFullContent: (request) => replaceDocumentContent(options.hocuspocus, request),
     readContent: (request) => readDocumentContent(options.hocuspocus, options.yjsStateStore, request),
     ...(options.secret ? { secret: options.secret } : {}),
     logger: options.logger,

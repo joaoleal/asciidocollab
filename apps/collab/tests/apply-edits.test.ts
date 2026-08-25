@@ -7,6 +7,8 @@ import {
   applyEditsToDocument,
   applyStructuredReplacementToDocument,
   readDocumentContent,
+  replaceTextMinimalDiff,
+  replaceDocumentContent,
 } from '../src/apply-edits';
 
 function ytextWith(text: string): Y.Text {
@@ -47,6 +49,135 @@ describe('applyReplacementsToYText', () => {
       ]),
     ).toBe(0);
     expect(ytext.toString()).toBe('keep');
+  });
+});
+
+// Runs replaceTextMinimalDiff inside a real Y.Doc transaction (as production code does), against a
+// real Y.Text, and returns spies on the instance's own delete/insert so a test can assert the exact
+// offsets/lengths used — not just the resulting string — proving the splice is minimal.
+function runMinimalDiff(seed: string, target: string): { ytext: Y.Text; deleteSpy: jest.SpyInstance; insertSpy: jest.SpyInstance } {
+  const document = new Y.Doc();
+  const ytext = document.getText('codemirror');
+  if (seed.length > 0) ytext.insert(0, seed);
+  const deleteSpy = jest.spyOn(ytext, 'delete');
+  const insertSpy = jest.spyOn(ytext, 'insert');
+  document.transact(() => replaceTextMinimalDiff(ytext, target));
+  return { ytext, deleteSpy, insertSpy };
+}
+
+describe('replaceTextMinimalDiff', () => {
+  it('is a no-op when the content is already identical', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('unchanged text', 'unchanged text');
+    expect(ytext.toString()).toBe('unchanged text');
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it('appends only the new suffix', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('hello', 'hello world');
+    expect(ytext.toString()).toBe('hello world');
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+    expect(insertSpy).toHaveBeenCalledWith(5, ' world');
+  });
+
+  it('prepends only the new prefix', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('world', 'hello world');
+    expect(ytext.toString()).toBe('hello world');
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+    expect(insertSpy).toHaveBeenCalledWith(0, 'hello ');
+  });
+
+  it('inserts only the changed middle, leaving the shared prefix/suffix untouched', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('foobaz', 'foobarbaz');
+    expect(ytext.toString()).toBe('foobarbaz');
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+    expect(insertSpy).toHaveBeenCalledWith(5, 'rba');
+  });
+
+  it('deletes only the changed middle, leaving the shared prefix/suffix untouched', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('foobarbaz', 'foobaz');
+    expect(ytext.toString()).toBe('foobaz');
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith(5, 3);
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it('replaces the whole text when there is no common prefix or suffix', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('abc', 'xyz');
+    expect(ytext.toString()).toBe('xyz');
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith(0, 3);
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+    expect(insertSpy).toHaveBeenCalledWith(0, 'xyz');
+  });
+
+  it('inserts into an empty document', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('', 'hello');
+    expect(ytext.toString()).toBe('hello');
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+    expect(insertSpy).toHaveBeenCalledWith(0, 'hello');
+  });
+
+  it('clears a document down to empty', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('hello', '');
+    expect(ytext.toString()).toBe('');
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith(0, 5);
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it('handles a single-character edit as a single-character splice', () => {
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('a', 'b');
+    expect(ytext.toString()).toBe('b');
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith(0, 1);
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+    expect(insertSpy).toHaveBeenCalledWith(0, 'b');
+  });
+
+  it('clamps the suffix so it cannot overlap the prefix on a repetitive string', () => {
+    // Naively matching from the end (without capping against the remaining length after the
+    // prefix) would find a 3-char common suffix ("aaa") on top of a 3-char common prefix — 6
+    // total against a 4-char source. The clamp must keep prefix(3) + suffix(0) instead.
+    const { ytext, deleteSpy, insertSpy } = runMinimalDiff('aaaa', 'aaa');
+    expect(ytext.toString()).toBe('aaa');
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith(3, 1);
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('replaceDocumentContent', () => {
+  it('loads a dormant document, reconciles it to the target content, and the writeback persists it', async () => {
+    const stored: string[] = [];
+    const seed = '= Doc\n\nold content\n';
+    const extension = {
+      onLoadDocument: async ({ document }: { document: Y.Doc }) => {
+        const ytext = document.getText('codemirror');
+        if (ytext.length === 0) ytext.insert(0, seed);
+      },
+      onStoreDocument: async ({ document }: { document: Y.Doc }) => {
+        stored.push(document.getText('codemirror').toString());
+      },
+    };
+    const server = new Server({ port: 0, extensions: [extension as unknown as Extension] });
+    try {
+      await replaceDocumentContent(server.hocuspocus, {
+        projectId: '770e8400-e29b-41d4-a716-446655440003',
+        yjsStateId: '11111111-e29b-41d4-a716-446655440111',
+        content: '= Doc\n\nnew content\n',
+      });
+
+      // disconnect() forces a writeback; it must see the reconciled (not the stale seeded) text.
+      expect(stored.length).toBeGreaterThan(0);
+      expect(stored.at(-1)).toBe('= Doc\n\nnew content\n');
+    } finally {
+      await server.destroy();
+    }
   });
 });
 

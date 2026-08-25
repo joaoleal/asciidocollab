@@ -7,10 +7,12 @@ import { Re2RegexEngine } from '@asciidocollab/infrastructure';
 import {
   APPLY_EDITS_PATH,
   APPLY_STRUCTURED_REPLACEMENT_PATH,
+  APPLY_FULL_CONTENT_PATH,
   READ_CONTENT_PATH,
   createApplyEditsRequestHandler,
   parseApplyEditsBody,
   parseStructuredApplyBody,
+  parseApplyFullContentBody,
   parseReadContentBody,
   startInternalEditServer,
   type ApplyEditsHandlerDeps,
@@ -42,6 +44,7 @@ interface RecordedResponse {
 interface HandlerDoubles {
   applyEdits: jest.Mock;
   applyStructuredReplacement: jest.Mock;
+  applyFullContent: jest.Mock;
   readContent: jest.Mock;
   logger: { info: jest.Mock; error: jest.Mock };
   secret?: string;
@@ -89,6 +92,7 @@ function handlerDoubles(): HandlerDoubles {
   return {
     applyEdits: jest.fn(async () => 3),
     applyStructuredReplacement: jest.fn(async () => 2),
+    applyFullContent: jest.fn(async () => {}),
     readContent: jest.fn(async () => 'live-text'),
     logger: fakeLogger(),
   };
@@ -280,6 +284,50 @@ describe('parseReadContentBody', () => {
   });
 });
 
+describe('parseApplyFullContentBody', () => {
+  it('accepts a well-formed body', () => {
+    expect(
+      parseApplyFullContentBody(JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 'hello' })),
+    ).toEqual({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 'hello' });
+  });
+
+  // An empty target legitimately clears the document — must NOT be rejected as "missing".
+  it('accepts an empty content string', () => {
+    expect(
+      parseApplyFullContentBody(JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: '' })),
+    ).toEqual({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: '' });
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseApplyFullContentBody('{nope')).toBeNull();
+    expect(parseApplyFullContentBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseApplyFullContentBody(JSON.stringify({ projectId: '../etc', yjsStateId: YJS_STATE_ID, content: 'x' }))).toBeNull();
+    expect(parseApplyFullContentBody(JSON.stringify({ projectId: PROJECT_ID, yjsStateId: 'x', content: 'x' }))).toBeNull();
+  });
+
+  it('rejects a non-string id that stringifies to a UUID', () => {
+    expect(
+      parseApplyFullContentBody(JSON.stringify({ projectId: [PROJECT_ID], yjsStateId: YJS_STATE_ID, content: 'x' })),
+    ).toBeNull();
+    expect(
+      parseApplyFullContentBody(JSON.stringify({ projectId: PROJECT_ID, yjsStateId: [YJS_STATE_ID], content: 'x' })),
+    ).toBeNull();
+  });
+
+  it('rejects a missing or non-string content', () => {
+    expect(parseApplyFullContentBody(JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID }))).toBeNull();
+    expect(
+      parseApplyFullContentBody(JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 5 })),
+    ).toBeNull();
+    expect(
+      parseApplyFullContentBody(JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: null })),
+    ).toBeNull();
+  });
+});
+
 describe('internal edit server (HTTP)', () => {
   let server: Server;
   let baseUrl: string;
@@ -355,6 +403,27 @@ describe('internal edit server (HTTP)', () => {
     expect(response.status).toBe(400);
   });
 
+  it('applies full content and returns { ok: true }', async () => {
+    await startWith();
+    const response = await fetch(`${baseUrl}${APPLY_FULL_CONTENT_PATH}`, {
+      method: 'POST',
+      headers: { connection: 'close' },
+      body: JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 'new content' }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+  });
+
+  it('returns 400 for an invalid apply-full-content body', async () => {
+    await startWith();
+    const response = await fetch(`${baseUrl}${APPLY_FULL_CONTENT_PATH}`, {
+      method: 'POST',
+      headers: { connection: 'close' },
+      body: JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 5 }),
+    });
+    expect(response.status).toBe(400);
+  });
+
   it('enforces the shared secret when configured', async () => {
     await startWith({ secret: 'top-secret' });
     const noSecret = await fetch(`${baseUrl}${APPLY_EDITS_PATH}`, {
@@ -383,6 +452,27 @@ describe('internal edit server (HTTP)', () => {
     });
     expect(wrong.status).toBe(401);
     await wrong.text();
+  });
+
+  it('rejects a missing secret on apply-full-content, and never echoes the secret back', async () => {
+    await startWith({ secret: 'top-secret' });
+    const noSecret = await fetch(`${baseUrl}${APPLY_FULL_CONTENT_PATH}`, {
+      method: 'POST',
+      headers: { connection: 'close' },
+      body: JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 'x' }),
+    });
+    expect(noSecret.status).toBe(401);
+    const noSecretBody = await noSecret.text();
+    expect(noSecretBody).not.toContain('top-secret');
+
+    const withSecret = await fetch(`${baseUrl}${APPLY_FULL_CONTENT_PATH}`, {
+      method: 'POST',
+      headers: { 'x-collab-internal-secret': 'top-secret', connection: 'close' },
+      body: JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 'x' }),
+    });
+    expect(withSecret.status).toBe(200);
+    const withSecretBody = await withSecret.text();
+    expect(withSecretBody).not.toContain('top-secret');
   });
 
   it('returns 413 for a body larger than the cap without crashing the connection', async () => {
@@ -461,6 +551,7 @@ describe('createApplyEditsRequestHandler', () => {
     replacements: [{ find: 'a', replace: 'b' }],
   });
   const readContentBody = JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID });
+  const fullContentBody = JSON.stringify({ projectId: PROJECT_ID, yjsStateId: YJS_STATE_ID, content: 'new content' });
   const structuredBody = JSON.stringify({
     projectId: PROJECT_ID,
     yjsStateId: YJS_STATE_ID,
@@ -533,6 +624,56 @@ describe('createApplyEditsRequestHandler', () => {
     expect(response.headers).toEqual(JSON_HEADERS);
     expect(response.body).toBe('{"error":"read-content failed"}');
     expect(doubles.logger.error).toHaveBeenCalledWith({ err: boom }, 'read-content failed');
+  });
+
+  it('answers apply-full-content with { ok: true } and dispatches the parsed body', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(
+      doubles,
+      fakeRequest('POST', APPLY_FULL_CONTENT_PATH),
+      recordingResponse(),
+      fullContentBody,
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.headers).toEqual(JSON_HEADERS);
+    expect(response.body).toBe('{"ok":true}');
+    expect(doubles.applyFullContent).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      yjsStateId: YJS_STATE_ID,
+      content: 'new content',
+    });
+  });
+
+  it('answers apply-full-content with a JSON error object on an invalid body', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(
+      doubles,
+      fakeRequest('POST', APPLY_FULL_CONTENT_PATH),
+      recordingResponse(),
+      '{bad',
+    );
+    expect(response.statusCode).toBe(400);
+    expect(response.headers).toEqual(JSON_HEADERS);
+    expect(response.body).toBe('{"error":"Invalid body"}');
+    expect(doubles.applyFullContent).not.toHaveBeenCalled();
+  });
+
+  it('logs the cause and answers a JSON 500 when applyFullContent throws', async () => {
+    const doubles = handlerDoubles();
+    const boom = new Error('full-content boom');
+    doubles.applyFullContent = jest.fn(async () => {
+      throw boom;
+    });
+    const response = await handle(
+      doubles,
+      fakeRequest('POST', APPLY_FULL_CONTENT_PATH),
+      recordingResponse(),
+      fullContentBody,
+    );
+    expect(response.statusCode).toBe(500);
+    expect(response.headers).toEqual(JSON_HEADERS);
+    expect(response.body).toBe('{"error":"apply-full-content failed"}');
+    expect(doubles.logger.error).toHaveBeenCalledWith({ err: boom }, 'apply-full-content failed');
   });
 
   it('answers structured-apply with the applied count as JSON', async () => {

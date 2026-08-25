@@ -34,6 +34,16 @@ export interface ApplyEditsRequest {
   replacements: ContentReplacement[];
 }
 
+/** A request to replace a live document's entire content with a target string via a minimal diff. */
+export interface ApplyFullContentRequest {
+  /** Project that owns the document. */
+  projectId: string;
+  /** Yjs state identifier — identifies the document's collaboration room. */
+  yjsStateId: string;
+  /** The content the document should end up containing. */
+  content: string;
+}
+
 /** A request to read the live text of one collaborative document. */
 export interface ReadContentRequest {
   /** Project that owns the document. */
@@ -101,6 +111,65 @@ export async function applyEditsToDocument(
     await connection.disconnect();
   }
   return applied;
+}
+
+/**
+ * Reconciles a Y.Text toward `target` with the minimal single-region splice: the common PREFIX and
+ * (non-overlapping) common SUFFIX of `current` and `target` are left untouched, and only the
+ * changed middle is deleted/inserted. This is at most one `delete` and one `insert` (or neither,
+ * when `current === target`) rather than a full clear+rewrite — which preserves CRDT positions
+ * (and any concurrent cursors) outside the changed region. MUST be called inside a Yjs transaction.
+ *
+ * @param ytext - The Y.Text to reconcile in place.
+ * @param target - The content the text should end up containing.
+ */
+export function replaceTextMinimalDiff(ytext: Y.Text, target: string): void {
+  const current = ytext.toString();
+  if (current === target) return;
+
+  const maxPrefix = Math.min(current.length, target.length);
+  let prefix = 0;
+  while (prefix < maxPrefix && current[prefix] === target[prefix]) prefix += 1;
+
+  // Compare the tails of the two REMAINDERS (current.slice(prefix) vs target.slice(prefix)), so the
+  // match can never reach back into the already-matched prefix on either side — that is the clamp.
+  const maxSuffix = Math.min(current.length - prefix, target.length - prefix);
+  let suffix = 0;
+  while (suffix < maxSuffix && current[current.length - 1 - suffix] === target[target.length - 1 - suffix]) {
+    suffix += 1;
+  }
+
+  const deleteCount = current.length - prefix - suffix;
+  if (deleteCount > 0) ytext.delete(prefix, deleteCount);
+
+  const insertText = target.slice(prefix, target.length - suffix);
+  if (insertText.length > 0) ytext.insert(prefix, insertText);
+}
+
+/**
+ * Replaces the entire content of the live collaborative document identified by the request with
+ * `request.content`, via a server-side direct connection — the server side of a "pull remote
+ * changes" landing. Mirrors {@link applyEditsToDocument}'s lifecycle exactly: `openDirectConnection`
+ * attaches to an already-open room or loads a dormant one from its authoritative Yjs state; the
+ * reconciliation runs inside a single transaction via {@link replaceTextMinimalDiff}; `disconnect()`
+ * forces the normal writeback (Yjs state + plain text) and unloads the room if idle.
+ *
+ * @param hocuspocus - The Hocuspocus instance owning the live documents.
+ * @param request - The document identity and the target content.
+ */
+export async function replaceDocumentContent(
+  hocuspocus: Pick<Hocuspocus, 'openDirectConnection'>,
+  request: ApplyFullContentRequest,
+): Promise<void> {
+  const roomName = `${request.projectId}/${request.yjsStateId}`;
+  const connection = await hocuspocus.openDirectConnection(roomName);
+  try {
+    await connection.transact((document) => {
+      replaceTextMinimalDiff(document.getText(CODEMIRROR_TEXT), request.content);
+    });
+  } finally {
+    await connection.disconnect();
+  }
 }
 
 /** A request to apply a selection- and regex-aware replacement to one collaborative document. */
