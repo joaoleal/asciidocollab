@@ -45,6 +45,13 @@ export type {
   GitPushInput,
   GitPushResult,
   GitPushError,
+  GitFetchInput,
+  GitFetchResult,
+  GitBehindAhead,
+  GitMergeInput,
+  GitMergeFileChange,
+  GitMergeConflictPath,
+  GitMergeOutcome,
 } from './git/git-command-runner';
 
 // file-tree/

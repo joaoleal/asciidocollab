@@ -1,6 +1,12 @@
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { GitCommandFailedError } from '../../../src/errors/git/git-command-failed';
-import { GitWorkingTreeStatus } from '../../../src/ports/git/git-command-runner';
+import { RepositoryUnreachableError } from '../../../src/errors/git/repository-unreachable';
+import {
+  GitBehindAhead,
+  GitFetchResult,
+  GitMergeOutcome,
+  GitWorkingTreeStatus,
+} from '../../../src/ports/git/git-command-runner';
 import { InMemoryGitCommandRunner } from './in-memory-git-command-runner';
 
 describe('InMemoryGitCommandRunner', () => {
@@ -65,6 +71,148 @@ describe('InMemoryGitCommandRunner', () => {
       await runner.getStatus(projectA);
 
       expect(runner.statusCalls).toEqual([projectA, projectB, projectA]);
+    });
+  });
+
+  describe('fetch', () => {
+    const fetchInput = { remoteUrl: 'https://example.com/repo.git', token: 'secret-token', branch: 'main' };
+
+    it('returns the seeded GitFetchResult for a project', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const seeded: GitFetchResult = { remoteHead: 'abc123' };
+      runner.seedFetch(projectA, seeded);
+
+      const result = await runner.fetch(projectA, fetchInput);
+
+      expect(result).toEqual({ success: true, value: seeded });
+    });
+
+    it('returns a default GitFetchResult when unseeded', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      const result = await runner.fetch(projectA, fetchInput);
+
+      expect(result.success).toBe(true);
+      expect(result.success && typeof result.value.remoteHead).toBe('string');
+    });
+
+    it('returns a seeded failure instead of the happy-path result', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const failure = new RepositoryUnreachableError();
+      runner.seedFetch(projectA, { remoteHead: 'abc123' });
+      runner.seedFetchFailure(projectA, failure);
+
+      const result = await runner.fetch(projectA, fetchInput);
+
+      expect(result).toEqual({ success: false, error: failure });
+    });
+
+    it('records every call made, including the input', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      await runner.fetch(projectA, fetchInput);
+
+      expect(runner.fetchCalls).toEqual([{ projectId: projectA, input: fetchInput }]);
+    });
+  });
+
+  describe('getBehindAhead', () => {
+    it('returns the seeded GitBehindAhead for a project', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const seeded: GitBehindAhead = { behind: 2, ahead: 1 };
+      runner.seedBehindAhead(projectA, seeded);
+
+      const result = await runner.getBehindAhead(projectA, 'main');
+
+      expect(result).toEqual({ success: true, value: seeded });
+    });
+
+    it('defaults to zero behind and ahead when unseeded', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      const result = await runner.getBehindAhead(projectA, 'main');
+
+      expect(result).toEqual({ success: true, value: { behind: 0, ahead: 0 } });
+    });
+
+    it('returns a seeded failure instead of the happy-path result', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const failure = new GitCommandFailedError('rev-list failed');
+      runner.seedBehindAheadFailure(projectA, failure);
+
+      const result = await runner.getBehindAhead(projectA, 'main');
+
+      expect(result).toEqual({ success: false, error: failure });
+    });
+
+    it('records every call made, including the branch', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      await runner.getBehindAhead(projectA, 'feature/x');
+
+      expect(runner.behindAheadCalls).toEqual([{ projectId: projectA, branch: 'feature/x' }]);
+    });
+  });
+
+  describe('merge', () => {
+    const mergeInput = {
+      branch: 'main',
+      flush: [{ path: 'docs/intro.adoc', content: 'live text' }],
+    };
+
+    it('returns the seeded merged outcome with its changes', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const seeded: GitMergeOutcome = {
+        status: 'merged',
+        headCommit: 'def456',
+        changes: [{ type: 'modified', path: 'docs/intro.adoc', content: Buffer.from('merged'), mimeType: 'text/asciidoc' }],
+      };
+      runner.seedMerge(projectA, seeded);
+
+      const result = await runner.merge(projectA, mergeInput);
+
+      expect(result).toEqual({ success: true, value: seeded });
+    });
+
+    it('returns the seeded conflicted outcome with its conflicts', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const seeded: GitMergeOutcome = {
+        status: 'conflicted',
+        conflicts: [{ path: 'docs/intro.adoc', isBinary: false }],
+      };
+      runner.seedMerge(projectA, seeded);
+
+      const result = await runner.merge(projectA, mergeInput);
+
+      expect(result).toEqual({ success: true, value: seeded });
+    });
+
+    it('defaults to a clean merge with no changes when unseeded', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      const result = await runner.merge(projectA, mergeInput);
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.status).toBe('merged');
+      expect(result.success && result.value.status === 'merged' && result.value.changes).toEqual([]);
+    });
+
+    it('returns a seeded failure instead of the happy-path outcome', async () => {
+      const runner = new InMemoryGitCommandRunner();
+      const failure = new GitCommandFailedError('merge failed');
+      runner.seedMergeFailure(projectA, failure);
+
+      const result = await runner.merge(projectA, mergeInput);
+
+      expect(result).toEqual({ success: false, error: failure });
+    });
+
+    it('records every call made, including the flush and branch', async () => {
+      const runner = new InMemoryGitCommandRunner();
+
+      await runner.merge(projectA, mergeInput);
+
+      expect(runner.mergeCalls).toEqual([{ projectId: projectA, input: mergeInput }]);
     });
   });
 });

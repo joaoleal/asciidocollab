@@ -155,6 +155,77 @@ export type GitPushError =
   | RepositoryUnreachableError
   | AuthenticationFailedError;
 
+/** Everything {@link GitCommandRunner.fetch} needs to update a project's remote-tracking ref. */
+export interface GitFetchInput {
+  /** The remote's URL, exactly as stored on the project's `GitRepository` link. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
+  readonly token: string;
+  /** The remote branch whose tracking ref to update. */
+  readonly branch: string;
+}
+
+/** What a completed fetch produced. */
+export interface GitFetchResult {
+  /** The tip of `origin/<branch>` after the fetch, i.e. the remote-tracking ref's new commit. */
+  readonly remoteHead: string;
+}
+
+/** How far a local branch stands from its already-fetched remote-tracking ref. */
+export interface GitBehindAhead {
+  /** The number of commits the remote-tracking ref has that the local branch does not. */
+  readonly behind: number;
+  /** The number of commits the local branch has that the remote-tracking ref does not. */
+  readonly ahead: number;
+}
+
+/** Everything {@link GitCommandRunner.merge} needs to merge a fetched remote-tracking ref into a branch. */
+export interface GitMergeInput {
+  /** The local branch to merge the remote-tracking ref into. */
+  readonly branch: string;
+  /**
+   * Live collaborative text written to the working tree and `git add`-ed BEFORE the merge runs,
+   * forming the local side of the three-way merge. Same contract and adapter ordering as
+   * {@link GitCommitInput.flush}.
+   */
+  readonly flush: readonly GitCommitFlushEntry[];
+}
+
+/**
+ * One file a clean merge changed. Carries the merged bytes (mirroring {@link ClonedFileEntry})
+ * because the git worktree root differs from the domain's `ProjectFileStore` root — the domain
+ * cannot read the merged bytes off disk itself.
+ */
+export type GitMergeFileChange =
+  | { readonly type: 'added'; readonly path: string; readonly content: Buffer; readonly mimeType: string }
+  | { readonly type: 'modified'; readonly path: string; readonly content: Buffer; readonly mimeType: string }
+  | { readonly type: 'removed'; readonly path: string }
+  | {
+      readonly type: 'renamed';
+      readonly fromPath: string;
+      readonly toPath: string;
+      readonly content: Buffer;
+      readonly mimeType: string;
+    };
+
+/** One file left conflicted by a merge. */
+export interface GitMergeConflictPath {
+  /** Workspace-relative POSIX path, no leading slash, of the conflicted file. */
+  readonly path: string;
+  /** Whether the conflicted file is binary (and so cannot be shown as a textual diff/conflict marker). */
+  readonly isBinary: boolean;
+}
+
+/**
+ * The outcome of a {@link GitCommandRunner.merge} call. A conflict is an EXPECTED outcome of a
+ * merge, not a failure — it is represented here as the `conflicted` variant, never as a
+ * `Result` error. "Already up to date" is represented as `{ status: 'merged', changes: [] }`;
+ * there is no separate variant for it.
+ */
+export type GitMergeOutcome =
+  | { readonly status: 'merged'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
+  | { readonly status: 'conflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
+
 /**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
@@ -281,4 +352,49 @@ export interface GitCommandRunner {
    *   {@link GitCommandFailedError} for any other failure.
    */
   push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>>;
+
+  /**
+   * Fetches a remote branch, updating only the local remote-tracking ref (`origin/<branch>`) — the
+   * working tree and the local branch are never touched. Authenticates out-of-band with
+   * `input.token`, the same convention {@link clone} and {@link push} follow.
+   *
+   * @param projectId - The project whose working tree's remote-tracking ref to update.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to fetch.
+   * @returns The remote-tracking ref's new tip commit on success; a
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
+   *   {@link checkRemoteAccess}, or a `GitCommandFailedError` for any other failure.
+   */
+  fetch(
+    projectId: ProjectId,
+    input: GitFetchInput,
+  ): Promise<Result<GitFetchResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>>;
+
+  /**
+   * Compares a local branch against its already-fetched remote-tracking ref — a pure local
+   * comparison that touches no network. Callers run {@link fetch} first when the remote-tracking
+   * ref needs to be current.
+   *
+   * @param projectId - The project whose working tree to compare.
+   * @param branch - The local branch to compare against its remote-tracking ref.
+   * @returns How many commits each side has that the other lacks; a `GitCommandFailedError` when
+   *   the underlying git command fails (for example, the branch has no remote-tracking ref yet).
+   */
+  getBehindAhead(projectId: ProjectId, branch: string): Promise<Result<GitBehindAhead, GitCommandFailedError>>;
+
+  /**
+   * Runs a local three-way merge of the already-fetched remote-tracking ref into `input.branch`.
+   * Touches no network — callers run {@link fetch} first so the remote-tracking ref is current.
+   *
+   * Adapter contract, matching {@link commit}: for EACH `input.flush` entry, in order, write its
+   * `content` to the working-tree file at its `path` and `git add` it BEFORE the merge runs, so the
+   * merge's local side reflects live collaborative content rather than stale working-tree bytes.
+   *
+   * @param projectId - The project whose working tree to merge into.
+   * @param input - The branch to merge into and the live-content flush list described above.
+   * @returns A {@link GitMergeOutcome} — `merged` with the resulting changes (empty when already up
+   *   to date) or `conflicted` with the files left in conflict; a conflict is an expected outcome,
+   *   never an error. Returns a `GitCommandFailedError` only when the underlying git command itself
+   *   fails.
+   */
+  merge(projectId: ProjectId, input: GitMergeInput): Promise<Result<GitMergeOutcome, GitCommandFailedError>>;
 }

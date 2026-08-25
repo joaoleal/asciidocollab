@@ -4,10 +4,15 @@ import { RepositoryUnreachableError } from '../../../src/errors/git/repository-u
 import { AuthenticationFailedError } from '../../../src/errors/git/authentication-failed';
 import {
   ClonedRepository,
+  GitBehindAhead,
   GitCloneInput,
   GitCommandRunner,
   GitCommitInput,
   GitCommitResult,
+  GitFetchInput,
+  GitFetchResult,
+  GitMergeInput,
+  GitMergeOutcome,
   GitPushError,
   GitPushInput,
   GitPushResult,
@@ -35,6 +40,15 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly commitResults = new Map<string, GitCommitResult>();
   private readonly pushFailures = new Map<string, GitPushError>();
   private readonly pushResults = new Map<string, GitPushResult>();
+  private readonly fetchFailures = new Map<
+    string,
+    RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError
+  >();
+  private readonly fetchResults = new Map<string, GitFetchResult>();
+  private readonly behindAheadFailures = new Map<string, GitCommandFailedError>();
+  private readonly behindAheadResults = new Map<string, GitBehindAhead>();
+  private readonly mergeFailures = new Map<string, GitCommandFailedError>();
+  private readonly mergeOutcomes = new Map<string, GitMergeOutcome>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -56,6 +70,15 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `push`, in call order, for asserting the remote URL, token, and branch pushed. */
   readonly pushCalls: { projectId: ProjectId; input: GitPushInput }[] = [];
+
+  /** Every call made to `fetch`, in call order, for asserting the remote URL, token, and branch fetched. */
+  readonly fetchCalls: { projectId: ProjectId; input: GitFetchInput }[] = [];
+
+  /** Every call made to `getBehindAhead`, in call order, for asserting the branch compared. */
+  readonly behindAheadCalls: { projectId: ProjectId; branch: string }[] = [];
+
+  /** Every call made to `merge`, in call order, for asserting the flush list and branch merged. */
+  readonly mergeCalls: { projectId: ProjectId; input: GitMergeInput }[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -242,5 +265,101 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: result };
+  }
+
+  /** Configures the `GitFetchResult` `fetch` returns for a project on success. */
+  seedFetch(projectId: ProjectId, result: GitFetchResult): void {
+    this.fetchResults.set(projectId.value, result);
+  }
+
+  /**
+   * Configures `fetch` to fail for a project, taking priority over any seeded result — seed with a
+   * `RepositoryUnreachableError`, `AuthenticationFailedError`, or a generic `GitCommandFailedError`.
+   */
+  seedFetchFailure(
+    projectId: ProjectId,
+    error: RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError,
+  ): void {
+    this.fetchFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact remote URL, token, and branch, so a test can assert
+   * them — and returns the seeded `GitFetchResult` (or a canned default), unless a failure was
+   * seeded for this project via `seedFetchFailure`.
+   */
+  async fetch(
+    projectId: ProjectId,
+    input: GitFetchInput,
+  ): Promise<Result<GitFetchResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>> {
+    this.fetchCalls.push({ projectId, input });
+
+    const failure = this.fetchFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.fetchResults.get(projectId.value) ?? { remoteHead: '0000000000000000000000000000000000000000' };
+
+    return { success: true, value: result };
+  }
+
+  /** Configures the `GitBehindAhead` `getBehindAhead` returns for a project on success. */
+  seedBehindAhead(projectId: ProjectId, result: GitBehindAhead): void {
+    this.behindAheadResults.set(projectId.value, result);
+  }
+
+  /** Configures `getBehindAhead` to fail for a project, taking priority over any seeded result. */
+  seedBehindAheadFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.behindAheadFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the branch compared, so a test can assert it — and returns the
+   * seeded `GitBehindAhead` (defaulting to `{behind: 0, ahead: 0}` when unseeded), unless a failure
+   * was seeded for this project via `seedBehindAheadFailure`.
+   */
+  async getBehindAhead(projectId: ProjectId, branch: string): Promise<Result<GitBehindAhead, GitCommandFailedError>> {
+    this.behindAheadCalls.push({ projectId, branch });
+
+    const failure = this.behindAheadFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.behindAheadResults.get(projectId.value) ?? { behind: 0, ahead: 0 };
+
+    return { success: true, value: result };
+  }
+
+  /**
+   * Configures the `GitMergeOutcome` `merge` returns for a project on success — a `merged` outcome
+   * with its `changes`, or a `conflicted` outcome with its `conflicts`. A conflict is a seeded
+   * happy-path outcome, not a failure — use `seedMergeFailure` only for an actual git command failure.
+   */
+  seedMerge(projectId: ProjectId, outcome: GitMergeOutcome): void {
+    this.mergeOutcomes.set(projectId.value, outcome);
+  }
+
+  /** Configures `merge` to fail for a project, taking priority over any seeded outcome. */
+  seedMergeFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.mergeFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact flush list and branch, so a test can assert them — and
+   * returns the seeded `GitMergeOutcome` (defaulting to `{status: 'merged', changes: []}` when
+   * unseeded), unless a failure was seeded for this project via `seedMergeFailure`. Records no
+   * working-tree writes: the flush list is captured verbatim for assertion only.
+   */
+  async merge(projectId: ProjectId, input: GitMergeInput): Promise<Result<GitMergeOutcome, GitCommandFailedError>> {
+    this.mergeCalls.push({ projectId, input });
+
+    const failure = this.mergeFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const outcome: GitMergeOutcome = this.mergeOutcomes.get(projectId.value) ?? {
+      status: 'merged',
+      headCommit: '0000000000000000000000000000000000000000',
+      changes: [],
+    };
+
+    return { success: true, value: outcome };
   }
 }
