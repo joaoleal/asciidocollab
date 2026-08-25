@@ -69,16 +69,19 @@ describe('git credential store wiring', () => {
     const provider = GitProvider.create('github');
     const plaintext = 'ghp_testtoken1234567890';
 
-    // Encrypt the token exactly as an upstream caller would, with the SAME dedicated key the
-    // wiring is supposed to use. If the composition root had instead built the git credential
-    // store with the session encryption key, this round trip would fail to decrypt.
     const store = services.gitCredentialStore as PrismaGitCredentialStore;
-    const encryption = new SessionEncryption({ encryptionKey: GIT_CREDENTIAL_ENCRYPTION_KEY });
-    const ciphertext = encryption.encrypt(plaintext);
+    await store.save(projectId, { token: plaintext, provider, createdByUserId });
 
-    await store.save(projectId, { encryptedToken: ciphertext, tokenHint: '7890', provider, createdByUserId });
+    // Decrypt the raw stored ciphertext with an INDEPENDENTLY constructed SessionEncryption
+    // under the SAME dedicated key the wiring is supposed to use. If the composition root had
+    // instead built the git credential store with the session encryption key, this would fail
+    // (wrong key / auth-tag mismatch) even though the store's own round trip below would still
+    // "work" against itself either way.
+    const independentEncryption = new SessionEncryption({ encryptionKey: GIT_CREDENTIAL_ENCRYPTION_KEY });
+    const stored = await store.load(projectId);
+    expect(independentEncryption.decrypt(stored!.encryptedToken)).toBe(plaintext);
+
     const decrypted = await store.loadDecrypted(projectId);
-
     expect(decrypted).toEqual({ token: plaintext, tokenHint: '7890' });
   });
 });

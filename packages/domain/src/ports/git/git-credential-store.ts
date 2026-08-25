@@ -3,11 +3,11 @@ import { UserId } from '../../value-objects/ids/user-id';
 import { GitProvider } from '../../value-objects/project/git-provider';
 
 /**
- * An already-encrypted Git access token record for a project.
+ * A Git access credential's ciphertext, as read back for a project.
  *
  * The `encryptedToken` field is opaque ciphertext produced by the infrastructure adapter's
- * encryption scheme — this port never sees, stores, or returns the plaintext secret. The
- * `tokenHint` field is a short, non-sensitive fragment (e.g. The token's last four characters)
+ * encryption scheme — reading a credential back never exposes the plaintext secret. The
+ * `tokenHint` field is a short, non-sensitive fragment (e.g. the token's last four characters)
  * safe to surface in a client-facing UI so a user can recognize which credential is connected.
  */
 export interface GitCredentialRecord {
@@ -18,15 +18,18 @@ export interface GitCredentialRecord {
 }
 
 /**
- * Input for {@link GitCredentialStore.save} — the encrypted credential plus the persistence
+ * Input for {@link GitCredentialStore.save} — the plaintext access token plus the persistence
  * context the underlying `GitCredential` record requires (`provider`, `createdByUserId`).
  *
- * These two fields are deliberately kept off {@link GitCredentialRecord} itself: that type is
- * also what `load()` returns, and callers reading a credential back only ever need the
- * ciphertext + display hint, never who created it or which provider it was created for.
- * Widening the shared record would leak save-only bookkeeping into every read.
+ * Unlike {@link GitCredentialRecord} (what `load()` hands back — ciphertext only), `save()` takes
+ * the raw token: encrypting it, and deriving the display `tokenHint` from it, is the concrete
+ * adapter's job, never its caller's — the same division `PasswordHasher.hash` draws for
+ * passwords. The plaintext is held only for the duration of this call; no implementation of this
+ * port may log, return, or persist it as-is.
  */
-export interface GitCredentialSaveInput extends GitCredentialRecord {
+export interface GitCredentialSaveInput {
+  /** The raw access token. Encrypted by the adapter before it is ever persisted. */
+  readonly token: string;
   /** The git hosting provider this credential authenticates against. */
   readonly provider: GitProvider;
   /** The user who saved (created or most recently rotated) this credential. */
@@ -34,20 +37,21 @@ export interface GitCredentialSaveInput extends GitCredentialRecord {
 }
 
 /**
- * Port for persisting the encrypted Git access credential associated with a project.
+ * Port for persisting the Git access credential associated with a project.
  *
- * Each project has at most one stored credential. This port only moves already-encrypted
- * ciphertext and its display hint — encrypting and decrypting the token is the responsibility
- * of the infrastructure adapter that implements this interface, never of the port's callers or
- * of domain code. The plaintext token itself is never a parameter or return value here.
+ * Each project has at most one stored credential. `save()` accepts the plaintext token and leaves
+ * encryption — and deriving the display hint — entirely to the concrete adapter; `load()` returns
+ * only already-encrypted ciphertext and the hint. Nothing reachable through this port ever hands
+ * plaintext back to a caller; an adapter's own execution-time decryption (for the git-worker to
+ * actually run a command) is a deliberately adapter-specific capability outside this interface.
  */
 export interface GitCredentialStore {
   /**
-   * Stores the encrypted credential for a project, replacing any existing one.
+   * Encrypts and stores the credential for a project, replacing any existing one.
    *
    * @param projectId - The project the credential authenticates against.
-   * @param credential - The encrypted token, its display hint, and the persistence context
-   *   (`provider`, `createdByUserId`) the credential record requires.
+   * @param credential - The plaintext token and the persistence context (`provider`,
+   *   `createdByUserId`) the credential record requires.
    * @returns A promise that resolves when the credential has been saved.
    */
   save(projectId: ProjectId, credential: GitCredentialSaveInput): Promise<void>;

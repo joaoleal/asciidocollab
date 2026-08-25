@@ -57,34 +57,24 @@ describe('PrismaGitCredentialStore', () => {
   const plaintext = 'ghp_supersecrettoken1234567890';
 
   describe('save + load', () => {
-    it('round-trips the ciphertext unchanged: decrypting what load() returns yields the original plaintext', async () => {
+    it('encrypts the plaintext token internally: decrypting what load() returns yields it back', async () => {
       const { store, encryption } = makeStore();
-      const ciphertext = encryption.encrypt(plaintext);
 
-      await store.save(projectId, { encryptedToken: ciphertext, tokenHint: '7890', provider, createdByUserId });
+      await store.save(projectId, { token: plaintext, provider, createdByUserId });
       const found = await store.load(projectId);
 
       expect(found).not.toBeNull();
-      expect(found!.encryptedToken).toBe(ciphertext);
+      expect(found!.encryptedToken).not.toBe(plaintext);
       expect(encryption.decrypt(found!.encryptedToken)).toBe(plaintext);
     });
 
-    it('stores the tokenHint alongside the ciphertext', async () => {
-      const { store, encryption } = makeStore();
-      const ciphertext = encryption.encrypt(plaintext);
+    it('derives the tokenHint from the plaintext token', async () => {
+      const { store } = makeStore();
 
-      await store.save(projectId, { encryptedToken: ciphertext, tokenHint: '7890', provider, createdByUserId });
+      await store.save(projectId, { token: plaintext, provider, createdByUserId });
 
-      expect(await store.load(projectId)).toEqual({ encryptedToken: ciphertext, tokenHint: '7890' });
-    });
-
-    it('allows a null tokenHint to round-trip', async () => {
-      const { store, encryption } = makeStore();
-      const ciphertext = encryption.encrypt(plaintext);
-
-      await store.save(projectId, { encryptedToken: ciphertext, tokenHint: null, provider, createdByUserId });
-
-      expect(await store.load(projectId)).toEqual({ encryptedToken: ciphertext, tokenHint: null });
+      const found = await store.load(projectId);
+      expect(found?.tokenHint).toBe('7890');
     });
 
     it('returns null when reading a project with no stored credential', async () => {
@@ -94,10 +84,9 @@ describe('PrismaGitCredentialStore', () => {
     });
 
     it('persists the non-nullable provider and createdByUserId columns the GitCredential table requires', async () => {
-      const { store, rows, encryption } = makeStore();
-      const ciphertext = encryption.encrypt(plaintext);
+      const { store, rows } = makeStore();
 
-      await store.save(projectId, { encryptedToken: ciphertext, tokenHint: '7890', provider: GitProvider.create('gitlab'), createdByUserId });
+      await store.save(projectId, { token: plaintext, provider: GitProvider.create('gitlab'), createdByUserId });
 
       const row = rows.get(projectId.value);
       expect(row?.provider).toBe('GITLAB');
@@ -106,29 +95,28 @@ describe('PrismaGitCredentialStore', () => {
 
     it('overwrites the previous credential when saving again for the same project', async () => {
       const { store, encryption } = makeStore();
-      await store.save(projectId, { encryptedToken: encryption.encrypt('old-token'), tokenHint: 'aaaa', provider, createdByUserId });
+      await store.save(projectId, { token: 'old-token-aaaa', provider, createdByUserId });
 
-      await store.save(projectId, { encryptedToken: encryption.encrypt('new-token'), tokenHint: 'bbbb', provider, createdByUserId });
+      await store.save(projectId, { token: 'new-token-bbbb', provider, createdByUserId });
 
       const found = await store.load(projectId);
       expect(found?.tokenHint).toBe('bbbb');
-      expect(encryption.decrypt(found!.encryptedToken)).toBe('new-token');
+      expect(encryption.decrypt(found!.encryptedToken)).toBe('new-token-bbbb');
     });
 
     it('keeps credentials for different projects independent', async () => {
       const { store, encryption } = makeStore();
-      await store.save(projectId, { encryptedToken: encryption.encrypt('token-one'), tokenHint: '1111', provider, createdByUserId });
-      await store.save(otherProjectId, { encryptedToken: encryption.encrypt('token-two'), tokenHint: '2222', provider, createdByUserId });
+      await store.save(projectId, { token: 'token-one-1111', provider, createdByUserId });
+      await store.save(otherProjectId, { token: 'token-two-2222', provider, createdByUserId });
 
       const found = await store.load(otherProjectId);
-      expect(encryption.decrypt(found!.encryptedToken)).toBe('token-two');
+      expect(encryption.decrypt(found!.encryptedToken)).toBe('token-two-2222');
     });
 
     it('never persists the plaintext token: the stored row only ever contains ciphertext', async () => {
-      const { store, rows, encryption } = makeStore();
-      const ciphertext = encryption.encrypt(plaintext);
+      const { store, rows } = makeStore();
 
-      await store.save(projectId, { encryptedToken: ciphertext, tokenHint: '7890', provider, createdByUserId });
+      await store.save(projectId, { token: plaintext, provider, createdByUserId });
 
       const row = rows.get(projectId.value);
       expect(row?.encryptedToken).not.toContain(plaintext);
@@ -140,10 +128,9 @@ describe('PrismaGitCredentialStore', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
       const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       try {
-        const { store, encryption } = makeStore();
-        const ciphertext = encryption.encrypt(plaintext);
+        const { store } = makeStore();
 
-        await store.save(projectId, { encryptedToken: ciphertext, tokenHint: '7890', provider, createdByUserId });
+        await store.save(projectId, { token: plaintext, provider, createdByUserId });
         await store.load(projectId);
 
         for (const spy of [logSpy, warnSpy, errorSpy]) {
@@ -161,8 +148,8 @@ describe('PrismaGitCredentialStore', () => {
 
   describe('delete', () => {
     it('removes the stored credential so a later read returns null', async () => {
-      const { store, encryption } = makeStore();
-      await store.save(projectId, { encryptedToken: encryption.encrypt(plaintext), tokenHint: '7890', provider, createdByUserId });
+      const { store } = makeStore();
+      await store.save(projectId, { token: plaintext, provider, createdByUserId });
 
       await store.delete(projectId);
 
@@ -176,9 +163,9 @@ describe('PrismaGitCredentialStore', () => {
     });
 
     it('leaves other projects untouched', async () => {
-      const { store, encryption } = makeStore();
-      await store.save(projectId, { encryptedToken: encryption.encrypt('token-one'), tokenHint: '1111', provider, createdByUserId });
-      await store.save(otherProjectId, { encryptedToken: encryption.encrypt('token-two'), tokenHint: '2222', provider, createdByUserId });
+      const { store } = makeStore();
+      await store.save(projectId, { token: 'token-one-1111', provider, createdByUserId });
+      await store.save(otherProjectId, { token: 'token-two-2222', provider, createdByUserId });
 
       await store.delete(projectId);
 
@@ -188,8 +175,8 @@ describe('PrismaGitCredentialStore', () => {
 
   describe('loadDecrypted (adapter-specific execution-time decrypted path)', () => {
     it('returns the decrypted plaintext token and the tokenHint', async () => {
-      const { store, encryption } = makeStore();
-      await store.save(projectId, { encryptedToken: encryption.encrypt(plaintext), tokenHint: '7890', provider, createdByUserId });
+      const { store } = makeStore();
+      await store.save(projectId, { token: plaintext, provider, createdByUserId });
 
       const decrypted = await store.loadDecrypted(projectId);
 

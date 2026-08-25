@@ -51,19 +51,19 @@ describe('PrismaGitCredentialStore', () => {
     return { project, owner };
   }
 
-  it('saves and reads back the encrypted token and hint', async () => {
+  it('encrypts the plaintext token and reads back ciphertext plus a derived hint', async () => {
     const { project, owner } = await setupProjectAndUser();
-    const ciphertext = encryption.encrypt('ghp_liveTestToken1234');
 
     await store.save(project.id, {
-      encryptedToken: ciphertext,
-      tokenHint: '1234',
+      token: 'ghp_liveTestToken1234',
       provider: GitProvider.create('github'),
       createdByUserId: owner.id,
     });
     const found = await store.load(project.id);
 
-    expect(found).toEqual({ encryptedToken: ciphertext, tokenHint: '1234' });
+    expect(found).not.toBeNull();
+    expect(found!.encryptedToken).not.toBe('ghp_liveTestToken1234');
+    expect(found!.tokenHint).toBe('1234');
     expect(encryption.decrypt(found!.encryptedToken)).toBe('ghp_liveTestToken1234');
   });
 
@@ -71,8 +71,7 @@ describe('PrismaGitCredentialStore', () => {
     const { project, owner } = await setupProjectAndUser();
 
     await store.save(project.id, {
-      encryptedToken: encryption.encrypt('token'),
-      tokenHint: null,
+      token: 'token',
       provider: GitProvider.create('gitlab'),
       createdByUserId: owner.id,
     });
@@ -93,30 +92,27 @@ describe('PrismaGitCredentialStore', () => {
   it('overwrites the previous row when saving again for the same project (unique projectId)', async () => {
     const { project, owner } = await setupProjectAndUser();
     await store.save(project.id, {
-      encryptedToken: encryption.encrypt('old'),
-      tokenHint: 'aaaa',
+      token: 'old-token-aaaa',
       provider: GitProvider.create('github'),
       createdByUserId: owner.id,
     });
 
     await store.save(project.id, {
-      encryptedToken: encryption.encrypt('new'),
-      tokenHint: 'bbbb',
+      token: 'new-token-bbbb',
       provider: GitProvider.create('github'),
       createdByUserId: owner.id,
     });
 
     const rows = await client.gitCredential.findMany({ where: { projectId: project.id.value } });
     expect(rows).toHaveLength(1);
-    expect(encryption.decrypt(rows[0].encryptedToken)).toBe('new');
+    expect(encryption.decrypt(rows[0].encryptedToken)).toBe('new-token-bbbb');
     expect(rows[0].tokenHint).toBe('bbbb');
   });
 
   it('deletes the stored credential so a later read returns null', async () => {
     const { project, owner } = await setupProjectAndUser();
     await store.save(project.id, {
-      encryptedToken: encryption.encrypt('token'),
-      tokenHint: '1234',
+      token: 'token',
       provider: GitProvider.create('github'),
       createdByUserId: owner.id,
     });
@@ -136,8 +132,7 @@ describe('PrismaGitCredentialStore', () => {
   it('cascades away when the owning project is deleted (onDelete: Cascade)', async () => {
     const { project, owner } = await setupProjectAndUser();
     await store.save(project.id, {
-      encryptedToken: encryption.encrypt('token'),
-      tokenHint: '1234',
+      token: 'token',
       provider: GitProvider.create('github'),
       createdByUserId: owner.id,
     });
@@ -151,8 +146,7 @@ describe('PrismaGitCredentialStore', () => {
     it('returns the decrypted plaintext token and hint', async () => {
       const { project, owner } = await setupProjectAndUser();
       await store.save(project.id, {
-        encryptedToken: encryption.encrypt('ghp_workerToken'),
-        tokenHint: 'oken',
+        token: 'ghp_workerToken',
         provider: GitProvider.create('github'),
         createdByUserId: owner.id,
       });

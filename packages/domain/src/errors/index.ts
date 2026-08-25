@@ -45,3 +45,4 @@ export { IllegalGitOperationTransitionError } from './git/illegal-git-operation-
 export { InsufficientRoleError } from './git/insufficient-role';
 export { RepositoryUnreachableError } from './git/repository-unreachable';
 export { AuthenticationFailedError } from './git/authentication-failed';
+export { RepositoryAlreadyConnectedError } from './git/repository-already-connected';

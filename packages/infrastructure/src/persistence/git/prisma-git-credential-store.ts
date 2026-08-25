@@ -20,35 +20,35 @@ export interface DecryptedGitCredential {
   readonly tokenHint: string | null;
 }
 
+/** The tail of a token safe to show in a UI — its last four characters, or null for an empty token. */
+function deriveTokenHint(token: string): string | null {
+  return token.length > 0 ? token.slice(-4) : null;
+}
+
 /**
  * Prisma-backed implementation of the `GitCredentialStore` port, storing AES-256-GCM ciphertext
  * (produced by {@link SessionEncryption}) in the `GitCredential` table.
  *
- * `save` accepts a `GitCredentialSaveInput` that widens `GitCredentialRecord` with
- * `provider`/`createdByUserId`. Those two fields are supplied only on save — the `GitCredential`
- * row's columns require them, but they have no place on the ciphertext record `load` hands back,
- * since a reader only ever needs the ciphertext and its display hint.
+ * `save` accepts the plaintext token (plus the `provider`/`createdByUserId` persistence context
+ * the `GitCredential` row's non-nullable columns require) and encrypts it — and derives the
+ * display `tokenHint` from it — before anything is written. `load` and `delete` only ever move
+ * already-encrypted ciphertext; nothing on the read side ever exposes plaintext. The injected
+ * {@link SessionEncryption} is keyed with the DEDICATED `git.credentialEncryptionKey` (never the
+ * session encryption key), wired by the composition root.
  *
- * Neither `save`, `load`, nor `delete` encrypt or decrypt anything — the `encryptedToken` field
- * they move is already ciphertext produced upstream of this port (per the `GitCredentialRecord`
- * contract, this port never sees, stores, or returns plaintext). The injected
- * {@link SessionEncryption} — keyed with the DEDICATED `git.credentialEncryptionKey` (never the
- * session encryption key), wired by the composition root — is used by this adapter only for
- * {@link loadDecrypted}.
- *
- * Decryption is intentionally isolated to `loadDecrypted`, a deliberately adapter-specific method
- * not added to the domain `GitCredentialStore` port: decryption is an infrastructure concern, and
- * keeping it off the port means every other consumer (use cases, the in-memory test fake) keeps
- * working with ciphertext-only semantics. Only the git-worker's composition root, which already
- * depends on this concrete adapter for DI, should call it, at job execution time, to hand the
- * plaintext to `git` out-of-band via a `GIT_ASKPASS` helper or similar — never via argv, the
- * working tree, `.git/config`, or a log line.
+ * Decryption for actual use — as opposed to the encrypt-on-write above — is intentionally isolated
+ * to `loadDecrypted`, a deliberately adapter-specific method not added to the domain
+ * `GitCredentialStore` port: only the git-worker's composition root, which already depends on this
+ * concrete adapter for DI, should call it, at job execution time, to hand the plaintext to `git`
+ * out-of-band via a `GIT_ASKPASS` helper or similar — never via argv, the working tree,
+ * `.git/config`, or a log line.
  */
 export class PrismaGitCredentialStore implements GitCredentialStore {
   /**
    * @param prisma - The Prisma client used for database operations.
    * @param encryption - AES-256-GCM service, constructed with the dedicated
-   *   `git.credentialEncryptionKey` — used only by `loadDecrypted`, never by `save`/`load`.
+   *   `git.credentialEncryptionKey` — used by both `save` (to encrypt) and `loadDecrypted` (to
+   *   decrypt), never by `load`.
    */
   constructor(
     private readonly prisma: PrismaClient,
@@ -56,18 +56,19 @@ export class PrismaGitCredentialStore implements GitCredentialStore {
   ) {}
 
   /**
-   * Stores the encrypted credential for a project, replacing any existing one.
+   * Encrypts the given plaintext token and stores it for a project, replacing any existing
+   * credential.
    *
    * @param projectId - The project the credential authenticates against.
-   * @param credential - The already-encrypted token, its display hint, and the persistence
-   *   context (`provider`, `createdByUserId`) the `GitCredential` row requires.
+   * @param credential - The plaintext token and the persistence context (`provider`,
+   *   `createdByUserId`) the `GitCredential` row requires.
    */
   async save(projectId: ProjectId, credential: GitCredentialSaveInput): Promise<void> {
     const data = {
       projectId: projectId.value,
       provider: toPrismaProvider(credential.provider.value),
-      encryptedToken: credential.encryptedToken,
-      tokenHint: credential.tokenHint,
+      encryptedToken: this.encryption.encrypt(credential.token),
+      tokenHint: deriveTokenHint(credential.token),
       createdByUserId: credential.createdByUserId.value,
     };
     await this.prisma.gitCredential.upsert({

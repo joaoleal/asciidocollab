@@ -11,11 +11,11 @@ import { GitOperationRepository } from '../../ports/git/git-operation-repository
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
 import { Logger } from '../../ports/observability/logger';
-import { GitCredentialEncryptor } from '../../services/git-credential-encryptor';
 import { DomainError } from '../../errors/domain-error';
 import { ValidationError } from '../../errors/common/validation-error';
 import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
 import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
+import { RepositoryAlreadyConnectedError } from '../../errors/git/repository-already-connected';
 import { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
 import { InsufficientRoleError } from '../../errors/git/insufficient-role';
 import { requireGitRole } from './git-role-guard';
@@ -70,8 +70,8 @@ export interface ConnectRepositoryResult {
 export class ConnectRepositoryUseCase {
   /**
    * @param gitRepositoryRepo - Persists the project's `GitRepository` link.
-   * @param credentialStore - Persists the encrypted access credential (ciphertext only).
-   * @param credentialEncryptor - Encrypts the plaintext token before it is ever stored.
+   * @param credentialStore - Encrypts and persists the access credential; takes the plaintext
+   *   token and never hands it back.
    * @param commandRunner - Runs the connectivity/authentication check against the remote.
    * @param gitOperationRepo - Single-flight guard so a connect cannot race another git action.
    * @param projectMemberRepo - Resolves the actor's role for the authorization check.
@@ -81,7 +81,6 @@ export class ConnectRepositoryUseCase {
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly credentialStore: GitCredentialStore,
-    private readonly credentialEncryptor: GitCredentialEncryptor,
     private readonly commandRunner: GitCommandRunner,
     private readonly gitOperationRepo: GitOperationRepository,
     private readonly projectMemberRepo: ProjectMemberRepository,
@@ -96,6 +95,7 @@ export class ConnectRepositoryUseCase {
    * @returns The created repository link on success; a typed refusal otherwise —
    *   {@link InsufficientRoleError} when the actor is not the project's OWNER, a
    *   {@link ValidationError} for an unrecognized provider or malformed remote URL,
+   *   {@link RepositoryAlreadyConnectedError} when the project already has a repository link,
    *   {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} when the remote check
    *   fails, or {@link GitOperationInProgressError} when another git action is already in flight
    *   for this project.
@@ -131,6 +131,14 @@ export class ConnectRepositoryUseCase {
       };
     }
 
+    // Checked here, ahead of the remote/storage work, so a reconnect attempt on an
+    // already-connected project is a typed refusal rather than a storage-layer unique-constraint
+    // error surfacing from `gitRepositoryRepo.save` (the entity's 1:1 relationship with a project).
+    const existing = await this.gitRepositoryRepo.findByProjectId(input.projectId);
+    if (existing !== null) {
+      return { success: false, error: new RepositoryAlreadyConnectedError() };
+    }
+
     const guarded = await this.gitOperationRepo.withGuard(input.projectId, () =>
       this.connectWhileGuarded(input, provider),
     );
@@ -154,10 +162,10 @@ export class ConnectRepositoryUseCase {
     });
     if (!accessCheck.success) return accessCheck;
 
-    const encrypted = this.credentialEncryptor.encrypt(input.token);
+    // The store encrypts this internally and derives its own display hint — the plaintext
+    // token is never held here beyond this call, and never appears in what gets persisted.
     await this.credentialStore.save(input.projectId, {
-      encryptedToken: encrypted.encryptedToken,
-      tokenHint: encrypted.tokenHint,
+      token: input.token,
       provider,
       createdByUserId: input.actorId,
     });

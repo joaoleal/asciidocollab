@@ -3,8 +3,11 @@ import { InsufficientRoleError } from '../../../src/errors/git/insufficient-role
 import { ValidationError } from '../../../src/errors/common/validation-error';
 import { RepositoryUnreachableError } from '../../../src/errors/git/repository-unreachable';
 import { AuthenticationFailedError } from '../../../src/errors/git/authentication-failed';
-import { GitCredentialEncryptor } from '../../../src/services/git-credential-encryptor';
+import { RepositoryAlreadyConnectedError } from '../../../src/errors/git/repository-already-connected';
 import { ProjectMember } from '../../../src/entities/project-member';
+import { GitRepository } from '../../../src/entities/git-repository';
+import { GitRepositoryId } from '../../../src/value-objects/ids/git-repository-id';
+import { GitProvider } from '../../../src/value-objects/project/git-provider';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { UserId } from '../../../src/value-objects/ids/user-id';
 import { Role } from '../../../src/value-objects/identity/role';
@@ -20,16 +23,6 @@ const OWNER_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
 const REMOTE_URL = 'https://github.com/example/repo.git';
 const TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890';
 
-/** A deterministic, reversible stand-in for the real AES-256-GCM encryptor. */
-function fakeEncryptor(): GitCredentialEncryptor {
-  return {
-    encrypt: jest.fn((plaintextToken: string) => ({
-      encryptedToken: `enc(${plaintextToken})`,
-      tokenHint: plaintextToken.slice(-4),
-    })),
-  };
-}
-
 async function memberRepoWithRole(role: string | null): Promise<InMemoryProjectMemberRepository> {
   const repo = new InMemoryProjectMemberRepository();
   if (role) {
@@ -42,7 +35,6 @@ interface Harness {
   useCase: ConnectRepositoryUseCase;
   gitRepositoryRepo: InMemoryGitRepositoryRepository;
   credentialStore: InMemoryGitCredentialStore;
-  credentialEncryptor: GitCredentialEncryptor;
   commandRunner: InMemoryGitCommandRunner;
   gitOperationRepo: InMemoryGitOperationRepository;
   auditRepo: InMemoryAuditLogRepository;
@@ -54,14 +46,12 @@ async function buildHarness(role: string | null = 'owner'): Promise<Harness> {
   const auditRepo = new InMemoryAuditLogRepository();
   const gitRepositoryRepo = new InMemoryGitRepositoryRepository();
   const credentialStore = new InMemoryGitCredentialStore();
-  const credentialEncryptor = fakeEncryptor();
   const commandRunner = new InMemoryGitCommandRunner();
   const gitOperationRepo = new InMemoryGitOperationRepository();
 
   const useCase = new ConnectRepositoryUseCase(
     gitRepositoryRepo,
     credentialStore,
-    credentialEncryptor,
     commandRunner,
     gitOperationRepo,
     memberRepo,
@@ -72,7 +62,6 @@ async function buildHarness(role: string | null = 'owner'): Promise<Harness> {
     useCase,
     gitRepositoryRepo,
     credentialStore,
-    credentialEncryptor,
     commandRunner,
     gitOperationRepo,
     auditRepo,
@@ -106,11 +95,10 @@ describe('ConnectRepositoryUseCase', () => {
     expect(saved).not.toBeNull();
     expect(saved!.connectedByUserId).toEqual(OWNER_ID);
 
-    // The credential is stored via the encryptor's ciphertext — never the raw token.
+    // The credential store encrypts internally — never the raw token.
     const storedCredential = await harness.credentialStore.load(PROJECT_ID);
     expect(storedCredential).not.toBeNull();
     expect(storedCredential!.encryptedToken).not.toBe(TOKEN);
-    expect(storedCredential!.encryptedToken).toBe(`enc(${TOKEN})`);
     expect(storedCredential!.tokenHint).toBe('7890');
   });
 
@@ -212,6 +200,32 @@ describe('ConnectRepositoryUseCase', () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(ValidationError);
     expect(harness.commandRunner.remoteAccessCalls).toHaveLength(0);
+  });
+
+  test('a project that already has a repository link is refused with RepositoryAlreadyConnectedError', async () => {
+    const harness = await buildHarness('owner');
+    await harness.gitRepositoryRepo.save(
+      new GitRepository(
+        GitRepositoryId.create('550e8400-e29b-41d4-a716-446655440099'),
+        PROJECT_ID,
+        GitProvider.create('gitlab'),
+        'https://gitlab.com/existing/repo.git',
+        PROJECT_ID.value,
+      ),
+    );
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId: PROJECT_ID,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(RepositoryAlreadyConnectedError);
+    expect(harness.commandRunner.remoteAccessCalls).toHaveLength(0);
+    expect(await harness.credentialStore.load(PROJECT_ID)).toBeNull();
   });
 
   test('a remote that cannot be reached surfaces RepositoryUnreachableError, and nothing is stored', async () => {

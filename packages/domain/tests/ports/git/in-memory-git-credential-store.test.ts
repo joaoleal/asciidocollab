@@ -9,13 +9,15 @@ describe('InMemoryGitCredentialStore', () => {
   const createdByUserId = UserId.create('550e8400-e29b-41d4-a716-446655440020');
   const provider = GitProvider.create('github');
 
-  it('reads back the same encrypted token and hint that were saved', async () => {
+  it('reads back an encrypted (never plaintext) token and a hint derived from it', async () => {
     const store = new InMemoryGitCredentialStore();
-    await store.save(projectId, { encryptedToken: 'iv:tag:ciphertext', tokenHint: 'a1b2', provider, createdByUserId });
+    await store.save(projectId, { token: 'ghp_abcdefgh1234', provider, createdByUserId });
 
     const found = await store.load(projectId);
 
-    expect(found).toEqual({ encryptedToken: 'iv:tag:ciphertext', tokenHint: 'a1b2' });
+    expect(found).not.toBeNull();
+    expect(found!.encryptedToken).not.toBe('ghp_abcdefgh1234');
+    expect(found!.tokenHint).toBe('1234');
   });
 
   it('returns null when reading a project with no stored credential', async () => {
@@ -28,17 +30,18 @@ describe('InMemoryGitCredentialStore', () => {
 
   it('overwrites the previous credential when saving again for the same project', async () => {
     const store = new InMemoryGitCredentialStore();
-    await store.save(projectId, { encryptedToken: 'iv:tag:old', tokenHint: 'aaaa', provider, createdByUserId });
-    await store.save(projectId, { encryptedToken: 'iv:tag:new', tokenHint: 'bbbb', provider, createdByUserId });
+    await store.save(projectId, { token: 'old-token-aaaa', provider, createdByUserId });
+    await store.save(projectId, { token: 'new-token-bbbb', provider, createdByUserId });
 
     const found = await store.load(projectId);
 
-    expect(found).toEqual({ encryptedToken: 'iv:tag:new', tokenHint: 'bbbb' });
+    expect(found!.tokenHint).toBe('bbbb');
+    expect(found!.encryptedToken).not.toBe('new-token-bbbb');
   });
 
   it('deletes the stored credential so a later read returns null', async () => {
     const store = new InMemoryGitCredentialStore();
-    await store.save(projectId, { encryptedToken: 'iv:tag:ciphertext', tokenHint: 'a1b2', provider, createdByUserId });
+    await store.save(projectId, { token: 'ghp_abcdefgh1234', provider, createdByUserId });
 
     await store.delete(projectId);
 
@@ -53,25 +56,21 @@ describe('InMemoryGitCredentialStore', () => {
 
   it('keeps credentials for different projects independent', async () => {
     const store = new InMemoryGitCredentialStore();
-    await store.save(projectId, { encryptedToken: 'iv:tag:one', tokenHint: '1111', provider, createdByUserId });
-    await store.save(otherProjectId, { encryptedToken: 'iv:tag:two', tokenHint: '2222', provider, createdByUserId });
+    await store.save(projectId, { token: 'token-one-1111', provider, createdByUserId });
+    await store.save(otherProjectId, { token: 'token-two-2222', provider, createdByUserId });
 
     await store.delete(projectId);
 
     expect(await store.load(projectId)).toBeNull();
-    expect(await store.load(otherProjectId)).toEqual({ encryptedToken: 'iv:tag:two', tokenHint: '2222' });
-  });
-
-  it('allows a null tokenHint to round-trip', async () => {
-    const store = new InMemoryGitCredentialStore();
-    await store.save(projectId, { encryptedToken: 'iv:tag:ciphertext', tokenHint: null, provider, createdByUserId });
-
-    expect(await store.load(projectId)).toEqual({ encryptedToken: 'iv:tag:ciphertext', tokenHint: null });
+    expect(await store.load(otherProjectId)).toEqual({
+      encryptedToken: 'encrypted:token-two-2222',
+      tokenHint: '2222',
+    });
   });
 
   it('does not echo the save-only provider/createdByUserId context back from load', async () => {
     const store = new InMemoryGitCredentialStore();
-    await store.save(projectId, { encryptedToken: 'iv:tag:ciphertext', tokenHint: 'a1b2', provider, createdByUserId });
+    await store.save(projectId, { token: 'ghp_abcdefgh1234', provider, createdByUserId });
 
     const found = await store.load(projectId);
 
