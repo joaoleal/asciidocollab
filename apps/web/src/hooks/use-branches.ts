@@ -1,0 +1,231 @@
+'use client';
+
+/**
+ * Orchestrates the editor's branch switcher: loads the project's local branches and which one is
+ * current, creates new branches, and starts/polls a branch switch to completion — mirroring
+ * `usePull`'s own-operation polling exactly, with one added wrinkle: `checkoutBranch` has TWO
+ * distinct synchronous refusals (`409 uncommitted_changes` and `409 open_files_need_confirm`,
+ * checked in that order by the route) rather than pull's one, so the confirm state tracks which of
+ * the two fired and the confirm dialog itself performs the flagged retry (see
+ * `BranchSwitchDialog`), exactly like `PullConfirmForm` retries the pull.
+ */
+import { useCallback, useEffect, useState } from 'react';
+import { describeCheckoutFailure } from '@/components/git/branch-switch-dialog';
+import {
+  checkoutBranch,
+  createBranch as createBranchRequest,
+  getBranches,
+  getGitOperation,
+  isGitOperationTerminal,
+  type BranchSwitchConfirmCode,
+  type CheckoutBranchResult,
+} from '@/lib/api/git';
+import { ApiError } from '@/lib/api/transport';
+import type { BranchDto } from '@asciidocollab/shared';
+
+/** How often a queued branch-switch operation's status is re-read while it is queued or running. */
+const POLL_INTERVAL_MS = 1500;
+
+/** A branch switch's settled, non-success outcome to show the user. */
+export interface BranchSwitchMessage {
+  /** An `error` tone renders as a destructive alert; a `neutral` tone (paused on conflicts) does not. */
+  tone: 'neutral' | 'error';
+  /** The message text. */
+  text: string;
+}
+
+/** State and actions for the editor layout's branch switcher. */
+export interface UseBranches {
+  /** The currently checked-out branch, or null while not yet loaded (or on a load failure). */
+  current: string | null;
+  /** Every local branch, in no particular order. Empty while not yet loaded (or on a load failure). */
+  branches: BranchDto[];
+  /** True while the branch list is loading. */
+  loading: boolean;
+  /** A genuinely unexpected load failure. */
+  error: string | null;
+  /** Reloads the branch list — for use after a switch or a creation changes it. */
+  refetch: () => Promise<void>;
+  /** Creates a new branch from the current branch's tip, then refetches the list. */
+  createBranch: (name: string) => Promise<void>;
+  /** Starts switching to the given branch; opens the confirm dialog instead of erroring on either 409. */
+  switchBranch: (name: string) => void;
+  /** True while a switch is starting or its operation is being polled. */
+  switchPending: boolean;
+  /** The outcome message from the most recent switch attempt that did not simply succeed, or null. */
+  switchMessage: BranchSwitchMessage | null;
+  /** Whether the switch confirm dialog should be shown. */
+  confirmOpen: boolean;
+  /** The branch the confirm dialog would switch to. Set together with `confirmOpen`/`confirmCode`. */
+  confirmBranchName: string | null;
+  /** Which of the two synchronous refusals opened the confirm dialog. */
+  confirmCode: BranchSwitchConfirmCode | null;
+  /** Closes the confirm dialog without switching. */
+  closeConfirm: () => void;
+  /** Called by the confirm dialog once its flagged retry has successfully queued a switch. */
+  handleConfirmed: (result: CheckoutBranchResult) => void;
+}
+
+/** The two `ApiError.code`s that open the confirm dialog rather than surfacing as an error. */
+const CONFIRMABLE_CODES: ReadonlySet<string> = new Set(['uncommitted_changes', 'open_files_need_confirm']);
+
+/**
+ * @param projectId - The project whose branches are being managed.
+ * @param onSucceeded - Called once a branch-switch operation reaches `SUCCEEDED`, in addition to
+ * this hook's own list refetch — the caller refetches the same cross-cutting git read models a
+ * pull does (tree status, git status, behind-ahead), since a branch switch changes the working
+ * tree exactly like a pull does.
+ */
+export function useBranches(projectId: string, onSucceeded: () => void): UseBranches {
+  const [current, setCurrent] = useState<string | null>(null);
+  const [branches, setBranches] = useState<BranchDto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [switchPending, setSwitchPending] = useState(false);
+  const [switchMessage, setSwitchMessage] = useState<BranchSwitchMessage | null>(null);
+  const [operationId, setOperationId] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmBranchName, setConfirmBranchName] = useState<string | null>(null);
+  const [confirmCode, setConfirmCode] = useState<BranchSwitchConfirmCode | null>(null);
+
+  const load = useCallback(
+    async (active: () => boolean) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await getBranches(projectId);
+        if (!active()) return;
+        // Defensive against a malformed/mismatched response body: an unexpected shape resolves to
+        // "nothing loaded" rather than crashing the switcher's render.
+        setCurrent(typeof result.current === 'string' ? result.current : null);
+        setBranches(Array.isArray(result.branches) ? result.branches : []);
+      } catch {
+        if (!active()) return;
+        setCurrent(null);
+        setBranches([]);
+        setError('Failed to load branches.');
+      } finally {
+        if (active()) setLoading(false);
+      }
+    },
+    [projectId],
+  );
+
+  useEffect(() => {
+    let active = true;
+    void load(() => active);
+    return () => {
+      active = false;
+    };
+  }, [load]);
+
+  const refetch = useCallback(() => load(() => true), [load]);
+
+  const createBranch = useCallback(
+    async (name: string) => {
+      await createBranchRequest(projectId, name);
+      await refetch();
+    },
+    [projectId, refetch],
+  );
+
+  const switchBranch = useCallback(
+    (name: string) => {
+      setSwitchMessage(null);
+      setSwitchPending(true);
+      checkoutBranch(projectId, { name })
+        .then((result) => {
+          setOperationId(result.operationId);
+        })
+        .catch((caughtError: unknown) => {
+          if (caughtError instanceof ApiError && CONFIRMABLE_CODES.has(caughtError.code)) {
+            setConfirmBranchName(name);
+            setConfirmCode(caughtError.code as BranchSwitchConfirmCode);
+            setConfirmOpen(true);
+            setSwitchPending(false);
+            return;
+          }
+          setSwitchPending(false);
+          setSwitchMessage({ tone: 'error', text: describeCheckoutFailure(caughtError) });
+        });
+    },
+    [projectId],
+  );
+
+  const handleConfirmed = useCallback((result: CheckoutBranchResult) => {
+    setConfirmOpen(false);
+    setConfirmBranchName(null);
+    setConfirmCode(null);
+    setSwitchMessage(null);
+    setSwitchPending(true);
+    setOperationId(result.operationId);
+  }, []);
+
+  const closeConfirm = useCallback(() => {
+    setConfirmOpen(false);
+    setConfirmBranchName(null);
+    setConfirmCode(null);
+  }, []);
+
+  // Polls the queued switch operation, exactly like `usePull`, until it reaches a terminal state OR
+  // `AWAITING_CONFLICT` — checked first here, same reason as the pull hook: `isGitOperationTerminal`
+  // deliberately does not count it as terminal.
+  useEffect(() => {
+    if (!operationId) return;
+    const currentOperationId: string = operationId;
+    let active = true;
+
+    async function tick() {
+      try {
+        const status = await getGitOperation(projectId, currentOperationId);
+        if (!active) return;
+        if (status.state === 'AWAITING_CONFLICT') {
+          setOperationId(null);
+          setSwitchPending(false);
+          setSwitchMessage({ tone: 'neutral', text: 'Branch switch paused — conflicts need resolving.' });
+          return;
+        }
+        if (isGitOperationTerminal(status.state)) {
+          setOperationId(null);
+          setSwitchPending(false);
+          if (status.state === 'SUCCEEDED') {
+            void refetch();
+            onSucceeded();
+          } else {
+            setSwitchMessage({
+              tone: 'error',
+              text: status.state === 'FAILED' ? 'The branch switch failed.' : 'The branch switch was aborted.',
+            });
+          }
+        }
+      } catch {
+        // A transient poll failure doesn't end the switch — the next tick tries again.
+      }
+    }
+
+    void tick();
+    const timer = setInterval(tick, POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [operationId, projectId, onSucceeded, refetch]);
+
+  return {
+    current,
+    branches,
+    loading,
+    error,
+    refetch,
+    createBranch,
+    switchBranch,
+    switchPending,
+    switchMessage,
+    confirmOpen,
+    confirmBranchName,
+    confirmCode,
+    closeConfirm,
+    handleConfirmed,
+  };
+}

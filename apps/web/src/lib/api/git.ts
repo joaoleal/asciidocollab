@@ -6,6 +6,8 @@ import { apiRequest } from '@/lib/api/transport';
 import type {
   ActiveGitOperationDto,
   BehindAheadDto,
+  BranchDto,
+  BranchListDto,
   CommitDto,
   FileGitStatus,
   GitOperationStatusDto,
@@ -132,6 +134,73 @@ export async function startPull(
  */
 export async function getActiveGitOperation(projectId: string): Promise<ActiveGitOperationDto> {
   return apiRequest(`/api/projects/${projectId}/git/active-operation`);
+}
+
+/**
+ * Reads the project's connected repository's local branches and which one is currently checked
+ * out. Any project member may read this (unlike creating or switching, which require editor tier).
+ */
+export async function getBranches(projectId: string): Promise<BranchListDto> {
+  return apiRequest(`/api/projects/${projectId}/git/branches`);
+}
+
+/** What creating a branch hands back. A freshly created branch is never the checked-out one. */
+export interface CreateBranchResult {
+  /** The newly created branch. */
+  branch: BranchDto;
+}
+
+/**
+ * Creates a new branch from the project's current branch tip. Synchronous, unlike checkout/pull —
+ * creating a branch does not touch the working tree, so there is no operation to poll.
+ */
+export async function createBranch(projectId: string, name: string): Promise<CreateBranchResult> {
+  return apiRequest(`/api/projects/${projectId}/git/branches`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+/** The two synchronous refusals `checkoutBranch` can be retried past, once the caller confirms. */
+export type BranchSwitchConfirmCode = 'uncommitted_changes' | 'open_files_need_confirm';
+
+/** Request body for {@link checkoutBranch}. */
+export interface CheckoutBranchInput {
+  /** The branch to switch to. */
+  name: string;
+  /** Acknowledges that files open in live editing sessions may be affected by the switch. */
+  confirmAffectsOpenFiles?: boolean;
+  /** Acknowledges that uncommitted local changes should ride across the switch (stashed and reapplied). */
+  stashLocal?: boolean;
+}
+
+/** What starting a branch switch hands back: the operation to poll. */
+export interface CheckoutBranchResult {
+  /** Identifier of the newly queued branch-switch operation. */
+  operationId: string;
+  /** Identifier of the project the switch applies to. */
+  projectId: string;
+}
+
+/**
+ * Starts switching the connected repository's checked-out branch. Resolves as soon as the server
+ * has queued the switch (`202`) — the returned identifier is for polling {@link getGitOperation},
+ * not a sign the switch itself has finished. Refused with `409 uncommitted_changes` when the
+ * working tree has pending changes and `stashLocal` was not passed as `true`, and with
+ * `409 open_files_need_confirm` when files are open in live editing sessions and
+ * `confirmAffectsOpenFiles` was not passed as `true` — both checked in that order.
+ */
+export async function checkoutBranch(
+  projectId: string,
+  input: CheckoutBranchInput,
+): Promise<CheckoutBranchResult> {
+  const body: { name: string; confirmAffectsOpenFiles?: boolean; stashLocal?: boolean } = { name: input.name };
+  if (input.confirmAffectsOpenFiles) body.confirmAffectsOpenFiles = true;
+  if (input.stashLocal) body.stashLocal = true;
+  return apiRequest(`/api/projects/${projectId}/git/checkout`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 /** The `GitOperationStatusDto` states that mean polling should stop. */

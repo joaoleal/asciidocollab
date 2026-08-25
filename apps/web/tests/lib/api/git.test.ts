@@ -4,8 +4,11 @@
  */
 import { API_BASE_URL } from '@/lib/api/base-url';
 import {
+  checkoutBranch,
   commitChanges,
+  createBranch,
   getBehindAhead,
+  getBranches,
   getGitOperation,
   getGitStatus,
   getGitTreeStatus,
@@ -250,6 +253,109 @@ describe('startPull', () => {
     failOnce(409, { error: { code: 'open_files_need_confirm', message: 'Files are open in live editing sessions' } });
 
     await expect(startPull('proj1')).rejects.toMatchObject({
+      status: 409,
+      code: 'open_files_need_confirm',
+    });
+  });
+});
+
+describe('getBranches', () => {
+  test('GETs the project-scoped branches endpoint', async () => {
+    const body = { current: 'main', branches: [{ name: 'main', isCurrent: true }, { name: 'dev', isCurrent: false }] };
+    okOnce(body);
+
+    const result = await getBranches('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/branches`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(body);
+  });
+
+  test('surfaces a not-connected refusal for a project with no git repo', async () => {
+    failOnce(404, { error: { code: 'repository_not_connected', message: 'This project has no connected Git repository' } });
+
+    await expect(getBranches('proj1')).rejects.toMatchObject({
+      status: 404,
+      code: 'repository_not_connected',
+    });
+  });
+});
+
+describe('createBranch', () => {
+  test('POSTs the name to the project-scoped branches endpoint', async () => {
+    const branch = { name: 'feature/x', isCurrent: false };
+    okOnce({ branch });
+
+    const result = await createBranch('proj1', 'feature/x');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/branches`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({ name: 'feature/x' });
+    expect(result).toEqual({ branch });
+  });
+
+  test('surfaces a refusal, e.g. insufficient role', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'You do not have the required role for this action' } });
+
+    await expect(createBranch('proj1', 'feature/x')).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
+    });
+  });
+});
+
+describe('checkoutBranch', () => {
+  test('POSTs the branch name to the project-scoped checkout endpoint, omitting unset flags', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    const result = await checkoutBranch('proj1', { name: 'dev' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/checkout`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({ name: 'dev' });
+    expect(result).toEqual({ operationId: 'op1', projectId: 'proj1' });
+  });
+
+  test('includes confirmAffectsOpenFiles only when explicitly requested', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    await checkoutBranch('proj1', { name: 'dev', confirmAffectsOpenFiles: true });
+
+    expect(requestBody()).toEqual({ name: 'dev', confirmAffectsOpenFiles: true });
+  });
+
+  test('includes stashLocal only when explicitly requested', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    await checkoutBranch('proj1', { name: 'dev', stashLocal: true });
+
+    expect(requestBody()).toEqual({ name: 'dev', stashLocal: true });
+  });
+
+  test('includes both flags when both are requested', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    await checkoutBranch('proj1', { name: 'dev', confirmAffectsOpenFiles: true, stashLocal: true });
+
+    expect(requestBody()).toEqual({ name: 'dev', confirmAffectsOpenFiles: true, stashLocal: true });
+  });
+
+  test('surfaces the uncommitted-changes refusal', async () => {
+    failOnce(409, { error: { code: 'uncommitted_changes', message: 'There are uncommitted local changes' } });
+
+    await expect(checkoutBranch('proj1', { name: 'dev' })).rejects.toMatchObject({
+      status: 409,
+      code: 'uncommitted_changes',
+    });
+  });
+
+  test('surfaces the open-files refusal', async () => {
+    failOnce(409, { error: { code: 'open_files_need_confirm', message: 'Files are open in live editing sessions' } });
+
+    await expect(checkoutBranch('proj1', { name: 'dev', stashLocal: true })).rejects.toMatchObject({
       status: 409,
       code: 'open_files_need_confirm',
     });

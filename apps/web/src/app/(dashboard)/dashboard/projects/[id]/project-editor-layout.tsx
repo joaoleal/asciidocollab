@@ -17,10 +17,13 @@ import { useGitStatus } from '@/hooks/use-git-status';
 import { useBehindAhead } from '@/hooks/use-behind-ahead';
 import { useGitActivity } from '@/hooks/use-git-activity';
 import { usePull } from '@/hooks/use-pull';
+import { useBranches } from '@/hooks/use-branches';
 import { CommitDialog } from '@/components/git/commit-dialog';
 import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
 import { GitActivityIndicator } from '@/components/git/git-activity-indicator';
 import { PullDialog } from '@/components/git/pull-dialog';
+import { BranchSwitcher } from '@/components/git/branch-switcher';
+import { BranchSwitchDialog } from '@/components/git/branch-switch-dialog';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
@@ -519,6 +522,13 @@ export function ProjectEditorLayout({
   const pull = usePull(projectId, handlePullSucceeded);
   // Pulling requires the same editor capability as committing (see the route's requirement).
   const canPull = canEdit;
+
+  // Branch switching changes the working tree exactly like a pull does, so it refetches the same
+  // three git read models on success — reusing the pull handler rather than duplicating it.
+  const branches = useBranches(projectId, handlePullSucceeded);
+  // Creating/switching branches requires the same editor capability as committing/pulling; reading
+  // the list does not (the route allows any project member), but the switcher is editor-only here.
+  const canSwitchBranches = canEdit;
 
   // Collaboration-facing "git activity" signal: lets a member notice that ANOTHER member's (or the
   // system's) whole-project git operation is running, purely from polling the same `GitOperation`
@@ -1330,6 +1340,16 @@ export function ProjectEditorLayout({
         <div className="ml-auto flex items-center gap-2">
           <NonLiveIndicator active={nonLive} />
           <GitActivityIndicator activeOperation={activeGitOperation} />
+          {canSwitchBranches && (
+            <BranchSwitcher
+              current={branches.current}
+              branches={branches.branches}
+              loading={branches.loading}
+              switchPending={branches.switchPending}
+              onSwitch={branches.switchBranch}
+              onCreate={branches.createBranch}
+            />
+          )}
           <GitConnectionStatusBar
             status={gitStatus}
             connected={gitConnected}
@@ -1398,6 +1418,19 @@ export function ProjectEditorLayout({
       {pull.message && pull.message.tone === 'neutral' && (
         <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
           {pull.message.text}
+        </div>
+      )}
+
+      {/* Branch switch outcome: a synchronous start failure, or the polled operation settling into
+          something other than success. AWAITING_CONFLICT is deliberately neutral, same as pull's. */}
+      {branches.switchMessage && branches.switchMessage.tone === 'error' && (
+        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {branches.switchMessage.text}
+        </div>
+      )}
+      {branches.switchMessage && branches.switchMessage.tone === 'neutral' && (
+        <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
+          {branches.switchMessage.text}
         </div>
       )}
 
@@ -1751,6 +1784,14 @@ export function ProjectEditorLayout({
         open={pull.confirmOpen}
         onOpenChange={pull.closeConfirm}
         onConfirmed={pull.handleConfirmed}
+      />
+      <BranchSwitchDialog
+        projectId={projectId}
+        open={branches.confirmOpen}
+        branchName={branches.confirmBranchName}
+        code={branches.confirmCode}
+        onOpenChange={branches.closeConfirm}
+        onConfirmed={branches.handleConfirmed}
       />
     </div>
   );
