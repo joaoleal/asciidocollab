@@ -207,6 +207,19 @@ export interface GitBehindAhead {
   readonly ahead: number;
 }
 
+/** One commit as read from a project's git history: the raw author identity is an email — mapping it
+ *  to a platform user is a domain concern, not the runner's. Newest-first ordering is the adapter's contract. */
+export interface GitLogEntry {
+  /** The full commit hash. */
+  readonly hash: string;
+  /** The commit's subject/message. */
+  readonly message: string;
+  /** The commit author's email, exactly as recorded in git (may map to no platform user). */
+  readonly authorEmail: string;
+  /** When the commit was authored. */
+  readonly authoredAt: Date;
+}
+
 /** Everything {@link GitCommandRunner.merge} needs to merge a fetched remote-tracking ref into a branch. */
 export interface GitMergeInput {
   /** The local branch to merge the remote-tracking ref into. */
@@ -556,6 +569,27 @@ export interface GitCommandRunner {
    *   the underlying git command fails (for example, the branch has no remote-tracking ref yet).
    */
   getBehindAhead(projectId: ProjectId, branch: string): Promise<Result<GitBehindAhead, GitCommandFailedError>>;
+
+  /**
+   * Reads a project's commit history, newest first. With `path`, restricts to the commits that touched
+   * that single project-relative file (its per-file history); without it, the whole project's history.
+   * `limit`, when given, caps the number of commits returned. A purely local read — no network.
+   *
+   * Adapter contract (implemented later in the worker): run `git log` with a machine-readable format that
+   * emits hash, author email, author date, and subject; when `path` is set, pass it as a positional after
+   * `--end-of-options` (`git log … -- <path>`); apply `--max-count=<limit>` when `limit` is set. Returns the
+   * entries newest-first; an empty history is an empty array, not an error.
+   *
+   * @param projectId - The project whose history to read.
+   * @param options - `path` restricts to a single project-relative file's history; `limit` caps the
+   *   number of commits returned.
+   * @returns Every matching commit, newest first; a `GitCommandFailedError` when the underlying git
+   *   command fails.
+   */
+  log(
+    projectId: ProjectId,
+    options: { readonly path?: string; readonly limit?: number },
+  ): Promise<Result<GitLogEntry[], GitCommandFailedError>>;
 
   /**
    * Runs a local three-way merge of the already-fetched remote-tracking ref into `input.branch`.

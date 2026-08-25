@@ -19,6 +19,7 @@ import {
   GitInitializeError,
   GitInitializeInput,
   GitInitializeOutcome,
+  GitLogEntry,
   GitMergeInput,
   GitMergeOutcome,
   GitPushError,
@@ -61,6 +62,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly fetchResults = new Map<string, GitFetchResult>();
   private readonly behindAheadFailures = new Map<string, GitCommandFailedError>();
   private readonly behindAheadResults = new Map<string, GitBehindAhead>();
+  private readonly logFailures = new Map<string, GitCommandFailedError>();
+  private readonly logResults = new Map<string, GitLogEntry[]>();
   private readonly mergeFailures = new Map<string, GitCommandFailedError>();
   private readonly mergeOutcomes = new Map<string, GitMergeOutcome>();
   private readonly createBranchFailures = new Map<string, GitCommandFailedError>();
@@ -103,6 +106,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `getBehindAhead`, in call order, for asserting the branch compared. */
   readonly behindAheadCalls: { projectId: ProjectId; branch: string }[] = [];
+
+  /** Every call made to `log`, in call order, for asserting the path/limit options. */
+  readonly logCalls: { projectId: ProjectId; options: { readonly path?: string; readonly limit?: number } }[] = [];
 
   /** Every call made to `merge`, in call order, for asserting the flush list and branch merged. */
   readonly mergeCalls: { projectId: ProjectId; input: GitMergeInput }[] = [];
@@ -408,6 +414,35 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     const result = this.behindAheadResults.get(projectId.value) ?? { behind: 0, ahead: 0 };
 
     return { success: true, value: result };
+  }
+
+  /** Configures the `GitLogEntry[]` `log` returns for a project on success. */
+  seedLog(projectId: ProjectId, entries: GitLogEntry[]): void {
+    this.logResults.set(projectId.value, entries);
+  }
+
+  /** Configures `log` to fail for a project, taking priority over any seeded entries. */
+  seedLogFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.logFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact `path`/`limit` options, so a test can assert them — and
+   * returns the seeded `GitLogEntry[]` (defaulting to an empty history when unseeded), unless a
+   * failure was seeded for this project via `seedLogFailure`.
+   */
+  async log(
+    projectId: ProjectId,
+    options: { readonly path?: string; readonly limit?: number },
+  ): Promise<Result<GitLogEntry[], GitCommandFailedError>> {
+    this.logCalls.push({ projectId, options });
+
+    const failure = this.logFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const entries = this.logResults.get(projectId.value) ?? [];
+
+    return { success: true, value: entries };
   }
 
   /**
