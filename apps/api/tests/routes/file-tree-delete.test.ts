@@ -120,6 +120,47 @@ describe('DELETE /projects/:projectId/files/:fileNodeId', () => {
     expect(bus.emit).not.toHaveBeenCalled();
   });
 
+  test('rejects deleting a node whose stored path resolves into .git, without invoking the use case', async () => {
+    const app = buildTestServer();
+    const repos = (app as unknown as { repos: { fileNode: { findById: jest.Mock } } }).repos;
+    repos.fileNode.findById.mockResolvedValue({
+      id: { value: FILE_NODE_ID },
+      projectId: { value: PROJECT_ID },
+      parentId: { value: '550e8400-e29b-41d4-a716-446655440009' },
+      type: { value: 'file' },
+      name: 'config',
+      path: { value: '/.git/config' },
+    });
+    const executeSpy = jest.spyOn(DeleteFileUseCase.prototype, 'execute');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/projects/${PROJECT_ID}/files/${FILE_NODE_ID}`,
+    });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
+  test('rejects deleting a node whose stored path resolves into .collab, without invoking the use case', async () => {
+    const app = buildTestServer();
+    const repos = (app as unknown as { repos: { fileNode: { findById: jest.Mock } } }).repos;
+    repos.fileNode.findById.mockResolvedValue({
+      id: { value: FILE_NODE_ID },
+      projectId: { value: PROJECT_ID },
+      parentId: { value: '550e8400-e29b-41d4-a716-446655440009' },
+      type: { value: 'folder' },
+      name: '.collab',
+      path: { value: '/.collab' },
+    });
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/projects/${PROJECT_ID}/files/${FILE_NODE_ID}`,
+    });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
+  });
+
   test('emits event with parentId=null when file node has no parent', async () => {
     jest.spyOn(DeleteFileUseCase.prototype, 'execute').mockResolvedValue({
       success: true,

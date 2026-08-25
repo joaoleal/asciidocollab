@@ -10,7 +10,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
-import { sendFileTreeError, toNodeType } from './file-tree-errors';
+import { sendFileTreeError, toNodeType, isHiddenMetadataName, sendHiddenMetadataError } from './file-tree-errors';
 
 type PatchBody = { name?: string; parentId?: string };
 
@@ -34,6 +34,13 @@ export async function fileTreePatchRoutes(app: FastifyInstance): Promise<void> {
       const projectId = ProjectId.create(request.params.projectId);
       const fileNodeId = FileNodeId.create(request.params.fileNodeId);
       const { name, parentId } = request.body;
+
+      // A rename that lands the node on .git/.collab must be rejected before the file store or
+      // database are touched (security boundary) — both the rename-only and combined branches
+      // rename the node, so both are guarded here.
+      if (name !== undefined && isHiddenMetadataName(name)) {
+        return sendHiddenMetadataError(reply);
+      }
 
       if (name !== undefined && parentId !== undefined) {
         const renameUseCase = new RenameFileUseCase(

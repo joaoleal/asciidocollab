@@ -9,7 +9,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
-import { sendFileTreeError, toNodeType } from './file-tree-errors';
+import { sendFileTreeError, toNodeType, pathHasHiddenMetadataSegment, sendHiddenMetadataError } from './file-tree-errors';
 
 /** Registers DELETE /projects/:projectId/files/:fileNodeId. */
 export async function fileTreeDeleteRoutes(app: FastifyInstance): Promise<void> {
@@ -32,6 +32,14 @@ export async function fileTreeDeleteRoutes(app: FastifyInstance): Promise<void> 
       );
 
       const fileNodeBeforeDelete = await request.server.repos.fileNode.findById(fileNodeId);
+
+      // Defense-in-depth: a node whose stored path resolves into .git/.collab must never be
+      // deleted through the app, even if such a node somehow exists (it can never be created or
+      // renamed into one via this API — see file-tree-create.ts / file-tree-patch.ts).
+      if (fileNodeBeforeDelete && pathHasHiddenMetadataSegment(fileNodeBeforeDelete.path.value)) {
+        return sendHiddenMetadataError(reply);
+      }
+
       const result = await useCase.execute(actorId, fileNodeId, projectId, requestContextFrom(request));
       if (!result.success) {
         return sendFileTreeError(reply, result.error);

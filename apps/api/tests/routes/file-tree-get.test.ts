@@ -37,6 +37,37 @@ const fileNode: NodeFixture = {
   parentId: { value: ROOT_ID },
 };
 
+const GIT_ID = '550e8400-e29b-41d4-a716-446655440005';
+const COLLAB_ID = '550e8400-e29b-41d4-a716-446655440006';
+const NESTED_GIT_ID = '550e8400-e29b-41d4-a716-446655440007';
+
+/** A rogue node named `.git`, sitting directly under root — must never reach the response. */
+const gitNode: NodeFixture = {
+  id: { value: GIT_ID },
+  name: '.git',
+  type: { value: 'folder' },
+  path: { value: '/.git' },
+  parentId: { value: ROOT_ID },
+};
+
+/** A rogue node named `.collab`, sitting directly under root — must never reach the response. */
+const collabNode: NodeFixture = {
+  id: { value: COLLAB_ID },
+  name: '.collab',
+  type: { value: 'folder' },
+  path: { value: '/.collab' },
+  parentId: { value: ROOT_ID },
+};
+
+/** A node nested inside the rogue `.git` folder — must be dropped along with its hidden ancestor. */
+const nestedInsideGit: NodeFixture = {
+  id: { value: NESTED_GIT_ID },
+  name: 'config',
+  type: { value: 'file' },
+  path: { value: '/.git/config' },
+  parentId: { value: GIT_ID },
+};
+
 const document_ = {
   fileNodeId: { value: FILE_ID },
   mimeType: { value: 'text/asciidoc' },
@@ -124,6 +155,52 @@ describe('GET /projects/:projectId/files', () => {
     const response = await app.inject({ method: 'GET', url: `/projects/${PROJECT_ID}/files` });
 
     expect(response.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it('omits a .git entry sitting directly under root from the returned tree', async () => {
+    const app = buildTestServer({ nodes: [rootNode, fileNode, gitNode] });
+    await app.register(fileTreeGetRoutes);
+    await app.ready();
+
+    const response = await app.inject({ method: 'GET', url: `/projects/${PROJECT_ID}/files` });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    const names = body.children.map((c: { name: string }) => c.name);
+    expect(names).not.toContain('.git');
+    expect(names).toContain('doc.adoc');
+
+    await app.close();
+  });
+
+  it('omits a .collab entry sitting directly under root from the returned tree', async () => {
+    const app = buildTestServer({ nodes: [rootNode, fileNode, collabNode] });
+    await app.register(fileTreeGetRoutes);
+    await app.ready();
+
+    const response = await app.inject({ method: 'GET', url: `/projects/${PROJECT_ID}/files` });
+
+    expect(response.statusCode).toBe(200);
+    const names = response.json().children.map((c: { name: string }) => c.name);
+    expect(names).not.toContain('.collab');
+
+    await app.close();
+  });
+
+  it('omits everything nested inside a rogue .git entry, not just the .git node itself', async () => {
+    const app = buildTestServer({ nodes: [rootNode, fileNode, gitNode, nestedInsideGit] });
+    await app.register(fileTreeGetRoutes);
+    await app.ready();
+
+    const response = await app.inject({ method: 'GET', url: `/projects/${PROJECT_ID}/files` });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    const allIds = JSON.stringify(body);
+    expect(allIds).not.toContain(NESTED_GIT_ID);
+    expect(allIds).not.toContain(GIT_ID);
 
     await app.close();
   });

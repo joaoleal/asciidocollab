@@ -307,6 +307,43 @@ describe('PATCH /projects/:projectId/files/:fileNodeId', () => {
       expect(body.error.code).toBe('CONFLICT');
     });
 
+    test('rejects renaming a file to .git without touching the file store', async () => {
+      const app = buildRenameServer();
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: '.git' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
+      const stores = (app as unknown as { stores: { fileStore: { move: jest.Mock } } }).stores;
+      expect(stores.fileStore.move).not.toHaveBeenCalled();
+    });
+
+    test('rejects renaming a file to .collab without touching the file store', async () => {
+      const app = buildRenameServer();
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: '.collab' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
+    });
+
+    test('still allows renaming a file to the ordinary dotfile .gitignore', async () => {
+      const app = buildRenameServer();
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: '.gitignore' },
+      });
+      expect(response.statusCode).toBe(204);
+    });
+
     test('does not emit event when post-rename findById returns null', async () => {
       const app = buildRenameServer();
       const repos = (app as unknown as { repos: { fileNode: { findById: jest.Mock } } }).repos;
@@ -476,6 +513,18 @@ describe('PATCH /projects/:projectId/files/:fileNodeId', () => {
       expect(response.statusCode).toBe(409);
       const body = JSON.parse(response.body);
       expect(body.error.code).toBe('CONFLICT');
+    });
+
+    test('rejects a combined rename+move that renames to .git', async () => {
+      const app = buildRenameMoveServer();
+      const response = await app.inject({
+        method: 'PATCH',
+        url: PATCH_URL,
+        headers: { 'content-type': 'application/json' },
+        payload: { name: '.git', parentId: PARENT_ID },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
     });
 
     test('does not emit event when post-operation findById returns null', async () => {

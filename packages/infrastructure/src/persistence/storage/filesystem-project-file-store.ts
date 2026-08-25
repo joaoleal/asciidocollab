@@ -6,6 +6,13 @@ import { ProjectFileStore } from '@asciidocollab/domain';
 import { ProjectId, FilePath, FileConflictError } from '@asciidocollab/domain';
 import { Result } from '@asciidocollab/domain';
 
+/**
+ * Path segments that are reserved for platform-internal metadata and must never be reachable
+ * through the project file API: `.git` (working-tree metadata) and `.collab` (Yjs blob store).
+ * Matched as a whole path segment only, so `.gitignore` and a folder named `mygit` are unaffected.
+ */
+const HIDDEN_METADATA_SEGMENTS = new Set(['.git', '.collab']);
+
 /** Filesystem implementation of ProjectFileStore. Files are stored under storageRoot/<projectId>/. */
 export class FilesystemProjectFileStore implements ProjectFileStore {
   /** Initializes the store with the root directory for all project files. */
@@ -19,6 +26,14 @@ export class FilesystemProjectFileStore implements ProjectFileStore {
     const projectDirectory = this.projectDirectory(projectId);
     const resolved = path.resolve(projectDirectory, filePath.value.slice(1));
     if (!resolved.startsWith(projectDirectory + '/') && resolved !== projectDirectory) {
+      throw new Error(`Path traversal detected: ${filePath.value}`);
+    }
+    // .git (working-tree metadata) and .collab (Yjs blob store) are internal siblings of the
+    // tracked project tree, not project content — reject any path that resolves into either of
+    // them as a whole path SEGMENT, anywhere. A segment must match exactly: 'mygit' and
+    // '.gitignore' are ordinary names and stay allowed.
+    const relative = path.relative(projectDirectory, resolved);
+    if (relative.split(path.sep).some((segment) => HIDDEN_METADATA_SEGMENTS.has(segment))) {
       throw new Error(`Path traversal detected: ${filePath.value}`);
     }
     return resolved;

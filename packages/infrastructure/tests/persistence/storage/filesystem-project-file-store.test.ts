@@ -147,6 +147,64 @@ describe('FilesystemProjectFileStore', () => {
     });
   });
 
+  describe('hidden-metadata guard', () => {
+    it('rejects a path whose first segment is exactly .git', async () => {
+      await expect(store.read(projectId, FilePath.create('/.git'))).rejects.toThrow('Path traversal detected: /.git');
+    });
+
+    it('rejects a path whose first segment is exactly .collab', async () => {
+      await expect(store.read(projectId, FilePath.create('/.collab'))).rejects.toThrow('Path traversal detected: /.collab');
+    });
+
+    it('rejects a path where .git appears as a nested segment', async () => {
+      await expect(store.read(projectId, FilePath.create('/.git/config'))).rejects.toThrow('Path traversal detected: /.git/config');
+    });
+
+    it('rejects a path where .collab appears as a nested segment', async () => {
+      await expect(store.read(projectId, FilePath.create('/.collab/state.bin'))).rejects.toThrow('Path traversal detected: /.collab/state.bin');
+    });
+
+    it('rejects .git/.collab segments across every mutating operation, not just read', async () => {
+      await expect(store.write(projectId, FilePath.create('/.git/HEAD'), content)).rejects.toThrow('Path traversal detected');
+      await expect(store.createExclusive(projectId, FilePath.create('/.git/HEAD'), content)).rejects.toThrow('Path traversal detected');
+      await expect(store.remove(projectId, FilePath.create('/.git/HEAD'))).rejects.toThrow('Path traversal detected');
+      await expect(store.createDirectory(projectId, FilePath.create('/.collab'))).rejects.toThrow('Path traversal detected');
+      await expect(store.removeDirectory(projectId, FilePath.create('/.collab'))).rejects.toThrow('Path traversal detected');
+      await expect(store.readStream(projectId, FilePath.create('/.git/HEAD'))).rejects.toThrow('Path traversal detected');
+      await expect(store.move(projectId, FilePath.create('/valid.txt'), FilePath.create('/.git/dest'))).rejects.toThrow('Path traversal detected');
+      await expect(store.move(projectId, FilePath.create('/.collab/src'), FilePath.create('/valid.txt'))).rejects.toThrow('Path traversal detected');
+    });
+
+    it('does NOT reject a file literally named mygit (not a .git segment)', async () => {
+      await store.write(projectId, FilePath.create('/mygit'), content);
+      expect(await store.read(projectId, FilePath.create('/mygit'))).toEqual(content);
+    });
+
+    it('does NOT reject a dotfile named .gitignore (not the .git directory)', async () => {
+      await store.write(projectId, FilePath.create('/.gitignore'), content);
+      expect(await store.read(projectId, FilePath.create('/.gitignore'))).toEqual(content);
+    });
+
+    it('does NOT reject a folder named .github (tracked dotfile directory, not .git)', async () => {
+      const nested = FilePath.create('/.github/workflows.yml');
+      await store.write(projectId, nested, content);
+      expect(await store.read(projectId, nested)).toEqual(content);
+    });
+
+    it('does NOT reject a normal nested path containing "collaboration" as a segment (not .collab)', async () => {
+      const nested = FilePath.create('/collaboration/notes.txt');
+      await store.write(projectId, nested, content);
+      expect(await store.read(projectId, nested)).toEqual(content);
+    });
+
+    it('still allows normal paths and still rejects the pre-existing leading-double-slash escape', async () => {
+      await store.write(projectId, filePath, content);
+      expect(await store.read(projectId, filePath)).toEqual(content);
+      const escaping = FilePath.create('//etc/passwd');
+      await expect(store.read(projectId, escaping)).rejects.toThrow('Path traversal detected: //etc/passwd');
+    });
+  });
+
   describe('non-ENOENT / non-EEXIST failures propagate instead of being swallowed', () => {
     // A 300-byte basename exceeds Linux's 255-byte NAME_MAX, so every syscall on it fails with
     // ENAMETOOLONG — a deterministic stand-in for "an I/O error that is not the expected one".

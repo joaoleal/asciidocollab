@@ -179,6 +179,44 @@ describe('POST /projects/:projectId/files — file creation', () => {
     });
     expect(response.statusCode).toBe(400);
   });
+
+  test('rejects creating a file literally named .git without touching the file store', async () => {
+    const app = buildTestServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'file', parentId: PARENT_ID, name: '.git' },
+    });
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('RESERVED_PATH');
+    const stores = (app as unknown as { stores: { fileStore: { createExclusive: jest.Mock } } }).stores;
+    expect(stores.fileStore.createExclusive).not.toHaveBeenCalled();
+  });
+
+  test('rejects creating a file literally named .collab without touching the file store', async () => {
+    const app = buildTestServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'file', parentId: PARENT_ID, name: '.collab' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
+  });
+
+  test('still allows creating an ordinary dotfile named .gitignore', async () => {
+    const app = buildTestServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'file', parentId: PARENT_ID, name: '.gitignore' },
+    });
+    expect(response.statusCode).toBe(201);
+  });
 });
 
 describe('POST /projects/:projectId/files — folder creation', () => {
@@ -249,5 +287,43 @@ describe('POST /projects/:projectId/files — folder creation', () => {
       payload: { type: 'folder', parentId: PARENT_ID, name: 'my-folder' },
     });
     expect(response.statusCode).toBe(409);
+  });
+
+  test('rejects creating a folder literally named .git without touching the file store', async () => {
+    const app = buildTestServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'folder', parentId: PARENT_ID, name: '.git' },
+    });
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('RESERVED_PATH');
+    const stores = (app as unknown as { stores: { fileStore: { createDirectory: jest.Mock } } }).stores;
+    expect(stores.fileStore.createDirectory).not.toHaveBeenCalled();
+  });
+
+  test('rejects creating a folder literally named .collab without touching the file store', async () => {
+    const app = buildTestServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'folder', parentId: PARENT_ID, name: '.collab' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('RESERVED_PATH');
+  });
+
+  test('still allows creating an ordinary folder named .github', async () => {
+    const app = buildTestServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: POST_URL,
+      headers: { 'content-type': 'application/json' },
+      payload: { type: 'folder', parentId: PARENT_ID, name: '.github' },
+    });
+    expect(response.statusCode).toBe(201);
   });
 });

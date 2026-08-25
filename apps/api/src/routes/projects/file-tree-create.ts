@@ -11,7 +11,7 @@ import type { FileTreeEventDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { requestContextFrom } from '../../lib/request-context';
 import { requestLogger } from '../../lib/request-logger';
-import { sendFileTreeError } from './file-tree-errors';
+import { sendFileTreeError, isHiddenMetadataName, sendHiddenMetadataError } from './file-tree-errors';
 
 type CreateBody = { type: 'file' | 'folder'; parentId: string; name: string; mimeType?: string };
 
@@ -37,6 +37,13 @@ export async function fileTreeCreateRoutes(app: FastifyInstance): Promise<void> 
       const actorId = UserId.create(getAuthenticatedUserId(request));
       const projectId = ProjectId.create(request.params.projectId);
       const { type, parentId, name, mimeType } = request.body;
+
+      // .git/.collab are internal siblings of the tracked project tree, never project content
+      // (security boundary): reject before touching the file store or the database.
+      if (isHiddenMetadataName(name)) {
+        return sendHiddenMetadataError(reply);
+      }
+
       const parentFileNodeId = FileNodeId.create(parentId);
 
       if (type === 'folder') {
