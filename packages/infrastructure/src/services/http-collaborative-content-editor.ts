@@ -1,6 +1,7 @@
 import type {
   CollaborativeContentEditor,
   CollaborativeContentReader,
+  CollaborativeContentWriter,
   ContentReplacement,
   ProjectId,
   YjsStateId,
@@ -13,6 +14,9 @@ export const COLLAB_APPLY_EDITS_PATH = '/internal/collab/apply-edits';
 
 /** Path of the internal read-content endpoint on the collaboration server. */
 export const COLLAB_READ_CONTENT_PATH = '/internal/collab/read-content';
+
+/** Path of the internal apply-full-content endpoint on the collaboration server. */
+export const COLLAB_APPLY_FULL_CONTENT_PATH = '/internal/collab/apply-full-content';
 
 // Strip trailing '/' characters. Linear-time (no regex) to keep it ReDoS-free; equivalent to
 // `s.replace(/\/+$/, '')`.
@@ -43,7 +47,9 @@ export interface HttpCollaborativeContentEditorConfig {
  * the source of truth (via `openDirectConnection`); this adapter is the api-side client that asks it
  * to. Transport-only — it carries no business logic.
  */
-export class HttpCollaborativeContentEditor implements CollaborativeContentEditor, CollaborativeContentReader {
+export class HttpCollaborativeContentEditor
+  implements CollaborativeContentEditor, CollaborativeContentReader, CollaborativeContentWriter
+{
   private readonly fetchImpl: typeof globalThis.fetch;
 
   /** @param config - Base URL, optional secret/timeout, and either mTLS material or an injected fetch. */
@@ -125,5 +131,17 @@ export class HttpCollaborativeContentEditor implements CollaborativeContentEdito
       return { success: false, error: new Error('read-content returned a malformed body') };
     }
     return { success: true, value: body.content };
+  }
+
+  /** Posts the full replacement content to the collab server's apply-full-content endpoint. */
+  async replaceContent(projectId: ProjectId, yjsStateId: YjsStateId, targetContent: string): Promise<Result<void, Error>> {
+    const posted = await this.post(
+      COLLAB_APPLY_FULL_CONTENT_PATH,
+      { projectId: projectId.value, yjsStateId: yjsStateId.value, content: targetContent },
+      'apply-full-content',
+    );
+    if (!posted.success) return posted;
+
+    return { success: true, value: undefined };
   }
 }

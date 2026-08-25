@@ -3,6 +3,7 @@ import {
   HttpCollaborativeContentEditor,
   COLLAB_APPLY_EDITS_PATH,
   COLLAB_READ_CONTENT_PATH,
+  COLLAB_APPLY_FULL_CONTENT_PATH,
 } from '../../src/services/http-collaborative-content-editor';
 
 describe('HttpCollaborativeContentEditor', () => {
@@ -161,5 +162,77 @@ describe('HttpCollaborativeContentEditor', () => {
     const result = await editor.readContent(projectId, yjsStateId);
     expect(result.success).toBe(true);
     if (result.success) expect(result.value).toBeNull();
+  });
+
+  describe('replaceContent', () => {
+    const targetContent = '= Doc\n\nreplaced body\n';
+
+    it('POSTs to the apply-full-content endpoint and returns ok(undefined) on 200', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true }, { status: 200 }));
+      const editor = new HttpCollaborativeContentEditor({
+        baseUrl: 'http://127.0.0.1:4003/',
+        secret: 's3cret',
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+      });
+
+      const result = await editor.replaceContent(projectId, yjsStateId, targetContent);
+
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.value).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe(`http://127.0.0.1:4003${COLLAB_APPLY_FULL_CONTENT_PATH}`);
+      expect(init.method).toBe('POST');
+      expect(init.headers['content-type']).toBe('application/json');
+      expect(init.headers['x-collab-internal-secret']).toBe('s3cret');
+      expect(JSON.parse(init.body)).toEqual({
+        projectId: projectId.value,
+        yjsStateId: yjsStateId.value,
+        content: targetContent,
+      });
+    });
+
+    it('omits the secret header when none is configured', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true }, { status: 200 }));
+      const editor = new HttpCollaborativeContentEditor({
+        baseUrl: 'http://127.0.0.1:4003',
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+      });
+
+      await editor.replaceContent(projectId, yjsStateId, targetContent);
+      expect(fetchMock.mock.calls[0][1].headers['x-collab-internal-secret']).toBeUndefined();
+    });
+
+    it('returns an error result (never throws) on a non-2xx response, without leaking the secret', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+      const editor = new HttpCollaborativeContentEditor({
+        baseUrl: 'http://127.0.0.1:4003',
+        secret: 's3cret',
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+      });
+
+      const result = await editor.replaceContent(projectId, yjsStateId, targetContent);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toContain('500');
+        expect(result.error.message).not.toContain('s3cret');
+      }
+    });
+
+    it('returns an error result (never throws) when the request fails, without leaking the secret', async () => {
+      const fetchMock = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      const editor = new HttpCollaborativeContentEditor({
+        baseUrl: 'http://127.0.0.1:4003',
+        secret: 's3cret',
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+      });
+
+      const result = await editor.replaceContent(projectId, yjsStateId, targetContent);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toContain('ECONNREFUSED');
+        expect(result.error.message).not.toContain('s3cret');
+      }
+    });
   });
 });
