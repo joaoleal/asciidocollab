@@ -57,6 +57,7 @@ export type { ProjectFileStore } from './storage/project-file-store';
 export type { YjsStateStore } from './storage/yjs-state-store';
 export type { CollaborativeContentEditor, ContentReplacement } from './storage/collaborative-content-editor';
 export type { CollaborativeContentReader } from './storage/collaborative-content-reader';
+export type { CollaborativeContentWriter } from './storage/collaborative-content-writer';
 export type { StructuredCollaborativeEditor, StructuredReplacementSpec } from './storage/structured-collaborative-editor';
 
 // text/
