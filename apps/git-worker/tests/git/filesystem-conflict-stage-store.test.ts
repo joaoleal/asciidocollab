@@ -1,0 +1,161 @@
+import { mkdtemp, readdir, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { GitOperationId } from '@asciidocollab/domain';
+import { FilesystemConflictStageStore } from '../../src/git/filesystem-conflict-stage-store.js';
+
+const OPERATION_A = GitOperationId.create('550e8400-e29b-41d4-a716-446655440200');
+const OPERATION_B = GitOperationId.create('550e8400-e29b-41d4-a716-446655440201');
+
+async function createStore(): Promise<{ root: string; store: FilesystemConflictStageStore }> {
+  const root = await mkdtemp(path.join(tmpdir(), 'git-worker-test-conflict-store-'));
+  return { root, store: new FilesystemConflictStageStore(root) };
+}
+
+describe('FilesystemConflictStageStore', () => {
+  it('round-trips a written snapshot', async () => {
+    const { store } = await createStore();
+    const snapshot = { preOpHead: 'a'.repeat(40), branch: 'main' };
+
+    const written = await store.writeSnapshot(OPERATION_A, snapshot);
+    expect(written).toEqual({ success: true, value: undefined });
+
+    expect(await store.readSnapshot(OPERATION_A)).toEqual({ success: true, value: snapshot });
+  });
+
+  it('returns null reading a snapshot for an operation with none recorded', async () => {
+    const { store } = await createStore();
+
+    expect(await store.readSnapshot(OPERATION_A)).toEqual({ success: true, value: null });
+  });
+
+  it('round-trips written stages, including a binary file and an absent base (add/add)', async () => {
+    const { store } = await createStore();
+    const binaryBase = Buffer.from([0x00, 0x01, 0x02]);
+    const binaryOurs = Buffer.from([0x03, 0x04, 0x05]);
+    const binaryTheirs = Buffer.from([0x06, 0x07, 0x08]);
+
+    await store.writeStages(OPERATION_A, 'chapters/intro.adoc', {
+      base: Buffer.from('base\n'),
+      ours: Buffer.from('ours\n'),
+      theirs: Buffer.from('theirs\n'),
+      isBinary: false,
+    });
+    await store.writeStages(OPERATION_A, 'assets/logo.png', {
+      base: binaryBase,
+      ours: binaryOurs,
+      theirs: binaryTheirs,
+      isBinary: true,
+    });
+    await store.writeStages(OPERATION_A, 'new-both-sides.adoc', {
+      base: null,
+      ours: Buffer.from('local\n'),
+      theirs: Buffer.from('remote\n'),
+      isBinary: false,
+    });
+
+    expect(await store.readStages(OPERATION_A, 'chapters/intro.adoc')).toEqual({
+      success: true,
+      value: { base: Buffer.from('base\n'), ours: Buffer.from('ours\n'), theirs: Buffer.from('theirs\n'), isBinary: false },
+    });
+    expect(await store.readStages(OPERATION_A, 'assets/logo.png')).toEqual({
+      success: true,
+      value: { base: binaryBase, ours: binaryOurs, theirs: binaryTheirs, isBinary: true },
+    });
+    expect(await store.readStages(OPERATION_A, 'new-both-sides.adoc')).toEqual({
+      success: true,
+      value: { base: null, ours: Buffer.from('local\n'), theirs: Buffer.from('remote\n'), isBinary: false },
+    });
+  });
+
+  it('returns null reading stages for a path that was never captured', async () => {
+    const { store } = await createStore();
+
+    expect(await store.readStages(OPERATION_A, 'never-written.adoc')).toEqual({ success: true, value: null });
+  });
+
+  it('round-trips written merged bytes', async () => {
+    const { store } = await createStore();
+    const content = Buffer.from('resolved content\n');
+
+    await store.writeMerged(OPERATION_A, 'chapters/intro.adoc', content);
+
+    expect(await store.readMerged(OPERATION_A, 'chapters/intro.adoc')).toEqual({ success: true, value: content });
+  });
+
+  it('keeps files independent per operation id', async () => {
+    const { store } = await createStore();
+    await store.writeStages(OPERATION_A, 'a.adoc', {
+      base: null,
+      ours: Buffer.from('a-ours'),
+      theirs: Buffer.from('a-theirs'),
+      isBinary: false,
+    });
+
+    expect(await store.readStages(OPERATION_B, 'a.adoc')).toEqual({ success: true, value: null });
+  });
+
+  it('on-disk key is base64url of the path (no "/", no "..") and reversible', async () => {
+    const { root, store } = await createStore();
+    const relativePath = 'chapters/intro.adoc';
+    await store.writeStages(OPERATION_A, relativePath, {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+
+    const filesDirectory = path.join(root, OPERATION_A.value, 'files');
+    const entries = await readdir(filesDirectory);
+    expect(entries).toHaveLength(1);
+    const [key] = entries;
+
+    expect(key).not.toContain('/');
+    expect(key).not.toContain('..');
+    expect(Buffer.from(key, 'base64url').toString('utf8')).toBe(relativePath);
+  });
+
+  it('rejects a crafted path that would escape the store root, via the staysInside guard', async () => {
+    const { root, store } = await createStore();
+
+    const written = await store.writeStages(OPERATION_A, '../../etc/escape.adoc', {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+
+    expect(written.success).toBe(false);
+    // Nothing was created for this (rejected) write.
+    await expect(stat(path.join(root, OPERATION_A.value))).rejects.toThrow();
+  });
+
+  it('clear removes the whole operation directory, leaving other operations untouched', async () => {
+    const { root, store } = await createStore();
+    await store.writeSnapshot(OPERATION_A, { preOpHead: 'a'.repeat(40), branch: 'main' });
+    await store.writeStages(OPERATION_A, 'a.adoc', {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+    await store.writeSnapshot(OPERATION_B, { preOpHead: 'b'.repeat(40), branch: 'main' });
+
+    const cleared = await store.clear(OPERATION_A);
+
+    expect(cleared).toEqual({ success: true, value: undefined });
+    await expect(stat(path.join(root, OPERATION_A.value))).rejects.toThrow();
+    expect(await store.readSnapshot(OPERATION_A)).toEqual({ success: true, value: null });
+    // The other operation survives untouched.
+    expect(await store.readSnapshot(OPERATION_B)).toEqual({
+      success: true,
+      value: { preOpHead: 'b'.repeat(40), branch: 'main' },
+    });
+  });
+
+  it('clear on an operation with nothing recorded is a harmless success', async () => {
+    const { store } = await createStore();
+
+    expect(await store.clear(OPERATION_A)).toEqual({ success: true, value: undefined });
+  });
+});

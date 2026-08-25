@@ -1,4 +1,5 @@
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
+import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
 import { GitCommandFailedError } from '../../../src/errors/git/git-command-failed';
 import { RepositoryUnreachableError } from '../../../src/errors/git/repository-unreachable';
 import {
@@ -161,6 +162,7 @@ describe('InMemoryGitCommandRunner', () => {
     const mergeInput = {
       branch: 'main',
       flush: [{ path: 'docs/intro.adoc', content: 'live text' }],
+      operationId: GitOperationId.create('550e8400-e29b-41d4-a716-446655440040'),
     };
 
     it('returns the seeded merged outcome with its changes', async () => {
@@ -318,6 +320,7 @@ describe('InMemoryGitCommandRunner', () => {
       branch: 'develop',
       flush: [{ path: 'docs/intro.adoc', content: 'live text' }],
       stashLocal: true,
+      operationId: GitOperationId.create('550e8400-e29b-41d4-a716-446655440041'),
     };
 
     it('returns the seeded switched outcome with its changes', async () => {

@@ -56,6 +56,15 @@ export interface GitWorkerConfig {
    */
   contentStorageRoot: string;
 
+  /**
+   * Root directory for the off-working-tree conflict stage store: captured base/ours/theirs blobs
+   * and the pre-operation undo snapshot for a conflicted (or freshly landed) pull/switch. MUST be
+   * a sibling of `storageRoot`'s per-project working-tree directories, never nested inside one —
+   * the per-job `ensureCleanWorkingTree` step runs `git clean -fdx` inside a project's working tree
+   * and would otherwise delete this store's contents while a conflict is still awaiting resolution.
+   */
+  conflictStoreRoot: string;
+
   /** PostgreSQL connection URL, shared with `apps/api`, `apps/collab`, and `packages/db`. */
   databaseUrl: string;
 
@@ -139,6 +148,12 @@ export function createGitWorkerConfig() {
       format: String,
       default: './storage',
       env: 'ASCIIDOCOLLAB_STORAGE_PATH',
+    },
+    conflictStoreRoot: {
+      doc: "Root directory for the off-working-tree conflict stage store (captured base/ours/theirs blobs and pre-operation undo snapshots). MUST be a sibling of storageRoot's per-project working trees, never nested inside one — ensureCleanWorkingTree's `git clean -fdx` would otherwise delete it.",
+      format: String,
+      default: './storage-git-conflicts',
+      env: 'ASCIIDOCOLLAB_GIT_CONFLICT_STORE_ROOT',
     },
     databaseUrl: {
       doc: 'PostgreSQL connection URL.',

@@ -40,6 +40,7 @@ import {
 } from '@asciidocollab/infrastructure';
 import { createGitWorkerConfig } from './config/git-worker-config.js';
 import { RealGitCommandRunner } from './git/git-command-runner.js';
+import { FilesystemConflictStageStore } from './git/filesystem-conflict-stage-store.js';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './git/working-tree.js';
 import { createGitWorkerLoop, type GitWorkerLoop } from './worker-loop.js';
 import { createImportHandler } from './dispatch/import-handler.js';
@@ -113,7 +114,11 @@ export async function compositionRoot() {
   // handlers to close over too.
   const gitCredentialStore = new PrismaGitCredentialStore(prisma, credentialEncryption);
   const storageRoot = config.get('storageRoot');
-  const gitCommandRunner = new RealGitCommandRunner(storageRoot, config.get('egressAllowedHosts'));
+  // Off-working-tree store for captured conflict stages and pre-operation undo snapshots — rooted
+  // outside every project's working tree (never under storageRoot) so ensureCleanWorkingTree's
+  // `git clean -fdx` can never delete it while a conflict awaits resolution.
+  const conflictStageStore = new FilesystemConflictStageStore(config.get('conflictStoreRoot'));
+  const gitCommandRunner = new RealGitCommandRunner(storageRoot, config.get('egressAllowedHosts'), undefined, conflictStageStore);
 
   // Adapts this app's structured pino logger to the domain's minimal `Logger` port (best-effort
   // `warn`-only sink), the same shape apps/api's `requestLogger` adapter presents.
@@ -331,6 +336,7 @@ export async function compositionRoot() {
     gitOperationRepository,
     gitCredentialStore,
     gitCommandRunner,
+    conflictStageStore,
     auditLogRepository,
     config,
     // The internal RPC server's op fns — `src/index.ts` passes these straight to

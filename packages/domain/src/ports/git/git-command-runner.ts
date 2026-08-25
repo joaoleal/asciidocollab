@@ -1,4 +1,5 @@
 import { ProjectId } from '../../value-objects/ids/project-id';
+import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
 import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
@@ -189,6 +190,12 @@ export interface GitMergeInput {
    * {@link GitCommitInput.flush}.
    */
   readonly flush: readonly GitCommitFlushEntry[];
+  /**
+   * The queued operation this merge is running. Keys the pre-operation undo snapshot the adapter
+   * records (on both a clean and a conflicted outcome), and the three-way conflict stages it
+   * captures before aborting a conflicted merge.
+   */
+  readonly operationId: GitOperationId;
 }
 
 /**
@@ -241,6 +248,12 @@ export interface GitCheckoutInput {
    * them onto the target branch. A no-op on a clean tree (nothing to shelve).
    */
   readonly stashLocal: boolean;
+  /**
+   * The queued operation this switch is running. Keys the pre-operation undo snapshot the adapter
+   * records (on both a clean and a conflicted outcome), and the three-way conflict stages it
+   * captures before discarding a stash-pop conflict.
+   */
+  readonly operationId: GitOperationId;
 }
 
 /**

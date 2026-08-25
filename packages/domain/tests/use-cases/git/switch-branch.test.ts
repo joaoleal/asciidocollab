@@ -200,6 +200,7 @@ describe('SwitchBranchUseCase', () => {
       branch: TARGET_BRANCH,
       flush: [{ path: LIVE_PATH, content: LIVE_TEXT }],
       stashLocal: true,
+      operationId: OPERATION_ID,
     });
 
     // The reconciler received the checkout's own change-set.
@@ -230,6 +231,7 @@ describe('SwitchBranchUseCase', () => {
     expect(harness.commandRunner.checkoutCalls).toHaveLength(1);
     expect(harness.commandRunner.checkoutCalls[0].input.branch).toBe(TARGET_BRANCH);
     expect(harness.commandRunner.checkoutCalls[0].input.flush).toEqual([{ path: LIVE_PATH, content: LIVE_TEXT }]);
+    expect(harness.commandRunner.checkoutCalls[0].input.operationId).toBe(OPERATION_ID);
   });
 
   test('the caller stash flag is passed straight through to checkout', async () => {

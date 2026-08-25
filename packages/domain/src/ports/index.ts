@@ -20,6 +20,7 @@ export type { ActiveCloneRegistry } from './project/active-clone-registry';
 
 // git/
 export type { GitCredentialStore, GitCredentialRecord, GitCredentialSaveInput } from './git/git-credential-store';
+export type { ConflictStageStore, ConflictStages, ConflictUndoSnapshot } from './git/conflict-stage-store';
 export type {
   GitOperationRepository,
   EnqueueGitOperationInput,

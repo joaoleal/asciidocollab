@@ -153,6 +153,7 @@ export class SwitchBranchUseCase {
       branch: input.targetBranch,
       flush: flush.value,
       stashLocal: input.stashLocal,
+      operationId: input.operationId,
     });
     if (!checkout.success) return checkout;
 

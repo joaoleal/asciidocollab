@@ -8,6 +8,7 @@ import {
   RepositoryUnreachableError,
   type ClonedFileEntry,
   type ClonedRepository,
+  type ConflictStageStore,
   type GitBehindAhead,
   type GitBranchList,
   type GitCheckoutInput,
@@ -24,6 +25,7 @@ import {
   type GitMergeFileChange,
   type GitMergeInput,
   type GitMergeOutcome,
+  type GitOperationId,
   type GitPendingChange,
   type GitPendingChangeType,
   type GitPushError,
@@ -37,7 +39,7 @@ import {
 import { assertRemoteHostAllowed, type HostAddressResolver } from './egress-allowlist.js';
 import { guessMimeType } from './guess-mime-type.js';
 import { declaresLfsFilter } from './lfs-pointer.js';
-import { GitProcessError, runGitCommand } from './run-git-command.js';
+import { GitProcessError, runGitCommand, runGitCommandForBytes } from './run-git-command.js';
 import { resolveWorkingTreePath } from './working-tree.js';
 
 /**
@@ -324,6 +326,42 @@ async function readMergeConflicts(workingDirectory: string, theirsReference = 'M
 }
 
 /**
+ * Reads one conflicting file's optional merge-base stage (`git show :1:<path>`), while the
+ * unmerged index entries left by a conflicted merge/stash-pop still exist. A non-zero exit is
+ * EXPECTED and not an error here: it means the file had no common ancestor (an add/add conflict),
+ * which this returns as `null` rather than surfacing any failure. `filePath` is passed as a
+ * positional AFTER `--end-of-options` ({@link runGitCommandForBytes}'s option-injection guard),
+ * and the returned bytes are the object's raw content — safe for a binary file.
+ *
+ * @param workingDirectory - The working tree whose in-progress conflict to read from.
+ * @param filePath - The conflicting file's workspace-relative path.
+ * @returns The base stage's raw bytes, or null when the file had no merge base.
+ */
+async function readOptionalBaseStage(workingDirectory: string, filePath: string): Promise<Buffer | null> {
+  try {
+    return await runGitCommandForBytes(workingDirectory, { command: 'show', positionals: [`:1:${filePath}`] });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads one conflicting file's "ours" (`:2:`) or "theirs" (`:3:`) index stage — both stages a
+ * genuine content conflict always populates, unlike the optional base stage above. A failure here
+ * is a real error (I/O, an unexpected git failure) and is left to propagate, never silently turned
+ * into `null`. Same positional/option-injection posture as {@link readOptionalBaseStage}.
+ *
+ * @param workingDirectory - The working tree whose in-progress conflict to read from.
+ * @param stage - `2` for "ours", `3` for "theirs".
+ * @param filePath - The conflicting file's workspace-relative path.
+ * @returns The stage's raw bytes.
+ * @throws {GitProcessError} If the underlying `git show` fails.
+ */
+async function readRequiredStage(workingDirectory: string, stage: 2 | 3, filePath: string): Promise<Buffer> {
+  return runGitCommandForBytes(workingDirectory, { command: 'show', positionals: [`:${stage}:${filePath}`] });
+}
+
+/**
  * Computes the file-level change-set landed against `fromCommit`, as `git diff --name-status -M -z
  * <fromCommit> [<toCommit>]`.
  *
@@ -422,12 +460,88 @@ export class RealGitCommandRunner implements GitCommandRunner {
    * @param resolveHost - Overrides the DNS resolution `assertRemoteAllowed` validates a remote
    *   host's address against. Defaults to real DNS resolution; only ever overridden by tests, the
    *   same seam `assertRemoteHostAllowed` itself already exposes for the same reason.
+   * @param conflictStageStore - Off-working-tree store {@link merge}/{@link checkout} write the
+   *   pre-operation undo snapshot and captured three-way conflict stages to. Optional so a test
+   *   exercising unrelated behavior need not construct one; the composition root always supplies a
+   *   real one rooted OUTSIDE every project's working tree. When omitted, `merge`/`checkout` skip
+   *   the snapshot/stage capture entirely (their conflicted/clean outcomes are unaffected).
    */
   constructor(
     private readonly storageRoot: string,
     private readonly allowedHosts: readonly string[] = [],
     private readonly resolveHost?: HostAddressResolver,
+    private readonly conflictStageStore?: ConflictStageStore,
   ) {}
+
+  /**
+   * Records the pre-operation undo snapshot, when a {@link conflictStageStore} was configured.
+   * Called by {@link merge}/{@link checkout} before any working-tree mutation, on BOTH the clean
+   * and conflicted paths, so every pull/switch leaves an undo target.
+   *
+   * @param operationId - The operation this snapshot belongs to.
+   * @param preOpHead - The local `HEAD` captured before the flush commit / any working-tree change.
+   * @param branch - The branch the operation is running on.
+   * @returns Success (a no-op) when no store is configured, or once recorded; a
+   *   `GitCommandFailedError` when the store's write fails.
+   */
+  private async writeUndoSnapshot(
+    operationId: GitOperationId,
+    preOpHead: string,
+    branch: string,
+  ): Promise<Result<void, GitCommandFailedError>> {
+    if (!this.conflictStageStore) return { success: true, value: undefined };
+
+    const written = await this.conflictStageStore.writeSnapshot(operationId, { preOpHead, branch });
+    if (!written.success) {
+      return { success: false, error: new GitCommandFailedError('The pre-operation snapshot could not be recorded.') };
+    }
+    return { success: true, value: undefined };
+  }
+
+  /**
+   * Captures every conflicting path's three-way stages (base/ours/theirs) into
+   * {@link conflictStageStore}, when one is configured — called by {@link merge}/{@link checkout}
+   * AFTER the conflict is detected but BEFORE the caller aborts it, while the unmerged index
+   * entries `git show :1:/:2:/:3:<path>` reads from still exist.
+   *
+   * Never throws: every failure (a required `:2:`/`:3:` stage read, or the store's own write) is
+   * caught and turned into a `GitCommandFailedError` result, so the caller can always run its
+   * abort in a `finally` around this call and still learn whether the capture succeeded.
+   *
+   * @param workingDirectory - The working tree whose in-progress conflict to capture.
+   * @param operationId - The conflicted operation these stages belong to.
+   * @param conflicts - Every path left in conflict, with its binary classification.
+   * @returns Success (a no-op) when no store is configured, or once every path is captured; a
+   *   `GitCommandFailedError` on the first read or write failure.
+   */
+  private async captureConflictStages(
+    workingDirectory: string,
+    operationId: GitOperationId,
+    conflicts: readonly GitMergeConflictPath[],
+  ): Promise<Result<void, GitCommandFailedError>> {
+    if (!this.conflictStageStore) return { success: true, value: undefined };
+
+    try {
+      for (const conflict of conflicts) {
+        const base = await readOptionalBaseStage(workingDirectory, conflict.path);
+        const ours = await readRequiredStage(workingDirectory, 2, conflict.path);
+        const theirs = await readRequiredStage(workingDirectory, 3, conflict.path);
+
+        const written = await this.conflictStageStore.writeStages(operationId, conflict.path, {
+          base,
+          ours,
+          theirs,
+          isBinary: conflict.isBinary,
+        });
+        if (!written.success) {
+          return { success: false, error: new GitCommandFailedError('The conflict could not be recorded.') };
+        }
+      }
+      return { success: true, value: undefined };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The conflict could not be recorded.') };
+    }
+  }
 
   /**
    * Gates a git network operation on the configured egress allowlist, resolving `remoteUrl`'s
@@ -839,29 +953,36 @@ export class RealGitCommandRunner implements GitCommandRunner {
    * `input.branch`. Touches no network.
    *
    * Ordering (all in the project's own working tree):
-   * 1. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
+   * 1. `preOpHead` (`rev-parse HEAD`, BEFORE the flush commit) is recorded as the operation's undo
+   *    snapshot via {@link writeUndoSnapshot} — on BOTH the clean and conflicted paths below, so
+   *    every pull leaves an undo target.
+   * 2. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
    *    write — an unsafe path fails the whole merge closed, with no partial write.
-   * 2. Each flush entry is written then `git add`-ed, exactly as {@link commit} does, forming the
+   * 3. Each flush entry is written then `git add`-ed, exactly as {@link commit} does, forming the
    *    live local side of the merge.
-   * 3. That local side is committed — but only when {@link hasStagedChanges} confirms something is
+   * 4. That local side is committed — but only when {@link hasStagedChanges} confirms something is
    *    staged — under {@link SERVICE_COMMIT_IDENTITY} (a merge carries no author) with
    *    {@link FLUSH_COMMIT_MESSAGE}, so the merge is a clean commit-vs-commit three-way.
-   * 4. `preMergeHead` is captured AFTER that commit, so the computed change-set is the REMOTE's
+   * 5. `preMergeHead` is captured AFTER that commit, so the computed change-set is the REMOTE's
    *    contribution only, excluding the live local edits the domain already holds.
-   * 5. `git merge --no-edit refs/remotes/origin/<branch>` runs. A non-zero exit is EXPECTED when the
+   * 6. `git merge --no-edit refs/remotes/origin/<branch>` runs. A non-zero exit is EXPECTED when the
    *    merge conflicts and is NOT immediately an error: unmerged paths are inspected
    *    ({@link readMergeConflicts}) — if there are none the exit was a genuine failure
-   *    (`GitCommandFailedError`); if there are, `git merge --abort` restores a clean tree (the
-   *    domain records conflicts in its own store, never on disk) and the `conflicted` outcome is
-   *    returned.
-   * 6. On a clean merge, the change-set is computed from `preMergeHead` to the post-merge `HEAD`
+   *    (`GitCommandFailedError`); if there are, each conflicting path's three-way stages are
+   *    captured via {@link captureConflictStages} BEFORE `git merge --abort` runs (in a `finally`,
+   *    so a capture failure can never leave `MERGE_HEAD` behind) and the `conflicted` outcome is
+   *    returned — UNLESS the capture itself failed, in which case a `GitCommandFailedError` is
+   *    returned instead, after the abort has already restored a clean tree.
+   * 7. On a clean merge, the change-set is computed from `preMergeHead` to the post-merge `HEAD`
    *    ({@link computeMergeChanges}); an unchanged `HEAD` (already up to date) yields empty changes.
    *
    * @param projectId - The project whose working tree to merge into.
-   * @param input - The branch to merge into and the live-content flush list.
+   * @param input - The branch to merge into, the live-content flush list, and the operation id the
+   *   undo snapshot and any captured conflict stages are keyed by.
    * @returns A {@link GitMergeOutcome} — `merged` (with the remote's change-set) or `conflicted`
    *   (with the files left in conflict); a `GitCommandFailedError` only when a git command itself
-   *   fails or a flush path is unsafe. A conflict is an expected outcome, never an error.
+   *   fails, a flush path is unsafe, or the stage-store capture fails. A conflict is an expected
+   *   outcome, never an error.
    */
   async merge(projectId: ProjectId, input: GitMergeInput): Promise<Result<GitMergeOutcome, GitCommandFailedError>> {
     const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
@@ -876,6 +997,11 @@ export class RealGitCommandRunner implements GitCommandRunner {
     }
 
     try {
+      const preOpHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const preOpHead = readRevParseAnswer(preOpHeadResult.stdout);
+      const snapshotWritten = await this.writeUndoSnapshot(input.operationId, preOpHead, input.branch);
+      if (!snapshotWritten.success) return snapshotWritten;
+
       for (const entry of input.flush) {
         await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
         await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
@@ -909,7 +1035,17 @@ export class RealGitCommandRunner implements GitCommandRunner {
           // not a content conflict.
           throw error;
         }
-        await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] });
+
+        // Capture every conflicting path's three-way stages BEFORE the abort — the abort runs in
+        // a `finally` so a capture failure can never leave `MERGE_HEAD` behind.
+        let captured: Result<void, GitCommandFailedError> = { success: true, value: undefined };
+        try {
+          captured = await this.captureConflictStages(cwd, input.operationId, conflicts);
+        } finally {
+          await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] });
+        }
+        if (!captured.success) return captured;
+
         return { success: true, value: { status: 'conflicted', conflicts } };
       }
 
@@ -996,7 +1132,8 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *    write — an unsafe path fails the whole switch closed, with no partial write.
    * 2. `preSwitchHead` (the source branch tip) is captured. It is NOT a flush commit: unlike
    *    {@link merge}, the flushed edits are carried across by a stash, never committed on the source
-   *    branch.
+   *    branch. It doubles as the operation's pre-operation undo snapshot ({@link writeUndoSnapshot}),
+   *    recorded on BOTH the clean and conflicted paths below, so every switch leaves an undo target.
    * 3. Each flush entry is written then `git add`-ed, exactly as {@link commit}/{@link merge} do,
    *    materializing the live edits as staged working-tree state on the source branch.
    * 4. When `input.stashLocal` is true AND that flush actually staged something
@@ -1008,11 +1145,16 @@ export class RealGitCommandRunner implements GitCommandRunner {
    * 6. When step 4 stashed, `git stash pop` re-applies the shelved edits. A non-zero exit is EXPECTED
    *    when the edits collide with the target branch and is NOT immediately an error: unmerged paths
    *    are inspected ({@link readMergeConflicts}, classifying binary against the stash commit) — if
-   *    there are none the exit was a genuine failure; if there are, the working tree is restored to a
-   *    clean checkout of the target branch (`git reset --hard`) and the now-unneeded stash is dropped,
-   *    leaving a defined, clean tree exactly as {@link merge}'s `--abort` does. The live edits are not
-   *    lost — they remain live in each collaborator's editor, which the later conflict-resolution flow
-   *    reconciles against the reported paths. The `conflicted` outcome is returned.
+   *    there are none the exit was a genuine failure; if there are, every conflicting path's
+   *    three-way stages are captured via {@link captureConflictStages} — the unmerged index entries
+   *    still exist at this point — BEFORE the working tree is restored to a clean checkout of the
+   *    target branch (`git reset --hard`) and the now-unneeded stash is dropped (both run in a
+   *    `finally`, so a capture failure can never leave the stash undropped), leaving a defined,
+   *    clean tree exactly as {@link merge}'s `--abort` does. The live edits are not lost — they
+   *    remain live in each collaborator's editor, which the later conflict-resolution flow
+   *    reconciles against the reported paths. The `conflicted` outcome is returned — UNLESS the
+   *    capture itself failed, in which case a `GitCommandFailedError` is returned instead, after the
+   *    reset/drop have already restored a clean tree.
    * 7. On a clean switch, `git add -A` stages the re-applied edits (so a flushed edit to a file absent
    *    from the target branch is captured as an addition), and `changes` is the delta from
    *    `preSwitchHead` to the post-switch working tree ({@link computeMergeChanges} with no second
@@ -1020,11 +1162,13 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *    An identical tree yields empty `changes`.
    *
    * @param projectId - The project whose working tree to switch.
-   * @param input - The target branch, the live-content flush list, and whether to carry local edits.
+   * @param input - The target branch, the live-content flush list, whether to carry local edits,
+   *   and the operation id the undo snapshot and any captured conflict stages are keyed by.
    * @returns A {@link GitCheckoutOutcome} — `switched` with the resulting changes (empty when the
    *   tree is unchanged) or `conflicted` with the files the stash-pop left in conflict; a conflict is
    *   an expected outcome, never an error. Returns a `GitCommandFailedError` (generic message) only
-   *   when the underlying git command itself fails or a flush path is unsafe.
+   *   when the underlying git command itself fails, a flush path is unsafe, or the stage-store
+   *   capture fails.
    */
   async checkout(
     projectId: ProjectId,
@@ -1044,6 +1188,11 @@ export class RealGitCommandRunner implements GitCommandRunner {
     try {
       const preSwitchHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
       const preSwitchHead = readRevParseAnswer(preSwitchHeadResult.stdout);
+      // preSwitchHead IS the pre-operation head (a switch never takes a flush commit on the source
+      // branch — the flushed edits are carried across by a stash instead), so it doubles as the
+      // undo snapshot's `preOpHead`, recorded on BOTH the clean and conflicted paths below.
+      const snapshotWritten = await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch);
+      if (!snapshotWritten.success) return snapshotWritten;
 
       for (const entry of input.flush) {
         await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
@@ -1068,11 +1217,21 @@ export class RealGitCommandRunner implements GitCommandRunner {
           if (conflicts.length === 0) {
             throw error;
           }
-          // Restore a clean checkout of the target branch and drop the shelved edits, exactly as
-          // `merge --abort` leaves a clean tree. The edits are not lost: they stay live in each
-          // collaborator's editor, which the later conflict-resolution flow reconciles.
-          await runGitCommand(cwd, { command: 'reset', flags: ['--hard'] });
-          await runGitCommand(cwd, { command: 'stash', flags: ['drop'] });
+
+          // Capture every conflicting path's three-way stages BEFORE the reset/drop — both run in
+          // a `finally` so a capture failure can never leave the stash undropped or the tree dirty.
+          let captured: Result<void, GitCommandFailedError> = { success: true, value: undefined };
+          try {
+            captured = await this.captureConflictStages(cwd, input.operationId, conflicts);
+          } finally {
+            // Restore a clean checkout of the target branch and drop the shelved edits, exactly as
+            // `merge --abort` leaves a clean tree. The edits are not lost: they stay live in each
+            // collaborator's editor, which the later conflict-resolution flow reconciles.
+            await runGitCommand(cwd, { command: 'reset', flags: ['--hard'] });
+            await runGitCommand(cwd, { command: 'stash', flags: ['drop'] });
+          }
+          if (!captured.success) return captured;
+
           return { success: true, value: { status: 'conflicted', conflicts } };
         }
       }

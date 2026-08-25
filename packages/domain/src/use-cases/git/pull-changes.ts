@@ -171,6 +171,7 @@ export class PullChangesUseCase {
     const merge = await this.commandRunner.merge(input.projectId, {
       branch: gitRepository.currentBranch,
       flush: flush.value,
+      operationId: input.operationId,
     });
     if (!merge.success) return merge;
 

@@ -2,16 +2,18 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import path from 'node:path';
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import {
   AuthenticationFailedError,
   GitCommandFailedError,
+  GitOperationId,
   NonFastForwardError,
   ProjectId,
   RepositoryUnreachableError,
 } from '@asciidocollab/domain';
 import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
+import { FilesystemConflictStageStore } from '../../src/git/filesystem-conflict-stage-store.js';
 import { RemoteHostNotAllowedError, type HostAddressResolver } from '../../src/git/egress-allowlist.js';
 import {
   commitAll,
@@ -26,6 +28,19 @@ import { startGitHttpServer } from '../helpers/git-http-server.js';
 import { withArgvCapturingGit } from '../helpers/argv-capturing-git.js';
 
 const execFile = promisify(execFileCallback);
+
+/** A fixed operation id for merge calls in tests that do not exercise conflict-stage capture. */
+const OPERATION_ID = GitOperationId.create('550e8400-e29b-41d4-a716-446655440098');
+
+/**
+ * Creates a `FilesystemConflictStageStore` rooted at a fresh temp directory — deliberately NOT
+ * under the project's `storageRoot`/working tree, mirroring the composition root's invariant that
+ * the store must live outside every working tree.
+ */
+async function createTemporaryConflictStageStore(): Promise<FilesystemConflictStageStore> {
+  const root = await mkdtemp(path.join(tmpdir(), 'git-worker-test-conflict-store-'));
+  return new FilesystemConflictStageStore(root);
+}
 
 /**
  * Resolves any host to a fixed, genuinely public IP literal — used to let a test reach a local
@@ -302,7 +317,7 @@ describe('RealGitCommandRunner.merge', () => {
     const remoteTip = await readReference(cwd, 'refs/remotes/origin/main');
 
     const runner = new RealGitCommandRunner(path.dirname(cwd));
-    const result = await runner.merge(projectId, { branch: 'main', flush: [] });
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
 
     expect(result.success).toBe(true);
     if (!result.success) throw new Error('expected success');
@@ -333,7 +348,7 @@ describe('RealGitCommandRunner.merge', () => {
     const headBefore = await readReference(cwd, 'HEAD');
 
     const runner = new RealGitCommandRunner(path.dirname(cwd));
-    const result = await runner.merge(projectId, { branch: 'main', flush: [] });
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
 
     expect(result.success).toBe(true);
     if (!result.success) throw new Error('expected success');
@@ -354,6 +369,7 @@ describe('RealGitCommandRunner.merge', () => {
     const result = await runner.merge(projectId, {
       branch: 'main',
       flush: [{ path: 'base.adoc', content: 'locally flushed\n' }],
+      operationId: OPERATION_ID,
     });
 
     expect(result.success).toBe(true);
@@ -383,7 +399,8 @@ describe('RealGitCommandRunner.merge', () => {
     });
     await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
 
-    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
     const result = await runner.merge(projectId, {
       branch: 'main',
       // A NUL byte in the flushed text makes git treat pic.bin as binary on the local side too.
@@ -391,6 +408,7 @@ describe('RealGitCommandRunner.merge', () => {
         { path: 'doc.adoc', content: 'local line\n' },
         { path: 'pic.bin', content: 'CCC CCC' },
       ],
+      operationId: OPERATION_ID,
     });
 
     expect(result.success).toBe(true);
@@ -404,6 +422,152 @@ describe('RealGitCommandRunner.merge', () => {
     // merge --abort ran: no unmerged paths, working tree clean.
     const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
     expect(status.trim()).toBe('');
+
+    // The three-way stages were captured BEFORE the abort, binary bytes round-tripping exactly.
+    const textStages = await conflictStageStore.readStages(OPERATION_ID, 'doc.adoc');
+    expect(textStages).toEqual({
+      success: true,
+      value: {
+        base: Buffer.from('base line\n'),
+        ours: Buffer.from('local line\n'),
+        theirs: Buffer.from('remote line\n'),
+        isBinary: false,
+      },
+    });
+
+    const binaryStages = await conflictStageStore.readStages(OPERATION_ID, 'pic.bin');
+    expect(binaryStages).toEqual({
+      success: true,
+      value: { base: baseBinary, ours: Buffer.from('CCC\0CCC'), theirs: remoteBinary, isBinary: true },
+    });
+
+    // Every pull leaves an undo target, captured BEFORE the flush commit.
+    const snapshot = await conflictStageStore.readSnapshot(OPERATION_ID);
+    expect(snapshot.success).toBe(true);
+    if (!snapshot.success) throw new Error('expected success');
+    expect(snapshot.value?.branch).toBe('main');
+    expect(snapshot.value?.preOpHead).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('captures an add/add conflict with a null base stage', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440086');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'remote adds new.adoc', async (clone) => {
+      await writeFile(path.join(clone, 'new.adoc'), 'remote version\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+    const result = await runner.merge(projectId, {
+      branch: 'main',
+      // Also adds new.adoc locally — an add/add conflict, which has no common merge-base stage.
+      flush: [
+        { path: 'base.adoc', content: 'base\n' },
+        { path: 'new.adoc', content: 'local version\n' },
+      ],
+      operationId: OPERATION_ID,
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'conflicted') throw new Error('expected conflicted');
+    expect(result.value.conflicts).toEqual([{ path: 'new.adoc', isBinary: false }]);
+
+    const stages = await conflictStageStore.readStages(OPERATION_ID, 'new.adoc');
+    expect(stages).toEqual({
+      success: true,
+      value: {
+        base: null,
+        ours: Buffer.from('local version\n'),
+        theirs: Buffer.from('remote version\n'),
+        isBinary: false,
+      },
+    });
+  });
+
+  it('writes only the undo snapshot (no files/) on a clean merge', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440087');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'remote adds a file', async (clone) => {
+      await writeFile(path.join(clone, 'remote.adoc'), 'from remote\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+    const preOpHead = await readReference(cwd, 'HEAD');
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'merged') throw new Error('expected merged');
+
+    expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
+      success: true,
+      value: { preOpHead, branch: 'main' },
+    });
+    // No conflict occurred: nothing was captured for any path.
+    expect(await conflictStageStore.readStages(OPERATION_ID, 'base.adoc')).toEqual({ success: true, value: null });
+  });
+
+  it('returns GitCommandFailedError and leaves no MERGE_HEAD when a stage read fails on a present stage', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440088');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'doc.adoc'), 'base line\n');
+    });
+    await addRemoteCommit(remotePath, 'remote edit', async (clone) => {
+      await writeFile(path.join(clone, 'doc.adoc'), 'remote line\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
+
+    // A shim that forces `git show :2:doc.adoc` (the "ours" stage) to fail, delegating every other
+    // invocation to the real `git` — simulating an unexpected failure reading a PRESENT stage.
+    const { stdout: realGitPath } = await execFile('sh', ['-c', 'command -v git']);
+    const shimDirectory = await mkdtemp(path.join(tmpdir(), 'git-worker-test-show-failure-shim-'));
+    const shimPath = path.join(shimDirectory, 'git');
+    const shimScript = [
+      '#!/bin/sh',
+      'case "$*" in',
+      '  *":2:doc.adoc"*) exit 17 ;;',
+      'esac',
+      `exec "${realGitPath.trim()}" "$@"`,
+      '',
+    ].join('\n');
+    await writeFile(shimPath, shimScript, { mode: 0o700 });
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${shimDirectory}:${originalPath ?? ''}`;
+    let result;
+    try {
+      result = await runner.merge(projectId, {
+        branch: 'main',
+        flush: [{ path: 'doc.adoc', content: 'local line\n' }],
+        operationId: OPERATION_ID,
+      });
+    } finally {
+      process.env.PATH = originalPath;
+      await rm(shimDirectory, { recursive: true, force: true });
+    }
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+
+    // The finally-abort ran despite the capture failure: no MERGE_HEAD, clean tree.
+    await expect(stat(path.join(cwd, '.git', 'MERGE_HEAD'))).rejects.toThrow();
+    const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
+    expect(status.trim()).toBe('');
+
+    // Nothing was left half-written for the file whose "ours" read failed.
+    expect(await conflictStageStore.readStages(OPERATION_ID, 'doc.adoc')).toEqual({ success: true, value: null });
   });
 
   it('returns GitCommandFailedError for a genuine merge failure (no tracking ref to merge)', async () => {
@@ -415,7 +579,7 @@ describe('RealGitCommandRunner.merge', () => {
     // Deliberately never populate refs/remotes/origin/main.
 
     const runner = new RealGitCommandRunner(storageRoot);
-    const result = await runner.merge(projectId, { branch: 'main', flush: [] });
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
 
     expect(result.success).toBe(false);
     if (result.success) throw new Error('expected failure');
@@ -433,6 +597,7 @@ describe('RealGitCommandRunner.merge', () => {
     const result = await runner.merge(projectId, {
       branch: 'main',
       flush: [{ path: '../escaped-by-merge-test.adoc', content: 'pwned' }],
+      operationId: OPERATION_ID,
     });
 
     expect(result.success).toBe(false);

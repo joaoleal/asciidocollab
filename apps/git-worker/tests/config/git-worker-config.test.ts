@@ -9,6 +9,7 @@ describe('createGitWorkerConfig', () => {
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_HEARTBEAT_INTERVAL_MS;
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_STALE_HEARTBEAT_AFTER_MS;
     delete process.env.ASCIIDOCOLLAB_GIT_EGRESS_ALLOWED_HOSTS;
+    delete process.env.ASCIIDOCOLLAB_GIT_CONFLICT_STORE_ROOT;
   });
 
   it('defaults storageRoot to ./storage', () => {
@@ -38,6 +39,23 @@ describe('createGitWorkerConfig', () => {
 
     expect(config.get('contentStorageRoot')).toBe('/mnt/project-storage');
     expect(config.get('contentStorageRoot')).toBe(config.get('storageRoot'));
+  });
+
+  it('defaults conflictStoreRoot to a path distinct from storageRoot (never nested inside a working tree)', () => {
+    const config = createGitWorkerConfig();
+
+    expect(config.get('conflictStoreRoot')).toBe('./storage-git-conflicts');
+    expect(config.get('conflictStoreRoot')).not.toBe(config.get('storageRoot'));
+  });
+
+  it('reads conflictStoreRoot from its own env var, independent of ASCIIDOCOLLAB_STORAGE_PATH', () => {
+    process.env.ASCIIDOCOLLAB_STORAGE_PATH = '/mnt/project-storage';
+    process.env.ASCIIDOCOLLAB_GIT_CONFLICT_STORE_ROOT = '/mnt/git-conflicts';
+
+    const config = createGitWorkerConfig();
+
+    expect(config.get('conflictStoreRoot')).toBe('/mnt/git-conflicts');
+    expect(config.get('storageRoot')).toBe('/mnt/project-storage');
   });
 
   it('defaults databaseUrl and credentialEncryptionKey to empty strings', () => {

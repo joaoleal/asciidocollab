@@ -293,3 +293,63 @@ export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<
     }
   }
 }
+
+/**
+ * Runs a single `git` subcommand exactly like {@link runGitCommand}, but captures stdout as RAW
+ * bytes rather than UTF-8-decoded text — used to read a git object's exact bytes (`git show
+ * :N:<path>`) without corrupting binary content. No credential/identity support (irrelevant to its
+ * only caller, a purely local, no-network plumbing read); shares the same secure global config,
+ * `--end-of-options` positional guard (see {@link GitCommandSpec.positionals}), and locale/env
+ * hardening as {@link runGitCommand}. Uses the plain callback form of `execFile` directly (rather
+ * than the shared `promisify`-wrapped one) so `encoding: 'buffer'` is unambiguous to the type
+ * checker.
+ *
+ * @param cwd - The working tree (or bare repository) to run the command against.
+ * @param spec - The subcommand, its static flags, and caller-supplied positionals.
+ * @returns The command's raw stdout bytes.
+ * @throws {GitProcessError} If `git` cannot be spawned or exits non-zero.
+ */
+export async function runGitCommandForBytes(cwd: string, spec: GitCommandSpec): Promise<Buffer> {
+  const positionals = spec.positionals ?? [];
+  const arguments_ = [
+    ...SECURE_GLOBAL_CONFIG,
+    spec.command,
+    ...(spec.flags ?? []),
+    ...(positionals.length > 0 ? ['--end-of-options', ...positionals] : []),
+  ];
+
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    LC_ALL: 'C',
+  };
+
+  return new Promise<Buffer>((resolve, reject) => {
+    execFileCallback(
+      'git',
+      arguments_,
+      {
+        cwd,
+        env: environment,
+        timeout: spec.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        maxBuffer: MAX_BUFFER_BYTES,
+        encoding: 'buffer' as const,
+      },
+      (error, stdout) => {
+        if (error) {
+          const exitCode = hasNumericExitCode(error) ? error.code : null;
+          reject(
+            new GitProcessError(
+              `git ${spec.command} failed${exitCode === null ? '' : ` (exit code ${exitCode})`}`,
+              exitCode,
+            ),
+          );
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}

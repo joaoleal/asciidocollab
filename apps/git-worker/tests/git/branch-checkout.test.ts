@@ -1,12 +1,27 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readFile, stat, writeFile } from 'node:fs/promises';
-import { GitCommandFailedError, ProjectId } from '@asciidocollab/domain';
+import { GitCommandFailedError, GitOperationId, ProjectId } from '@asciidocollab/domain';
 import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
+import { FilesystemConflictStageStore } from '../../src/git/filesystem-conflict-stage-store.js';
 import { commitAll, createTemporaryStorageRootWithProject } from '../helpers/temporary-git-repo.js';
 
 const execFile = promisify(execFileCallback);
+
+/** A fixed operation id every checkout call in this file is keyed by. */
+const OPERATION_ID = GitOperationId.create('550e8400-e29b-41d4-a716-446655440099');
+
+/**
+ * Creates a `FilesystemConflictStageStore` rooted at a fresh temp directory — deliberately NOT
+ * under the project's `storageRoot`/working tree, mirroring the composition root's invariant that
+ * the store must live outside every working tree.
+ */
+async function createTemporaryConflictStageStore(): Promise<FilesystemConflictStageStore> {
+  const root = await mkdtemp(path.join(tmpdir(), 'git-worker-test-conflict-store-'));
+  return new FilesystemConflictStageStore(root);
+}
 
 /** Reads the working tree's currently checked-out branch name (test setup helper). */
 async function currentBranch(cwd: string): Promise<string> {
@@ -101,6 +116,31 @@ describe('RealGitCommandRunner.listBranches', () => {
 });
 
 describe('RealGitCommandRunner.checkout', () => {
+  it('writes only the undo snapshot (no files/) on a clean switch', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440089');
+    const { storageRoot, cwd } = await setupProjectOnMain(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addLocalBranch(cwd, 'feature', async (tree) => {
+      await writeFile(path.join(tree, 'feature.adoc'), 'feature only\n');
+    });
+    const preSwitchHead = await readReference(cwd, 'HEAD');
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, conflictStageStore);
+    const result = await runner.checkout(projectId, { branch: 'feature', flush: [], stashLocal: true, operationId: OPERATION_ID });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'switched') throw new Error('expected switched');
+
+    expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
+      success: true,
+      value: { preOpHead: preSwitchHead, branch: 'feature' },
+    });
+    expect(await conflictStageStore.readStages(OPERATION_ID, 'base.adoc')).toEqual({ success: true, value: null });
+  });
+
   it('switches cleanly on an empty flush, landing the target branch delta', async () => {
     const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440092');
     const { storageRoot, cwd } = await setupProjectOnMain(projectId.value, async (tree) => {
@@ -113,7 +153,7 @@ describe('RealGitCommandRunner.checkout', () => {
     const featureTip = await readReference(cwd, 'feature');
 
     const runner = new RealGitCommandRunner(storageRoot);
-    const result = await runner.checkout(projectId, { branch: 'feature', flush: [], stashLocal: true });
+    const result = await runner.checkout(projectId, { branch: 'feature', flush: [], stashLocal: true, operationId: OPERATION_ID });
 
     expect(result.success).toBe(true);
     if (!result.success) throw new Error('expected success');
@@ -143,6 +183,7 @@ describe('RealGitCommandRunner.checkout', () => {
       branch: 'feature',
       flush: [{ path: 'live.adoc', content: 'live edit\n' }],
       stashLocal: true,
+      operationId: OPERATION_ID,
     });
 
     expect(result.success).toBe(true);
@@ -169,12 +210,15 @@ describe('RealGitCommandRunner.checkout', () => {
     await addLocalBranch(cwd, 'feature', async (tree) => {
       await writeFile(path.join(tree, 'base.adoc'), 'feature version\n');
     });
+    const preSwitchHead = await readReference(cwd, 'HEAD');
 
-    const runner = new RealGitCommandRunner(storageRoot);
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, conflictStageStore);
     const result = await runner.checkout(projectId, {
       branch: 'feature',
       flush: [{ path: 'base.adoc', content: 'local version\n' }],
       stashLocal: true,
+      operationId: OPERATION_ID,
     });
 
     expect(result.success).toBe(true);
@@ -188,6 +232,25 @@ describe('RealGitCommandRunner.checkout', () => {
     const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
     expect(status.trim()).toBe('');
     expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('feature version\n');
+
+    // The three-way stages were captured BEFORE the reset/drop. A stash-pop conflict is modeled by
+    // git as a merge of the stash INTO the already-checked-out target branch, so "ours" is the
+    // target branch's content and "theirs" is the stashed (carried) local edit.
+    expect(await conflictStageStore.readStages(OPERATION_ID, 'base.adoc')).toEqual({
+      success: true,
+      value: {
+        base: Buffer.from('base\n'),
+        ours: Buffer.from('feature version\n'),
+        theirs: Buffer.from('local version\n'),
+        isBinary: false,
+      },
+    });
+
+    // Every switch leaves an undo target, captured before any flush/stash/checkout ran.
+    expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
+      success: true,
+      value: { preOpHead: preSwitchHead, branch: 'feature' },
+    });
   });
 
   it('rejects a flush path escaping the working tree, writing nothing and never switching', async () => {
@@ -204,6 +267,7 @@ describe('RealGitCommandRunner.checkout', () => {
       branch: 'feature',
       flush: [{ path: '../escaped-by-checkout-test.adoc', content: 'pwned' }],
       stashLocal: true,
+      operationId: OPERATION_ID,
     });
 
     expect(result.success).toBe(false);
@@ -220,7 +284,7 @@ describe('RealGitCommandRunner.checkout', () => {
     });
 
     const runner = new RealGitCommandRunner(storageRoot);
-    const result = await runner.checkout(projectId, { branch: 'no-such-branch', flush: [], stashLocal: true });
+    const result = await runner.checkout(projectId, { branch: 'no-such-branch', flush: [], stashLocal: true, operationId: OPERATION_ID });
 
     expect(result.success).toBe(false);
     if (result.success) throw new Error('expected failure');

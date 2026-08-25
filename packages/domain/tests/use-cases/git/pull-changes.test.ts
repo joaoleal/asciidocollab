@@ -235,6 +235,7 @@ describe('PullChangesUseCase', () => {
     expect(harness.commandRunner.mergeCalls).toHaveLength(1);
     expect(harness.commandRunner.mergeCalls[0].input.branch).toBe(CURRENT_BRANCH);
     expect(harness.commandRunner.mergeCalls[0].input.flush).toEqual([{ path: LIVE_PATH, content: LIVE_TEXT }]);
+    expect(harness.commandRunner.mergeCalls[0].input.operationId).toBe(OPERATION_ID);
   });
 
   test('a dormant document (no active session) contributes no flush entry', async () => {
