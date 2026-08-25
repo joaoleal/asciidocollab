@@ -59,6 +59,36 @@ export async function requireProjectMembership(
 }
 
 /**
+ * The EDITOR-tier gate every git mutation route (stage/unstage/commit/push) calls FIRST, before the
+ * worker RPC or the async enqueue. Mirrors {@link requireProjectMembership} exactly but with
+ * `requiredRole: 'editor'`.
+ *
+ * This is defense-in-depth, not the only check: the worker's own use case (for stage/unstage/commit)
+ * or the domain push use case self-gates editor again once it runs. Both checks are intentional —
+ * this one rejects a non-editor before any worker call/enqueue is even made; do not remove either
+ * side. It also does not replace the worker's single-flight guard: an in-progress operation is a
+ * `GitOperationInProgressError` domain refusal the worker/enqueue path returns on its own, not
+ * something this route-level gate is responsible for.
+ *
+ * @param request - The current Fastify request (source of the membership and audit-log repos).
+ * @param actorId - The authenticated caller.
+ * @param projectId - The project the mutation targets.
+ * @returns `{ success: true }` for an editor (or owner), otherwise `{ success: false, error: InsufficientRoleError }`.
+ */
+export async function requireEditorRole(
+  request: FastifyRequest,
+  actorId: UserId,
+  projectId: ProjectId,
+): Promise<Result<void, InsufficientRoleError>> {
+  return requireGitRole(
+    request.server.repos.projectMember,
+    request.server.repos.auditLog,
+    { actorId, projectId, requiredRole: 'editor', context: requestContextFrom(request) },
+    requestLogger(request),
+  );
+}
+
+/**
  * Sends the standard `409` response for a mutation (or new edit session) refused because a
  * content-changing git operation is currently running for the project.
  */
