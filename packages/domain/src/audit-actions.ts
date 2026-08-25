@@ -53,6 +53,7 @@ export const AUDIT_GIT_OPERATION_ABORTED = 'git.operation_aborted';
 
 // Git repository connection lifecycle
 export const AUDIT_GIT_REPOSITORY_CONNECTED = 'git.repository_connected';
+export const AUDIT_GIT_REPOSITORY_DISCONNECTED = 'git.repository_disconnected';
 
 // Per-file conflict resolution
 export const AUDIT_GIT_CONFLICT_RESOLVED = 'git.conflict_resolved';
