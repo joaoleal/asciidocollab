@@ -70,14 +70,34 @@ export async function commitAll(workingTree: string, message: string): Promise<v
 }
 
 /**
- * Adds `origin` pointing at `remotePath` and pushes the current branch to it.
+ * Adds `origin` pointing at `remotePath` and pushes the current branch to it as `main`, then
+ * points the bare remote's own `HEAD` at that branch.
+ *
+ * The fix-up matters: `git init --bare` sets a bare repository's `HEAD` symbolic ref to whatever
+ * `init.defaultBranch` names (commonly `master`), regardless of what branch is later pushed into
+ * it — unlike a real hosting provider, which always keeps `HEAD` pointed at the actual default
+ * branch. Left uncorrected, cloning this fixture would report "remote HEAD refers to nonexistent
+ * ref" and check out nothing at all.
  *
  * @param workingTree - The working tree to push from.
  * @param remotePath - The bare repository to push to.
  */
-async function pushToOrigin(workingTree: string, remotePath: string): Promise<void> {
+export async function pushToOrigin(workingTree: string, remotePath: string): Promise<void> {
   await git(workingTree, ['remote', 'add', 'origin', remotePath]);
   await git(workingTree, ['push', '-q', 'origin', 'HEAD:refs/heads/main']);
+  await git(remotePath, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+}
+
+/**
+ * Pushes the working tree's current `HEAD` as an additional branch to an already-configured
+ * `origin` remote (see {@link pushToOrigin} / {@link createPushedRepoPair}), without touching the
+ * remote's `HEAD` — used to give a test fixture a second, non-default branch.
+ *
+ * @param workingTree - The working tree to push from (with `origin` already configured).
+ * @param branch - The branch name to push and create on the remote.
+ */
+export async function pushBranch(workingTree: string, branch: string): Promise<void> {
+  await git(workingTree, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
 }
 
 /**

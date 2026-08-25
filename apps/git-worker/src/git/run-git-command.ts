@@ -81,18 +81,26 @@ export interface GitCommandResult {
 /**
  * Raised when the underlying `git` process cannot be spawned or exits non-zero.
  *
- * Deliberately carries no raw stdout/stderr or argv — only a fixed, safe message plus the exit
- * code — so a caller may wrap it directly into a domain error without further scrubbing.
+ * Deliberately carries no raw stdout/stderr or argv in its `message` — only a fixed, safe message
+ * plus the exit code — so a caller may wrap it directly into a domain error without further
+ * scrubbing. The one exception is {@link networkFailureKind}: a coarse, pre-computed
+ * classification (never the stderr text itself) that a network-operation caller may use to choose
+ * between typed domain errors, for example unreachable versus rejected credential, without ever
+ * touching raw process output.
  */
 export class GitProcessError extends Error {
   /**
    * @param message - A safe, human-readable description of the failure.
    * @param exitCode - The process's exit code, or null if it could not be determined (for
    *   example, the `git` binary itself could not be spawned).
+   * @param networkFailureKind - This failure's best-effort network classification, or undefined
+   *   when it doesn't match a recognized reachability/credential pattern (see
+   *   {@link classifyNetworkFailure}).
    */
   constructor(
     message: string,
     readonly exitCode: number | null,
+    readonly networkFailureKind?: NetworkFailureKind,
   ) {
     super(message);
     this.name = 'GitProcessError';
@@ -103,6 +111,66 @@ export class GitProcessError extends Error {
 function hasNumericExitCode(value: unknown): value is { code: number } {
   if (typeof value !== 'object' || value === null || !('code' in value)) return false;
   return typeof value.code === 'number';
+}
+
+/** Narrows an unknown value to one carrying the string `stderr` Node attaches to a failed `execFile`. */
+function hasStderrText(value: unknown): value is { stderr: string } {
+  if (typeof value !== 'object' || value === null || !('stderr' in value)) return false;
+  return typeof value.stderr === 'string';
+}
+
+/**
+ * A best-effort classification of why a network-facing `git` invocation failed, distinguishing a
+ * remote that could not be reached at all from one that was reached but rejected the supplied
+ * credential. Lets a caller performing a network operation (clone, a remote-access check, ...) map
+ * a failure to the right typed domain error without ever handling — or being handed — the raw
+ * process output itself.
+ */
+export type NetworkFailureKind = 'unreachable' | 'authentication-failed';
+
+/**
+ * Stderr substrings (matched case-insensitively, against English text — see this file's `LC_ALL`
+ * override) that reliably indicate the remote itself could not be reached: name resolution
+ * failure, connection refusal/reset/timeout, or no viable route.
+ */
+const UNREACHABLE_PATTERNS: readonly RegExp[] = [
+  /could not resolve host/i,
+  /failed to connect/i,
+  /could not connect to server/i,
+  /connection refused/i,
+  /connection reset/i,
+  /connection timed out/i,
+  /operation timed out/i,
+  /network is unreachable/i,
+  /no route to host/i,
+];
+
+/**
+ * Stderr substrings indicating the remote was reached but the credential was rejected: git's own
+ * "Authentication failed" (the terminal message once every `GIT_ASKPASS` credential attempt has
+ * been exhausted) and an HTTP 401/403 the transport surfaces verbatim.
+ */
+const AUTHENTICATION_FAILED_PATTERNS: readonly RegExp[] = [
+  /authentication failed/i,
+  /invalid username or (password|token)/i,
+  /returned error: 40[13]\b/i,
+];
+
+/**
+ * Classifies a failed network `git` invocation's stderr into a {@link NetworkFailureKind}, or
+ * undefined when the text matches neither known pattern (a failure unrelated to reachability or
+ * credentials — a missing branch, a disk-full working tree, and so on).
+ *
+ * Exported for direct unit testing against synthetic stderr text — real `git` failures exercise
+ * only a handful of these patterns without an actual flaky/unreachable network to provoke the rest.
+ *
+ * @param stderr - The failed invocation's raw stderr text.
+ * @returns The matched failure kind, or undefined.
+ */
+export function classifyNetworkFailure(stderr: string): NetworkFailureKind | undefined {
+  if (UNREACHABLE_PATTERNS.some((pattern) => pattern.test(stderr))) return 'unreachable';
+  if (AUTHENTICATION_FAILED_PATTERNS.some((pattern) => pattern.test(stderr))) return 'authentication-failed';
+  return undefined;
 }
 
 const ASKPASS_SCRIPT = [
@@ -139,6 +207,11 @@ export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<
     GIT_TERMINAL_PROMPT: '0',
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: '/dev/null',
+    // Forces git's own diagnostic text to stable English, regardless of the host's locale — the
+    // only thing {@link classifyNetworkFailure} reads to tell an unreachable remote apart from a
+    // rejected credential. Does not affect any machine-readable output this wrapper parses
+    // elsewhere (porcelain/plumbing formats are locale-independent already).
+    LC_ALL: 'C',
   };
 
   let askpassDirectory: string | undefined;
@@ -162,9 +235,11 @@ export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<
     return { stdout, stderr };
   } catch (error) {
     const exitCode = hasNumericExitCode(error) ? error.code : null;
+    const stderrText = hasStderrText(error) ? error.stderr : '';
     throw new GitProcessError(
       `git ${spec.command} failed${exitCode === null ? '' : ` (exit code ${exitCode})`}`,
       exitCode,
+      classifyNetworkFailure(stderrText),
     );
   } finally {
     // Best-effort memory hygiene: drop every reference to the credential so it becomes eligible

@@ -3,7 +3,8 @@ import { promisify } from 'node:util';
 import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { GitProcessError, runGitCommand } from '../../src/git/run-git-command.js';
+import net from 'node:net';
+import { classifyNetworkFailure, GitProcessError, runGitCommand } from '../../src/git/run-git-command.js';
 import {
   createPushedRepoPair,
   createTemporaryBareRemote,
@@ -162,6 +163,38 @@ describe('runGitCommand', () => {
         }),
       ).rejects.toBeInstanceOf(GitProcessError);
     });
+
+    it('authenticates a real `git clone` via GIT_ASKPASS, and the token never touches argv, the destination working tree, or .git/config', async () => {
+      const destinationParent = await mkdtemp(path.join(tmpdir(), 'git-worker-clone-leak-'));
+      const destination = path.join(destinationParent, 'dest');
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        await runGitCommand(destinationParent, {
+          command: 'clone',
+          positionals: [`${server.url}/repo.git`, destination],
+          credential: { username, token },
+        });
+        return { calls: await getCalls() };
+      });
+
+      // Proof the credential actually authenticated a real `clone` (not just that nothing threw).
+      expect(server.authorizationHeadersSeen.length).toBeGreaterThan(0);
+
+      for (const call of capture.calls) {
+        for (const argument of call) {
+          expect(argument).not.toContain(token);
+        }
+      }
+
+      const files = await listFilesRecursively(destination);
+      for (const file of files) {
+        const content = await readFile(file, 'utf8').catch(() => '');
+        expect(content).not.toContain(token);
+      }
+
+      const gitConfig = await readFile(path.join(destination, '.git', 'config'), 'utf8');
+      expect(gitConfig).not.toContain(token);
+    });
   });
 
   describe('cross-host redirect defense', () => {
@@ -180,6 +213,91 @@ describe('runGitCommand', () => {
         );
       } finally {
         await redirectServer.close();
+      }
+    });
+  });
+
+  describe('classifyNetworkFailure', () => {
+    it('classifies a name-resolution failure as unreachable', () => {
+      const stderr = "fatal: unable to access 'https://example.invalid/x.git/': Could not resolve host: example.invalid";
+      expect(classifyNetworkFailure(stderr)).toBe('unreachable');
+    });
+
+    it('classifies a refused connection as unreachable', () => {
+      const stderr =
+        "fatal: unable to access 'http://127.0.0.1:1/x.git/': Failed to connect to 127.0.0.1 port 1: Connection refused";
+      expect(classifyNetworkFailure(stderr)).toBe('unreachable');
+    });
+
+    it('classifies a rejected credential as authentication-failed', () => {
+      expect(classifyNetworkFailure("fatal: Authentication failed for 'https://example.invalid/x.git/'")).toBe(
+        'authentication-failed',
+      );
+    });
+
+    it('classifies an HTTP 403 response as authentication-failed', () => {
+      const stderr = "fatal: unable to access 'https://example.invalid/x.git/': The requested URL returned error: 403";
+      expect(classifyNetworkFailure(stderr)).toBe('authentication-failed');
+    });
+
+    it('returns undefined for a failure unrelated to reachability or credentials', () => {
+      expect(classifyNetworkFailure("fatal: pathspec 'nope' did not match any files")).toBeUndefined();
+    });
+  });
+
+  describe('network failure classification, against real git failures', () => {
+    it('tags a connection-refused clone as unreachable on the thrown GitProcessError', async () => {
+      // Bind then immediately release an ephemeral port: nothing listens there afterward, so
+      // connecting to it deterministically refuses — a real (not simulated) unreachable remote.
+      const port = await new Promise<number>((resolve, reject) => {
+        const probe = net.createServer();
+        probe.on('error', reject);
+        probe.listen(0, '127.0.0.1', () => {
+          const address = probe.address();
+          const boundPort = typeof address === 'object' && address !== null ? address.port : 0;
+          probe.close(() => resolve(boundPort));
+        });
+      });
+      const workingTree = await createTemporaryWorkingTree();
+
+      let caught: unknown;
+      try {
+        await runGitCommand(workingTree, {
+          command: 'clone',
+          positionals: [`http://127.0.0.1:${port}/repo.git`, path.join(workingTree, 'dest')],
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(GitProcessError);
+      expect((caught as GitProcessError).networkFailureKind).toBe('unreachable');
+    });
+
+    it('tags a wrong-credential clone as authentication-failed on the thrown GitProcessError', async () => {
+      const { remoteProjectRoot } = await createPushedRepoPair();
+      const server = await startGitHttpServer({
+        projectRoot: remoteProjectRoot,
+        requireAuth: { username: 'x-access-token', password: 'the-real-token' },
+      });
+      const workingTree = await createTemporaryWorkingTree();
+
+      try {
+        let caught: unknown;
+        try {
+          await runGitCommand(workingTree, {
+            command: 'clone',
+            positionals: [`${server.url}/repo.git`, path.join(workingTree, 'dest')],
+            credential: { username: 'x-access-token', token: 'wrong-token' },
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        expect(caught).toBeInstanceOf(GitProcessError);
+        expect((caught as GitProcessError).networkFailureKind).toBe('authentication-failed');
+      } finally {
+        await server.close();
       }
     });
   });
