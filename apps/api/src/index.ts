@@ -14,6 +14,7 @@ import type {
   ProjectMemberRepository,
   GitRepositoryRepository,
   GitOperationRepository,
+  GitCredentialStore,
   TemplateRepository,
   AssetRepository,
   AuditLogRepository,
@@ -157,6 +158,12 @@ export interface AppContainer {
     emailVerificationNotifier: EmailVerificationNotifier;
     /** Bounds each user to one clone in flight; shared by every request this server serves. */
     activeCloneRegistry: ActiveCloneRegistry;
+    /**
+     * Store for the encrypted per-project git credential, keyed with the dedicated
+     * `git.credentialEncryptionKey` (never the session encryption key). Undefined when no
+     * Prisma client is configured.
+     */
+    gitCredentialStore: GitCredentialStore | undefined;
   };
 }
 
@@ -348,6 +355,7 @@ declare module 'fastify' {
       registrationInvitationNotifier: RegistrationInvitationNotifier;
       emailVerificationNotifier: EmailVerificationNotifier;
       activeCloneRegistry: ActiveCloneRegistry;
+      gitCredentialStore: GitCredentialStore | undefined;
     };
   }
 }

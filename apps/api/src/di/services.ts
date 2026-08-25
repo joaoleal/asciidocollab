@@ -13,6 +13,7 @@ import {
   SmtpRegistrationInvitationNotifier,
   SmtpEmailVerificationNotifier,
   InMemoryActiveCloneRegistry,
+  PrismaGitCredentialStore,
 } from '@asciidocollab/infrastructure';
 import type { EmailSender } from '@asciidocollab/domain';
 import type { getConfig } from '../config';
@@ -80,6 +81,17 @@ export function createServices(input: CreateServicesInput): AppContainer['servic
     ? new PrismaSessionStore(prisma, sessionEncryption)
     : undefined;
 
+  // A dedicated encryption instance, keyed with the dedicated git.credentialEncryptionKey
+  // (never the session key above): isolates a leaked session key from also decrypting stored
+  // git access tokens.
+  const gitCredentialEncryption = new SessionEncryption({
+    encryptionKey: appConfig.git.credentialEncryptionKey,
+  });
+
+  const gitCredentialStore = prisma
+    ? new PrismaGitCredentialStore(prisma, gitCredentialEncryption)
+    : undefined;
+
   const passwordResetNotifier = new SmtpPasswordResetNotifier(
     emailSender,
     appConfig.auth.email.templates.resetRequest.subject,
@@ -125,5 +137,6 @@ export function createServices(input: CreateServicesInput): AppContainer['servic
     registrationInvitationNotifier,
     emailVerificationNotifier,
     activeCloneRegistry,
+    gitCredentialStore,
   };
 }
