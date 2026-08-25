@@ -47,6 +47,7 @@ import {
 import { assertRemoteHostAllowed, type HostAddressResolver } from './egress-allowlist.js';
 import { guessMimeType } from './guess-mime-type.js';
 import { declaresLfsFilter } from './lfs-pointer.js';
+import { writeManagedGitignore } from './managed-gitignore.js';
 import { GitProcessError, runGitCommand, runGitCommandForBytes } from './run-git-command.js';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './working-tree.js';
 
@@ -917,14 +918,17 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *    is needed.
    * 4. `git remote add origin <input.remoteUrl>` wires the remote — the URL as a positional after
    *    `--end-of-options`, with NO credential in this step (mirrors the port's documented contract).
-   * 5. `git add -A` stages every file currently in the working tree. This relies on the working
-   *    tree's own `.gitignore` (written before this call ever runs) to already exclude internal
-   *    platform paths such as `.collab/` — `git add -A` never stages an ignored path, so no
-   *    additional pathspec exclusion is needed here.
-   * 6. `git commit` records the initial commit under {@link SERVICE_COMMIT_IDENTITY} (the port's
+   * 5. {@link writeManagedGitignore} writes the working tree's managed `.gitignore` (with no project
+   *    user patterns — see the method body's inline note) so internal platform paths such as
+   *    `.collab/` are excluded BEFORE anything is staged: this call is the only thing that
+   *    provisions that file, since nothing else runs before it on a previously non-git project.
+   * 6. `git add -A` stages every file currently in the working tree. `git add -A` never stages an
+   *    ignored path, so the `.gitignore` just written is what keeps `.collab/` and `*.tmp` out of
+   *    the initial commit, with no additional pathspec exclusion needed here.
+   * 7. `git commit` records the initial commit under {@link SERVICE_COMMIT_IDENTITY} (the port's
    *    input carries no per-user author — this is a platform bootstrap action, not an edit
    *    attributable to one collaborator).
-   * 7. `git push` publishes that commit to `origin`/`input.branch`, authenticated out-of-band
+   * 8. `git push` publishes that commit to `origin`/`input.branch`, authenticated out-of-band
    *    exactly like {@link push}.
    *
    * All-or-nothing: any failure from step 3 onward removes the working tree's `.git` directory
@@ -974,6 +978,11 @@ export class RealGitCommandRunner implements GitCommandRunner {
         flags: ['add', 'origin'],
         positionals: [input.remoteUrl],
       });
+      // `userPatterns` is `null`: this port's input carries no project-level ignore patterns, and
+      // the security-critical job here is excluding the internal `.collab/`/`*.tmp` entries before
+      // the very first `git add -A` ever runs on this tree — the maintainer-editable user patterns
+      // are a separate concern a future write-on-every-job step will merge in.
+      await writeManagedGitignore(cwd, null);
       await runGitCommand(cwd, { command: 'add', flags: ['-A'] });
       await runGitCommand(cwd, {
         command: 'commit',

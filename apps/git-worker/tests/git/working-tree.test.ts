@@ -1,4 +1,5 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ProjectId } from '@asciidocollab/domain';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from '../../src/git/working-tree.js';
@@ -33,6 +34,27 @@ describe('ensureCleanWorkingTree', () => {
 
     await expect(ensureCleanWorkingTree(cwd)).resolves.toBeUndefined();
     await expect(access(path.join(cwd, 'untracked.txt'))).rejects.toThrow();
+  });
+
+  it('resolves without touching anything when the working tree is not a git repository yet', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'git-worker-test-nogit-'));
+    await writeFile(path.join(directory, 'index.adoc'), '= Handbook\n');
+    await mkdir(path.join(directory, '.collab'), { recursive: true });
+    await writeFile(path.join(directory, '.collab', 'state.bin'), 'live collaboration state');
+
+    await expect(ensureCleanWorkingTree(directory)).resolves.toBeUndefined();
+
+    await expect(readFile(path.join(directory, 'index.adoc'), 'utf8')).resolves.toBe('= Handbook\n');
+    await expect(readFile(path.join(directory, '.collab', 'state.bin'), 'utf8')).resolves.toBe(
+      'live collaboration state',
+    );
+  });
+
+  it('resolves without throwing when the working tree directory does not exist at all', async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), 'git-worker-test-missing-'));
+    const missing = path.join(parent, 'not-created-yet');
+
+    await expect(ensureCleanWorkingTree(missing)).resolves.toBeUndefined();
   });
 
   it('never removes the .collab/ Yjs blob store, even though it is untracked', async () => {

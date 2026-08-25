@@ -1728,6 +1728,49 @@ describe('RealGitCommandRunner.initializeAndPublish', () => {
     }
   });
 
+  it('never publishes the internal .collab/ path even when no .gitignore pre-exists, writing a managed one itself', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440097');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'index.adoc'), '= Handbook\n');
+      await mkdir(path.join(tree, '.collab'), { recursive: true });
+      await writeFile(path.join(tree, '.collab', 'session.bin'), 'internal state');
+      // Deliberately no `.gitignore` written here — this proves the adapter provisions one itself.
+    });
+    const cwd = path.join(storageRoot, projectId.value);
+
+    const remotePath = await createTemporaryBareRemote();
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('expected success');
+
+      // Assert directly against the bare remote's own pushed tree, not the local working tree.
+      const { stdout } = await execFile('git', ['ls-tree', '-r', '--name-only', 'refs/heads/main'], {
+        cwd: remotePath,
+      });
+      const pushedPaths = stdout.split('\n').filter((line) => line.length > 0);
+
+      expect(pushedPaths).toEqual(expect.arrayContaining(['.gitignore', 'index.adoc']));
+      expect(pushedPaths.some((pushedPath) => pushedPath.startsWith('.collab/'))).toBe(false);
+
+      const { stdout: gitignoreContent } = await execFile(
+        'git',
+        ['show', 'refs/heads/main:.gitignore'],
+        { cwd: remotePath },
+      );
+      expect(gitignoreContent).toContain('.collab/');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('refuses to publish onto a remote that already has commits, without creating a local repository', async () => {
     const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440093');
     const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
