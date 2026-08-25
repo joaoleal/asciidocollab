@@ -11,6 +11,7 @@ import {
   GIT_OPERATION_LEGAL_TRANSITIONS,
   GitOperationInProgressError,
   IllegalGitOperationTransitionError,
+  GitConflictNotFoundError,
 } from '@asciidocollab/domain';
 import type {
   GitOperationKind,
@@ -326,6 +327,32 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
   /** Removes every conflict recorded for an operation. */
   async clearConflicts(operationId: GitOperationId): Promise<void> {
     await this.prisma.gitConflict.deleteMany({ where: { operationId: operationId.value } });
+  }
+
+  /**
+   * Sets `resolved = true` and `resolution` on the conflict recorded for `(operationId, path)`
+   * using the existing `resolved`/`resolution` columns — no schema change. There is no unique
+   * constraint on `(operationId, path)`, so this uses a conditional `updateMany` (race-safe
+   * against a concurrent resolve of the same path — the second call still finds and updates the
+   * now-resolved row, satisfying this method's documented idempotence) followed by a read-back.
+   */
+  async resolveConflict(
+    operationId: GitOperationId,
+    path: string,
+    resolution: ConflictResolution,
+  ): Promise<Result<GitConflict, GitConflictNotFoundError>> {
+    const updated = await this.prisma.gitConflict.updateMany({
+      where: { operationId: operationId.value, path },
+      data: { resolved: true, resolution },
+    });
+    if (updated.count === 0) {
+      return { success: false, error: new GitConflictNotFoundError(path) };
+    }
+
+    const record = await this.prisma.gitConflict.findFirstOrThrow({
+      where: { operationId: operationId.value, path },
+    });
+    return { success: true, value: toDomainGitConflict(record) };
   }
 }
 

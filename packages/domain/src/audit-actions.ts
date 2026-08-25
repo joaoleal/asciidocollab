@@ -54,5 +54,8 @@ export const AUDIT_GIT_OPERATION_ABORTED = 'git.operation_aborted';
 // Git repository connection lifecycle
 export const AUDIT_GIT_REPOSITORY_CONNECTED = 'git.repository_connected';
 
+// Per-file conflict resolution
+export const AUDIT_GIT_CONFLICT_RESOLVED = 'git.conflict_resolved';
+
 // Project-level maintainer-editable git-ignore patterns
 export const AUDIT_PROJECT_GIT_IGNORE_PATTERNS_UPDATED = 'project.git_ignore_patterns_updated';

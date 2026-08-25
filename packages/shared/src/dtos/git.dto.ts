@@ -200,22 +200,40 @@ export function isConflictResolution(value: string): value is ConflictResolution
 }
 
 /**
- * A file with competing changes from a pull/merge, with its three-way content
- * for the client's merge view. `resolution` is null until the file is resolved.
+ * One conflicting file in the `GET /git/conflicts` list — no content, just enough to drive the
+ * conflict list panel (path, whether it's binary, and whether it's already resolved).
  */
-export interface ConflictDto {
+export interface ConflictSummaryDto {
   /** Project-relative path of the conflicting file. */
   path: string;
   /** Whether the file is binary (no textual three-way diff is possible). */
   isBinary: boolean;
-  /** The chosen resolution, or null while the conflict is still open. */
-  resolution: ConflictResolution | null;
-  /** The merge-base content, or null if the file did not exist there. */
+  /** Whether this file's conflict has already been resolved. */
+  resolved: boolean;
+}
+
+/** A project's currently conflicting files, for the conflict list panel. */
+export interface ConflictListDto {
+  /** The awaiting operation these conflicts belong to. */
+  operationId: string;
+  /** Every conflicting file, in the order they were recorded. */
+  files: ConflictSummaryDto[];
+}
+
+/**
+ * One conflicting file's three-way content, for the `GET /git/conflicts/:path` merge view. A
+ * binary conflict carries no text — `base`/`ours`/`theirs` are empty and `isBinary` is `true`, so
+ * the client offers only whole-file ours/theirs actions, never the inline text editor.
+ */
+export interface ConflictStagesDto {
+  /** The merge-base content, or null when the file had no merge base (an add/add conflict). */
   base: string | null;
-  /** This branch's ("ours") content. */
+  /** This branch's ("ours") content. Empty for a binary conflict. */
   ours: string;
-  /** The incoming branch's ("theirs") content. */
+  /** The incoming branch's ("theirs") content. Empty for a binary conflict. */
   theirs: string;
+  /** Whether the file is binary (no textual three-way view). */
+  isBinary: boolean;
 }
 
 /** The kind of whole-project git action a `GitOperation` performs. */

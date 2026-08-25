@@ -6,8 +6,10 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { UserId } from '../../value-objects/ids/user-id';
 import { GitOperationKind } from '../../types/git-operation-kind';
 import { GitOperationState } from '../../types/git-operation-state';
+import { ConflictResolution } from '../../types/conflict-resolution';
 import { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
 import { IllegalGitOperationTransitionError } from '../../errors/git/illegal-git-operation-transition';
+import { GitConflictNotFoundError } from '../../errors/git/git-conflict-not-found';
 import { Result } from '../../types/result';
 
 /**
@@ -196,4 +198,22 @@ export interface GitOperationRepository {
    * @returns A promise that resolves once the conflicts have been cleared.
    */
   clearConflicts(operationId: GitOperationId): Promise<void>;
+
+  /**
+   * Records a per-file resolution decision: sets `resolved = true` and `resolution` on the
+   * conflict recorded for `(operationId, path)`. Idempotent — re-resolving the same path
+   * overwrites its prior choice. The merged bytes, when `resolution === 'merged'`, live in the
+   * `ConflictStageStore`, not here.
+   *
+   * @param operationId - The operation the conflict belongs to.
+   * @param path - The conflicting file's path.
+   * @param resolution - The chosen resolution.
+   * @returns The updated conflict, or a `GitConflictNotFoundError` when no conflict is recorded
+   *   for that `(operationId, path)`.
+   */
+  resolveConflict(
+    operationId: GitOperationId,
+    path: string,
+    resolution: ConflictResolution,
+  ): Promise<Result<GitConflict, GitConflictNotFoundError>>;
 }

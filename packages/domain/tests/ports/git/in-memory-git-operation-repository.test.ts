@@ -4,6 +4,7 @@ import { UserId } from '../../../src/value-objects/ids/user-id';
 import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
 import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
 import { IllegalGitOperationTransitionError } from '../../../src/errors/git/illegal-git-operation-transition';
+import { GitConflictNotFoundError } from '../../../src/errors/git/git-conflict-not-found';
 import { InMemoryGitOperationRepository } from './in-memory-git-operation-repository';
 
 /** A mutable clock so tests can advance time deterministically without sleeping. */
@@ -422,6 +423,45 @@ describe('InMemoryGitOperationRepository', () => {
       await repo.clearConflicts(operation.id);
 
       expect(await repo.listConflicts(operation.id)).toEqual([]);
+    });
+
+    it('resolveConflict sets resolved and resolution on the matching conflict', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const operation = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      const created = await repo.createConflict({ operationId: operation.id, path: 'docs/intro.adoc' });
+
+      const result = await repo.resolveConflict(operation.id, 'docs/intro.adoc', 'theirs');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.resolved).toBe(true);
+      expect(result.success && result.value.resolution).toBe('theirs');
+      expect(result.success && result.value.id.value).toBe(created.id.value);
+      const reread = await repo.getConflict(created.id);
+      expect(reread?.resolved).toBe(true);
+      expect(reread?.resolution).toBe('theirs');
+    });
+
+    it('resolveConflict is idempotent: re-resolving overwrites the prior choice', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const operation = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      await repo.createConflict({ operationId: operation.id, path: 'docs/intro.adoc' });
+      await repo.resolveConflict(operation.id, 'docs/intro.adoc', 'ours');
+
+      const result = await repo.resolveConflict(operation.id, 'docs/intro.adoc', 'merged');
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.value.resolution).toBe('merged');
+    });
+
+    it('resolveConflict fails with GitConflictNotFoundError for an unknown path', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const operation = await repo.enqueue({ projectId: projectA, kind: 'PULL', triggeredByUserId: user });
+      await repo.createConflict({ operationId: operation.id, path: 'docs/intro.adoc' });
+
+      const result = await repo.resolveConflict(operation.id, 'docs/missing.adoc', 'ours');
+
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(GitConflictNotFoundError);
     });
   });
 });

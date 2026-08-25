@@ -51,3 +51,6 @@ export { EmptyCommitMessageError } from './git/empty-commit-message';
 export { NothingStagedError } from './git/nothing-staged';
 export { LiveContentFlushFailedError } from './git/live-content-flush-failed';
 export { NonFastForwardError } from './git/non-fast-forward';
+export { GitConflictNotFoundError } from './git/git-conflict-not-found';
+export { NoConflictInProgressError } from './git/no-conflict-in-progress';
+export { InvalidResolutionError } from './git/invalid-resolution';

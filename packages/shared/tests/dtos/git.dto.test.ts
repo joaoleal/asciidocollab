@@ -20,8 +20,9 @@ import type {
   PendingChangeDto,
   GitStatusDto,
   FileGitStatus,
-  ConflictResolution,
-  ConflictDto,
+  ConflictSummaryDto,
+  ConflictListDto,
+  ConflictStagesDto,
 } from '../../src/dtos/git.dto';
 
 describe('git provider', () => {
@@ -176,31 +177,50 @@ describe('conflict resolution', () => {
   });
 });
 
-describe('ConflictDto', () => {
-  test('carries the three-way content and a null resolution while unresolved', () => {
-    const dto: ConflictDto = {
+describe('ConflictSummaryDto / ConflictListDto', () => {
+  test('summarizes a conflicting file with no content, just path/binary/resolved', () => {
+    const summary: ConflictSummaryDto = {
       path: 'docs/intro.adoc',
       isBinary: false,
-      resolution: null,
+      resolved: false,
+    };
+    expect(summary.resolved).toBe(false);
+  });
+
+  test('lists every conflicting file under its operation id', () => {
+    const list: ConflictListDto = {
+      operationId: 'op-1',
+      files: [
+        { path: 'docs/intro.adoc', isBinary: false, resolved: false },
+        { path: 'assets/logo.png', isBinary: true, resolved: true },
+      ],
+    };
+    expect(list.files).toHaveLength(2);
+    expect(list.files[1].isBinary).toBe(true);
+  });
+});
+
+describe('ConflictStagesDto', () => {
+  test('carries the three-way text content for a non-binary conflict', () => {
+    const stages: ConflictStagesDto = {
       base: 'original text',
       ours: 'our edit',
       theirs: 'their edit',
+      isBinary: false,
     };
-    expect(dto.resolution).toBeNull();
-    expect(dto.base).toBe('original text');
+    expect(stages.base).toBe('original text');
+    expect(stages.isBinary).toBe(false);
   });
 
-  test('records the chosen resolution once resolved', () => {
-    const resolution: ConflictResolution = 'theirs';
-    const dto: ConflictDto = {
-      path: 'docs/intro.adoc',
-      isBinary: false,
-      resolution,
+  test('carries empty content and isBinary:true for a binary conflict', () => {
+    const stages: ConflictStagesDto = {
       base: null,
-      ours: 'our edit',
-      theirs: 'their edit',
+      ours: '',
+      theirs: '',
+      isBinary: true,
     };
-    expect(dto.resolution).toBe('theirs');
-    expect(dto.base).toBeNull();
+    expect(stages.base).toBeNull();
+    expect(stages.ours).toBe('');
+    expect(stages.isBinary).toBe(true);
   });
 });

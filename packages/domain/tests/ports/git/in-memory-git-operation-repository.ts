@@ -4,6 +4,7 @@ import { GitConflict } from '../../../src/entities/git-conflict';
 import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
 import { GitConflictId } from '../../../src/value-objects/ids/git-conflict-id';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
+import { ConflictResolution } from '../../../src/types/conflict-resolution';
 import { Result } from '../../../src/types/result';
 import { TERMINAL_GIT_OPERATION_STATES } from '../../../src/types/git-operation-state';
 import {
@@ -16,6 +17,7 @@ import {
 } from '../../../src/ports/git/git-operation-repository';
 import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
 import { IllegalGitOperationTransitionError } from '../../../src/errors/git/illegal-git-operation-transition';
+import { GitConflictNotFoundError } from '../../../src/errors/git/git-conflict-not-found';
 
 /** Produces the current time; injectable so tests can simulate stale heartbeats deterministically. */
 export type Clock = () => Date;
@@ -188,6 +190,35 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     for (const [id, conflict] of this.conflicts) {
       if (conflict.operationId.value === operationId.value) this.conflicts.delete(id);
     }
+  }
+
+  /**
+   * Sets `resolved`/`resolution` on the conflict recorded for `(operationId, path)`. Idempotent —
+   * re-resolving the same path overwrites its prior choice.
+   */
+  async resolveConflict(
+    operationId: GitOperationId,
+    path: string,
+    resolution: ConflictResolution,
+  ): Promise<Result<GitConflict, GitConflictNotFoundError>> {
+    const existing = [...this.conflicts.values()].find(
+      (conflict) => conflict.operationId.value === operationId.value && conflict.path === path,
+    );
+    if (!existing) {
+      return { success: false, error: new GitConflictNotFoundError(path) };
+    }
+
+    const resolved = new GitConflict(
+      existing.id,
+      existing.operationId,
+      existing.path,
+      existing.isBinary,
+      true,
+      resolution,
+      existing.createdAt,
+    );
+    this.conflicts.set(resolved.id.value, resolved);
+    return { success: true, value: resolved };
   }
 
   /** Finds the oldest (by enqueue order) stored operation matching `predicate`, or undefined. */
