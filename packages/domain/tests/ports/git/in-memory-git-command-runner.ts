@@ -8,6 +8,9 @@ import {
   GitCommandRunner,
   GitCommitInput,
   GitCommitResult,
+  GitPushError,
+  GitPushInput,
+  GitPushResult,
   GitRemoteAccessCheck,
   GitWorkingTreeStatus,
 } from '../../../src/ports/git/git-command-runner';
@@ -30,6 +33,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly unstageFailures = new Map<string, GitCommandFailedError>();
   private readonly commitFailures = new Map<string, GitCommandFailedError>();
   private readonly commitResults = new Map<string, GitCommitResult>();
+  private readonly pushFailures = new Map<string, GitPushError>();
+  private readonly pushResults = new Map<string, GitPushResult>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -48,6 +53,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `commit`, in call order, for asserting the flush list and author. */
   readonly commitCalls: { projectId: ProjectId; input: GitCommitInput }[] = [];
+
+  /** Every call made to `push`, in call order, for asserting the remote URL, token, and branch pushed. */
+  readonly pushCalls: { projectId: ProjectId; input: GitPushInput }[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -199,6 +207,39 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
       message: input.message,
       authoredAt: new Date('2024-01-01T00:00:00.000Z'),
     };
+
+    return { success: true, value: result };
+  }
+
+  /**
+   * Configures `push` to fail for a project, taking priority over any seeded result — seed with a
+   * `NonFastForwardError`, `RepositoryUnreachableError`, `AuthenticationFailedError`, or a generic
+   * `GitCommandFailedError` to exercise each of `push`'s typed refusals.
+   */
+  seedPushFailure(projectId: ProjectId, error: GitPushError): void {
+    this.pushFailures.set(projectId.value, error);
+  }
+
+  /** Configures the `GitPushResult` `push` returns for a project on success. */
+  seedPush(projectId: ProjectId, result: GitPushResult): void {
+    this.pushResults.set(projectId.value, result);
+  }
+
+  /**
+   * Records the call — including the exact remote URL, token, and branch, so a test can assert
+   * them — and returns the seeded `GitPushResult`, unless a failure was seeded for this project via
+   * `seedPushFailure`, in which case that failure takes priority.
+   */
+  async push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>> {
+    this.pushCalls.push({ projectId, input });
+
+    const failure = this.pushFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.pushResults.get(projectId.value);
+    if (!result) {
+      return { success: false, error: new GitCommandFailedError('No push result configured for this project') };
+    }
 
     return { success: true, value: result };
   }

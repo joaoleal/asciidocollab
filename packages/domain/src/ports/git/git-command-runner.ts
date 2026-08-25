@@ -2,6 +2,7 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
 import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
+import { NonFastForwardError } from '../../errors/git/non-fast-forward';
 import { Result } from '../../types/result';
 
 /**
@@ -131,6 +132,29 @@ export interface GitCommitResult {
   readonly authoredAt: Date;
 }
 
+/** Everything {@link GitCommandRunner.push} needs to push a branch to its remote. */
+export interface GitPushInput {
+  /** The remote's URL, exactly as stored on the project's `GitRepository` link. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
+  readonly token: string;
+  /** The local branch to push (and the remote branch it pushes to, by the same name). */
+  readonly branch: string;
+}
+
+/** What a completed push produced. */
+export interface GitPushResult {
+  /** The commit now at the tip of the remote branch, after the push landed. */
+  readonly headCommit: string;
+}
+
+/** Every typed way {@link GitCommandRunner.push} can fail. */
+export type GitPushError =
+  | GitCommandFailedError
+  | NonFastForwardError
+  | RepositoryUnreachableError
+  | AuthenticationFailedError;
+
 /**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
@@ -238,4 +262,23 @@ export interface GitCommandRunner {
    *   command (write, add, or commit) fails.
    */
   commit(projectId: ProjectId, input: GitCommitInput): Promise<Result<GitCommitResult, GitCommandFailedError>>;
+
+  /**
+   * Pushes the project's current branch to its remote (the real adapter runs `git push` inside the
+   * project's sandboxed working tree, authenticating out-of-band with `input.token` — never via
+   * argv, the same convention {@link clone} and {@link checkRemoteAccess} follow).
+   *
+   * Adapter contract: a push git rejects as non-fast-forward (`! [rejected] ... (non-fast-forward)`
+   * / `(fetch first)` — the remote has commits this branch does not) is classified into
+   * {@link NonFastForwardError}, distinct from the remote being unreachable at all
+   * ({@link RepositoryUnreachableError}) or rejecting the credential ({@link AuthenticationFailedError}).
+   *
+   * @param projectId - The project whose working tree to push from.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to push.
+   * @returns The remote branch's new tip commit on success; a {@link NonFastForwardError} when the
+   *   remote has commits this branch does not, a {@link RepositoryUnreachableError}/
+   *   {@link AuthenticationFailedError} on the same terms as {@link checkRemoteAccess}, or a
+   *   {@link GitCommandFailedError} for any other failure.
+   */
+  push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>>;
 }

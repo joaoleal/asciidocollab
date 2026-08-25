@@ -50,3 +50,4 @@ export { RepositoryNotConnectedError } from './git/repository-not-connected';
 export { EmptyCommitMessageError } from './git/empty-commit-message';
 export { NothingStagedError } from './git/nothing-staged';
 export { LiveContentFlushFailedError } from './git/live-content-flush-failed';
+export { NonFastForwardError } from './git/non-fast-forward';
