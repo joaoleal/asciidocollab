@@ -3,7 +3,7 @@
  * and polls the long-running operation that clone runs as.
  */
 import { apiRequest } from '@/lib/api/transport';
-import type { FileGitStatus, GitOperationStatusDto, GitProvider } from '@asciidocollab/shared';
+import type { CommitDto, FileGitStatus, GitOperationStatusDto, GitProvider, GitStatusDto } from '@asciidocollab/shared';
 
 /** Request body for `POST /api/git/import`. */
 export interface ImportRepositoryInput {
@@ -61,6 +61,26 @@ export interface GitTreeStatus {
  */
 export async function getGitTreeStatus(projectId: string): Promise<GitTreeStatus> {
   return apiRequest(`/api/projects/${projectId}/git/tree-status`);
+}
+
+/**
+ * Reads the project's connected repository's working-tree status: the current branch, its sync
+ * state, and every pending change bucketed by staged/unstaged/untracked/conflicted. The commit
+ * dialog reads its `staged[]` bucket to show what a commit would include.
+ */
+export async function getGitStatus(projectId: string): Promise<GitStatusDto> {
+  return apiRequest(`/api/projects/${projectId}/git/status`);
+}
+
+/**
+ * Commits the project's currently staged changes with the given message. Named `commitChanges`
+ * (rather than `commit`) to stay unambiguous next to unrelated React/git terminology.
+ */
+export async function commitChanges(projectId: string, message: string): Promise<{ commit: CommitDto }> {
+  return apiRequest(`/api/projects/${projectId}/git/commit`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
 }
 
 /** The `GitOperationStatusDto` states that mean polling should stop. */

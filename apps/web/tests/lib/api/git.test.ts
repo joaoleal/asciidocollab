@@ -3,7 +3,14 @@
  * a brand-new project, and polling the long-running operation it returns.
  */
 import { API_BASE_URL } from '@/lib/api/base-url';
-import { getGitOperation, getGitTreeStatus, importRepository, isGitOperationTerminal } from '@/lib/api/git';
+import {
+  commitChanges,
+  getGitOperation,
+  getGitStatus,
+  getGitTreeStatus,
+  importRepository,
+  isGitOperationTerminal,
+} from '@/lib/api/git';
 
 const fetchMock = jest.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -132,6 +139,63 @@ describe('getGitTreeStatus', () => {
     await expect(getGitTreeStatus('proj1')).rejects.toMatchObject({
       status: 404,
       code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('getGitStatus', () => {
+  test('GETs the project-scoped status endpoint', async () => {
+    const status = {
+      branch: 'main',
+      syncStatus: 'UP_TO_DATE',
+      ahead: 0,
+      behind: 0,
+      lastSyncAt: null,
+      staged: [{ path: 'a.adoc', changeType: 'modified' }],
+      unstaged: [],
+      untracked: [],
+      conflicted: [],
+    };
+    okOnce(status);
+
+    const result = await getGitStatus('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/status`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(status);
+  });
+
+  test('surfaces a not-connected refusal for a project with no git repo', async () => {
+    failOnce(404, { error: { code: 'NOT_FOUND', message: 'Project is not connected to a git repository' } });
+
+    await expect(getGitStatus('proj1')).rejects.toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('commitChanges', () => {
+  test('POSTs the trimmed message to the project-scoped commit endpoint', async () => {
+    const commit = { hash: 'abc123', message: 'Fix typo', authorUserId: 'user1', authoredAt: '2026-08-24T00:00:00Z' };
+    okOnce({ commit });
+
+    const result = await commitChanges('proj1', 'Fix typo');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/commit`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({ message: 'Fix typo' });
+    expect(result).toEqual({ commit });
+  });
+
+  test('surfaces a typed refusal, e.g. nothing staged', async () => {
+    failOnce(409, { error: { code: 'nothing_staged', message: 'There is nothing staged to commit' } });
+
+    await expect(commitChanges('proj1', 'Fix typo')).rejects.toMatchObject({
+      status: 409,
+      code: 'nothing_staged',
     });
   });
 });

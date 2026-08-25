@@ -1,7 +1,7 @@
 'use client';
 import { useLayoutEffect, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Settings, Users } from 'lucide-react';
+import { ChevronLeft, GitCommitHorizontal, Settings, Users } from 'lucide-react';
 import type { CreateAnchorInput, ReviewItemDto } from '@asciidocollab/shared';
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,7 @@ import { AsciiDocEditor, type EditorGrammarState } from '@/components/editor/asc
 import { useProjectSymbolIndex } from '@/hooks/use-project-symbol-index';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
 import { useGitTreeStatus } from '@/hooks/use-git-tree-status';
+import { CommitDialog } from '@/components/git/commit-dialog';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
@@ -490,7 +491,12 @@ export function ProjectEditorLayout({
 
   // Per-file git status for the file tree's badges (a read-only display enhancement — see the hook
   // for why a project with no connected git repository resolves to an empty map rather than an error).
-  const { statusByFileNodeId } = useGitTreeStatus(projectId);
+  // `refetch` is reused as the commit dialog's onCommitted callback below, so a commit's badges update
+  // from the SAME hook instance rather than adding a second status subscription.
+  const { statusByFileNodeId, refetch: refetchGitTreeStatus } = useGitTreeStatus(projectId);
+  // Commit dialog: a modest trigger for now — the full git status bar (branch, sync state, push) is a
+  // later addition that will absorb this trigger into a richer surface.
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
 
   // ── Review comments & tasks (feature 038) ──────────────────────────────────────────────────
   // Comments are available only for a collaborative .adoc (a live Y.Doc + document id). The review
@@ -1296,6 +1302,10 @@ export function ProjectEditorLayout({
         </div>
         <div className="ml-auto flex items-center gap-2">
           <NonLiveIndicator active={nonLive} />
+          <Button variant="outline" size="sm" onClick={() => setCommitDialogOpen(true)}>
+            <GitCommitHorizontal className="mr-2 h-4 w-4" />
+            Commit…
+          </Button>
           <PdfExportButton
             onExport={handleExportPdf}
             isExporting={isExportingPdf}
@@ -1678,6 +1688,12 @@ export function ProjectEditorLayout({
         onNavigate={handleNavigateToUsage}
         onRenamed={handleSymbolRenamed}
         onClose={() => setRefactorOpen(false)}
+      />
+      <CommitDialog
+        projectId={projectId}
+        open={commitDialogOpen}
+        onOpenChange={setCommitDialogOpen}
+        onCommitted={refetchGitTreeStatus}
       />
     </div>
   );
