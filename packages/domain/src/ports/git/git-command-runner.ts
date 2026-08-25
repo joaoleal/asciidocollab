@@ -40,6 +40,44 @@ export interface GitRemoteAccessCheck {
   readonly token: string;
 }
 
+/** Input for {@link GitCommandRunner.clone}. */
+export interface GitCloneInput {
+  /** The remote's URL, exactly as the caller supplied it. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Used only for this call, never persisted. */
+  readonly token: string;
+  /** The branch to check out, or the remote's default branch when omitted. */
+  readonly branch?: string;
+}
+
+/**
+ * One file a clone produced: its path (workspace-relative, POSIX separators, no leading slash —
+ * e.g. `chapters/intro.adoc`) and its bytes, exactly as the remote's default (or requested) branch
+ * has them. `.git/` and LFS plumbing (`.gitattributes`) are resolved by the runner — an LFS pointer
+ * is smudged to the real object's bytes before this entry is produced, so a caller never has to
+ * recognize or special-case a pointer file — but nothing here excludes internal platform paths
+ * (e.g. `.collab/`); doing that is the caller's responsibility, the same way it decides everything
+ * else about how the bytes become a project.
+ */
+export interface ClonedFileEntry {
+  /** Workspace-relative path, POSIX separators, no leading slash. */
+  readonly path: string;
+  /** The file's bytes, already resolved past any LFS pointer. */
+  readonly content: Buffer;
+  /** Best-effort MIME type for the file, as the runner determined it. */
+  readonly mimeType: string;
+}
+
+/** What a completed clone produced: every tracked file, and the remote state it was cloned at. */
+export interface ClonedRepository {
+  /** The remote's default branch (what its `HEAD` points to). */
+  readonly defaultBranch: string;
+  /** The commit hash of the branch that was cloned, as observed at clone time. */
+  readonly headCommit: string;
+  /** Every tracked file the clone produced. Directories are implicit in each entry's path. */
+  readonly entries: readonly ClonedFileEntry[];
+}
+
 /**
  * Port for running scoped git actions against a project's sandboxed working tree.
  *
@@ -79,4 +117,22 @@ export interface GitCommandRunner {
   checkRemoteAccess(
     check: GitRemoteAccessCheck,
   ): Promise<Result<void, RepositoryUnreachableError | AuthenticationFailedError>>;
+
+  /**
+   * Clones a remote's branch (its default branch when none is given) into a scratch working tree
+   * and returns every tracked file it contains. Used by `ImportRepository` to materialize a
+   * brand-new project's file tree from an external remote — this call does not touch any
+   * project's own working tree or storage; translating the returned entries into that project's
+   * `FileNode`/`Document`/`Asset` rows and stored bytes is the caller's job.
+   *
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
+   *   clone (defaults to the remote's default branch).
+   * @returns The cloned repository's files and the branch/commit they were cloned at; a
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
+   *   {@link checkRemoteAccess}, or a `GitCommandFailedError` for any other failure (for example,
+   *   the remote exceeds a configured size limit).
+   */
+  clone(
+    input: GitCloneInput,
+  ): Promise<Result<ClonedRepository, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>>;
 }

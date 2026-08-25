@@ -34,6 +34,9 @@ export type {
   GitPendingChange,
   GitPendingChangeType,
   GitRemoteAccessCheck,
+  GitCloneInput,
+  ClonedFileEntry,
+  ClonedRepository,
 } from './git/git-command-runner';
 
 // file-tree/
