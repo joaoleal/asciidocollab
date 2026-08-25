@@ -1,10 +1,11 @@
 import { randomUUID } from 'crypto';
 import { isThemeFilePath } from '@asciidocollab/asciidoc-core';
+import { Project } from '../../entities/project';
+import { ProjectMember } from '../../entities/project-member';
 import { FileNode } from '../../entities/file-node';
 import { Document } from '../../entities/document';
 import { Asset } from '../../entities/asset';
 import { GitRepository } from '../../entities/git-repository';
-import { GitOperation } from '../../entities/git-operation';
 import { FileNodeId } from '../../value-objects/ids/file-node-id';
 import { DocumentId } from '../../value-objects/ids/document-id';
 import { ContentId } from '../../value-objects/ids/content-id';
@@ -13,37 +14,34 @@ import { GitRepositoryId } from '../../value-objects/ids/git-repository-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { UserId } from '../../value-objects/ids/user-id';
 import { GitProvider } from '../../value-objects/project/git-provider';
+import { ProjectName } from '../../value-objects/project/project-name';
+import { Role } from '../../value-objects/identity/role';
 import { MimeType } from '../../value-objects/files/mime-type';
 import { FileNodeType } from '../../value-objects/files/file-node-type';
 import { FilePath } from '../../value-objects/files/file-path';
 import { isAsciiDocumentFileName } from '../../value-objects/files/asciidoc-file-name';
+import { ProjectRepository } from '../../ports/project/project.repository';
 import { FileNodeRepository } from '../../ports/file-tree/file-node.repository';
 import { DocumentRepository } from '../../ports/file-tree/document.repository';
 import { AssetRepository } from '../../ports/file-tree/asset.repository';
 import { ProjectFileStore } from '../../ports/storage/project-file-store';
+import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { GitCredentialStore } from '../../ports/git/git-credential-store';
 import { ClonedFileEntry, GitCommandRunner } from '../../ports/git/git-command-runner';
-import { GitOperationRepository } from '../../ports/git/git-operation-repository';
-import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
 import { Logger } from '../../ports/observability/logger';
 import { DomainError } from '../../errors/domain-error';
 import { ValidationError } from '../../errors/common/validation-error';
-import { RepositoryAlreadyConnectedError } from '../../errors/git/repository-already-connected';
-import { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
-// Referenced only from this file's own JSDoc @link tags (never thrown directly here) —
-// InsufficientRoleError is raised inside requireGitRole, and the remote-access failures are raised
-// inside GitCommandRunner.clone; kept imported so the links resolve to real symbols.
-import type { InsufficientRoleError } from '../../errors/git/insufficient-role';
-import type { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
-import type { AuthenticationFailedError } from '../../errors/git/authentication-failed';
-import { requireGitRole } from './git-role-guard';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 import { recordAuditSuccess } from '../audit-recording';
 import { AUDIT_GIT_OPERATION_SUCCEEDED } from '../../audit-actions';
+// Referenced only from this file's own JSDoc @link tags (never thrown directly here) — both are
+// raised inside GitCommandRunner.clone; kept imported so the links resolve to real symbols.
+import type { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
+import type { AuthenticationFailedError } from '../../errors/git/authentication-failed';
 
 /**
  * A remote URL this use case will accept, identical to `ConnectRepository`'s own check (a
@@ -58,36 +56,41 @@ const INTERNAL_PATH_PREFIXES = ['.git/', '.collab/'];
 /** Path values a clone entry is dropped for outright when they name the internal root itself. */
 const INTERNAL_PATH_EXACT = new Set(['.git', '.collab']);
 
-/**
- * How long a claimed operation may go without a heartbeat before it is considered abandoned.
- * Passed to `claimNextQueued`, which this use case calls once, immediately after enqueuing its own
- * operation — so in practice this only matters if a previous, crashed run left the operation
- * `RUNNING` with a stale heartbeat; a fresh `QUEUED` operation is always claimed regardless.
- */
-const CLAIM_STALE_HEARTBEAT_AFTER_MS = 5 * 60_000;
+/** The name a new import falls back to when nothing usable can be derived from the remote URL. */
+const FALLBACK_PROJECT_NAME = 'Imported repository';
 
 /**
  * Whether a clone entry's path names a platform-internal working-tree path (`.git/`, `.collab/`)
  * rather than genuine repository-tracked content. `.git/` is git's own metadata; `.collab/` is
- * where this platform keeps its own collaboration-session state beside the working tree
- * (data-model.md) — neither is a file the repository's owner ever authored, so neither is ever
- * imported as one, however a (misbehaving, or maliciously crafted) clone response might list it.
+ * where this platform keeps its own collaboration-session state beside the working tree —
+ * neither is a file the repository's owner ever authored, so neither is ever imported as one,
+ * however a (misbehaving, or maliciously crafted) clone response might list it.
  */
 function isInternalPath(path: string): boolean {
   if (INTERNAL_PATH_EXACT.has(path)) return true;
   return INTERNAL_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
-/** Everything `ImportRepositoryUseCase.execute` needs to import a remote into a project. */
+/**
+ * Derives a starting project name from a remote URL: the last path segment, with any trailing
+ * `.git` suffix removed (e.g. `https://github.com/acme/handbook.git` → `handbook`). Falls back to
+ * a fixed name when nothing usable can be extracted, so a name that fails `ProjectName`'s own
+ * validation is never possible for a well-formed remote URL, however unusual its final segment.
+ */
+function deriveProjectName(remoteUrl: string): string {
+  const withoutGitSuffix = remoteUrl.replace(/\.git$/i, '');
+  const segments = withoutGitSuffix.split(/[/:]+/).map((segment) => segment.trim()).filter(Boolean);
+  const lastSegment = segments.pop();
+  return lastSegment && lastSegment.length > 0 ? lastSegment : FALLBACK_PROJECT_NAME;
+}
+
+/** Everything `ImportRepositoryUseCase.execute` needs to import a remote as a new project. */
 export interface ImportRepositoryInput {
-  /** The user asking to import the repository. Must be the project's OWNER. */
-  readonly actorId: UserId;
   /**
-   * The project to import into. Import connects this project to the remote and populates its
-   * file tree from the remote's default (or requested) branch — it does not create the project
-   * itself, the same way `ConnectRepository` does not.
+   * The user asking to import the repository. Any authenticated user may do so — there is no
+   * pre-existing project to hold a role on — and becomes the new project's OWNER.
    */
-  readonly projectId: ProjectId;
+  readonly actorId: UserId;
   /** The git hosting provider, e.g. `'github'`, `'gitlab'`, or `'bitbucket'`. */
   readonly provider: string;
   /** The remote repository's URL. */
@@ -102,77 +105,67 @@ export interface ImportRepositoryInput {
 
 /** What a successful import hands back to its caller. */
 export interface ImportRepositoryResult {
-  /** The newly created repository link. */
+  /** The newly created project, owned by the importing user. */
+  readonly project: Project;
+  /** The new project's repository link. */
   readonly repository: GitRepository;
-  /** The completed `GitOperation` record for this import. */
-  readonly operation: GitOperation;
-}
-
-/** Tracks every write this run's tree materialization made, so a failure can undo exactly those. */
-interface MaterializedTree {
-  /** Every `FileNode` (folder or file) created, in the order it was written — parent before child. */
-  readonly createdFileNodeIds: FileNodeId[];
-  /** Every `Document` row created. */
-  readonly createdDocumentIds: DocumentId[];
-  /** Every `Asset` row created, keyed by its owning `FileNode` id (`Asset.id === FileNode.id`). */
-  readonly createdAssetIds: FileNodeId[];
-  /** Every path written to the project's file store. */
-  readonly writtenPaths: FilePath[];
-}
-
-function emptyTree(): MaterializedTree {
-  return { createdFileNodeIds: [], createdDocumentIds: [], createdAssetIds: [], writtenPaths: [] };
 }
 
 /**
- * What the guarded stretch of the import ended in: a connected repository, or the refusal to
- * answer with. Carried as one value, as `CloneProjectUseCase`'s `CloneOutcome` is, so a built
- * result and the failure that would discard it cannot both be set.
+ * What the guarded stretch of the import ended in: a built project, or the refusal to answer
+ * with. Carried as one value, as `CloneProjectUseCase`'s `CloneOutcome` is, so a built result and
+ * the failure that would discard it cannot both be set.
  */
 type ImportOutcome =
-  | { readonly built: true; readonly repository: GitRepository }
+  | { readonly built: true; readonly project: Project; readonly repository: GitRepository }
   | { readonly built: false; readonly error: DomainError };
 
 /**
- * Connects a project to an external Git remote and populates its file tree from the remote's
- * default (or requested) branch — the all-or-nothing "import" flow.
+ * Imports an external Git remote's default (or requested) branch as a brand-new project: clones
+ * it, builds a fresh `FileNode`/`Document`/`Asset` tree from what it returns, and connects the new
+ * project to the remote — the all-or-nothing "import" flow.
  *
- * Mirrors `CloneProjectUseCase`'s all-or-nothing shape, but its single load-bearing ordering
- * choice is different, for a reason worth spelling out. Clone defers its new project's *own*
- * owner-membership row to the very last write, because a project row with no membership is
- * invisible to every read path — that is what makes a failed clone leave nothing for anyone to
- * find. Import has no equivalent row to defer: it acts on a project the caller already owns (like
- * `ConnectRepository`, not like `CloneProjectUseCase`), so that project is visible throughout,
- * succeed or fail. What import *can* defer — and does — is the one write that would otherwise let
- * the project look "connected" before it genuinely is: the `GitRepository` row itself. Every
- * earlier write (the file tree, the stored credential) is undone by this use case's own cleanup on
- * any failure, so a project that never finishes an import is left exactly as it stood before the
- * attempt — not stranded mid-way with a remote link nothing populated.
+ * Any authenticated user may call this: there is no existing project to hold a role check
+ * against, since this use case is what creates the project. Mirrors `CloneProjectUseCase`'s
+ * ordering exactly — the project row is created early (memberless, and so invisible to every read
+ * path), everything else is built inside the same guarded stretch, and the actor's owner
+ * membership is the LAST write: the commit point. A run that fails at any point before that write
+ * — the clone itself, the tree, the stored credential, the repository link — leaves nothing an
+ * owner-scoped read path will ever surface, and the cleanup below discards the row (and, via the
+ * database's own cascade, everything hung off it) plus the stored files and credential a fake
+ * cannot cascade away on its own.
  *
- * Single-flight — never running two mutating git actions against the same project at once — is
- * enforced by checking `GitOperationRepository.findActiveOperation`
- * before enqueuing this import's own `GitOperation`, rather than by `withGuard`'s row-touch. This
- * matters because import runs before any `GitRepository` row exists for the project (it is what
- * creates that row) — so a guard that assumed one already existed would never fire for the very
- * case it exists to cover. `findActiveOperation` and `enqueue` are both keyed on the *project*,
- * which — unlike the `GitRepository` link — already exists by the time import is asked for, so the
- * guard holds from the first call onward.
+ * This use case is deliberately just the execution logic — cloning, tree-building, and the
+ * all-or-nothing commit — and does not enqueue, claim, or transition any `GitOperation` itself.
+ * Import is dispatched asynchronously (the route responds `202` immediately): the route is what
+ * enqueues the durable operation record, and the git-worker's run loop is what claims it and
+ * would invoke this use case (via a thin adapter translating the claimed operation and its
+ * decrypted credential into an `ImportRepositoryInput`) as the registered handler for the `IMPORT`
+ * kind, then transitions the operation to its terminal state from the `Result` this returns. None
+ * of that wiring exists yet — this class has no `GitOperationRepository` dependency so it stays
+ * callable synchronously today, and remains a clean, single seam for that adapter to close over
+ * once the route and worker registration are built.
+ *
+ * Single-flight does not apply to this create path: every import mints its own new project, so
+ * there is never a pre-existing project for a concurrent import to collide with — the single-flight
+ * guard other git actions need (via `GitOperationRepository`) has nothing to guard here.
  */
 export class ImportRepositoryUseCase {
   /**
-   * @param fileNodeRepo - Reads the project's existing root folder and writes the cloned tree.
+   * @param projectRepo - Writes the new project's row, and deletes it on a failed import.
+   * @param fileNodeRepo - Writes the new project's root folder and cloned tree.
    * @param documentRepo - Writes a row for every cloned AsciiDoc/theme file.
    * @param assetRepo - Writes a row for every other cloned file.
-   * @param fileStore - Holds the cloned bytes.
-   * @param gitRepositoryRepo - Reads whether the project is already connected, and writes the link.
+   * @param fileStore - Holds the cloned bytes; cleared entirely on a failed import.
+   * @param gitRepositoryRepo - Writes the new project's repository link.
    * @param credentialStore - Encrypts and persists the access credential.
    * @param commandRunner - Clones the remote's tracked files.
-   * @param gitOperationRepo - The durable work-list, single-flight guard, and progress tracker.
-   * @param projectMemberRepo - Resolves the actor's role for the authorization check.
-   * @param auditLogRepo - Records the authorization denial and the successful import.
+   * @param projectMemberRepo - Writes the owner-membership row that commits the import.
+   * @param auditLogRepo - Records the successful import.
    * @param logger - Optional sink for best-effort failures that must stay visible.
    */
   constructor(
+    private readonly projectRepo: ProjectRepository,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly documentRepo: DocumentRepository,
     private readonly assetRepo: AssetRepository,
@@ -180,40 +173,21 @@ export class ImportRepositoryUseCase {
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly credentialStore: GitCredentialStore,
     private readonly commandRunner: GitCommandRunner,
-    private readonly gitOperationRepo: GitOperationRepository,
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly auditLogRepo: AuditLogRepository,
     private readonly logger?: Logger,
   ) {}
 
   /**
-   * Imports the given remote's branch into the project.
+   * Imports the given remote's branch as a new project owned by `input.actorId`.
    *
-   * @param input - The acting user, the project, and the remote/credential to import.
-   * @returns The created repository link on success; a typed refusal otherwise —
-   *   {@link InsufficientRoleError} (via {@link requireGitRole}) when the actor is not the
-   *   project's OWNER, a {@link ValidationError} for an unrecognized provider or malformed remote
-   *   URL, {@link RepositoryAlreadyConnectedError} when the project already has a repository link,
-   *   {@link GitOperationInProgressError} when another git action is already in flight for this
-   *   project, {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} when the clone
-   *   fails, or a {@link GitCommandFailedError} for any other failure — including the project
-   *   having no root folder to import into, which should not happen for a project created through
-   *   the ordinary project-creation path.
+   * @param input - The acting user and the remote/credential to import.
+   * @returns The new project and its repository link on success; a typed refusal otherwise — a
+   *   {@link ValidationError} for an unrecognized provider or malformed remote URL,
+   *   {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} when the clone fails, or
+   *   a {@link GitCommandFailedError} for any other failure.
    */
   async execute(input: ImportRepositoryInput): Promise<Result<ImportRepositoryResult, DomainError>> {
-    const roleCheck = await requireGitRole(
-      this.projectMemberRepo,
-      this.auditLogRepo,
-      {
-        actorId: input.actorId,
-        projectId: input.projectId,
-        requiredRole: 'owner',
-        context: input.context,
-      },
-      this.logger,
-    );
-    if (!roleCheck.success) return roleCheck;
-
     let provider: GitProvider;
     try {
       provider = GitProvider.create(input.provider);
@@ -229,63 +203,29 @@ export class ImportRepositoryUseCase {
       };
     }
 
-    // Checked here, ahead of the single-flight guard and the clone itself, so a project that is
-    // already connected is a typed refusal rather than a storage-layer unique-constraint error
-    // surfacing from `gitRepositoryRepo.save` (the entity's 1:1 relationship with a project).
-    const existingRepository = await this.gitRepositoryRepo.findByProjectId(input.projectId);
-    if (existingRepository !== null) {
-      return { success: false, error: new RepositoryAlreadyConnectedError() };
-    }
-
-    // Single-flight (see the class docstring for why this, and not `withGuard`, is the right tool
-    // here). A TOCTOU race between this check and the `enqueue` below is real at the domain layer —
-    // the in-memory fake used in tests has no atomic test-and-set either — but the real adapter's
-    // partial-unique index on `(projectId) WHERE state IN (...)` (data-model.md) is what actually
-    // closes it; this check is the fast, typed refusal path for the overwhelmingly common case of
-    // two *sequential* requests, not the sole guarantee.
-    const activeOperation = await this.gitOperationRepo.findActiveOperation(input.projectId);
-    if (activeOperation !== null) {
-      return { success: false, error: new GitOperationInProgressError() };
-    }
-
-    const rootFolder = await this.findRootFolder(input.projectId);
-    if (rootFolder === null) {
-      return {
-        success: false,
-        error: new GitCommandFailedError('The project has no root folder to import into'),
-      };
-    }
-
-    return this.importWhileGuarded(input, provider, rootFolder.id);
-  }
-
-  /**
-   * Runs the clone and, on success, materializes the tree, stores the credential, and creates the
-   * repository link — the part of the flow that runs under this import's own `GitOperation`.
-   */
-  private async importWhileGuarded(
-    input: ImportRepositoryInput,
-    provider: GitProvider,
-    rootFolderId: FileNodeId,
-  ): Promise<Result<ImportRepositoryResult, DomainError>> {
-    const enqueued = await this.gitOperationRepo.enqueue({
-      projectId: input.projectId,
-      kind: 'IMPORT',
-      triggeredByUserId: input.actorId,
-      branch: input.branch ?? null,
-    });
-    // Claims this same operation (it is the only one queued for this project): moves it to
-    // RUNNING with a fresh heartbeat, which is what makes it visible to another caller's
-    // `findActiveOperation` check for the whole rest of this run.
-    const operation = (await this.gitOperationRepo.claimNextQueued(CLAIM_STALE_HEARTBEAT_AFTER_MS)) ?? enqueued;
-
-    // Allocated before the guarded stretch, and mutated in place rather than returned, so that a
-    // failure partway through `materializeTree` — which throws through, rather than returning —
-    // still leaves the cleanup below able to see (and undo) whatever had already been written.
-    const tree = emptyTree();
-    let outcome: ImportOutcome;
-
+    let projectName: ProjectName;
     try {
+      projectName = ProjectName.create(deriveProjectName(input.remoteUrl));
+    } catch (error) {
+      if (error instanceof DomainError) return { success: false, error };
+      throw error;
+    }
+
+    // Minted before any write, exactly as `CloneProjectUseCase` mints its clone id: the
+    // compensating cleanup needs something to name whatever happens next, including a project row
+    // whose own write is what fails.
+    const projectId = ProjectId.create(randomUUID());
+
+    let outcome: ImportOutcome;
+    try {
+      const project = new Project(projectId, projectName, null, [], null);
+      await this.projectRepo.save(project);
+
+      const rootFolderId = FileNodeId.create(randomUUID());
+      await this.fileNodeRepo.save(
+        new FileNode(rootFolderId, projectId, null, projectName.value, FileNodeType.create('folder'), FilePath.create('/')),
+      );
+
       const cloneResult = await this.commandRunner.clone({
         remoteUrl: input.remoteUrl,
         token: input.token,
@@ -295,11 +235,11 @@ export class ImportRepositoryUseCase {
       if (!cloneResult.success) {
         outcome = { built: false, error: cloneResult.error };
       } else {
-        await this.materializeTree(input.projectId, rootFolderId, cloneResult.value.entries, tree);
+        await this.materializeTree(projectId, rootFolderId, cloneResult.value.entries);
 
         // The store encrypts this internally — the plaintext token is never held here beyond
         // this call, and never appears in what gets persisted.
-        await this.credentialStore.save(input.projectId, {
+        await this.credentialStore.save(projectId, {
           token: input.token,
           provider,
           createdByUserId: input.actorId,
@@ -307,12 +247,12 @@ export class ImportRepositoryUseCase {
 
         const repository = new GitRepository(
           GitRepositoryId.create(randomUUID()),
-          input.projectId,
+          projectId,
           provider,
           input.remoteUrl,
           // The credential store is keyed by projectId (one credential per project), so the
           // project id itself is the reference the repository link needs to find it back.
-          input.projectId.value,
+          projectId.value,
           input.branch ?? cloneResult.value.defaultBranch,
           undefined,
           cloneResult.value.defaultBranch,
@@ -321,12 +261,16 @@ export class ImportRepositoryUseCase {
           new Date(),
           input.actorId,
         );
-        // The commit point (see the class docstring): nothing before this write treats the
-        // project as imported, so a failure at any earlier step below leaves nothing for the
-        // cleanup to discard but the tree and credential it undoes itself.
         await this.gitRepositoryRepo.save(repository);
 
-        outcome = { built: true, repository };
+        project.setRootFolderId(rootFolderId);
+        await this.projectRepo.save(project);
+
+        // The commit point: a project row with no membership is invisible to every read path, so
+        // it is this write, not the project row above, that makes the import findable at all.
+        await this.projectMemberRepo.addMember(new ProjectMember(projectId, input.actorId, Role.create('owner')));
+
+        outcome = { built: true, project, repository };
       }
     } catch (error) {
       outcome = {
@@ -336,18 +280,17 @@ export class ImportRepositoryUseCase {
     }
 
     if (!outcome.built) {
-      await this.gitOperationRepo.transition(operation.id, 'FAILED', { errorCode: outcome.error.name });
-      await this.cleanUpFailedImport(input.projectId, tree);
+      await this.cleanUpAbandonedImport(projectId);
       return { success: false, error: outcome.error };
     }
 
-    const transitioned = await this.gitOperationRepo.transition(operation.id, 'SUCCEEDED');
-
+    // Only now, past the commit point — an audit entry for an import abandoned before the
+    // membership row landed would outlive the project the cleanup above just removed.
     await recordAuditSuccess(
       this.auditLogRepo,
       {
         actorId: input.actorId,
-        projectId: input.projectId,
+        projectId,
         action: AUDIT_GIT_OPERATION_SUCCEEDED,
         resourceType: 'GitRepository',
         resourceId: outcome.repository.id.value,
@@ -357,23 +300,11 @@ export class ImportRepositoryUseCase {
       this.logger,
     );
 
-    return {
-      success: true,
-      value: {
-        repository: outcome.repository,
-        operation: transitioned.success ? transitioned.value : operation,
-      },
-    };
-  }
-
-  /** Finds the project's root folder (the node at the root path `/`), or null if it has none. */
-  private async findRootFolder(projectId: ProjectId): Promise<FileNode | null> {
-    const nodes = await this.fileNodeRepo.findByProjectId(projectId);
-    return nodes.find((node) => node.path.value === '/') ?? null;
+    return { success: true, value: { project: outcome.project, repository: outcome.repository } };
   }
 
   /**
-   * Reproduces every cloned file under the project's existing root folder, minting a fresh id
+   * Reproduces every cloned file under the project's just-created root folder, minting a fresh id
    * (and, for documents, a fresh `contentId`/`yjsStateId`) for each — nothing about a cloned file's
    * identity in this system reuses anything from the remote. Folders are implicit in each entry's
    * path and are created on demand as their first descendant is reached, so the tree structure
@@ -381,17 +312,13 @@ export class ImportRepositoryUseCase {
    * are dropped outright: neither is genuine repository-tracked content a project owner authored.
    *
    * @param projectId - The project the tree is written under.
-   * @param rootFolderId - The project's existing root folder; every top-level entry is parented here.
+   * @param rootFolderId - The project's just-created root folder; every top-level entry is parented here.
    * @param entries - Every file the clone produced.
-   * @param tree - Mutated in place as each row/byte is written — allocated by the caller, before
-   *   this call, so that a failure partway through (this method throws rather than returning on
-   *   any write failure) still leaves the caller able to see, and undo, everything written so far.
    */
   private async materializeTree(
     projectId: ProjectId,
     rootFolderId: FileNodeId,
     entries: readonly ClonedFileEntry[],
-    tree: MaterializedTree,
   ): Promise<void> {
     const folderIdByPath = new Map<string, FileNodeId>([['', rootFolderId]]);
 
@@ -402,17 +329,15 @@ export class ImportRepositoryUseCase {
       if (segments.length === 0) continue;
 
       const fileName = segments[segments.length - 1];
-      const parentId = await this.ensureFolder(projectId, segments.slice(0, -1), folderIdByPath, tree);
+      const parentId = await this.ensureFolder(projectId, segments.slice(0, -1), folderIdByPath);
 
       const fileNodeId = FileNodeId.create(randomUUID());
       const filePath = FilePath.create(`/${segments.join('/')}`);
       await this.fileNodeRepo.save(
         new FileNode(fileNodeId, projectId, parentId, fileName, FileNodeType.create('file'), filePath),
       );
-      tree.createdFileNodeIds.push(fileNodeId);
 
       await this.fileStore.write(projectId, filePath, entry.content);
-      tree.writtenPaths.push(filePath);
 
       const mimeType = MimeType.create(entry.mimeType);
 
@@ -422,15 +347,12 @@ export class ImportRepositoryUseCase {
       // an LFS pointer is already resolved to real bytes by the time `GitCommandRunner.clone`
       // returns an entry, so a large binary is handled exactly like any other asset.
       if (isAsciiDocumentFileName(fileName) || isThemeFilePath(entry.path)) {
-        const documentId = DocumentId.create(randomUUID());
         await this.documentRepo.save(
-          new Document(documentId, fileNodeId, ContentId.create(randomUUID()), YjsStateId.create(randomUUID()), mimeType),
+          new Document(DocumentId.create(randomUUID()), fileNodeId, ContentId.create(randomUUID()), YjsStateId.create(randomUUID()), mimeType),
         );
-        tree.createdDocumentIds.push(documentId);
       } else {
         // Asset.id == FileNode.id (1:1 FK relationship).
         await this.assetRepo.save(new Asset(fileNodeId, mimeType, BigInt(entry.content.length)));
-        tree.createdAssetIds.push(fileNodeId);
       }
     }
   }
@@ -445,50 +367,38 @@ export class ImportRepositoryUseCase {
     projectId: ProjectId,
     segments: readonly string[],
     folderIdByPath: Map<string, FileNodeId>,
-    tree: MaterializedTree,
   ): Promise<FileNodeId> {
     const key = segments.join('/');
     const existing = folderIdByPath.get(key);
     if (existing !== undefined) return existing;
 
-    const parentId = await this.ensureFolder(projectId, segments.slice(0, -1), folderIdByPath, tree);
+    const parentId = await this.ensureFolder(projectId, segments.slice(0, -1), folderIdByPath);
     const folderId = FileNodeId.create(randomUUID());
     const name = segments[segments.length - 1];
     const path = FilePath.create(`/${segments.join('/')}`);
     await this.fileNodeRepo.save(new FileNode(folderId, projectId, parentId, name, FileNodeType.create('folder'), path));
 
-    tree.createdFileNodeIds.push(folderId);
     folderIdByPath.set(key, folderId);
     return folderId;
   }
 
   /**
-   * Undoes a failed import so the project is left exactly as it stood before the attempt: every
-   * row and byte this run itself wrote, and (defensively) any credential or repository-link row
-   * that made it past the point that failed. Nothing here may hide the failure that caused it, so
-   * each step is attempted independently and a step that fails is logged rather than raised.
+   * Undoes an abandoned import, so a run that failed leaves nothing behind.
    *
-   * @param projectId - The project the import was attempted against.
-   * @param tree - Everything `materializeTree` wrote before the failure — possibly nothing, if the
-   *   clone itself never returned a repository to materialize.
+   * Deleting the project row cascades (in a real database) to everything hung off it — file
+   * nodes, documents, assets, and the repository link — leaving only the stored files and
+   * credential, which are removed here directly since neither is a row the project's own deletion
+   * can cascade away. Each step is attempted independently and a step that fails is logged rather
+   * than raised — a row delete the database refuses must not also leave the import's bytes or
+   * credential behind, and vice versa.
+   *
+   * @param projectId - The project the failed import would have produced.
    */
-  private async cleanUpFailedImport(projectId: ProjectId, tree: MaterializedTree): Promise<void> {
-    for (const path of tree.writtenPaths) {
-      await this.attemptCleanup(`the imported file at ${path.value}`, () => this.fileStore.remove(projectId, path));
-    }
-    for (const documentId of tree.createdDocumentIds) {
-      await this.attemptCleanup('an imported document row', () => this.documentRepo.delete(documentId));
-    }
-    for (const assetId of tree.createdAssetIds) {
-      await this.attemptCleanup('an imported asset row', () => this.assetRepo.delete(assetId));
-    }
-    // Children before parents: nothing here relies on the database to cascade a delete order.
-    for (const fileNodeId of [...tree.createdFileNodeIds].reverse()) {
-      await this.attemptCleanup('an imported file-tree node', () => this.fileNodeRepo.delete(fileNodeId));
-    }
-
-    await this.attemptCleanup('the stored credential', () => this.credentialStore.delete(projectId));
-    await this.attemptCleanup('the repository link', async () => {
+  private async cleanUpAbandonedImport(projectId: ProjectId): Promise<void> {
+    await this.attemptCleanup('the abandoned import\'s project row', () => this.projectRepo.delete(projectId));
+    await this.attemptCleanup('the abandoned import\'s stored files', () => this.fileStore.removeProject(projectId));
+    await this.attemptCleanup('the abandoned import\'s stored credential', () => this.credentialStore.delete(projectId));
+    await this.attemptCleanup('the abandoned import\'s repository link', async () => {
       const existing = await this.gitRepositoryRepo.findByProjectId(projectId);
       if (existing !== null) await this.gitRepositoryRepo.delete(existing.id);
     });
