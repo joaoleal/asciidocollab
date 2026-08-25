@@ -14,6 +14,9 @@ describe('gitErrorResponse', () => {
     ['GitConflictNotFoundError', 422, 'validation_error'],
     ['NoConflictInProgressError', 404, 'no_conflict_in_progress'],
     ['InvalidResolutionError', 422, 'validation_error'],
+    ['RepositoryUnreachableError', 422, 'repository_unreachable'],
+    ['AuthenticationFailedError', 401, 'authentication_failed'],
+    ['RepositoryAlreadyConnectedError', 409, 'already_connected'],
   ])('maps %s to %i / %s', (name, status, code) => {
     const result = gitErrorResponse(name);
     expect(result.status).toBe(status);

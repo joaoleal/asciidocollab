@@ -6,6 +6,7 @@ import {
   GIT_WORKER_STAGE_PATH,
   GIT_WORKER_UNSTAGE_PATH,
   GIT_WORKER_COMMIT_PATH,
+  GIT_WORKER_CONNECT_PATH,
   GIT_WORKER_BRANCHES_PATH,
   GIT_WORKER_BRANCH_CREATE_PATH,
   GIT_WORKER_PULL_COMPLETE_PATH,
@@ -124,6 +125,136 @@ describe('HttpGitWorkerClient', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_COMMIT_PATH}`);
     expect(JSON.parse(init.body)).toEqual({ projectId, actorId, message: 'Fix typo' });
+  });
+
+  it('POSTs connect to the connect endpoint with the credential and returns the connected repository', async () => {
+    const repositoryData = {
+      id: '990e8400-e29b-41d4-a716-446655440020',
+      projectId,
+      provider: 'github',
+      remoteUrl: 'https://github.com/example/repo.git',
+      currentBranch: 'main',
+      defaultBranch: null,
+      syncStatus: 'UP_TO_DATE',
+      lastSyncAt: null,
+      connectedByUserId: actorId,
+      createdAt: '2026-08-24T00:00:00.000Z',
+    };
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: true, data: { repository: repositoryData } }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      secret: 'w0rkersecret',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.connect({
+      projectId,
+      actorId,
+      provider: 'github',
+      remoteUrl: 'https://github.com/example/repo.git',
+      token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+    });
+
+    expect(result).toEqual({ ok: true, data: { repository: repositoryData } });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_CONNECT_PATH}`);
+    expect(init.method).toBe('POST');
+    expect(init.headers['x-git-worker-internal-secret']).toBe('w0rkersecret');
+    expect(JSON.parse(init.body)).toEqual({
+      projectId,
+      actorId,
+      provider: 'github',
+      remoteUrl: 'https://github.com/example/repo.git',
+      token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+    });
+  });
+
+  it('POSTs connect with a branch when given, and omits it when not', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockImplementation(() => Promise.resolve(Response.json({ ok: true, data: { repository: {} } }, { status: 200 })));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await client.connect({
+      projectId,
+      actorId,
+      provider: 'github',
+      remoteUrl: 'https://github.com/example/repo.git',
+      token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+      branch: 'develop',
+    });
+    let body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.branch).toBe('develop');
+
+    await client.connect({
+      projectId,
+      actorId,
+      provider: 'github',
+      remoteUrl: 'https://github.com/example/repo.git',
+      token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+    });
+    body = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(Object.prototype.hasOwnProperty.call(body, 'branch')).toBe(false);
+  });
+
+  it('surfaces RepositoryUnreachableError from connect as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'RepositoryUnreachableError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.connect({
+      projectId,
+      actorId,
+      provider: 'github',
+      remoteUrl: 'https://github.com/example/repo.git',
+      token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+    });
+    expect(result).toEqual({ ok: false, error: 'RepositoryUnreachableError' });
+  });
+
+  it('never includes the token in a thrown transport error on connect', async () => {
+    const token = 'ghp_supersecrettokenvalue1234567890';
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    let caught: unknown;
+    try {
+      await client.connect({ projectId, actorId, provider: 'github', remoteUrl: 'https://github.com/example/repo.git', token });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(GitWorkerTransportError);
+    expect((caught as Error).message).not.toContain(token);
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from connect on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(
+      client.connect({
+        projectId,
+        actorId,
+        provider: 'github',
+        remoteUrl: 'https://github.com/example/repo.git',
+        token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+      }),
+    ).rejects.toBeInstanceOf(GitWorkerTransportError);
   });
 
   it('POSTs getBranches to the branches endpoint and returns the branch list', async () => {

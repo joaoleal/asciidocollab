@@ -36,6 +36,14 @@ export const GIT_UNSTAGE_PATH = '/internal/git/unstage';
 /** Path of the internal endpoint the API calls to commit the currently staged changes. */
 export const GIT_COMMIT_PATH = '/internal/git/commit';
 
+/**
+ * Path of the internal endpoint the API calls to attach an existing project to an already-existing
+ * remote: a connectivity/authentication preflight against the remote, then the encrypted credential
+ * and the project's `GitRepository` link are saved. Synchronous — like `commit`/`status` — because
+ * it must run where the real `GitCommandRunner` lives.
+ */
+export const GIT_CONNECT_PATH = '/internal/git/connect';
+
 /** Path of the internal endpoint the API calls to list a project's local branches. */
 export const GIT_BRANCHES_PATH = '/internal/git/branches';
 
@@ -126,6 +134,55 @@ export interface CommitChangesRequest {
   readonly actorId: string;
   /** The commit message. */
   readonly message: string;
+}
+
+/** The raw (still-string) input for the connect endpoint, as parsed from the request body. */
+export interface ConnectRequest {
+  /** The project to connect, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** The git hosting provider, e.g. `'github'`, `'gitlab'`, or `'bitbucket'`. */
+  readonly provider: string;
+  /** The remote repository's URL. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Never logged, echoed, or persisted as-is. */
+  readonly token: string;
+  /** The branch to check out initially. Defaults to `'main'` when omitted. */
+  readonly branch?: string;
+}
+
+/**
+ * Wire-shaped mirror of a connected `GitRepository`, every value object mapped to its plain
+ * string/primitive form (no `{"_value": "..."}` leakage) and every `Date` to an ISO-8601 string.
+ */
+export interface GitRepositoryWireData {
+  /** Unique identifier of the repository link. */
+  readonly id: string;
+  /** ID of the project this repository is connected to. */
+  readonly projectId: string;
+  /** The git hosting provider. */
+  readonly provider: string;
+  /** The full remote URL of the git repository. */
+  readonly remoteUrl: string;
+  /** The currently checked-out branch. */
+  readonly currentBranch: string;
+  /** The remote's default branch, or null if not yet determined. */
+  readonly defaultBranch: string | null;
+  /** How the current branch compares to its remote counterpart. */
+  readonly syncStatus: string;
+  /** ISO-8601 timestamp of the last successful sync, or null if never synced. */
+  readonly lastSyncAt: string | null;
+  /** ID of the user who connected this repository, or null if unknown. */
+  readonly connectedByUserId: string | null;
+  /** ISO-8601 timestamp of when the repository link was created. */
+  readonly createdAt: string;
+}
+
+/** Wire-shaped mirror of `ConnectRepositoryResult`, `repository` mapped to {@link GitRepositoryWireData}. */
+export interface ConnectRepositoryWireResult {
+  /** The newly connected repository link. */
+  readonly repository: GitRepositoryWireData;
 }
 
 /** The raw (still-string) input for the branch-create endpoint, as parsed from the request body. */
@@ -248,6 +305,35 @@ export function parseCommitChangesBody(raw: string): CommitChangesRequest | null
   if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
   if (typeof message !== 'string') return null;
   return { projectId, actorId, message };
+}
+
+/**
+ * Validates and normalises a connect request body. Returns null on any malformed input — non-UUID
+ * ids, or a non-string/empty `provider`, `remoteUrl`, or `token`. Unlike the commit message/branch
+ * name, these are rejected here rather than left to the use case: they name the shape of the
+ * request itself (which remote, with which provider/credential), not a value the use case's own
+ * domain rules judge. `branch`, like the other endpoints' optional fields, may be omitted or must
+ * be a string when present.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseConnectBody(raw: string): ConnectRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, provider, remoteUrl, token, branch } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (typeof provider !== 'string' || provider.length === 0) return null;
+  if (typeof remoteUrl !== 'string' || remoteUrl.length === 0) return null;
+  if (typeof token !== 'string' || token.length === 0) return null;
+  if (branch !== undefined && typeof branch !== 'string') return null;
+  return { projectId, actorId, provider, remoteUrl, token, ...(branch !== undefined ? { branch } : {}) };
 }
 
 /**
@@ -410,6 +496,15 @@ export interface GitOpsHandlerDeps {
    */
   commit: (request: CommitChangesRequest) => Promise<Result<CommitChangesResult, DomainError>>;
   /**
+   * Connects a project to an existing remote: a connectivity/authentication preflight, then the
+   * encrypted credential and the project's `GitRepository` link are saved.
+   *
+   * @param request - The validated connect request.
+   * @returns The binding's wire-mapped `Result` (`repository` already a plain-object mirror, no
+   *   value-object `{_value}` leakage).
+   */
+  connect: (request: ConnectRequest) => Promise<Result<ConnectRepositoryWireResult, DomainError>>;
+  /**
    * Lists a project's local branches and the one currently checked out.
    *
    * @param request - The validated status-shaped request (same fields as a status request).
@@ -467,7 +562,7 @@ export interface GitOpsHandlerDeps {
 
 /**
  * Builds the node HTTP request handler for the internal git short-op endpoints (status,
- * behind-ahead, stage, unstage, commit, branches, branch-create, pull-complete, undo-pull,
+ * behind-ahead, stage, unstage, commit, connect, branches, branch-create, pull-complete, undo-pull,
  * conflicts, conflict-stages, conflict-resolve). Separated from the server so it can be
  * unit-tested with injected functions.
  *
@@ -486,6 +581,7 @@ export function createGitOpsRequestHandler(
         path !== GIT_STAGE_PATH &&
         path !== GIT_UNSTAGE_PATH &&
         path !== GIT_COMMIT_PATH &&
+        path !== GIT_CONNECT_PATH &&
         path !== GIT_BRANCHES_PATH &&
         path !== GIT_BRANCH_CREATE_PATH &&
         path !== GIT_PULL_COMPLETE_PATH &&
@@ -551,6 +647,14 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.commit(parsed);
       label = 'commit';
+    } else if (path === GIT_CONNECT_PATH) {
+      const parsed = parseConnectBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.connect(parsed);
+      label = 'connect';
     } else if (path === GIT_BRANCHES_PATH) {
       const parsed = parseGitStatusBody(raw);
       if (!parsed) {
@@ -641,6 +745,8 @@ export interface InternalGitServerOptions {
   unstage: GitOpsHandlerDeps['unstage'];
   /** Commits the currently staged changes. */
   commit: GitOpsHandlerDeps['commit'];
+  /** Connects a project to an existing remote. */
+  connect: GitOpsHandlerDeps['connect'];
   /** Lists a project's local branches and the one currently checked out. */
   getBranches: GitOpsHandlerDeps['getBranches'];
   /** Creates a new branch from the working tree's current branch tip. */
@@ -659,7 +765,7 @@ export interface InternalGitServerOptions {
 
 /**
  * Starts the internal HTTP server that lets the API run the git short ops (status, behind-ahead,
- * stage, unstage, commit, branches, branch-create, pull-complete, undo-pull, conflicts,
+ * stage, unstage, commit, connect, branches, branch-create, pull-complete, undo-pull, conflicts,
  * conflict-stages, conflict-resolve) worker-side, against the real git adapter. Binds to loopback
  * by default; pair with a shared secret and/or network policy in production. Returns the server so
  * the caller can close it on shutdown.
@@ -674,6 +780,7 @@ export function startInternalGitServer(options: InternalGitServerOptions): Promi
     stage: options.stage,
     unstage: options.unstage,
     commit: options.commit,
+    connect: options.connect,
     getBranches: options.getBranches,
     createBranch: options.createBranch,
     completePull: options.completePull,

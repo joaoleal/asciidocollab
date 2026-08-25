@@ -40,6 +40,7 @@ import { gitOperationStatusRoutes } from '../routes/projects/git/operation-statu
 import { gitActiveOperationRoutes } from '../routes/projects/git/active-operation';
 import { gitStatusRoutes } from '../routes/projects/git/status';
 import { gitInitializeRoutes } from '../routes/projects/git/initialize';
+import { gitConnectRoutes } from '../routes/projects/git/connect';
 import { gitDisconnectRoutes } from '../routes/projects/git/disconnect';
 import { gitCredentialRoutes } from '../routes/projects/git/credential';
 import { gitBehindAheadRoutes } from '../routes/projects/git/behind-ahead';
@@ -117,6 +118,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitActiveOperationRoutes);
       await innerApp.register(gitStatusRoutes);
       await innerApp.register(gitInitializeRoutes);
+      await innerApp.register(gitConnectRoutes);
       await innerApp.register(gitDisconnectRoutes);
       await innerApp.register(gitCredentialRoutes);
       await innerApp.register(gitBehindAheadRoutes);

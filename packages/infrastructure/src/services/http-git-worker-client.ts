@@ -15,6 +15,14 @@ export const GIT_WORKER_UNSTAGE_PATH = '/internal/git/unstage';
 /** Path of the internal endpoint that commits the currently staged changes. */
 export const GIT_WORKER_COMMIT_PATH = '/internal/git/commit';
 
+/**
+ * Path of the internal endpoint that attaches an existing project to an already-existing remote: a
+ * connectivity/authentication preflight, then the encrypted credential and the project's
+ * `GitRepository` link are saved. Byte-matches the git-worker's own `GIT_CONNECT_PATH`
+ * (`apps/git-worker/src/internal-git-server.ts`).
+ */
+export const GIT_WORKER_CONNECT_PATH = '/internal/git/connect';
+
 /** Path of the internal endpoint that lists a project's local branches. */
 export const GIT_WORKER_BRANCHES_PATH = '/internal/git/branches';
 
@@ -161,6 +169,36 @@ export interface GitWorkerCommitData {
   };
 }
 
+/** Wire shape of a connected repository link, as reported over the wire. */
+export interface GitWorkerRepositoryData {
+  /** Unique identifier of the repository link. */
+  readonly id: string;
+  /** ID of the project this repository is connected to. */
+  readonly projectId: string;
+  /** The git hosting provider. */
+  readonly provider: string;
+  /** The full remote URL of the git repository. */
+  readonly remoteUrl: string;
+  /** The currently checked-out branch. */
+  readonly currentBranch: string;
+  /** The remote's default branch, or null if not yet determined. */
+  readonly defaultBranch: string | null;
+  /** How the current branch compares to its remote counterpart. */
+  readonly syncStatus: GitWorkerSyncStatus;
+  /** ISO-8601 timestamp of the last successful sync, or null if never synced. */
+  readonly lastSyncAt: string | null;
+  /** ID of the user who connected this repository, or null if unknown. */
+  readonly connectedByUserId: string | null;
+  /** ISO-8601 timestamp of when the repository link was created. */
+  readonly createdAt: string;
+}
+
+/** Wire shape of the connect endpoint's `data` field. */
+export interface GitWorkerConnectData {
+  /** The newly connected repository link. */
+  readonly repository: GitWorkerRepositoryData;
+}
+
 /** Wire shape of the branches endpoint's `data` field. */
 export interface GitWorkerBranchListData {
   /** The currently checked-out branch. */
@@ -252,6 +290,18 @@ export interface GitWorkerCommitInput extends GitWorkerRequestInput {
   readonly message: string;
 }
 
+/** Input for {@link GitWorkerClient.connect}. */
+export interface GitWorkerConnectInput extends GitWorkerRequestInput {
+  /** The git hosting provider, e.g. `'github'`, `'gitlab'`, or `'bitbucket'`. */
+  readonly provider: string;
+  /** The remote repository's URL. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Never logged, echoed, or persisted as-is. */
+  readonly token: string;
+  /** The branch to check out initially. Defaults to `'main'` when omitted. */
+  readonly branch?: string;
+}
+
 /** Input for {@link GitWorkerClient.createBranch}. */
 export interface GitWorkerCreateBranchInput extends GitWorkerRequestInput {
   /** The new branch's name. */
@@ -296,6 +346,12 @@ export interface GitWorkerClient {
   unstageChanges(input: GitWorkerStageInput): Promise<GitWorkerResult<GitWorkerStageData>>;
   /** Commits the currently staged changes. */
   commitChanges(input: GitWorkerCommitInput): Promise<GitWorkerResult<GitWorkerCommitData>>;
+  /**
+   * Attaches an existing project to an already-existing remote: a connectivity/authentication
+   * preflight against the remote, then the encrypted credential and the project's `GitRepository`
+   * link are saved. Synchronous — no clone, no push.
+   */
+  connect(input: GitWorkerConnectInput): Promise<GitWorkerResult<GitWorkerConnectData>>;
   /** Lists a project's local branches and the one currently checked out. */
   getBranches(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBranchListData>>;
   /** Creates a new branch from the working tree's current branch tip. */
@@ -434,6 +490,17 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       projectId: input.projectId,
       actorId: input.actorId,
       message: input.message,
+    });
+  }
+
+  async connect(input: GitWorkerConnectInput): Promise<GitWorkerResult<GitWorkerConnectData>> {
+    return this.post<GitWorkerConnectData>(GIT_WORKER_CONNECT_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      provider: input.provider,
+      remoteUrl: input.remoteUrl,
+      token: input.token,
+      ...(input.branch !== undefined ? { branch: input.branch } : {}),
     });
   }
 

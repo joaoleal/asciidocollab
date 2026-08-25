@@ -88,6 +88,16 @@ const GIT_ERROR_TABLE: Readonly<Record<string, GitErrorTableEntry>> = {
     code: 'validation_error',
     message: 'The submitted resolution is invalid for this conflict',
   },
+  RepositoryUnreachableError: {
+    status: 422,
+    code: 'repository_unreachable',
+    message: 'The remote repository could not be reached',
+  },
+  AuthenticationFailedError: {
+    status: 401,
+    code: 'authentication_failed',
+    message: 'Authentication with the remote repository failed',
+  },
 };
 
 /**

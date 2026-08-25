@@ -6,6 +6,9 @@ import {
   InsufficientRoleError,
   GitOperationInProgressError,
   RepositoryNotConnectedError,
+  RepositoryUnreachableError,
+  AuthenticationFailedError,
+  RepositoryAlreadyConnectedError,
   EmptyCommitMessageError,
   NothingStagedError,
   LiveContentFlushFailedError,
@@ -23,6 +26,7 @@ import {
   GIT_STAGE_PATH,
   GIT_UNSTAGE_PATH,
   GIT_COMMIT_PATH,
+  GIT_CONNECT_PATH,
   GIT_BRANCHES_PATH,
   GIT_BRANCH_CREATE_PATH,
   GIT_PULL_COMPLETE_PATH,
@@ -34,6 +38,7 @@ import {
   parseGitStatusBody,
   parseStageChangesBody,
   parseCommitChangesBody,
+  parseConnectBody,
   parseCreateBranchBody,
   parseConflictPathBody,
   parseResolveConflictBody,
@@ -104,6 +109,7 @@ interface HandlerDoubles {
   stage: jest.Mock;
   unstage: jest.Mock;
   commit: jest.Mock;
+  connect: jest.Mock;
   getBranches: jest.Mock;
   createBranch: jest.Mock;
   completePull: jest.Mock;
@@ -122,6 +128,23 @@ function handlerDoubles(): HandlerDoubles {
     stage: jest.fn(async () => ({ success: true, value: { staged: ['a.adoc'] } })),
     unstage: jest.fn(async () => ({ success: true, value: { staged: [] } })),
     commit: jest.fn(async () => ({ success: true, value: { commit: { hash: 'abc123', message: 'msg', authoredAt: new Date('2026-01-01T00:00:00.000Z') } } })),
+    connect: jest.fn(async () => ({
+      success: true,
+      value: {
+        repository: {
+          id: '990e8400-e29b-41d4-a716-446655440020',
+          projectId: PROJECT_ID,
+          provider: 'github',
+          remoteUrl: 'https://github.com/example/repo.git',
+          currentBranch: 'main',
+          defaultBranch: null,
+          syncStatus: 'UP_TO_DATE',
+          lastSyncAt: null,
+          connectedByUserId: ACTOR_ID,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    })),
     getBranches: jest.fn(async () => ({ success: true, value: { current: 'main', branches: ['main'] } })),
     createBranch: jest.fn(async () => ({ success: true, value: { branch: { name: 'feature/x' } } })),
     completePull: jest.fn(async () => ({
@@ -256,6 +279,63 @@ describe('parseCommitChangesBody', () => {
     const withoutMessage = { projectId: PROJECT_ID, actorId: ACTOR_ID };
     expect(parseCommitChangesBody(JSON.stringify(withoutMessage))).toBeNull();
     expect(parseCommitChangesBody(JSON.stringify({ ...valid, message: 5 }))).toBeNull();
+  });
+});
+
+describe('parseConnectBody', () => {
+  const valid = {
+    projectId: PROJECT_ID,
+    actorId: ACTOR_ID,
+    provider: 'github',
+    remoteUrl: 'https://github.com/example/repo.git',
+    token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+  };
+
+  it('accepts a well-formed body without a branch', () => {
+    expect(parseConnectBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with a branch', () => {
+    const withBranch = { ...valid, branch: 'develop' };
+    expect(parseConnectBody(JSON.stringify(withBranch))).toEqual(withBranch);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseConnectBody('{bad')).toBeNull();
+    expect(parseConnectBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseConnectBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseConnectBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a missing, non-string, or empty provider', () => {
+    const { provider, ...withoutProvider } = valid;
+    void provider;
+    expect(parseConnectBody(JSON.stringify(withoutProvider))).toBeNull();
+    expect(parseConnectBody(JSON.stringify({ ...valid, provider: 5 }))).toBeNull();
+    expect(parseConnectBody(JSON.stringify({ ...valid, provider: '' }))).toBeNull();
+  });
+
+  it('rejects a missing, non-string, or empty remoteUrl', () => {
+    const { remoteUrl, ...withoutRemoteUrl } = valid;
+    void remoteUrl;
+    expect(parseConnectBody(JSON.stringify(withoutRemoteUrl))).toBeNull();
+    expect(parseConnectBody(JSON.stringify({ ...valid, remoteUrl: 5 }))).toBeNull();
+    expect(parseConnectBody(JSON.stringify({ ...valid, remoteUrl: '' }))).toBeNull();
+  });
+
+  it('rejects a missing, non-string, or empty token', () => {
+    const { token, ...withoutToken } = valid;
+    void token;
+    expect(parseConnectBody(JSON.stringify(withoutToken))).toBeNull();
+    expect(parseConnectBody(JSON.stringify({ ...valid, token: 5 }))).toBeNull();
+    expect(parseConnectBody(JSON.stringify({ ...valid, token: '' }))).toBeNull();
+  });
+
+  it('rejects a non-string branch when present', () => {
+    expect(parseConnectBody(JSON.stringify({ ...valid, branch: 5 }))).toBeNull();
   });
 });
 
@@ -425,6 +505,91 @@ describe('createGitOpsRequestHandler', () => {
       data: { commit: { hash: 'abc123', message: 'msg', authoredAt: '2026-01-01T00:00:00.000Z' } },
     });
     expect(doubles.commit).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, message: 'msg' });
+  });
+
+  const connectBody = JSON.stringify({
+    projectId: PROJECT_ID,
+    actorId: ACTOR_ID,
+    provider: 'github',
+    remoteUrl: 'https://github.com/example/repo.git',
+    token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+  });
+
+  it('answers connect with {ok:true,data} on a success Result, with no {_value} leakage and no token echoed', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONNECT_PATH), recordingResponse(), connectBody);
+    expect(response.statusCode).toBe(200);
+    const parsed = JSON.parse(response.body!);
+    expect(parsed).toEqual({
+      ok: true,
+      data: {
+        repository: {
+          id: '990e8400-e29b-41d4-a716-446655440020',
+          projectId: PROJECT_ID,
+          provider: 'github',
+          remoteUrl: 'https://github.com/example/repo.git',
+          currentBranch: 'main',
+          defaultBranch: null,
+          syncStatus: 'UP_TO_DATE',
+          lastSyncAt: null,
+          connectedByUserId: ACTOR_ID,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    });
+    expect(response.body).not.toContain('_value');
+    expect(response.body).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz1234567890');
+    expect(doubles.connect).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      provider: 'github',
+      remoteUrl: 'https://github.com/example/repo.git',
+      token: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+    });
+  });
+
+  it('answers 400 for connect on a malformed/non-UUID/missing-field body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONNECT_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.connect).not.toHaveBeenCalled();
+
+    const missingToken = await handle(
+      doubles,
+      fakeRequest('POST', GIT_CONNECT_PATH),
+      recordingResponse(),
+      JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, provider: 'github', remoteUrl: 'https://github.com/example/repo.git' }),
+    );
+    expect(missingToken.statusCode).toBe(400);
+    expect(doubles.connect).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for RepositoryUnreachableError from connect', async () => {
+    const doubles = handlerDoubles();
+    doubles.connect = jest.fn(async () => ({ success: false, error: new RepositoryUnreachableError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONNECT_PATH), recordingResponse(), connectBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryUnreachableError' });
+  });
+
+  it('answers {ok:false,error} for AuthenticationFailedError from connect', async () => {
+    const doubles = handlerDoubles();
+    doubles.connect = jest.fn(async () => ({ success: false, error: new AuthenticationFailedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONNECT_PATH), recordingResponse(), connectBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'AuthenticationFailedError' });
+  });
+
+  it('answers {ok:false,error} for RepositoryAlreadyConnectedError from connect', async () => {
+    const doubles = handlerDoubles();
+    doubles.connect = jest.fn(async () => ({ success: false, error: new RepositoryAlreadyConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONNECT_PATH), recordingResponse(), connectBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryAlreadyConnectedError' });
+  });
+
+  it('answers {ok:false,error} for InsufficientRoleError from connect', async () => {
+    const doubles = handlerDoubles();
+    doubles.connect = jest.fn(async () => ({ success: false, error: new InsufficientRoleError('owner') }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONNECT_PATH), recordingResponse(), connectBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'InsufficientRoleError' });
   });
 
   it('answers branches with {ok:true,data} on a success Result', async () => {
@@ -852,6 +1017,7 @@ describe('internal git server (HTTP)', () => {
       stage: doubles.stage,
       unstage: doubles.unstage,
       commit: doubles.commit,
+      connect: doubles.connect,
       getBranches: doubles.getBranches,
       createBranch: doubles.createBranch,
       completePull: doubles.completePull,
@@ -931,6 +1097,7 @@ describe('internal git server (HTTP)', () => {
         stage: doubles.stage,
         unstage: doubles.unstage,
         commit: doubles.commit,
+      connect: doubles.connect,
         getBranches: doubles.getBranches,
         createBranch: doubles.createBranch,
         completePull: doubles.completePull,
@@ -964,6 +1131,7 @@ describe('startInternalGitServer wiring', () => {
       stage: doubles.stage,
       unstage: doubles.unstage,
       commit: doubles.commit,
+      connect: doubles.connect,
       getBranches: doubles.getBranches,
       createBranch: doubles.createBranch,
       completePull: doubles.completePull,

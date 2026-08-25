@@ -21,6 +21,7 @@ import type {
   GitPushError,
   GitPushInput,
   GitPushResult,
+  GitRemoteAccessCheck,
   GitResolveMergeInput,
   GitResolveMergeOutcome,
   GitRestoreOutcome,
@@ -35,12 +36,16 @@ import type {
 type FetchError = RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError;
 
 /**
- * A local, minimal in-memory `GitCommandRunner` fake for this app's tests, covering only what
- * `ImportRepositoryUseCase` (`clone`) and `PushChangesUseCase` (`push`) exercise. See
- * `in-memory-git-operation-repository.ts`'s class docs for why this app keeps its own fakes
- * rather than reusing `packages/domain/tests`'.
+ * A local, minimal in-memory `GitCommandRunner` fake for this app's tests, covering what
+ * `ImportRepositoryUseCase` (`clone`), `PushChangesUseCase` (`push`), and `ConnectRepositoryUseCase`
+ * (`checkRemoteAccess`) exercise. See `in-memory-git-operation-repository.ts`'s class docs for why
+ * this app keeps its own fakes rather than reusing `packages/domain/tests`'.
  */
 export class InMemoryGitCommandRunner implements GitCommandRunner {
+  private readonly remoteAccessFailures = new Map<
+    string,
+    RepositoryUnreachableError | AuthenticationFailedError
+  >();
   private readonly clonedRepositories = new Map<string, ClonedRepository>();
   private readonly cloneFailures = new Map<
     string,
@@ -66,6 +71,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly resolveMergeFailures = new Map<string, GitCommandFailedError>();
   private readonly restoreToSnapshotResults = new Map<string, GitRestoreOutcome>();
   private readonly restoreToSnapshotFailures = new Map<string, GitCommandFailedError>();
+
+  /** Every call made to `checkRemoteAccess`, in call order, for asserting interactions. */
+  readonly remoteAccessCalls: GitRemoteAccessCheck[] = [];
 
   /** Every call made to `clone`, in call order, for asserting interactions. */
   readonly cloneCalls: GitCloneInput[] = [];
@@ -99,6 +107,11 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `restoreToSnapshot`, in call order, for asserting interactions. */
   readonly restoreToSnapshotCalls: { projectId: ProjectId; input: GitRestoreToSnapshotInput }[] = [];
+
+  /** Configures `checkRemoteAccess` to fail for a remote URL, taking priority over its default success. */
+  seedRemoteAccessFailure(remoteUrl: string, error: RepositoryUnreachableError | AuthenticationFailedError): void {
+    this.remoteAccessFailures.set(remoteUrl, error);
+  }
 
   /** Configures `clone` to return `repository` for a remote URL. */
   seedClone(remoteUrl: string, repository: ClonedRepository): void {
@@ -217,8 +230,19 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     throw new Error('not used by these tests');
   }
 
-  async checkRemoteAccess(): Promise<Result<void, RepositoryUnreachableError | AuthenticationFailedError>> {
-    throw new Error('not used by these tests');
+  /**
+   * Records the call and reports success, unless a failure was seeded for this remote URL via
+   * `seedRemoteAccessFailure`.
+   */
+  async checkRemoteAccess(
+    check: GitRemoteAccessCheck,
+  ): Promise<Result<void, RepositoryUnreachableError | AuthenticationFailedError>> {
+    this.remoteAccessCalls.push(check);
+
+    const failure = this.remoteAccessFailures.get(check.remoteUrl);
+    if (failure) return { success: false, error: failure };
+
+    return { success: true, value: undefined };
   }
 
   async clone(

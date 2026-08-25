@@ -11,7 +11,7 @@ async function main() {
   logger.info('git-worker started');
 
   // Internal endpoint that lets the API run the git short ops (status, behind-ahead, stage,
-  // unstage, commit, branches, branch-create, pull-complete, undo-pull, conflicts,
+  // unstage, commit, connect, branches, branch-create, pull-complete, undo-pull, conflicts,
   // conflict-stages, conflict-resolve) worker-side, against the real git adapter — the
   // synchronous RPC counterpart to the queue this worker otherwise polls. Bound to loopback;
   // secret-gated when configured.
@@ -33,6 +33,7 @@ async function main() {
     stage: app.stage,
     unstage: app.unstage,
     commit: app.commit,
+    connect: app.connect,
     getBranches: app.getBranches,
     createBranch: app.createBranch,
     completePull: app.completePull,

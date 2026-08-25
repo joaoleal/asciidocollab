@@ -7,6 +7,7 @@ import {
   GetBehindAheadUseCase,
   StageChangesUseCase,
   CommitChangesUseCase,
+  ConnectRepositoryUseCase,
   GetBranchesUseCase,
   CreateBranchUseCase,
   CompleteMergeUseCase,
@@ -18,6 +19,13 @@ import {
   ProjectId,
   UserId,
   type GitOperationId,
+  type GitRepository,
+  type GitRepositoryRepository,
+  type GitCredentialStore,
+  type GitCommandRunner,
+  type GitOperationRepository,
+  type ProjectMemberRepository,
+  type AuditLogRepository,
   type Logger,
   type GetGitStatusResult,
   type GitBehindAhead,
@@ -51,6 +59,9 @@ import type {
   CompleteMergeWireResult,
   UndoPullWireResult,
   ListConflictsWireResult,
+  ConnectRepositoryWireResult,
+  GitRepositoryWireData,
+  ConnectRequest,
 } from './internal-git-server.js';
 import { createGitWorkerConfig } from './config/git-worker-config.js';
 import { RealGitCommandRunner } from './git/git-command-runner.js';
@@ -85,6 +96,87 @@ export function mapOperationId<T extends { operationId: GitOperationId }>(
 ): Omit<T, 'operationId'> & { operationId: string } {
   const { operationId, ...rest } = result;
   return { ...rest, operationId: operationId.value };
+}
+
+/**
+ * Maps a real `GitRepository` entity to the wire-shaped mirror the internal RPC server serializes
+ * onto the HTTP response: every value object (`GitRepositoryId`/`ProjectId`/`GitProvider`/`UserId`)
+ * replaced by its plain `.value`, and every `Date` by an ISO-8601 string. None of those value
+ * objects define `toJSON`, so a bare `JSON.stringify` of the entity would otherwise serialize each
+ * as `{"_value": "..."}` — the same class of bug {@link mapOperationId} exists to close. Exported so
+ * it can be exercised directly over a REAL `GitRepository` (not a pre-stringified test fixture).
+ *
+ * @param repository - The connected repository entity.
+ * @returns Its wire-shaped mirror.
+ */
+export function mapGitRepositoryToWire(repository: GitRepository): GitRepositoryWireData {
+  return {
+    id: repository.id.value,
+    projectId: repository.projectId.value,
+    provider: repository.provider.value,
+    remoteUrl: repository.remoteUrl,
+    currentBranch: repository.currentBranch,
+    defaultBranch: repository.defaultBranch,
+    syncStatus: repository.syncStatus,
+    lastSyncAt: repository.lastSyncAt ? repository.lastSyncAt.toISOString() : null,
+    connectedByUserId: repository.connectedByUserId ? repository.connectedByUserId.value : null,
+    createdAt: repository.createdAt.toISOString(),
+  };
+}
+
+/** Every dependency the connect op fn needs to construct and run `ConnectRepositoryUseCase`. */
+export interface ConnectOpDeps {
+  /** Persists the project's `GitRepository` link. */
+  gitRepositoryRepository: GitRepositoryRepository;
+  /** Encrypts and persists the access credential. */
+  gitCredentialStore: GitCredentialStore;
+  /** Runs the connectivity/authentication check against the remote. */
+  gitCommandRunner: GitCommandRunner;
+  /** Single-flight guard so a connect cannot race another git action. */
+  gitOperationRepository: GitOperationRepository;
+  /** Resolves the actor's role for the use case's own OWNER-gate check. */
+  projectMemberRepository: ProjectMemberRepository;
+  /** Records the authorization denial and the successful connection. */
+  auditLogRepository: AuditLogRepository;
+  /** Optional sink for best-effort audit-write failures. */
+  logger?: Logger;
+}
+
+/**
+ * Builds the connect internal-RPC op fn: constructs `ConnectRepositoryUseCase` from the given
+ * deps, runs it, and maps a success onto the wire-shaped `{ repository }` envelope via
+ * {@link mapGitRepositoryToWire}. Separated from {@link compositionRoot} (mirroring
+ * `createInitializeHandler`'s own deps-taking factory) so it can be exercised directly against
+ * fakes in tests, without needing a real database.
+ *
+ * @param deps - The adapters (real, in the composition root; fakes, in tests) to run the connect with.
+ * @returns The op fn ready to bind onto `GitOpsHandlerDeps.connect`.
+ */
+export function createConnectOpFn(
+  deps: ConnectOpDeps,
+): (request: ConnectRequest) => Promise<Result<ConnectRepositoryWireResult, DomainError>> {
+  const connectRepository = new ConnectRepositoryUseCase(
+    deps.gitRepositoryRepository,
+    deps.gitCredentialStore,
+    deps.gitCommandRunner,
+    deps.gitOperationRepository,
+    deps.projectMemberRepository,
+    deps.auditLogRepository,
+    deps.logger,
+  );
+
+  return async (request: ConnectRequest): Promise<Result<ConnectRepositoryWireResult, DomainError>> => {
+    const result = await connectRepository.execute({
+      actorId: UserId.create(request.actorId),
+      projectId: ProjectId.create(request.projectId),
+      provider: request.provider,
+      remoteUrl: request.remoteUrl,
+      token: request.token,
+      ...(request.branch !== undefined ? { branch: request.branch } : {}),
+    });
+    if (!result.success) return result;
+    return { success: true, value: { repository: mapGitRepositoryToWire(result.value.repository) } };
+  };
 }
 
 export interface GitWorkerApp {
@@ -300,6 +392,19 @@ export async function compositionRoot() {
     userRepository,
     useCaseLogger,
   );
+  // Connect (attaching an existing project to an already-existing remote — no clone, no push) runs
+  // SYNC over this same internal RPC seam: it must run here rather than being enqueued because it
+  // calls `checkRemoteAccess` (`git ls-remote`) against the real `GitCommandRunner`, exactly like
+  // status/commit above.
+  const connect = createConnectOpFn({
+    gitRepositoryRepository,
+    gitCredentialStore,
+    gitCommandRunner,
+    gitOperationRepository,
+    projectMemberRepository,
+    auditLogRepository,
+    logger: useCaseLogger,
+  });
   const getBranchesUseCase = new GetBranchesUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
   const createBranchUseCase = new CreateBranchUseCase(
     projectMemberRepository,
@@ -467,6 +572,7 @@ export async function compositionRoot() {
     stage,
     unstage,
     commit,
+    connect,
     getBranches,
     createBranch,
     completePull,
