@@ -34,11 +34,22 @@ export type HostAddressResolver = (host: string) => Promise<readonly ResolvedHos
  * `scheme://[user@]host[:port]/path` URL and the scp-like shorthand `[user@]host:path` git
  * also accepts as a remote (no scheme, no `://`).
  *
+ * A backslash anywhere in the URL is rejected outright, before any parsing: the WHATWG `URL`
+ * parser used below silently rewrites a backslash to a forward slash for special schemes
+ * (`http:`/`https:`/...), so `https://github.com\@internal-host/x` parses here as host
+ * `github.com` — but git/curl follow RFC 3986, where the backslash has no such meaning and
+ * `github.com\` is parsed as literal userinfo, so the connection actually targets
+ * `internal-host`. No legitimate git remote host contains a backslash, so rejecting it closes
+ * that differential-parsing gap without needing a bespoke RFC-3986 authority parser.
+ *
  * @param remoteUrl - The remote URL a git network operation would connect to.
  * @returns The lowercased hostname, or null when no host can be extracted (for example a bare
- *   local filesystem path) — callers treat a null host as deny-by-default.
+ *   local filesystem path, or a URL containing a backslash) — callers treat a null host as
+ *   deny-by-default.
  */
 export function extractRemoteHost(remoteUrl: string): string | null {
+  if (remoteUrl.includes('\\')) return null;
+
   if (remoteUrl.includes('://')) {
     try {
       const { hostname } = new URL(remoteUrl);
@@ -48,6 +59,10 @@ export function extractRemoteHost(remoteUrl: string): string | null {
     }
   }
 
+  // Conservative fallback, not a full scp-syntax parser: this only needs to recognize the
+  // ordinary `[user@]host:path` shape. Anything odder — a second `@`, a bracketed IPv6 literal —
+  // either fails to match (denied outright) or yields a garbage "host" string that then fails
+  // the allowlist compare; either way it fails safe rather than extracting an attacker-chosen host.
   const scpLikeMatch = /^(?:[^@/]+@)?([^:/]+):/.exec(remoteUrl);
   return scpLikeMatch ? scpLikeMatch[1].toLowerCase() : null;
 }
@@ -126,6 +141,15 @@ async function lookupHostAddresses(host: string): Promise<readonly ResolvedHostA
  * its resolved addresses are not private/link-local. The host check runs first and rejects
  * before any DNS resolution is attempted, so a disallowed host never causes any network activity
  * at all.
+ *
+ * This validates the resolved address at check time only — it does not pin the connection to
+ * it. Whatever actually performs the git network operation (`git`/`curl`) re-resolves the
+ * hostname independently when it connects, moments later, so a remote that changes its DNS
+ * answer between this check and that connection (DNS rebinding) can still reach a different
+ * address than the one validated here. Closing that fully requires forcing the eventual
+ * connection to the exact address this function validated (for example via a resolve/connect-to
+ * override), which is out of scope here; a caller wiring this into a real network operation
+ * should either add that pinning or explicitly accept this residual TOCTOU window.
  *
  * @param remoteUrl - The remote URL a git network operation is about to contact.
  * @param allowedHosts - The configured egress allowlist (`git.egress.allowedHosts`).

@@ -31,6 +31,29 @@ describe('extractRemoteHost', () => {
   it('returns null for a malformed URL', () => {
     expect(extractRemoteHost('https://')).toBeNull();
   });
+
+  describe('differential-parsing safety (host must match what git/curl would actually contact)', () => {
+    it('rejects a backslash-crafted URL targeting a private address behind an allowlisted-looking prefix', () => {
+      // WHATWG URL treats \ as a path separator for http(s), so a naive parse would read this as
+      // host "github.com" — but git/curl (RFC 3986) read "github.com\" as userinfo and connect to
+      // 169.254.169.254. Must be denied outright, not misread as the allowlisted host.
+      expect(extractRemoteHost(String.raw`https://github.com\@169.254.169.254/repo.git`)).toBeNull();
+    });
+
+    it('rejects a backslash-crafted URL targeting an arbitrary host behind an allowlisted-looking prefix', () => {
+      expect(extractRemoteHost(String.raw`https://github.com\@evil-host.example/repo.git`)).toBeNull();
+    });
+
+    it('extracts the real (post-@) host, not the decoy, when the URL has multiple @ characters', () => {
+      expect(extractRemoteHost('https://github.com@evil.example/repo.git')).toBe('evil.example');
+    });
+
+    it('extracts the real host across an embedded tab/newline/carriage-return before the final @', () => {
+      expect(extractRemoteHost('https://github.com\t@evil.example/repo.git')).toBe('evil.example');
+      expect(extractRemoteHost('https://github.com\n@evil.example/repo.git')).toBe('evil.example');
+      expect(extractRemoteHost('https://github.com\r@evil.example/repo.git')).toBe('evil.example');
+    });
+  });
 });
 
 describe('isHostAllowed', () => {
@@ -129,6 +152,18 @@ describe('assertRemoteHostAllowed', () => {
     await expect(assertRemoteHostAllowed('/var/repos/example.git', ['git.example.com'], resolveHost)).rejects.toBeInstanceOf(
       RemoteHostNotAllowedError,
     );
+  });
+
+  it('rejects a backslash-crafted URL even when the allowlist contains the decoy prefix host, and never resolves', async () => {
+    const resolveHost = jest.fn().mockResolvedValue([{ address: '93.184.216.34' }]);
+
+    await expect(
+      assertRemoteHostAllowed(String.raw`https://github.com\@169.254.169.254/repo.git`, ['github.com'], resolveHost),
+    ).rejects.toBeInstanceOf(RemoteHostNotAllowedError);
+    await expect(
+      assertRemoteHostAllowed(String.raw`https://github.com\@evil-host.example/repo.git`, ['github.com'], resolveHost),
+    ).rejects.toBeInstanceOf(RemoteHostNotAllowedError);
+    expect(resolveHost).not.toHaveBeenCalled();
     expect(resolveHost).not.toHaveBeenCalled();
   });
 
