@@ -378,6 +378,14 @@ export type GitResolveMergeOutcome =
   | { readonly status: 'resolved'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
   | { readonly status: 'stillConflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
 
+/** What to discard/restore. `paths` are project-relative (no leading slash). Without `fromCommit`, each path's
+ *  working-tree changes are dropped back to HEAD (a plain discard); with `fromCommit`, each path is restored to
+ *  its content at that commit. */
+export interface GitDiscardInput {
+  readonly paths: readonly string[];
+  readonly fromCommit?: string;
+}
+
 /** Input for {@link GitCommandRunner.restoreToSnapshot}. */
 export interface GitRestoreToSnapshotInput {
   /** The operation whose pre-operation undo snapshot to restore. The snapshot is read from the `ConflictStageStore`. */
@@ -748,4 +756,26 @@ export interface GitCommandRunner {
     projectId: ProjectId,
     input: GitRestoreToSnapshotInput,
   ): Promise<Result<GitRestoreOutcome, GitCommandFailedError>>;
+
+  /**
+   * Restores the given files in the working tree — dropping their uncommitted changes back to HEAD, or, with
+   * `fromCommit`, to their content at that commit — and returns the resulting change-set for the caller to land
+   * into the project. A purely local operation — no network.
+   *
+   * Adapter contract (implemented later in the worker): for a plain discard, restore each tracked path from HEAD
+   * (`git checkout HEAD -- <path>` / `git restore`), and remove an untracked path (a `removed` change); with
+   * `fromCommit`, restore each path from that commit (`git checkout <fromCommit> -- <path>`). Paths are positionals
+   * after `--end-of-options`. Return each restored file as a `modified` (or `added`, if it was absent) change
+   * carrying its now-current bytes and mime type, and each discarded untracked file as a `removed` change — the
+   * change-set the reconciler applies. All-or-nothing: on any failure, leave the working tree as it was and return
+   * a `GitCommandFailedError`.
+   *
+   * @param projectId - The project whose working tree to restore.
+   * @param input - The paths to restore, and, optionally, the commit to restore them from.
+   * @returns The resulting change-set on success; a `GitCommandFailedError` when the underlying git command fails.
+   */
+  discardChanges(
+    projectId: ProjectId,
+    input: GitDiscardInput,
+  ): Promise<Result<GitMergeFileChange[], GitCommandFailedError>>;
 }

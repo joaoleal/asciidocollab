@@ -16,12 +16,14 @@ import {
   GitCreatedBranch,
   GitDiffInput,
   GitDiffResult,
+  GitDiscardInput,
   GitFetchInput,
   GitFetchResult,
   GitInitializeError,
   GitInitializeInput,
   GitInitializeOutcome,
   GitLogEntry,
+  GitMergeFileChange,
   GitMergeInput,
   GitMergeOutcome,
   GitPushError,
@@ -80,6 +82,8 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly resolveMergeOutcomes = new Map<string, GitResolveMergeOutcome>();
   private readonly restoreToSnapshotFailures = new Map<string, GitCommandFailedError>();
   private readonly restoreToSnapshotOutcomes = new Map<string, GitRestoreOutcome>();
+  private readonly discardChangesFailures = new Map<string, GitCommandFailedError>();
+  private readonly discardChangesResults = new Map<string, GitMergeFileChange[]>();
 
   /** Every call made to `getStatus`, in call order, for asserting use-case interactions. */
   readonly statusCalls: ProjectId[] = [];
@@ -134,6 +138,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `restoreToSnapshot`, in call order, for asserting the operation id. */
   readonly restoreToSnapshotCalls: { projectId: ProjectId; input: GitRestoreToSnapshotInput }[] = [];
+
+  /** Every call made to `discardChanges`, in call order, for asserting the exact paths/fromCommit. */
+  readonly discardChangesCalls: { projectId: ProjectId; input: GitDiscardInput }[] = [];
 
   /** Configures the status `getStatus` returns for a project. */
   seedStatus(projectId: ProjectId, status: GitWorkingTreeStatus): void {
@@ -673,5 +680,34 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     };
 
     return { success: true, value: outcome };
+  }
+
+  /** Configures the `GitMergeFileChange[]` `discardChanges` returns for a project on success. */
+  seedDiscardChanges(projectId: ProjectId, changes: GitMergeFileChange[]): void {
+    this.discardChangesResults.set(projectId.value, changes);
+  }
+
+  /** Configures `discardChanges` to fail for a project, taking priority over any seeded change-set. */
+  seedDiscardChangesFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.discardChangesFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact paths/`fromCommit`, so a test can assert them — and
+   * returns the seeded change-set (defaulting to an empty array when unseeded), unless a failure was
+   * seeded for this project via `seedDiscardChangesFailure`.
+   */
+  async discardChanges(
+    projectId: ProjectId,
+    input: GitDiscardInput,
+  ): Promise<Result<GitMergeFileChange[], GitCommandFailedError>> {
+    this.discardChangesCalls.push({ projectId, input });
+
+    const failure = this.discardChangesFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const changes = this.discardChangesResults.get(projectId.value) ?? [];
+
+    return { success: true, value: changes };
   }
 }
