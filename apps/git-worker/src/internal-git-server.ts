@@ -8,10 +8,14 @@ import {
   LiveContentFlushFailedError,
   type CommitChangesResult,
   type CompleteMergeResult,
+  type ConflictResolution,
   type CreateBranchResult,
   type GetBranchesResult,
+  type GetConflictStagesResult,
   type GetGitStatusResult,
   type GitBehindAhead,
+  type ListConflictsResult,
+  type ResolveConflictsResult,
   type Result,
   type StageChangesResult,
   type UndoPullResult,
@@ -47,6 +51,15 @@ export const GIT_PULL_COMPLETE_PATH = '/internal/git/pull/complete';
 
 /** Path of the internal endpoint the API calls to undo a project's most recent pull. */
 export const GIT_UNDO_PULL_PATH = '/internal/git/undo-pull';
+
+/** Path of the internal endpoint the API calls to list a project's currently conflicting files. */
+export const GIT_CONFLICTS_PATH = '/internal/git/conflicts';
+
+/** Path of the internal endpoint the API calls to read one conflicting file's three-way stages. */
+export const GIT_CONFLICT_STAGES_PATH = '/internal/git/conflicts/stages';
+
+/** Path of the internal endpoint the API calls to record one file's conflict resolution. */
+export const GIT_CONFLICT_RESOLVE_PATH = '/internal/git/conflicts/resolve';
 
 /** Header carrying the optional shared secret. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
@@ -124,6 +137,45 @@ export interface CreateBranchRequest {
   /** The new branch's name. */
   readonly name: string;
 }
+
+/** The raw (still-string) input for the conflict-stages endpoint, as parsed from the request body. */
+export interface ConflictPathRequest {
+  /** The project whose awaiting conflict to read from, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** The conflicting file's path. */
+  readonly path: string;
+}
+
+/** The raw (still-string) input for the conflict-resolve endpoint, as parsed from the request body. */
+export interface ResolveConflictRequest {
+  /** The project whose awaiting conflict this resolves a file for, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** The conflicting file's path. */
+  readonly path: string;
+  /** The chosen resolution for this file. */
+  readonly resolution: ConflictResolution;
+  /** The user-edited merged content; present iff {@link resolution} is `'merged'`. */
+  readonly mergedContent?: string;
+}
+
+/**
+ * Wire-shaped mirror of {@link CompleteMergeResult} with `operationId` mapped to a plain string.
+ * `GitOperationId` (a `Uuid` subclass) defines no `toJSON`, so a bare `JSON.stringify` of the
+ * domain result would otherwise serialize `operationId` as `{"_value": "<uuid>"}` instead of a
+ * string — `composition-root.ts`'s `completePull` binding maps to this shape before handing its
+ * result to this server.
+ */
+export type CompleteMergeWireResult = Omit<CompleteMergeResult, 'operationId'> & { readonly operationId: string };
+
+/** Wire-shaped mirror of {@link UndoPullResult}, `operationId` mapped to a plain string. See {@link CompleteMergeWireResult}. */
+export type UndoPullWireResult = Omit<UndoPullResult, 'operationId'> & { readonly operationId: string };
+
+/** Wire-shaped mirror of {@link ListConflictsResult}, `operationId` mapped to a plain string. See {@link CompleteMergeWireResult}. */
+export type ListConflictsWireResult = Omit<ListConflictsResult, 'operationId'> & { readonly operationId: string };
 
 /**
  * Validates and normalises a git-status request body. Returns null on any malformed input —
@@ -219,6 +271,64 @@ export function parseCreateBranchBody(raw: string): CreateBranchRequest | null {
   if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
   if (typeof name !== 'string') return null;
   return { projectId, actorId, name };
+}
+
+/** The `ConflictResolution` values a request body is allowed to carry. */
+const CONFLICT_RESOLUTIONS: ReadonlySet<string> = new Set<ConflictResolution>(['ours', 'theirs', 'merged']);
+
+/**
+ * Validates and normalises a conflict-stages request body. Returns null on any malformed input —
+ * non-UUID ids, or a non-string path.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseConflictPathBody(raw: string): ConflictPathRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, path } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (typeof path !== 'string') return null;
+  return { projectId, actorId, path };
+}
+
+/**
+ * Validates and normalises a conflict-resolve request body. Returns null on any malformed input —
+ * non-UUID ids, a non-string path, a `resolution` outside `'ours' | 'theirs' | 'merged'`, or a
+ * `mergedContent` that is present but not a string. `mergedContent` is legitimately absent (not
+ * merely `undefined`) for a non-`'merged'` resolution — the client omits it from the JSON body
+ * entirely — so this only rejects it when present with the wrong type.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseResolveConflictBody(raw: string): ResolveConflictRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, path, resolution, mergedContent } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (typeof path !== 'string') return null;
+  if (typeof resolution !== 'string' || !CONFLICT_RESOLUTIONS.has(resolution)) return null;
+  if (mergedContent !== undefined && typeof mergedContent !== 'string') return null;
+  return {
+    projectId,
+    actorId,
+    path,
+    resolution: resolution as ConflictResolution,
+    ...(mergedContent !== undefined ? { mergedContent } : {}),
+  };
 }
 
 function readBody(request: IncomingMessage): Promise<string> {
@@ -318,16 +428,37 @@ export interface GitOpsHandlerDeps {
    * resolved-changes landing with no commit for a `BRANCH_SWITCH`).
    *
    * @param request - The validated status-shaped request (same fields as a status request).
-   * @returns The use case's own `Result`.
+   * @returns The binding's wire-mapped `Result` (`operationId` already a plain string).
    */
-  completePull: (request: GitStatusRequest) => Promise<Result<CompleteMergeResult, DomainError>>;
+  completePull: (request: GitStatusRequest) => Promise<Result<CompleteMergeWireResult, DomainError>>;
   /**
    * Undoes a project's most recent pull.
    *
    * @param request - The validated status-shaped request (same fields as a status request).
+   * @returns The binding's wire-mapped `Result` (`operationId` already a plain string).
+   */
+  undoPull: (request: GitStatusRequest) => Promise<Result<UndoPullWireResult, DomainError>>;
+  /**
+   * Lists a project's currently conflicting files.
+   *
+   * @param request - The validated status-shaped request (same fields as a status request).
+   * @returns The binding's wire-mapped `Result` (`operationId` already a plain string).
+   */
+  listConflicts: (request: GitStatusRequest) => Promise<Result<ListConflictsWireResult, DomainError>>;
+  /**
+   * Reads one conflicting file's three-way (base/ours/theirs) stages.
+   *
+   * @param request - The validated conflict-path request.
    * @returns The use case's own `Result`.
    */
-  undoPull: (request: GitStatusRequest) => Promise<Result<UndoPullResult, DomainError>>;
+  getConflictStages: (request: ConflictPathRequest) => Promise<Result<GetConflictStagesResult, DomainError>>;
+  /**
+   * Records one file's chosen conflict resolution.
+   *
+   * @param request - The validated conflict-resolve request.
+   * @returns The use case's own `Result`.
+   */
+  resolveConflict: (request: ResolveConflictRequest) => Promise<Result<ResolveConflictsResult, DomainError>>;
   /** Optional shared secret; when set, requests without a matching header are rejected (401). */
   secret?: string;
   /** Logger for failures. */
@@ -336,8 +467,9 @@ export interface GitOpsHandlerDeps {
 
 /**
  * Builds the node HTTP request handler for the internal git short-op endpoints (status,
- * behind-ahead, stage, unstage, commit, branches, branch-create, pull-complete, undo-pull).
- * Separated from the server so it can be unit-tested with injected functions.
+ * behind-ahead, stage, unstage, commit, branches, branch-create, pull-complete, undo-pull,
+ * conflicts, conflict-stages, conflict-resolve). Separated from the server so it can be
+ * unit-tested with injected functions.
  *
  * @param deps - The op functions, optional secret, and logger.
  * @returns A node `http` request handler.
@@ -357,7 +489,10 @@ export function createGitOpsRequestHandler(
         path !== GIT_BRANCHES_PATH &&
         path !== GIT_BRANCH_CREATE_PATH &&
         path !== GIT_PULL_COMPLETE_PATH &&
-        path !== GIT_UNDO_PULL_PATH)
+        path !== GIT_UNDO_PULL_PATH &&
+        path !== GIT_CONFLICTS_PATH &&
+        path !== GIT_CONFLICT_STAGES_PATH &&
+        path !== GIT_CONFLICT_RESOLVE_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -440,7 +575,7 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.completePull(parsed);
       label = 'pull-complete';
-    } else {
+    } else if (path === GIT_UNDO_PULL_PATH) {
       const parsed = parseGitStatusBody(raw);
       if (!parsed) {
         response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
@@ -448,6 +583,30 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.undoPull(parsed);
       label = 'undo-pull';
+    } else if (path === GIT_CONFLICTS_PATH) {
+      const parsed = parseGitStatusBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.listConflicts(parsed);
+      label = 'conflicts';
+    } else if (path === GIT_CONFLICT_STAGES_PATH) {
+      const parsed = parseConflictPathBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.getConflictStages(parsed);
+      label = 'conflict-stages';
+    } else {
+      const parsed = parseResolveConflictBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.resolveConflict(parsed);
+      label = 'conflict-resolve';
     }
 
     try {
@@ -490,13 +649,20 @@ export interface InternalGitServerOptions {
   completePull: GitOpsHandlerDeps['completePull'];
   /** Undoes a project's most recent pull. */
   undoPull: GitOpsHandlerDeps['undoPull'];
+  /** Lists a project's currently conflicting files. */
+  listConflicts: GitOpsHandlerDeps['listConflicts'];
+  /** Reads one conflicting file's three-way (base/ours/theirs) stages. */
+  getConflictStages: GitOpsHandlerDeps['getConflictStages'];
+  /** Records one file's chosen conflict resolution. */
+  resolveConflict: GitOpsHandlerDeps['resolveConflict'];
 }
 
 /**
  * Starts the internal HTTP server that lets the API run the git short ops (status, behind-ahead,
- * stage, unstage, commit, branches, branch-create, pull-complete, undo-pull) worker-side, against
- * the real git adapter. Binds to loopback by default; pair with a shared secret and/or network
- * policy in production. Returns the server so the caller can close it on shutdown.
+ * stage, unstage, commit, branches, branch-create, pull-complete, undo-pull, conflicts,
+ * conflict-stages, conflict-resolve) worker-side, against the real git adapter. Binds to loopback
+ * by default; pair with a shared secret and/or network policy in production. Returns the server so
+ * the caller can close it on shutdown.
  *
  * @param options - Bind address, the op fns, optional secret/mTLS, logger.
  * @returns A promise resolving to the listening HTTP(S) server, or rejecting if the bind fails.
@@ -512,6 +678,9 @@ export function startInternalGitServer(options: InternalGitServerOptions): Promi
     createBranch: options.createBranch,
     completePull: options.completePull,
     undoPull: options.undoPull,
+    listConflicts: options.listConflicts,
+    getConflictStages: options.getConflictStages,
+    resolveConflict: options.resolveConflict,
     ...(options.secret ? { secret: options.secret } : {}),
     logger: options.logger,
   });

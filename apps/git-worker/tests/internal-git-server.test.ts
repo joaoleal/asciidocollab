@@ -13,6 +13,9 @@ import {
   GitCommandFailedError,
   UnresolvedConflictsError,
   NothingToUndoError,
+  NoConflictInProgressError,
+  GitConflictNotFoundError,
+  InvalidResolutionError,
 } from '@asciidocollab/domain';
 import {
   GIT_STATUS_PATH,
@@ -24,11 +27,16 @@ import {
   GIT_BRANCH_CREATE_PATH,
   GIT_PULL_COMPLETE_PATH,
   GIT_UNDO_PULL_PATH,
+  GIT_CONFLICTS_PATH,
+  GIT_CONFLICT_STAGES_PATH,
+  GIT_CONFLICT_RESOLVE_PATH,
   createGitOpsRequestHandler,
   parseGitStatusBody,
   parseStageChangesBody,
   parseCommitChangesBody,
   parseCreateBranchBody,
+  parseConflictPathBody,
+  parseResolveConflictBody,
   startInternalGitServer,
   type GitOpsHandlerDeps,
 } from '../src/internal-git-server.js';
@@ -100,6 +108,9 @@ interface HandlerDoubles {
   createBranch: jest.Mock;
   completePull: jest.Mock;
   undoPull: jest.Mock;
+  listConflicts: jest.Mock;
+  getConflictStages: jest.Mock;
+  resolveConflict: jest.Mock;
   logger: { info: jest.Mock; error: jest.Mock };
   secret?: string;
 }
@@ -121,6 +132,18 @@ function handlerDoubles(): HandlerDoubles {
       success: true,
       value: { operationId: '990e8400-e29b-41d4-a716-446655440011', headCommit: 'def456' },
     })),
+    listConflicts: jest.fn(async () => ({
+      success: true,
+      value: {
+        operationId: '990e8400-e29b-41d4-a716-446655440012',
+        files: [{ path: 'chapters/intro.adoc', isBinary: false, resolved: false }],
+      },
+    })),
+    getConflictStages: jest.fn(async () => ({
+      success: true,
+      value: { base: 'base text', ours: 'ours text', theirs: 'theirs text', isBinary: false },
+    })),
+    resolveConflict: jest.fn(async () => ({ success: true, value: { resolved: true } })),
     logger: fakeLogger(),
   };
 }
@@ -261,6 +284,68 @@ describe('parseCreateBranchBody', () => {
     const withoutName = { projectId: PROJECT_ID, actorId: ACTOR_ID };
     expect(parseCreateBranchBody(JSON.stringify(withoutName))).toBeNull();
     expect(parseCreateBranchBody(JSON.stringify({ ...valid, name: 5 }))).toBeNull();
+  });
+});
+
+describe('parseConflictPathBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc' };
+
+  it('accepts a well-formed body', () => {
+    expect(parseConflictPathBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseConflictPathBody('{bad')).toBeNull();
+    expect(parseConflictPathBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseConflictPathBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseConflictPathBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a missing or non-string path', () => {
+    expect(parseConflictPathBody(JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID }))).toBeNull();
+    expect(parseConflictPathBody(JSON.stringify({ ...valid, path: 5 }))).toBeNull();
+  });
+});
+
+describe('parseResolveConflictBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc', resolution: 'ours' };
+
+  it('accepts a well-formed body without mergedContent', () => {
+    expect(parseResolveConflictBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed merged body with mergedContent', () => {
+    const merged = { ...valid, resolution: 'merged', mergedContent: 'resolved text' };
+    expect(parseResolveConflictBody(JSON.stringify(merged))).toEqual(merged);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseResolveConflictBody('{bad')).toBeNull();
+    expect(parseResolveConflictBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseResolveConflictBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseResolveConflictBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a missing or non-string path', () => {
+    expect(parseResolveConflictBody(JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, resolution: 'ours' }))).toBeNull();
+    expect(parseResolveConflictBody(JSON.stringify({ ...valid, path: 5 }))).toBeNull();
+  });
+
+  it('rejects a missing or unrecognised resolution', () => {
+    expect(
+      parseResolveConflictBody(JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'x.adoc' })),
+    ).toBeNull();
+    expect(parseResolveConflictBody(JSON.stringify({ ...valid, resolution: 'bogus' }))).toBeNull();
+  });
+
+  it('rejects a non-string mergedContent when present', () => {
+    expect(parseResolveConflictBody(JSON.stringify({ ...valid, resolution: 'merged', mergedContent: 5 }))).toBeNull();
   });
 });
 
@@ -427,6 +512,144 @@ describe('createGitOpsRequestHandler', () => {
     doubles.undoPull = jest.fn(async () => ({ success: false, error: new NothingToUndoError() }));
     const response = await handle(doubles, fakeRequest('POST', GIT_UNDO_PULL_PATH), recordingResponse(), statusBody);
     expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'NothingToUndoError' });
+  });
+
+  it('answers conflicts with {ok:true,data} on a success Result, dispatching to listConflicts', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICTS_PATH), recordingResponse(), statusBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: {
+        operationId: '990e8400-e29b-41d4-a716-446655440012',
+        files: [{ path: 'chapters/intro.adoc', isBinary: false, resolved: false }],
+      },
+    });
+    expect(doubles.listConflicts).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID });
+  });
+
+  it('answers 400 for conflicts on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICTS_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.listConflicts).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for NoConflictInProgressError from conflicts', async () => {
+    const doubles = handlerDoubles();
+    doubles.listConflicts = jest.fn(async () => ({ success: false, error: new NoConflictInProgressError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICTS_PATH), recordingResponse(), statusBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'NoConflictInProgressError' });
+  });
+
+  it('answers conflict-stages with {ok:true,data} on a success Result, dispatching to getConflictStages with the decoded path', async () => {
+    const doubles = handlerDoubles();
+    const body = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc' });
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICT_STAGES_PATH), recordingResponse(), body);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: { base: 'base text', ours: 'ours text', theirs: 'theirs text', isBinary: false },
+    });
+    expect(doubles.getConflictStages).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      path: 'chapters/intro.adoc',
+    });
+  });
+
+  it('answers 400 for conflict-stages on a malformed/non-UUID/missing-path body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICT_STAGES_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.getConflictStages).not.toHaveBeenCalled();
+
+    const withoutPath = await handle(
+      doubles,
+      fakeRequest('POST', GIT_CONFLICT_STAGES_PATH),
+      recordingResponse(),
+      JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID }),
+    );
+    expect(withoutPath.statusCode).toBe(400);
+    expect(doubles.getConflictStages).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for GitConflictNotFoundError from conflict-stages', async () => {
+    const doubles = handlerDoubles();
+    doubles.getConflictStages = jest.fn(async () => ({ success: false, error: new GitConflictNotFoundError('chapters/intro.adoc') }));
+    const body = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc' });
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICT_STAGES_PATH), recordingResponse(), body);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'GitConflictNotFoundError' });
+  });
+
+  it('answers conflict-resolve with {ok:true,data} on a success Result, dispatching with the full decoded body', async () => {
+    const doubles = handlerDoubles();
+    const body = JSON.stringify({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      path: 'chapters/intro.adoc',
+      resolution: 'merged',
+      mergedContent: 'resolved content',
+    });
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICT_RESOLVE_PATH), recordingResponse(), body);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({ ok: true, data: { resolved: true } });
+    expect(doubles.resolveConflict).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      path: 'chapters/intro.adoc',
+      resolution: 'merged',
+      mergedContent: 'resolved content',
+    });
+  });
+
+  it('dispatches conflict-resolve without a mergedContent field when the body omits it (an ours/theirs resolution)', async () => {
+    const doubles = handlerDoubles();
+    const body = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc', resolution: 'ours' });
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICT_RESOLVE_PATH), recordingResponse(), body);
+    expect(response.statusCode).toBe(200);
+    expect(doubles.resolveConflict).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      path: 'chapters/intro.adoc',
+      resolution: 'ours',
+    });
+    const calledWith = doubles.resolveConflict.mock.calls[0][0];
+    expect(Object.prototype.hasOwnProperty.call(calledWith, 'mergedContent')).toBe(false);
+  });
+
+  it('answers 400 for conflict-resolve on a malformed body, a missing path, or an unrecognised resolution', async () => {
+    const doubles = handlerDoubles();
+    const malformed = await handle(doubles, fakeRequest('POST', GIT_CONFLICT_RESOLVE_PATH), recordingResponse(), '{bad');
+    expect(malformed.statusCode).toBe(400);
+
+    const missingPath = await handle(
+      doubles,
+      fakeRequest('POST', GIT_CONFLICT_RESOLVE_PATH),
+      recordingResponse(),
+      JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, resolution: 'ours' }),
+    );
+    expect(missingPath.statusCode).toBe(400);
+
+    const badResolution = await handle(
+      doubles,
+      fakeRequest('POST', GIT_CONFLICT_RESOLVE_PATH),
+      recordingResponse(),
+      JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'x.adoc', resolution: 'theirs; rm -rf /' }),
+    );
+    expect(badResolution.statusCode).toBe(400);
+    expect(doubles.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for InvalidResolutionError from conflict-resolve', async () => {
+    const doubles = handlerDoubles();
+    doubles.resolveConflict = jest.fn(async () => ({
+      success: false,
+      error: new InvalidResolutionError("A 'merged' resolution requires mergedContent"),
+    }));
+    const body = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'x.adoc', resolution: 'merged' });
+    const response = await handle(doubles, fakeRequest('POST', GIT_CONFLICT_RESOLVE_PATH), recordingResponse(), body);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'InvalidResolutionError' });
   });
 
   it('answers {ok:false,error} for RepositoryNotConnectedError from branches', async () => {
@@ -633,6 +856,9 @@ describe('internal git server (HTTP)', () => {
       createBranch: doubles.createBranch,
       completePull: doubles.completePull,
       undoPull: doubles.undoPull,
+      listConflicts: doubles.listConflicts,
+      getConflictStages: doubles.getConflictStages,
+      resolveConflict: doubles.resolveConflict,
       ...options,
     });
     await waitListening(server);
@@ -675,6 +901,22 @@ describe('internal git server (HTTP)', () => {
     expect(await response.json()).toEqual({ ok: true, data: { behind: 0, ahead: 0 } });
   });
 
+  it('answers a real conflicts request end to end', async () => {
+    await startWith();
+    const response = await fetch(`${baseUrl}${GIT_CONFLICTS_PATH}`, {
+      method: 'POST',
+      body: JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      data: {
+        operationId: '990e8400-e29b-41d4-a716-446655440012',
+        files: [{ path: 'chapters/intro.adoc', isBinary: false, resolved: false }],
+      },
+    });
+  });
+
   it('rejects (does not crash) when the port is already in use', async () => {
     await startWith();
     const inUsePort = (server.address() as AddressInfo).port;
@@ -693,6 +935,9 @@ describe('internal git server (HTTP)', () => {
         createBranch: doubles.createBranch,
         completePull: doubles.completePull,
         undoPull: doubles.undoPull,
+        listConflicts: doubles.listConflicts,
+        getConflictStages: doubles.getConflictStages,
+        resolveConflict: doubles.resolveConflict,
       }),
     ).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
@@ -723,6 +968,9 @@ describe('startInternalGitServer wiring', () => {
       createBranch: doubles.createBranch,
       completePull: doubles.completePull,
       undoPull: doubles.undoPull,
+      listConflicts: doubles.listConflicts,
+      getConflictStages: doubles.getConflictStages,
+      resolveConflict: doubles.resolveConflict,
     });
     listening = server;
     expect(logger.info).toHaveBeenCalledWith(

@@ -11,9 +11,13 @@ import {
   CreateBranchUseCase,
   CompleteMergeUseCase,
   UndoPullUseCase,
+  ListConflictsUseCase,
+  GetConflictStagesUseCase,
+  ResolveConflictsUseCase,
   GitChangeReconciler,
   ProjectId,
   UserId,
+  type GitOperationId,
   type Logger,
   type GetGitStatusResult,
   type GitBehindAhead,
@@ -21,8 +25,9 @@ import {
   type CommitChangesResult,
   type GetBranchesResult,
   type CreateBranchResult,
-  type CompleteMergeResult,
-  type UndoPullResult,
+  type GetConflictStagesResult,
+  type ResolveConflictsResult,
+  type ConflictResolution,
   type DomainError,
   type Result,
 } from '@asciidocollab/domain';
@@ -42,6 +47,11 @@ import {
   HttpCollaborativeContentEditor,
   SessionEncryption,
 } from '@asciidocollab/infrastructure';
+import type {
+  CompleteMergeWireResult,
+  UndoPullWireResult,
+  ListConflictsWireResult,
+} from './internal-git-server.js';
 import { createGitWorkerConfig } from './config/git-worker-config.js';
 import { RealGitCommandRunner } from './git/git-command-runner.js';
 import { FilesystemConflictStageStore } from './git/filesystem-conflict-stage-store.js';
@@ -57,6 +67,25 @@ import type { GitOperationHandlerRegistry } from './dispatch/git-operation-dispa
  * The wired git-worker application. `src/index.ts` drives its lifecycle: construct via
  * {@link compositionRoot}, `start()` it, then `shutdown()` it on SIGTERM/SIGINT.
  */
+/**
+ * Maps a use-case result whose `operationId` field is a `GitOperationId` value object to the
+ * wire-shaped result the internal RPC server serializes onto the HTTP response: `.value` (a plain
+ * string) in place of the value object itself, with every other field passed through unchanged.
+ * `GitOperationId` (a `Uuid` subclass) defines no `toJSON`, so a bare `JSON.stringify` of the
+ * domain result would otherwise serialize `operationId` as `{"_value": "<uuid>"}` — malformed for
+ * the API route/client, which expect a plain string. Exported so it can be exercised directly
+ * (over a real `GitOperationId`, not a pre-stringified test fixture) without needing a database.
+ *
+ * @param result - A use-case success value carrying a real `operationId` field.
+ * @returns The same value with `operationId` replaced by its plain-string `.value`.
+ */
+export function mapOperationId<T extends { operationId: GitOperationId }>(
+  result: T,
+): Omit<T, 'operationId'> & { operationId: string } {
+  const { operationId, ...rest } = result;
+  return { ...rest, operationId: operationId.value };
+}
+
 export interface GitWorkerApp {
   /**
    * Starts the git-worker application: begins the poll/claim/dispatch run loop.
@@ -291,6 +320,18 @@ export async function compositionRoot() {
     gitChangeReconciler,
     useCaseLogger,
   );
+  // The three conflict read/resolve ops likewise run SYNC over this same internal RPC seam,
+  // reading/editing the project's EXISTING awaiting operation's `GitConflict` rows rather than
+  // enqueuing new work.
+  const listConflictsUseCase = new ListConflictsUseCase(gitOperationRepository);
+  const getConflictStagesUseCase = new GetConflictStagesUseCase(gitOperationRepository, conflictStageStore);
+  const resolveConflictsUseCase = new ResolveConflictsUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitOperationRepository,
+    conflictStageStore,
+    useCaseLogger,
+  );
 
   // Bound as the internal RPC server's op fns (`src/index.ts`): each converts the raw UUID
   // strings the transport validated into the domain's own `ProjectId`/`UserId` value objects at
@@ -327,15 +368,49 @@ export async function compositionRoot() {
       actorId: UserId.create(input.actorId),
       name: input.name,
     });
-  const completePull = (input: { projectId: string; actorId: string }): Promise<Result<CompleteMergeResult, DomainError>> =>
-    completeMergeUseCase.execute({
+  const completePull = async (
+    input: { projectId: string; actorId: string },
+  ): Promise<Result<CompleteMergeWireResult, DomainError>> => {
+    const result = await completeMergeUseCase.execute({
       projectId: ProjectId.create(input.projectId),
       actorId: UserId.create(input.actorId),
     });
-  const undoPull = (input: { projectId: string; actorId: string }): Promise<Result<UndoPullResult, DomainError>> =>
-    undoPullUseCase.execute({
+    return result.success ? { success: true, value: mapOperationId(result.value) } : result;
+  };
+  const undoPull = async (
+    input: { projectId: string; actorId: string },
+  ): Promise<Result<UndoPullWireResult, DomainError>> => {
+    const result = await undoPullUseCase.execute({
       projectId: ProjectId.create(input.projectId),
       actorId: UserId.create(input.actorId),
+    });
+    return result.success ? { success: true, value: mapOperationId(result.value) } : result;
+  };
+  const listConflicts = async (
+    input: { projectId: string; actorId: string },
+  ): Promise<Result<ListConflictsWireResult, DomainError>> => {
+    const result = await listConflictsUseCase.execute({ projectId: ProjectId.create(input.projectId) });
+    return result.success ? { success: true, value: mapOperationId(result.value) } : result;
+  };
+  const getConflictStages = (
+    input: { projectId: string; actorId: string; path: string },
+  ): Promise<Result<GetConflictStagesResult, DomainError>> =>
+    getConflictStagesUseCase.execute({ projectId: ProjectId.create(input.projectId), path: input.path });
+  const resolveConflict = (
+    input: {
+      projectId: string;
+      actorId: string;
+      path: string;
+      resolution: ConflictResolution;
+      mergedContent?: string;
+    },
+  ): Promise<Result<ResolveConflictsResult, DomainError>> =>
+    resolveConflictsUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+      path: input.path,
+      resolution: input.resolution,
+      ...(input.mergedContent !== undefined ? { mergedContent: input.mergedContent } : {}),
     });
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
@@ -386,5 +461,8 @@ export async function compositionRoot() {
     createBranch,
     completePull,
     undoPull,
+    listConflicts,
+    getConflictStages,
+    resolveConflict,
   };
 }
