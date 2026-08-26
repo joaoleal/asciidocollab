@@ -14,6 +14,7 @@ import {
   type GetConflictStagesResult,
   type GetGitStatusResult,
   type GitBehindAhead,
+  type GitDiffResult,
   type ListConflictsResult,
   type ResolveConflictsResult,
   type Result,
@@ -68,6 +69,15 @@ export const GIT_CONFLICT_STAGES_PATH = '/internal/git/conflicts/stages';
 
 /** Path of the internal endpoint the API calls to record one file's conflict resolution. */
 export const GIT_CONFLICT_RESOLVE_PATH = '/internal/git/conflicts/resolve';
+
+/** Path of the internal endpoint the API calls to read a project's (or a single file's) commit history. */
+export const GIT_HISTORY_PATH = '/internal/git/history';
+
+/** Path of the internal endpoint the API calls to produce a unified diff. */
+export const GIT_DIFF_PATH = '/internal/git/diff';
+
+/** Path of the internal endpoint the API calls to read a single file's per-line authorship (blame). */
+export const GIT_BLAME_PATH = '/internal/git/blame';
 
 /** Header carrying the optional shared secret. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
@@ -417,6 +427,176 @@ export function parseResolveConflictBody(raw: string): ResolveConflictRequest | 
   };
 }
 
+/** The raw (still-string) input for the history endpoint, as parsed from the request body. */
+export interface HistoryRequest {
+  /** The project whose history to read, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** When given, restricts the history to the commits that touched this single project-relative file. */
+  readonly path?: string;
+  /** When given, caps the number of commits returned. */
+  readonly limit?: number;
+}
+
+/** The raw (still-string) input for the diff endpoint, as parsed from the request body. */
+export interface DiffRequest {
+  /** The project whose repository to diff, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** When given, scopes the diff to this single project-relative file (whole tree when absent). */
+  readonly path?: string;
+  /** The earlier commit hash. Given together with `to` to diff between two commits. */
+  readonly from?: string;
+  /** The later commit hash. Given together with `from` to diff between two commits. */
+  readonly to?: string;
+}
+
+/** The raw (still-string) input for the blame endpoint, as parsed from the request body. */
+export interface BlameRequest {
+  /** The project whose file to blame, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** The project-relative path of the file to blame. */
+  readonly path: string;
+  /** When given, blames the file as of this commit; without it, the current working-tree file. */
+  readonly ref?: string;
+}
+
+/**
+ * One commit in the history endpoint's wire-shaped result, mirroring the domain's `HistoryCommit`
+ * with `authorUserId` mapped to a plain string and `authoredAt` to an ISO-8601 string.
+ * `composition-root.ts`'s `getHistory` binding maps to this shape before handing its result to this
+ * server. See {@link GitRepositoryWireData} for why this mapping exists.
+ */
+export interface HistoryWireCommit {
+  /** The commit hash. */
+  readonly hash: string;
+  /** The commit message. */
+  readonly message: string;
+  /** ID of the authoring user, when the commit's author maps to one; absent for unmapped authors. */
+  readonly authorUserId?: string;
+  /** ISO-8601 timestamp of when the commit was authored. */
+  readonly authoredAt: string;
+}
+
+/** Wire-shaped mirror of the domain's `GetHistoryResult`, its commits mapped via {@link HistoryWireCommit}. */
+export interface GetHistoryWireResult {
+  /** The matching commits, newest first. */
+  readonly commits: readonly HistoryWireCommit[];
+}
+
+/**
+ * One line in the blame endpoint's wire-shaped result, mirroring the domain's `BlameLine` with
+ * `authorUserId` mapped to a plain string and `authoredAt` to an ISO-8601 string.
+ * `composition-root.ts`'s `getBlame` binding maps to this shape before handing its result to this
+ * server. See {@link GitRepositoryWireData} for why this mapping exists.
+ */
+export interface BlameWireLine {
+  /** 1-based line number in the blamed file. */
+  readonly lineNumber: number;
+  /** The full hash of the commit that last modified this line. */
+  readonly hash: string;
+  /** ID of the authoring user, when the line's commit author maps to one; absent for unmapped authors. */
+  readonly authorUserId?: string;
+  /** ISO-8601 timestamp of when the line's commit was authored. */
+  readonly authoredAt: string;
+  /** The line's text content. */
+  readonly content: string;
+}
+
+/** Wire-shaped mirror of the domain's `GetBlameResult`, its lines mapped via {@link BlameWireLine}. */
+export interface GetBlameWireResult {
+  /** Every line's authorship, in file order. */
+  readonly lines: readonly BlameWireLine[];
+}
+
+/**
+ * Validates and normalises a history request body. Returns null on any malformed input — non-UUID
+ * ids, a non-string `path` when present, or a `limit` that is present but not a non-negative finite
+ * number (rejecting it here, rather than leaving it to the use case, since it names the shape of
+ * the request itself).
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseHistoryBody(raw: string): HistoryRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, path, limit } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (path !== undefined && typeof path !== 'string') return null;
+  if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 0)) return null;
+  return {
+    projectId,
+    actorId,
+    ...(path !== undefined ? { path } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+  };
+}
+
+/**
+ * Validates and normalises a diff request body. Returns null on any malformed input — non-UUID
+ * ids, or a non-string `path`/`from`/`to` when present.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseDiffBody(raw: string): DiffRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, path, from, to } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (path !== undefined && typeof path !== 'string') return null;
+  if (from !== undefined && typeof from !== 'string') return null;
+  if (to !== undefined && typeof to !== 'string') return null;
+  return {
+    projectId,
+    actorId,
+    ...(path !== undefined ? { path } : {}),
+    ...(from !== undefined ? { from } : {}),
+    ...(to !== undefined ? { to } : {}),
+  };
+}
+
+/**
+ * Validates and normalises a blame request body. Returns null on any malformed input — non-UUID
+ * ids, a missing/empty/non-string `path` (required — blame always names a single file), or a
+ * non-string `ref` when present.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseBlameBody(raw: string): BlameRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, path, ref } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (typeof path !== 'string' || path.length === 0) return null;
+  if (ref !== undefined && typeof ref !== 'string') return null;
+  return { projectId, actorId, path, ...(ref !== undefined ? { ref } : {}) };
+}
+
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -554,6 +734,28 @@ export interface GitOpsHandlerDeps {
    * @returns The use case's own `Result`.
    */
   resolveConflict: (request: ResolveConflictRequest) => Promise<Result<ResolveConflictsResult, DomainError>>;
+  /**
+   * Reads a project's (or a single file's) commit history.
+   *
+   * @param request - The validated history request.
+   * @returns The binding's wire-mapped `Result` (`authorUserId`/`authoredAt` already plain strings).
+   */
+  getHistory: (request: HistoryRequest) => Promise<Result<GetHistoryWireResult, DomainError>>;
+  /**
+   * Produces a unified diff for a project: between two commits, or of the uncommitted working
+   * changes against HEAD.
+   *
+   * @param request - The validated diff request.
+   * @returns The use case's own `Result` (already a plain `{unified}` string, no mapping needed).
+   */
+  getDiff: (request: DiffRequest) => Promise<Result<GitDiffResult, DomainError>>;
+  /**
+   * Reads a single project-relative file's per-line authorship (a "blame").
+   *
+   * @param request - The validated blame request.
+   * @returns The binding's wire-mapped `Result` (`authorUserId`/`authoredAt` already plain strings).
+   */
+  getBlame: (request: BlameRequest) => Promise<Result<GetBlameWireResult, DomainError>>;
   /** Optional shared secret; when set, requests without a matching header are rejected (401). */
   secret?: string;
   /** Logger for failures. */
@@ -588,7 +790,10 @@ export function createGitOpsRequestHandler(
         path !== GIT_UNDO_PULL_PATH &&
         path !== GIT_CONFLICTS_PATH &&
         path !== GIT_CONFLICT_STAGES_PATH &&
-        path !== GIT_CONFLICT_RESOLVE_PATH)
+        path !== GIT_CONFLICT_RESOLVE_PATH &&
+        path !== GIT_HISTORY_PATH &&
+        path !== GIT_DIFF_PATH &&
+        path !== GIT_BLAME_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -703,7 +908,7 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.getConflictStages(parsed);
       label = 'conflict-stages';
-    } else {
+    } else if (path === GIT_CONFLICT_RESOLVE_PATH) {
       const parsed = parseResolveConflictBody(raw);
       if (!parsed) {
         response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
@@ -711,6 +916,30 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.resolveConflict(parsed);
       label = 'conflict-resolve';
+    } else if (path === GIT_HISTORY_PATH) {
+      const parsed = parseHistoryBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.getHistory(parsed);
+      label = 'history';
+    } else if (path === GIT_DIFF_PATH) {
+      const parsed = parseDiffBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.getDiff(parsed);
+      label = 'diff';
+    } else {
+      const parsed = parseBlameBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.getBlame(parsed);
+      label = 'blame';
     }
 
     try {
@@ -761,6 +990,12 @@ export interface InternalGitServerOptions {
   getConflictStages: GitOpsHandlerDeps['getConflictStages'];
   /** Records one file's chosen conflict resolution. */
   resolveConflict: GitOpsHandlerDeps['resolveConflict'];
+  /** Reads a project's (or a single file's) commit history. */
+  getHistory: GitOpsHandlerDeps['getHistory'];
+  /** Produces a unified diff for a project. */
+  getDiff: GitOpsHandlerDeps['getDiff'];
+  /** Reads a single project-relative file's per-line authorship (a "blame"). */
+  getBlame: GitOpsHandlerDeps['getBlame'];
 }
 
 /**
@@ -788,6 +1023,9 @@ export function startInternalGitServer(options: InternalGitServerOptions): Promi
     listConflicts: options.listConflicts,
     getConflictStages: options.getConflictStages,
     resolveConflict: options.resolveConflict,
+    getHistory: options.getHistory,
+    getDiff: options.getDiff,
+    getBlame: options.getBlame,
     ...(options.secret ? { secret: options.secret } : {}),
     logger: options.logger,
   });

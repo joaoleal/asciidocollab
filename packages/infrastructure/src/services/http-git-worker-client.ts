@@ -64,6 +64,15 @@ export const GIT_WORKER_CONFLICT_STAGES_PATH = '/internal/git/conflicts/stages';
 /** Path of the internal endpoint that records one file's conflict resolution. See the note on {@link GIT_WORKER_CONFLICTS_PATH}. */
 export const GIT_WORKER_CONFLICT_RESOLVE_PATH = '/internal/git/conflicts/resolve';
 
+/** Path of the internal endpoint that reads a project's (or a single file's) commit history. Byte-matches the git-worker's own `GIT_HISTORY_PATH`. */
+export const GIT_WORKER_HISTORY_PATH = '/internal/git/history';
+
+/** Path of the internal endpoint that produces a unified diff. Byte-matches the git-worker's own `GIT_DIFF_PATH`. */
+export const GIT_WORKER_DIFF_PATH = '/internal/git/diff';
+
+/** Path of the internal endpoint that reads a single file's per-line authorship (blame). Byte-matches the git-worker's own `GIT_BLAME_PATH`. */
+export const GIT_WORKER_BLAME_PATH = '/internal/git/blame';
+
 /** Header carrying the shared secret expected by the git-worker's internal endpoints. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
 
@@ -270,6 +279,50 @@ export interface GitWorkerUndoPullData {
   readonly headCommit: string;
 }
 
+/** One commit in the history endpoint's `data` field. `authoredAt` stays an ISO-8601 string, as received. */
+export interface GitWorkerHistoryCommit {
+  /** The commit hash. */
+  readonly hash: string;
+  /** The commit message. */
+  readonly message: string;
+  /** ID of the authoring user, when the commit's author maps to one; absent for unmapped authors. */
+  readonly authorUserId?: string;
+  /** ISO-8601 timestamp of when the commit was authored. */
+  readonly authoredAt: string;
+}
+
+/** Wire shape of the history endpoint's `data` field. */
+export interface GitWorkerHistoryData {
+  /** The matching commits, newest first. */
+  readonly commits: readonly GitWorkerHistoryCommit[];
+}
+
+/** Wire shape of the diff endpoint's `data` field. */
+export interface GitWorkerDiffData {
+  /** The raw unified-diff text. */
+  readonly unified: string;
+}
+
+/** One line in the blame endpoint's `data` field. `authoredAt` stays an ISO-8601 string, as received. */
+export interface GitWorkerBlameLine {
+  /** 1-based line number in the blamed file. */
+  readonly lineNumber: number;
+  /** The full hash of the commit that last modified this line. */
+  readonly hash: string;
+  /** ID of the authoring user, when the line's commit author maps to one; absent for unmapped authors. */
+  readonly authorUserId?: string;
+  /** ISO-8601 timestamp of when the line's commit was authored. */
+  readonly authoredAt: string;
+  /** The line's text content. */
+  readonly content: string;
+}
+
+/** Wire shape of the blame endpoint's `data` field. */
+export interface GitWorkerBlameData {
+  /** Every line's authorship, in file order. */
+  readonly lines: readonly GitWorkerBlameLine[];
+}
+
 /** Input shared by every git-worker request: the project and the acting principal. */
 export interface GitWorkerRequestInput {
   /** The project the operation acts on, as a raw UUID v4 string. */
@@ -322,6 +375,32 @@ export interface GitWorkerResolveConflictInput extends GitWorkerConflictPathInpu
   readonly mergedContent?: string;
 }
 
+/** Input for {@link GitWorkerClient.getHistory}. */
+export interface GitWorkerHistoryInput extends GitWorkerRequestInput {
+  /** When given, restricts the history to the commits that touched this single project-relative file. */
+  readonly path?: string;
+  /** When given, caps the number of commits returned. */
+  readonly limit?: number;
+}
+
+/** Input for {@link GitWorkerClient.getDiff}. */
+export interface GitWorkerDiffInput extends GitWorkerRequestInput {
+  /** When given, scopes the diff to this single project-relative file (whole tree when absent). */
+  readonly path?: string;
+  /** The earlier commit hash. Given together with `to` to diff between two commits. */
+  readonly from?: string;
+  /** The later commit hash. Given together with `from` to diff between two commits. */
+  readonly to?: string;
+}
+
+/** Input for {@link GitWorkerClient.getBlame}. */
+export interface GitWorkerBlameInput extends GitWorkerRequestInput {
+  /** The project-relative path of the file to blame. */
+  readonly path: string;
+  /** When given, blames the file as of this commit; without it, the current working-tree file. */
+  readonly ref?: string;
+}
+
 /**
  * The worker's own response envelope, reflected as-is: a domain success carries `data`; a domain
  * refusal carries the domain error's stable `name` (plus `path` for a `LiveContentFlushFailedError`).
@@ -366,6 +445,12 @@ export interface GitWorkerClient {
   completePull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerCompleteMergeData>>;
   /** Undoes a project's most recent pull. */
   undoPull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerUndoPullData>>;
+  /** Reads a project's (or a single file's) commit history. */
+  getHistory(input: GitWorkerHistoryInput): Promise<GitWorkerResult<GitWorkerHistoryData>>;
+  /** Produces a unified diff for a project: between two commits, or of the uncommitted working changes against HEAD. */
+  getDiff(input: GitWorkerDiffInput): Promise<GitWorkerResult<GitWorkerDiffData>>;
+  /** Reads a single project-relative file's per-line authorship (a "blame"). */
+  getBlame(input: GitWorkerBlameInput): Promise<GitWorkerResult<GitWorkerBlameData>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -555,6 +640,34 @@ export class HttpGitWorkerClient implements GitWorkerClient {
     return this.post<GitWorkerUndoPullData>(GIT_WORKER_UNDO_PULL_PATH, {
       projectId: input.projectId,
       actorId: input.actorId,
+    });
+  }
+
+  async getHistory(input: GitWorkerHistoryInput): Promise<GitWorkerResult<GitWorkerHistoryData>> {
+    return this.post<GitWorkerHistoryData>(GIT_WORKER_HISTORY_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      ...(input.path !== undefined ? { path: input.path } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    });
+  }
+
+  async getDiff(input: GitWorkerDiffInput): Promise<GitWorkerResult<GitWorkerDiffData>> {
+    return this.post<GitWorkerDiffData>(GIT_WORKER_DIFF_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      ...(input.path !== undefined ? { path: input.path } : {}),
+      ...(input.from !== undefined ? { from: input.from } : {}),
+      ...(input.to !== undefined ? { to: input.to } : {}),
+    });
+  }
+
+  async getBlame(input: GitWorkerBlameInput): Promise<GitWorkerResult<GitWorkerBlameData>> {
+    return this.post<GitWorkerBlameData>(GIT_WORKER_BLAME_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      path: input.path,
+      ...(input.ref !== undefined ? { ref: input.ref } : {}),
     });
   }
 }

@@ -168,6 +168,39 @@ export interface BehindAheadDto {
   readonly ahead: number;
 }
 
+/**
+ * A rendered diff for `GET /git/diff`. Rendering (unified-to-side-by-side, syntax highlighting,
+ * etc.) is a client concern — the server supplies only the raw unified-diff text.
+ */
+export interface DiffDto {
+  /** The raw unified-diff text. Empty when there is nothing to diff. */
+  readonly unified: string;
+}
+
+/**
+ * One line of a blamed file's per-line authorship, for `GET /git/blame`. `authorUserId` is
+ * absent for a git author email that maps to no platform user (for example, imported history
+ * authored outside the platform).
+ */
+export interface BlameLineDto {
+  /** 1-based line number in the blamed file. */
+  readonly lineNumber: number;
+  /** The full hash of the commit that last modified this line. */
+  readonly hash: string;
+  /** ID of the authoring user, when the line's commit author maps to one; absent for unmapped authors. */
+  readonly authorUserId?: string;
+  /** ISO 8601 timestamp of when the line's commit was authored. */
+  readonly authoredAt: string;
+  /** The line's text content. */
+  readonly content: string;
+}
+
+/** A single file's per-line authorship ("blame"), for `GET /git/blame`. */
+export interface BlameDto {
+  /** Every line's authorship, in file order. */
+  readonly lines: BlameLineDto[];
+}
+
 /** Per-file git status used to decorate the project's file tree. */
 export type FileGitStatus = 'unchanged' | 'modified' | 'staged' | 'untracked' | 'removed' | 'conflicted';
 

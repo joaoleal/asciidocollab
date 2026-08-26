@@ -34,6 +34,9 @@ import {
   GIT_CONFLICTS_PATH,
   GIT_CONFLICT_STAGES_PATH,
   GIT_CONFLICT_RESOLVE_PATH,
+  GIT_HISTORY_PATH,
+  GIT_DIFF_PATH,
+  GIT_BLAME_PATH,
   createGitOpsRequestHandler,
   parseGitStatusBody,
   parseStageChangesBody,
@@ -42,6 +45,9 @@ import {
   parseCreateBranchBody,
   parseConflictPathBody,
   parseResolveConflictBody,
+  parseHistoryBody,
+  parseDiffBody,
+  parseBlameBody,
   startInternalGitServer,
   type GitOpsHandlerDeps,
 } from '../src/internal-git-server.js';
@@ -117,6 +123,9 @@ interface HandlerDoubles {
   listConflicts: jest.Mock;
   getConflictStages: jest.Mock;
   resolveConflict: jest.Mock;
+  getHistory: jest.Mock;
+  getDiff: jest.Mock;
+  getBlame: jest.Mock;
   logger: { info: jest.Mock; error: jest.Mock };
   secret?: string;
 }
@@ -167,6 +176,23 @@ function handlerDoubles(): HandlerDoubles {
       value: { base: 'base text', ours: 'ours text', theirs: 'theirs text', isBinary: false },
     })),
     resolveConflict: jest.fn(async () => ({ success: true, value: { resolved: true } })),
+    getHistory: jest.fn(async () => ({
+      success: true,
+      value: {
+        commits: [
+          { hash: 'abc123', message: 'Initial commit', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z' },
+        ],
+      },
+    })),
+    getDiff: jest.fn(async () => ({ success: true, value: { unified: '--- a\n+++ b\n' } })),
+    getBlame: jest.fn(async () => ({
+      success: true,
+      value: {
+        lines: [
+          { lineNumber: 1, hash: 'abc123', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
+        ],
+      },
+    })),
     logger: fakeLogger(),
   };
 }
@@ -426,6 +452,105 @@ describe('parseResolveConflictBody', () => {
 
   it('rejects a non-string mergedContent when present', () => {
     expect(parseResolveConflictBody(JSON.stringify({ ...valid, resolution: 'merged', mergedContent: 5 }))).toBeNull();
+  });
+});
+
+describe('parseHistoryBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID };
+
+  it('accepts a well-formed body with no optional fields', () => {
+    expect(parseHistoryBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with path and limit', () => {
+    const full = { ...valid, path: 'chapters/intro.adoc', limit: 10 };
+    expect(parseHistoryBody(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseHistoryBody('{bad')).toBeNull();
+    expect(parseHistoryBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseHistoryBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseHistoryBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a non-string path when present', () => {
+    expect(parseHistoryBody(JSON.stringify({ ...valid, path: 5 }))).toBeNull();
+  });
+
+  it('rejects a non-number or negative limit', () => {
+    expect(parseHistoryBody(JSON.stringify({ ...valid, limit: 'ten' }))).toBeNull();
+    expect(parseHistoryBody(JSON.stringify({ ...valid, limit: -1 }))).toBeNull();
+    expect(parseHistoryBody(JSON.stringify({ ...valid, limit: Number.POSITIVE_INFINITY }))).toBeNull();
+  });
+
+  it('accepts a zero limit', () => {
+    expect(parseHistoryBody(JSON.stringify({ ...valid, limit: 0 }))).toEqual({ ...valid, limit: 0 });
+  });
+});
+
+describe('parseDiffBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID };
+
+  it('accepts a well-formed body with no optional fields', () => {
+    expect(parseDiffBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with path, from, and to', () => {
+    const full = { ...valid, path: 'chapters/intro.adoc', from: 'abc123', to: 'def456' };
+    expect(parseDiffBody(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseDiffBody('{bad')).toBeNull();
+    expect(parseDiffBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseDiffBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseDiffBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a non-string path/from/to when present', () => {
+    expect(parseDiffBody(JSON.stringify({ ...valid, path: 5 }))).toBeNull();
+    expect(parseDiffBody(JSON.stringify({ ...valid, from: 5 }))).toBeNull();
+    expect(parseDiffBody(JSON.stringify({ ...valid, to: 5 }))).toBeNull();
+  });
+});
+
+describe('parseBlameBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc' };
+
+  it('accepts a well-formed body with no ref', () => {
+    expect(parseBlameBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with a ref', () => {
+    const full = { ...valid, ref: 'abc123' };
+    expect(parseBlameBody(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseBlameBody('{bad')).toBeNull();
+    expect(parseBlameBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseBlameBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseBlameBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a missing, empty, or non-string path', () => {
+    expect(parseBlameBody(JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID }))).toBeNull();
+    expect(parseBlameBody(JSON.stringify({ ...valid, path: '' }))).toBeNull();
+    expect(parseBlameBody(JSON.stringify({ ...valid, path: 5 }))).toBeNull();
+  });
+
+  it('rejects a non-string ref when present', () => {
+    expect(parseBlameBody(JSON.stringify({ ...valid, ref: 5 }))).toBeNull();
   });
 });
 
@@ -883,6 +1008,118 @@ describe('createGitOpsRequestHandler', () => {
     expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'LiveContentFlushFailedError', path: 'chapters/intro.adoc' });
   });
 
+  const historyBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc', limit: 5 });
+
+  it('answers history with {ok:true,data} on a success Result, dispatching with the parsed fields', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_HISTORY_PATH), recordingResponse(), historyBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: {
+        commits: [
+          { hash: 'abc123', message: 'Initial commit', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z' },
+        ],
+      },
+    });
+    expect(doubles.getHistory).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      path: 'chapters/intro.adoc',
+      limit: 5,
+    });
+  });
+
+  it('answers 400 for history on a malformed/non-UUID/bad-limit body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_HISTORY_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.getHistory).not.toHaveBeenCalled();
+
+    const badLimit = await handle(
+      handlerDoubles(),
+      fakeRequest('POST', GIT_HISTORY_PATH),
+      recordingResponse(),
+      JSON.stringify({ ...JSON.parse(historyBody), limit: -1 }),
+    );
+    expect(badLimit.statusCode).toBe(400);
+  });
+
+  it('answers {ok:false,error} for RepositoryNotConnectedError from history', async () => {
+    const doubles = handlerDoubles();
+    doubles.getHistory = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_HISTORY_PATH), recordingResponse(), historyBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
+  const diffBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc' });
+
+  it('answers diff with {ok:true,data} on a success Result, dispatching with the parsed fields', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_DIFF_PATH), recordingResponse(), diffBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({ ok: true, data: { unified: '--- a\n+++ b\n' } });
+    expect(doubles.getDiff).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc' });
+  });
+
+  it('answers 400 for diff on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_DIFF_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.getDiff).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for RepositoryNotConnectedError from diff', async () => {
+    const doubles = handlerDoubles();
+    doubles.getDiff = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_DIFF_PATH), recordingResponse(), diffBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
+  const blameBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, path: 'chapters/intro.adoc', ref: 'abc123' });
+
+  it('answers blame with {ok:true,data} on a success Result, dispatching with the parsed fields', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_BLAME_PATH), recordingResponse(), blameBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: {
+        lines: [
+          { lineNumber: 1, hash: 'abc123', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
+        ],
+      },
+    });
+    expect(doubles.getBlame).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      path: 'chapters/intro.adoc',
+      ref: 'abc123',
+    });
+  });
+
+  it('answers 400 for blame on a malformed/non-UUID/missing-path body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_BLAME_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.getBlame).not.toHaveBeenCalled();
+
+    const missingPath = await handle(
+      handlerDoubles(),
+      fakeRequest('POST', GIT_BLAME_PATH),
+      recordingResponse(),
+      JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID }),
+    );
+    expect(missingPath.statusCode).toBe(400);
+  });
+
+  it('answers {ok:false,error} for RepositoryNotConnectedError from blame', async () => {
+    const doubles = handlerDoubles();
+    doubles.getBlame = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_BLAME_PATH), recordingResponse(), blameBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
   it('answers 400 with a JSON error object on an invalid body, without calling the op fn', async () => {
     const doubles = handlerDoubles();
     const response = await handle(doubles, fakeRequest('POST', GIT_STATUS_PATH), recordingResponse(), '{bad');
@@ -1025,6 +1262,9 @@ describe('internal git server (HTTP)', () => {
       listConflicts: doubles.listConflicts,
       getConflictStages: doubles.getConflictStages,
       resolveConflict: doubles.resolveConflict,
+      getHistory: doubles.getHistory,
+      getDiff: doubles.getDiff,
+      getBlame: doubles.getBlame,
       ...options,
     });
     await waitListening(server);
@@ -1105,6 +1345,9 @@ describe('internal git server (HTTP)', () => {
         listConflicts: doubles.listConflicts,
         getConflictStages: doubles.getConflictStages,
         resolveConflict: doubles.resolveConflict,
+        getHistory: doubles.getHistory,
+        getDiff: doubles.getDiff,
+        getBlame: doubles.getBlame,
       }),
     ).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
@@ -1139,6 +1382,9 @@ describe('startInternalGitServer wiring', () => {
       listConflicts: doubles.listConflicts,
       getConflictStages: doubles.getConflictStages,
       resolveConflict: doubles.resolveConflict,
+      getHistory: doubles.getHistory,
+      getDiff: doubles.getDiff,
+      getBlame: doubles.getBlame,
     });
     listening = server;
     expect(logger.info).toHaveBeenCalledWith(

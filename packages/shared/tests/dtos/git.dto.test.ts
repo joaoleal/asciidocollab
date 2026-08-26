@@ -23,6 +23,9 @@ import type {
   ConflictSummaryDto,
   ConflictListDto,
   ConflictStagesDto,
+  DiffDto,
+  BlameLineDto,
+  BlameDto,
 } from '../../src/dtos/git.dto';
 
 describe('git provider', () => {
@@ -197,6 +200,42 @@ describe('ConflictSummaryDto / ConflictListDto', () => {
     };
     expect(list.files).toHaveLength(2);
     expect(list.files[1].isBinary).toBe(true);
+  });
+});
+
+describe('DiffDto', () => {
+  test('carries only the raw unified-diff text', () => {
+    const dto: DiffDto = { unified: '--- a/doc.adoc\n+++ b/doc.adoc\n@@ -1 +1 @@\n-old\n+new\n' };
+    expect(dto.unified).toContain('@@');
+    expect(Object.keys(dto)).toEqual(['unified']);
+  });
+
+  test('an empty diff is an empty string', () => {
+    const dto: DiffDto = { unified: '' };
+    expect(dto.unified).toBe('');
+  });
+});
+
+describe('BlameLineDto / BlameDto', () => {
+  test('takes the documented shape; authorUserId is optional for unmapped authors', () => {
+    const mapped: BlameLineDto = {
+      lineNumber: 1,
+      hash: 'a1b2c3d',
+      authorUserId: '550e8400-e29b-41d4-a716-446655440004',
+      authoredAt: '2026-08-20T12:00:00.000Z',
+      content: '= Title',
+    };
+    const unmapped: BlameLineDto = {
+      lineNumber: 2,
+      hash: 'e4f5a6b',
+      authoredAt: '2026-08-19T12:00:00.000Z',
+      content: '',
+    };
+    expect(mapped.authorUserId).toBeDefined();
+    expect(unmapped.authorUserId).toBeUndefined();
+
+    const dto: BlameDto = { lines: [mapped, unmapped] };
+    expect(dto.lines).toHaveLength(2);
   });
 });
 

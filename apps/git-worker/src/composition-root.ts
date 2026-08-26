@@ -16,6 +16,9 @@ import {
   GetConflictStagesUseCase,
   ResolveConflictsUseCase,
   GitChangeReconciler,
+  GetHistoryUseCase,
+  GetDiffUseCase,
+  GetBlameUseCase,
   ProjectId,
   UserId,
   type GitOperationId,
@@ -29,6 +32,7 @@ import {
   type Logger,
   type GetGitStatusResult,
   type GitBehindAhead,
+  type GitDiffResult,
   type StageChangesResult,
   type CommitChangesResult,
   type GetBranchesResult,
@@ -62,6 +66,8 @@ import type {
   ConnectRepositoryWireResult,
   GitRepositoryWireData,
   ConnectRequest,
+  GetHistoryWireResult,
+  GetBlameWireResult,
 } from './internal-git-server.js';
 import { createGitWorkerConfig } from './config/git-worker-config.js';
 import { RealGitCommandRunner } from './git/git-command-runner.js';
@@ -448,6 +454,21 @@ export async function compositionRoot() {
     useCaseLogger,
   );
 
+  // The three read-only history/diff/blame ops likewise run SYNC over this same internal RPC seam
+  // (a local git-log/diff/blame read, not a mutating action) — no single-flight guard, and no
+  // domain-level role check: the calling route's own VIEWER-tier membership gate is the check.
+  const getHistoryUseCase = new GetHistoryUseCase(gitRepositoryRepository, gitCommandRunner, userRepository, useCaseLogger);
+  const getDiffUseCase = new GetDiffUseCase(
+    gitRepositoryRepository,
+    gitCommandRunner,
+    fileNodeRepository,
+    documentRepository,
+    collaborationSessionRepository,
+    collaborativeContentReader,
+    useCaseLogger,
+  );
+  const getBlameUseCase = new GetBlameUseCase(gitRepositoryRepository, gitCommandRunner, userRepository, useCaseLogger);
+
   // Bound as the internal RPC server's op fns (`src/index.ts`): each converts the raw UUID
   // strings the transport validated into the domain's own `ProjectId`/`UserId` value objects at
   // this boundary, then hands the request straight to the use case's own `execute`.
@@ -527,6 +548,58 @@ export async function compositionRoot() {
       resolution: input.resolution,
       ...(input.mergedContent !== undefined ? { mergedContent: input.mergedContent } : {}),
     });
+  const getHistory = async (
+    input: { projectId: string; actorId: string; path?: string; limit?: number },
+  ): Promise<Result<GetHistoryWireResult, DomainError>> => {
+    const result = await getHistoryUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      ...(input.path !== undefined ? { path: input.path } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    });
+    if (!result.success) return result;
+    return {
+      success: true,
+      value: {
+        commits: result.value.commits.map((commit) => ({
+          hash: commit.hash,
+          message: commit.message,
+          ...(commit.authorUserId !== undefined ? { authorUserId: commit.authorUserId.value } : {}),
+          authoredAt: commit.authoredAt.toISOString(),
+        })),
+      },
+    };
+  };
+  const getDiff = (
+    input: { projectId: string; actorId: string; path?: string; from?: string; to?: string },
+  ): Promise<Result<GitDiffResult, DomainError>> =>
+    getDiffUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      ...(input.path !== undefined ? { path: input.path } : {}),
+      ...(input.from !== undefined ? { from: input.from } : {}),
+      ...(input.to !== undefined ? { to: input.to } : {}),
+    });
+  const getBlame = async (
+    input: { projectId: string; actorId: string; path: string; ref?: string },
+  ): Promise<Result<GetBlameWireResult, DomainError>> => {
+    const result = await getBlameUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      path: input.path,
+      ...(input.ref !== undefined ? { ref: input.ref } : {}),
+    });
+    if (!result.success) return result;
+    return {
+      success: true,
+      value: {
+        lines: result.value.lines.map((line) => ({
+          lineNumber: line.lineNumber,
+          hash: line.hash,
+          ...(line.authorUserId !== undefined ? { authorUserId: line.authorUserId.value } : {}),
+          authoredAt: line.authoredAt.toISOString(),
+          content: line.content,
+        })),
+      },
+    };
+  };
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
     gitOperationRepository,
@@ -580,5 +653,8 @@ export async function compositionRoot() {
     listConflicts,
     getConflictStages,
     resolveConflict,
+    getHistory,
+    getDiff,
+    getBlame,
   };
 }
