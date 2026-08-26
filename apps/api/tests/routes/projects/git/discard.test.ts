@@ -189,4 +189,27 @@ describe('POST /projects/:projectId/git/discard', () => {
 
     await app.close();
   });
+
+  it('answers 429 once the caller has spent the git rate limit', async () => {
+    const { discardChanges, auditSave } = buildHarness();
+    const app = Fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 1, rateLimitWindow: 60_000 } } as never);
+    app.decorate('repos', {
+      projectMember: { findByCompositeKey: jest.fn(async () => ({ role: { value: 'editor' } })) },
+      auditLog: { save: auditSave },
+    } as never);
+    app.decorate('stores', { gitWorkerClient: { discardChanges } } as never);
+    await app.register(gitDiscardRoutes);
+    await app.ready();
+
+    const first = await discard(app, PROJECT_ID, { paths: ['docs/a.adoc'] });
+    const second = await discard(app, PROJECT_ID, { paths: ['docs/a.adoc'] });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(429);
+
+    await app.close();
+  });
 });

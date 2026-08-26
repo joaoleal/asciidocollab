@@ -24,6 +24,12 @@ export async function gitDisconnectRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: Record<string, never> }>(
     '/projects/:projectId/git/disconnect',
     {
+      config: {
+        rateLimit: {
+          max: app.config.git.rateLimitMax,
+          timeWindow: app.config.git.rateLimitWindow,
+        },
+      },
       schema: {
         params: {
           type: 'object',

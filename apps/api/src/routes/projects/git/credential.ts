@@ -30,6 +30,12 @@ export async function gitCredentialRoutes(app: FastifyInstance): Promise<void> {
   app.put<{ Params: { projectId: string }; Body: GitCredentialBody }>(
     '/projects/:projectId/git/credential',
     {
+      config: {
+        rateLimit: {
+          max: app.config.git.rateLimitMax,
+          timeWindow: app.config.git.rateLimitWindow,
+        },
+      },
       schema: {
         params: {
           type: 'object',

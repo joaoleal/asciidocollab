@@ -417,4 +417,29 @@ describe('POST /projects/:projectId/git/conflicts/:path', () => {
 
     await app.close();
   });
+
+  it('answers 429 once the caller has spent the git rate limit', async () => {
+    const resolveConflict = jest.fn(async () => ({ ok: true, data: { resolved: true } }));
+    const app = Fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 1, rateLimitWindow: 60_000 } } as never);
+    app.decorate('repos', {
+      projectMember: { findByCompositeKey: jest.fn(async () => ({ role: { value: 'editor' } })) },
+      auditLog: { save: jest.fn() },
+    } as never);
+    app.decorate('stores', {
+      gitWorkerClient: { listConflicts: jest.fn(), getConflictStages: jest.fn(), resolveConflict },
+    } as never);
+    await app.register(gitConflictsRoutes);
+    await app.ready();
+
+    const first = await postResolve(app, PROJECT_ID, encodeURIComponent('docs/a.adoc'), { resolution: 'ours' });
+    const second = await postResolve(app, PROJECT_ID, encodeURIComponent('docs/a.adoc'), { resolution: 'ours' });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(429);
+
+    await app.close();
+  });
 });

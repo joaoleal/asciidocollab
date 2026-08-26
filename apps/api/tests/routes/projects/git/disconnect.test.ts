@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { GitRepository, GitRepositoryId, ProjectId } from '@asciidocollab/domain';
 import { gitDisconnectRoutes } from '../../../../src/routes/projects/git/disconnect';
 import { errorHandler } from '../../../../src/plugins/error-handler';
@@ -51,6 +52,8 @@ function buildHarness(options: HarnessOptions = {}) {
   const build = async (): Promise<FastifyInstance> => {
     const app = Fastify();
     app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
     app.decorate('repos', {
       projectMember: {
         findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
@@ -147,6 +150,38 @@ describe('POST /projects/:projectId/git/disconnect', () => {
     expect(response.statusCode).toBe(409);
     expect(response.json().error.code).toBe('git_operation_in_progress');
     expect(gitRepositoryDelete).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('answers 429 once the caller has spent the git rate limit', async () => {
+    const repository = existingRepository();
+    const app = Fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 1, rateLimitWindow: 60_000 } } as never);
+    app.decorate('repos', {
+      projectMember: { findByCompositeKey: jest.fn(async () => ({ role: { value: 'owner' } })) },
+      auditLog: { save: jest.fn() },
+      gitRepository: { findByProjectId: jest.fn(async () => repository), delete: jest.fn() },
+      gitOperation: {
+        withGuard: jest.fn(async (_projectId: unknown, action: () => Promise<unknown>) => {
+          const value = await action();
+          return { success: true, value };
+        }),
+      },
+    } as never);
+    app.decorate('services', {
+      gitCredentialStore: { save: jest.fn(), load: jest.fn(async () => null), delete: jest.fn() },
+    } as never);
+    await app.register(gitDisconnectRoutes);
+    await app.ready();
+
+    const first = await disconnect(app, PROJECT_ID);
+    const second = await disconnect(app, PROJECT_ID);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(429);
 
     await app.close();
   });

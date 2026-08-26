@@ -120,4 +120,27 @@ describe('POST /projects/:projectId/git/pull/complete', () => {
 
     await app.close();
   });
+
+  it('answers 429 once the caller has spent the git rate limit', async () => {
+    const { completePull, auditSave } = buildHarness();
+    const app = Fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 1, rateLimitWindow: 60_000 } } as never);
+    app.decorate('repos', {
+      projectMember: { findByCompositeKey: jest.fn(async () => ({ role: { value: 'editor' } })) },
+      auditLog: { save: auditSave },
+    } as never);
+    app.decorate('stores', { gitWorkerClient: { completePull } } as never);
+    await app.register(gitPullCompleteRoutes);
+    await app.ready();
+
+    const first = await postComplete(app, PROJECT_ID);
+    const second = await postComplete(app, PROJECT_ID);
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(429);
+
+    await app.close();
+  });
 });

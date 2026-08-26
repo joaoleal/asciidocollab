@@ -250,4 +250,27 @@ describe('POST /projects/:projectId/git/branches', () => {
 
     await app.close();
   });
+
+  it('answers 429 once the caller has spent the git rate limit', async () => {
+    const createBranchMock = mockCreateBranch({ ok: true, data: { branch: { name: 'feature/x' } } });
+    const app = Fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 1, rateLimitWindow: 60_000 } } as never);
+    app.decorate('repos', {
+      projectMember: { findByCompositeKey: jest.fn(async () => ({ role: { value: 'editor' } })) },
+      auditLog: { save: jest.fn() },
+    } as never);
+    app.decorate('stores', { gitWorkerClient: { createBranch: createBranchMock } } as never);
+    await app.register(gitBranchesRoutes);
+    await app.ready();
+
+    const first = await createBranch(app, PROJECT_ID, { name: 'feature/x' });
+    const second = await createBranch(app, PROJECT_ID, { name: 'feature/x' });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(429);
+
+    await app.close();
+  });
 });

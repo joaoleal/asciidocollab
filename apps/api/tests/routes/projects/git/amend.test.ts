@@ -144,4 +144,27 @@ describe('POST /projects/:projectId/git/amend', () => {
 
     await app.close();
   });
+
+  it('answers 429 once the caller has spent the git rate limit', async () => {
+    const { amendCommit, auditSave } = buildHarness();
+    const app = Fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 1, rateLimitWindow: 60_000 } } as never);
+    app.decorate('repos', {
+      projectMember: { findByCompositeKey: jest.fn(async () => ({ role: { value: 'editor' } })) },
+      auditLog: { save: auditSave },
+    } as never);
+    app.decorate('stores', { gitWorkerClient: { amendCommit } } as never);
+    await app.register(gitAmendRoutes);
+    await app.ready();
+
+    const first = await amend(app, PROJECT_ID, { message: 'Amended message' });
+    const second = await amend(app, PROJECT_ID, { message: 'Amended message' });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(429);
+
+    await app.close();
+  });
 });
