@@ -413,6 +413,30 @@ export function usePdfPreview({
     scheduleRender(snapshot);
   }, [snapshot]);
 
+  // The extension bundle arriving is a render trigger in its own right.
+  //
+  // The bundle is fetched over the network and is REPLACED whenever the selection changes, so the
+  // render posted the moment an author enables an extension — or takes one back in with the theme
+  // editor's comparison control — carries sources that have not arrived yet. The registry refuses
+  // each id ("no source was supplied") and the document renders WITHOUT the extensions the selection
+  // named. Nothing about the snapshot changes afterwards: it is the same object carrying the same
+  // ids, so the trigger above cannot fire, and the preview went on showing the unextended document
+  // until the author happened to type something. The extension selection therefore appeared not to
+  // apply at all, and the exported PDF — which waits for the bundle (`ready`) — disagreed with the
+  // preview beside it.
+  //
+  // Scheduling here rather than gating the preview on `ready` (as the export does) keeps the first
+  // render immediate: an author sees their document at once and the extensions land a render later,
+  // instead of the panel sitting empty until a fetch completes.
+  //
+  // Safe to depend on identity: `usePdfExtensionBundle` memoises the bundle, so it changes only when
+  // the catalogue, the selection or the fetched sources actually change — a project with nothing
+  // enabled holds one stable empty bundle and never re-renders for this.
+  useEffect(() => {
+    if (!isEnabled || snapshot === null || extensions === undefined) return;
+    scheduleRender(snapshot);
+  }, [extensions]);
+
   // Mirror the render lifecycle into the debounce: while one is in flight the max-wait cap holds its
   // run back instead of stacking a second render on it, and reporting completion — a result or an
   // error alike, both of which clear `isRendering` — releases the held-back refresh immediately.

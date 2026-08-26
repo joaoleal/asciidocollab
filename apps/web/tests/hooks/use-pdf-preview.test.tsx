@@ -3,10 +3,13 @@ import {
   computeSourceHash,
   detectRenderableBlocks,
   type FromWorker,
+  type PdfExtensionBundle,
+  type PdfExtensionSource,
   type ProjectSnapshot,
   type RenderResult,
   type ToWorker,
 } from '@asciidocollab/asciidoc-pdf';
+import type { PdfExtensionCatalogueEntry } from '@asciidocollab/asciidoc-core';
 import { usePdfPreview } from '@/hooks/use-pdf-preview';
 import { PREVIEW_DEBOUNCE_MS, PREVIEW_MAX_WAIT_MS } from '@/lib/editor-config';
 import {
@@ -108,6 +111,37 @@ function makeSnapshot(files: Record<string, string>, rootPath = 'main.adoc'): Pr
 
 /** A stage breakdown of zeros: this fixture's render cost is not what the tests below are about. */
 const NO_STAGE_COST = { vmBootMs: 0, populateMs: 0, pipelineMs: 0, convertMs: 0 };
+
+/** One catalogue entry, enough for a bundle to be well-formed. Its contents are not under test. */
+const EXTENSION_ENTRY: PdfExtensionCatalogueEntry = {
+  manifest: {
+    id: 'multi-column-sections',
+    displayName: 'Multi-column regions',
+    description: 'Lays a marked region out in columns.',
+    targeting: '[.multi-column]',
+    themeKeys: [],
+    sampleContent: 'A marked region is laid out in columns.',
+  },
+  origin: 'shipped',
+  available: true,
+};
+
+/** The Ruby that entry's id resolves to, which arrives one fetch after the catalogue does. */
+const EXTENSION_SOURCE: PdfExtensionSource = {
+  id: 'multi-column-sections',
+  origin: 'shipped',
+  source: '# ruby',
+};
+
+/**
+ * A bundle carrying the catalogue and whatever sources have arrived so far.
+ *
+ * @param sources - The sources fetched by now; empty models the window before they land.
+ * @returns The bundle as `usePdfExtensionBundle` would hand it over.
+ */
+function bundleWithSources(sources: readonly PdfExtensionSource[]): PdfExtensionBundle {
+  return { catalogue: [EXTENSION_ENTRY], sources };
+}
 
 /** One keystroke every half trailing-delay — fast enough that the trailing timer can never elapse. */
 const KEYSTROKE_INTERVAL_MS = PREVIEW_DEBOUNCE_MS / 2;
@@ -505,6 +539,46 @@ describe('usePdfPreview', () => {
     });
     expect(previewAssets.map((asset) => asset.sourceHash)).toEqual([expectedHash]);
   });
+
+  it('re-renders when the extension bundle arrives after the first render was posted', async () => {
+    // The bundle is fetched asynchronously, so the first render of a document whose project enables
+    // an extension goes out before its Ruby has arrived. The registry then refuses the id — "no
+    // source was supplied" — and the document renders WITHOUT the extension. Nothing else changes
+    // afterwards: the snapshot is the same object and the ids in it are the same ids. So unless the
+    // bundle's own arrival schedules a render, the preview keeps showing the unextended document
+    // until the author happens to type, and the extension toggle appears to do nothing at all.
+    const snapshot = makeSnapshot({ 'main.adoc': '= Doc' });
+    const props = (extensions: PdfExtensionBundle) => ({
+      snapshot,
+      isEnabled: true,
+      extensions,
+      prerenderer: makePrerenderer(),
+    });
+
+    const { rerender } = renderHook((current: { extensions: PdfExtensionBundle }) =>
+      usePdfPreview(props(current.extensions)),
+      { initialProps: { extensions: bundleWithSources([]) } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    const first = renderCalls(lastWorker());
+    expect(first).toHaveLength(1);
+    expect(first[0]!.request.extensions?.sources).toHaveLength(0);
+
+    // That render reports back, so nothing is held when the sources land.
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+
+    // The sources arrive. Same snapshot, same selection — only the code to load them is new.
+    act(() => rerender({ extensions: bundleWithSources([EXTENSION_SOURCE]) }));
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(2);
+    expect(renders[1]!.request.extensions?.sources).toHaveLength(1);
+  });
+
 });
 
 // ── usePdfPreview — refreshing while typing never pauses ─────────────────────

@@ -143,6 +143,13 @@ interface ContentAreaProperties {
    * font is fetched once per project however many renders reference it.
    */
   assetCache: ProjectAssetCache;
+  /**
+   * The project's resolved render attributes, forwarded to the theme editor so its sample previews on
+   * the page the export actually produces. The SAME map the PDF preview and the export seed their
+   * snapshots with — a second derivation here is how the theme preview came to disagree with the PDF
+   * beside it about page size and layout.
+   */
+  projectAttributes: Readonly<Record<string, string>>;
   /** Project document language (ISO 639-1) driving the spellchecker, or null when unset. */
   projectLanguage: string | null;
   onScrollLine?: (line: number) => void;
@@ -229,6 +236,7 @@ function ContentArea({
   canConfigureRules,
   projectId,
   assetCache,
+  projectAttributes,
   projectLanguage,
   onScrollLine,
   onSelectionLine,
@@ -304,6 +312,7 @@ function ContentArea({
         themeSettings={themeSettings}
         enabledExtensions={enabledExtensions}
         assetCache={assetCache}
+        projectAttributes={projectAttributes}
         content={contentOverride ?? contentState.content ?? ''}
         canEdit={canEdit}
         path={selectedFile.path}
@@ -1443,6 +1452,7 @@ export function ProjectEditorLayout({
               projectId={projectId}
               onGrammarStateChange={setGrammarState}
               assetCache={assetCache}
+              projectAttributes={projectRenderAttributes.attributes}
               projectLanguage={projectLanguage}
               onScrollLine={previewOpen && scrollSyncEnabled ? handleScrollLine : undefined}
               onSelectionLine={previewOpen && scrollSyncEnabled ? handleScrollLine : undefined}

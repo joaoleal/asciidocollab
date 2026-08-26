@@ -123,6 +123,45 @@ describe('useThemePreview — snapshot', () => {
     expect(snapshot?.attributes.backend).toBe('pdf');
     expect(snapshot?.attributes['backend-html5']).toBeUndefined();
   });
+
+  it("renders the sample under the project's own page setup, exactly as the export does", () => {
+    // The preview seeded ONLY the backend intrinsics, so a project that had chosen A4, landscape or
+    // any other page option previewed its theme on the engine's default Letter page while the export
+    // produced the page the project had actually asked for. Page size and layout set the measure that
+    // every other theme setting is judged against — margins, line length, where headings sit — so the
+    // preview and the PDF beside it disagreed about the one thing a theme is read on.
+    //
+    // Seeded UNDER the project's map in the same order the export's snapshot builder uses, so the two
+    // cannot resolve a value differently. The document's own header still wins over both: every
+    // project attribute carries the soft-default marker, which is why the sample's `:doctype: book`
+    // survives a project configured for articles.
+    renderHook(() =>
+      useThemePreview('page:', true, undefined, undefined, undefined, undefined, {
+        'pdf-page-size': 'A4@',
+        'pdf-page-layout': 'landscape@',
+        doctype: 'article@',
+      }),
+    );
+    const [snapshot] = snapshots();
+    expect(snapshot?.attributes['pdf-page-size']).toBe('A4@');
+    expect(snapshot?.attributes['pdf-page-layout']).toBe('landscape@');
+    // Soft-defaulted, so the sample's own `:doctype: book` header still overrides it.
+    expect(snapshot?.attributes.doctype).toBe('article@');
+    expect(snapshot?.attributes.backend).toBe('pdf');
+  });
+
+  it('keeps one snapshot identity while the project attributes are unchanged', () => {
+    // Snapshot identity schedules a render, so the attribute map must not rebuild it per render.
+    const attributes = { 'pdf-page-size': 'A4@' };
+    const { rerender } = renderHook(
+      ({ text }) =>
+        useThemePreview(text, true, undefined, undefined, undefined, undefined, attributes),
+      { initialProps: { text: 'page:' } },
+    );
+    rerender({ text: 'page:' });
+    const [first, second] = snapshots();
+    expect(second).toBe(first);
+  });
 });
 
 describe('useThemePreview — coalescing', () => {

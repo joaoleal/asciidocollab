@@ -97,6 +97,13 @@ interface ThemeEditorProperties {
    */
   readonly assetCache?: ProjectAssetCache;
   /**
+   * The project's resolved render attributes — page size, layout, media and the rest — so the sample
+   * is previewed on the page this project's export actually produces rather than on the engine's
+   * default one. Must keep a stable identity across renders; the composition root's memo provides it.
+   * Omitted for a theme opened outside a project, which has no configuration to apply.
+   */
+  readonly projectAttributes?: Readonly<Record<string, string>>;
+  /**
    * Reports the live theme text up, for callers that persist it on the non-collab path.
    *
    * @param value - The theme document's full text after the edit.
@@ -134,6 +141,7 @@ export function ThemeEditor({
   themeSettings = THEME_SETTINGS,
   enabledExtensions = NO_EXTENSIONS,
   assetCache,
+  projectAttributes,
   onChange,
 }: ThemeEditorProperties): React.JSX.Element {
   // The collab path is broader than "a binding is present right now". A document that is
@@ -205,7 +213,15 @@ export function ThemeEditor({
   // without them corrects itself. Only a one-shot export has to wait (see the export button).
   const { bundle: extensionBundle } = usePdfExtensionBundle(projectId ?? '', previewExtensionIds);
 
-  const preview = useThemePreview(themeText, true, previewExtensionIds, extensionBundle, path, assetCache);
+  const preview = useThemePreview(
+    themeText,
+    true,
+    previewExtensionIds,
+    extensionBundle,
+    path,
+    assetCache,
+    projectAttributes,
+  );
 
   // Read lazily by the completion source, so enabling an extension widens completion without a
   // remount. The ref is what keeps the extension array stable across a settings change.

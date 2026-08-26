@@ -54,6 +54,13 @@ const THEME_CONUM_RESOURCE = 'callout numbers';
 const NO_EXTENSIONS: readonly string[] = [];
 
 /**
+ * No project render attributes — a theme opened outside a project, which has no configuration to
+ * apply. A shared constant for the same reason as above: the snapshot is memoised on this object's
+ * identity, so a fresh `{}` per render would rebuild it and schedule a render for nothing.
+ */
+const NO_PROJECT_ATTRIBUTES: Readonly<Record<string, string>> = Object.freeze({});
+
+/**
  * Separator for the extension-list cache key below.
  *
  * A NUL, because it is the one character an extension id can never contain, so two different lists
@@ -137,6 +144,7 @@ function buildThemeSnapshot(
   themePath: string,
   enabledExtensions: readonly string[],
   fontAssets: readonly SnapshotFile[],
+  projectAttributes: Readonly<Record<string, string>>,
 ): ProjectSnapshot {
   const binaryAssets: Record<string, Uint8Array> = {};
   const fontPaths: string[] = [];
@@ -164,7 +172,20 @@ function buildThemeSnapshot(
     // (`title-block-document-details`, `per-chapter-contents`) appeared to do nothing when switched
     // on. The parity fixture renders this same text from a manifest with `attributes: {}`, so it
     // rendered a book and passed while the app's own preview did not.
-    attributes: Object.fromEntries(PDF_RENDER_INTRINSIC_ATTRIBUTES),
+    //
+    // The PROJECT's own render attributes are layered over them, in the same order
+    // `buildProjectSnapshot` uses, because the preview's whole claim is to show what this project's
+    // export will produce. Seeded with only the intrinsics, a project configured for A4 previewed its
+    // theme on the engine's default Letter page while the export produced A4 — and page size and
+    // layout set the measure every other theme setting is judged against, so the preview and the PDF
+    // disagreed about exactly the thing a theme is read on.
+    //
+    // The sample's own header still wins over both: every project attribute carries the soft-default
+    // marker (`@`), which is what keeps `:doctype: book` above a project configured for articles.
+    // `pdf-theme` is the one exception, and it is handled below the app entirely — `invokeConvert`
+    // derives it from `themePath` after the attribute map is built, so the theme being edited is
+    // applied whatever the project has selected.
+    attributes: { ...Object.fromEntries(PDF_RENDER_INTRINSIC_ATTRIBUTES), ...projectAttributes },
     enabledExtensions,
   };
 }
@@ -336,6 +357,9 @@ export function unavailableCalloutGlyphs(themeText: string): RenderDiagnostic[] 
  *   Defaults to a root-mounted stand-in for a theme opened outside a project.
  * @param assets - The project's asset cache, so fonts the theme names are fetched and embedded.
  *   Omitted outside a project, where the preview falls back to built-in faces.
+ * @param projectAttributes - The project's resolved render attributes (page size, layout, media and
+ *   the rest), so the sample is previewed on the page the export will actually produce. Must keep a
+ *   stable identity across renders, since the snapshot is memoised on it. Empty outside a project.
  * @returns The preview state, including the last good render when the current text does not parse.
  */
 export function useThemePreview(
@@ -345,6 +369,7 @@ export function useThemePreview(
   extensions?: PdfExtensionBundle,
   themePath: string = THEME_PREVIEW_THEME_PATH,
   assets?: ProjectAssetCache,
+  projectAttributes: Readonly<Record<string, string>> = NO_PROJECT_ATTRIBUTES,
 ): UseThemePreviewResult {
   const problem = themeParseProblem(themeText);
 
@@ -375,8 +400,9 @@ export function useThemePreview(
         themePath,
         extensionKey === '' ? NO_EXTENSIONS : extensionKey.split(EXTENSION_KEY_SEPARATOR),
         fontAssets,
+        projectAttributes,
       ),
-    [renderedText, themePath, extensionKey, fontAssets],
+    [renderedText, themePath, extensionKey, fontAssets, projectAttributes],
   );
 
   // No `changedPaths`: that is the WARM re-render path, which rewrites only the named files. On the

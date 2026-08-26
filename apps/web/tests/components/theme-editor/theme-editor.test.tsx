@@ -108,14 +108,16 @@ describe('ThemeEditor', () => {
   it('feeds the preview the theme text', () => {
     renderEditor({ content: 'page:\n  layout: landscape' });
     // The trailing arguments are the extension selection, the code backing it, the theme's own path
-    // (which its font references resolve against) and the project's asset cache. With no project
-    // extensions enabled the first two are empty, and no cache is supplied by `renderEditor`.
+    // (which its font references resolve against), the project's asset cache and the project's render
+    // attributes (so the sample previews on the page the export produces). With no project extensions
+    // enabled the first two are empty, and `renderEditor` supplies neither a cache nor attributes.
     expect(mockPreview).toHaveBeenCalledWith(
       'page:\n  layout: landscape',
       true,
       [],
       { catalogue: [], sources: [] },
       expect.any(String),
+      undefined,
       undefined,
     );
   });
