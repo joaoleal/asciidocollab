@@ -1,7 +1,7 @@
 'use client';
 import { useLayoutEffect, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, History, Settings, Trash2, Users } from 'lucide-react';
+import { ChevronLeft, History, Settings, Trash2, Users, UserRoundSearch } from 'lucide-react';
 import type { CreateAnchorInput, ReviewItemDto } from '@asciidocollab/shared';
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,8 @@ import { PullDialog } from '@/components/git/pull-dialog';
 import { BranchSwitcher } from '@/components/git/branch-switcher';
 import { BranchSwitchDialog } from '@/components/git/branch-switch-dialog';
 import { ConflictPanel } from '@/components/git/conflict-panel';
-import { HistoryPanel } from '@/components/git/history-panel';
+import { HistoryPanelWithDiff } from '@/components/git/history-panel-with-diff';
+import { BlameView } from '@/components/git/blame-view';
 import { DiscardDialog } from '@/components/git/discard-dialog';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
@@ -549,6 +550,10 @@ export function ProjectEditorLayout({
   // to read history from. `HistoryPanel` only fetches while it is open, so mounting it here
   // unconditionally never fires a request until the viewer actually opens it.
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+
+  // Blame view: read-only, scoped to whichever file is currently open in the editor. Same
+  // fetch-only-while-open shape as the history panel.
+  const [blameViewOpen, setBlameViewOpen] = useState(false);
 
   // Discard dialog: every unstaged/untracked path is discardable in one action. Reuses the same
   // `gitStatus` this header already reads, rather than a separate fetch.
@@ -1399,6 +1404,12 @@ export function ProjectEditorLayout({
               History
             </Button>
           )}
+          {gitConnected && exportOpenPath !== null && (
+            <Button variant="outline" size="sm" onClick={() => setBlameViewOpen(true)}>
+              <UserRoundSearch className="mr-2 h-4 w-4" aria-hidden="true" />
+              Blame
+            </Button>
+          )}
           {canEdit && discardablePaths.length > 0 && (
             <Button variant="outline" size="sm" onClick={() => setDiscardDialogOpen(true)}>
               <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
@@ -1838,11 +1849,19 @@ export function ProjectEditorLayout({
         onOpenChange={branches.closeConfirm}
         onConfirmed={branches.handleConfirmed}
       />
-      <HistoryPanel
+      <HistoryPanelWithDiff
         projectId={projectId}
         open={historyPanelOpen}
         onOpenChange={setHistoryPanelOpen}
       />
+      {exportOpenPath !== null && (
+        <BlameView
+          projectId={projectId}
+          open={blameViewOpen}
+          onOpenChange={setBlameViewOpen}
+          path={exportOpenPath}
+        />
+      )}
       <DiscardDialog
         projectId={projectId}
         open={discardDialogOpen}
