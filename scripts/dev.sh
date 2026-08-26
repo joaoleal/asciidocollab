@@ -30,25 +30,57 @@ node -e "process.exit(parseInt(process.versions.node) < 24 ? 1 : 0)" 2>/dev/null
 # ─── Env file ─────────────────────────────────────────────────────────────────
 ENV_FILE="$ROOT/.env.local"
 
+# Secrets the app refuses to start without. Each one is filled in whether .env.local
+# is brand new (copied from .env.example with CHANGE_ME placeholders) or predates the
+# key being added — an existing .env.local is never re-created, so a key introduced
+# later has to be backfilled here or the API dies at config load ("must not be empty").
+REQUIRED_SECRETS=(
+  ASCIIDOCOLLAB_AUTH_SESSION_SECRET
+  ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY
+  ASCIIDOCOLLAB_GIT_CREDENTIAL_ENCRYPTION_KEY
+)
+
+# Give $1 a freshly generated 32-byte base64 secret if it is absent, empty, or still
+# the CHANGE_ME placeholder. Any already-set value is left untouched — regenerating a
+# key in place would silently orphan everything encrypted under the old one.
+ensure_secret() {
+  local key="$1" current value
+  current=$(grep -m1 "^${key}=" "$ENV_FILE" | cut -d= -f2- || true)
+  if [[ -n "$current" && "$current" != "CHANGE_ME" ]]; then
+    return
+  fi
+  value=$(openssl rand -base64 32)
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    # BSD sed (macOS) requires an argument to -i; GNU sed requires it to be absent.
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    else
+      sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    fi
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+  GENERATED_SECRETS+=("$key")
+}
+
 if [[ ! -f "$ENV_FILE" ]]; then
   info "Creating .env.local from .env.example …"
   cp "$ROOT/.env.example" "$ENV_FILE"
-
-  # Auto-generate secrets so the app starts without manual intervention
-  SESSION_SECRET=$(openssl rand -base64 32)
-  ENCRYPTION_KEY=$(openssl rand -base64 32)
-
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|ASCIIDOCOLLAB_AUTH_SESSION_SECRET=CHANGE_ME|ASCIIDOCOLLAB_AUTH_SESSION_SECRET=${SESSION_SECRET}|" "$ENV_FILE"
-    sed -i '' "s|ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY=CHANGE_ME|ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY=${ENCRYPTION_KEY}|" "$ENV_FILE"
-  else
-    sed -i "s|ASCIIDOCOLLAB_AUTH_SESSION_SECRET=CHANGE_ME|ASCIIDOCOLLAB_AUTH_SESSION_SECRET=${SESSION_SECRET}|" "$ENV_FILE"
-    sed -i "s|ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY=CHANGE_ME|ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY=${ENCRYPTION_KEY}|" "$ENV_FILE"
-  fi
-
-  success ".env.local created with auto-generated secrets."
+  ENV_FILE_IS_NEW=1
 else
   info "Using existing .env.local"
+  ENV_FILE_IS_NEW=0
+fi
+
+GENERATED_SECRETS=()
+for secret in "${REQUIRED_SECRETS[@]}"; do
+  ensure_secret "$secret"
+done
+
+if (( ENV_FILE_IS_NEW )); then
+  success ".env.local created with auto-generated secrets."
+elif (( ${#GENERATED_SECRETS[@]} > 0 )); then
+  success "Generated missing secrets in .env.local: ${GENERATED_SECRETS[*]}"
 fi
 
 # Source env file
