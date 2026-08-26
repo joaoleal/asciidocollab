@@ -1825,7 +1825,7 @@ export class RealGitCommandRunner implements GitCommandRunner {
   }
 
   /**
-   * Diffs HEAD's blob of `currentContent.path` against the supplied live text — the D9-style live
+   * Diffs HEAD's blob of `currentContent.path` against the supplied live text — the live-editor
    * override an open editor's stale working-tree copy must never leak into: HEAD's blob is written
    * to one scratch temp file, the live text to a second, and `git diff --no-index` compares the two
    * (see {@link runNoIndexDiff} for why that call bypasses `runGitCommand`). `git show
