@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import path from 'node:path';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import {
   AuthenticationFailedError,
@@ -357,6 +357,48 @@ describe('RealGitCommandRunner.merge', () => {
       ]),
     );
     expect(result.value.changes).toHaveLength(4);
+  });
+
+  it('materializes a merged-in symlink as regular-file text (its link target), never following it to read host bytes', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440089');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+
+    // A file OUTSIDE the project working tree, holding bytes that must never surface as document
+    // content. A tracked symlink pointing here is the escape a merge/checkout must not follow.
+    const outsideDirectory = await mkdtemp(path.join(tmpdir(), 'git-worker-test-outside-'));
+    const outsideSecretPath = path.join(outsideDirectory, 'secret');
+    const secretBytes = Buffer.from('TOP-SECRET-HOST-FILE-CONTENT\n');
+    await writeFile(outsideSecretPath, secretBytes);
+
+    await addRemoteCommit(remotePath, 'remote adds a symlink pointing outside the tree', async (clone) => {
+      await symlink(outsideSecretPath, path.join(clone, 'notes.adoc'));
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'merged') throw new Error('expected merged');
+
+    const symlinkChange = result.value.changes.find(
+      (change): change is Extract<typeof change, { content: Buffer }> =>
+        'path' in change && change.path === 'notes.adoc' && 'content' in change,
+    );
+    if (!symlinkChange) throw new Error('expected a content-bearing change for the symlink path');
+
+    // The escape is closed: the change carries the link-target TEXT, not the outside file's bytes.
+    expect(symlinkChange.content.equals(secretBytes)).toBe(false);
+    expect(symlinkChange.content.toString('utf8')).not.toContain('TOP-SECRET-HOST-FILE-CONTENT');
+    expect(symlinkChange.content.toString('utf8')).toBe(outsideSecretPath);
+
+    // On disk the merged entry is a regular file — never a real symlink into the host filesystem.
+    const onDisk = await lstat(path.join(cwd, 'notes.adoc'));
+    expect(onDisk.isSymbolicLink()).toBe(false);
+    expect(onDisk.isFile()).toBe(true);
   });
 
   it('returns merged with no changes when already up to date', async () => {

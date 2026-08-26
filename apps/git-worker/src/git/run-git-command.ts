@@ -18,8 +18,10 @@ const DEFAULT_TIMEOUT_MS = 60_000;
  * allowlist is closed by default and reopened only for the transports git-worker actually needs
  * (`file` for local/test remotes, `http`/`https` for real providers — `ext`, `git`, and `ssh` stay
  * blocked), any configured credential helper is cleared so the only credential source is the one
- * `runGitCommand` itself supplies, and paths are never quoted/escaped so this module's own porcelain
- * parsing sees raw bytes.
+ * `runGitCommand` itself supplies, paths are never quoted/escaped so this module's own porcelain
+ * parsing sees raw bytes, and tracked symlinks are never materialized as real links
+ * (`core.symlinks=false`) so no checkout/merge/discard/restore read can be redirected out of the
+ * working tree — git writes such an entry as a regular file holding the link-target text instead.
  */
 const SECURE_GLOBAL_CONFIG: readonly string[] = [
   '-c', 'http.followRedirects=false',
@@ -29,6 +31,7 @@ const SECURE_GLOBAL_CONFIG: readonly string[] = [
   '-c', 'protocol.https.allow=always',
   '-c', 'credential.helper=',
   '-c', 'core.quotePath=false',
+  '-c', 'core.symlinks=false',
 ];
 
 /**
