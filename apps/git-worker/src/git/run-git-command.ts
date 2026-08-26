@@ -91,6 +91,16 @@ export interface GitCommandSpec {
    * pass `'--'` here instead.
    */
   readonly optionsTerminator?: '--end-of-options' | '--';
+  /**
+   * Extra `key=value` git config entries for this one invocation, each emitted as a `-c key=value`
+   * pair immediately after {@link SECURE_GLOBAL_CONFIG} and BEFORE the subcommand. Command-line
+   * `-c` is git's highest-precedence config source, so this is how a caller pins a setting above any
+   * value a cloned repo supplies through `.git/config` or a tracked config file — for example
+   * pinning `lfs.url` to the already-egress-validated origin so a repo-supplied `.lfsconfig` can
+   * never redirect a `git lfs` transfer off that host. Code-authored only; never built from
+   * untrusted repo content.
+   */
+  readonly config?: readonly string[];
   /** An out-of-band credential to supply for this invocation only, or omit for none needed. */
   readonly credential?: GitCredential;
   /** The author/committer identity to record for this invocation only (only meaningful for `commit`). */
@@ -240,8 +250,10 @@ export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<
   // docs for why an external subcommand like `git lfs <verb>` must override it to `--`).
   const positionals = spec.positionals ?? [];
   const optionsTerminator = spec.optionsTerminator ?? '--end-of-options';
+  const perCallConfig = (spec.config ?? []).flatMap((entry) => ['-c', entry]);
   const arguments_ = [
     ...SECURE_GLOBAL_CONFIG,
+    ...perCallConfig,
     spec.command,
     ...(spec.flags ?? []),
     ...(positionals.length > 0 ? [optionsTerminator, ...positionals] : []),

@@ -123,6 +123,33 @@ describe('runGitCommand', () => {
     });
   });
 
+  describe('per-call config (`-c key=value`, pinning above repo-supplied config)', () => {
+    it('emits each config entry as a `-c key=value` pair BEFORE the subcommand', async () => {
+      const workingDirectory = await createTemporaryWorkingTree();
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        // `git-lfs` need not be installed: the argv is recorded before the top-level `git` would
+        // dispatch to the external binary, so the pin is asserted either way.
+        await runGitCommand(workingDirectory, {
+          command: 'lfs',
+          flags: ['pull'],
+          config: ['lfs.url=https://origin.example.com/org/repo.git/info/lfs'],
+        }).catch(() => undefined);
+        return getCalls();
+      });
+
+      const lastCall = capture.at(-1) ?? [];
+      const pin = 'lfs.url=https://origin.example.com/org/repo.git/info/lfs';
+      const valueIndex = lastCall.indexOf(pin);
+      expect(valueIndex).toBeGreaterThanOrEqual(0);
+      // The value rides argv as its own element (never a shell string, so it can never be
+      // word-split or re-quoted), immediately preceded by its own `-c`, and the whole pair sits
+      // before the subcommand — exactly where git reads `-c` config.
+      expect(lastCall[valueIndex - 1]).toBe('-c');
+      expect(valueIndex).toBeLessThan(lastCall.indexOf('lfs'));
+    });
+  });
+
   describe('out-of-band credential handling', () => {
     const username = 'x-access-token';
     const token = 'super-secret-test-token-DO-NOT-LEAK-93f1';

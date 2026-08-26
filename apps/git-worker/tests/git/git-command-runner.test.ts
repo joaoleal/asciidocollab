@@ -15,7 +15,7 @@ import {
   RepositoryTooLargeError,
   RepositoryUnreachableError,
 } from '@asciidocollab/domain';
-import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
+import { deriveLfsEndpoint, RealGitCommandRunner } from '../../src/git/git-command-runner.js';
 import { FilesystemConflictStageStore } from '../../src/git/filesystem-conflict-stage-store.js';
 import { RemoteHostNotAllowedError, type HostAddressResolver } from '../../src/git/egress-allowlist.js';
 import {
@@ -1276,6 +1276,51 @@ describe('RealGitCommandRunner.clone', () => {
   // so it documents the intended behavior once git-lfs is available (e.g. in CI).
   it.skip('smudges an LFS pointer to the real object bytes (requires git-lfs; unrunnable in this sandbox)', async () => {
     expect(true).toBe(true);
+  });
+
+  it('derives the LFS endpoint on the origin host, reproducing git-lfs\'s default for an https remote', () => {
+    // Replicates git-lfs's own default so an honest repo's transfer is unchanged; the security
+    // point is that the host is always the origin's, never anything a repo could supply.
+    expect(deriveLfsEndpoint('https://github.com/org/repo.git')).toBe('https://github.com/org/repo.git/info/lfs');
+    expect(deriveLfsEndpoint('https://github.com/org/repo')).toBe('https://github.com/org/repo.git/info/lfs');
+    expect(deriveLfsEndpoint('https://github.com/org/repo.git/')).toBe('https://github.com/org/repo.git/info/lfs');
+  });
+
+  it('pins the LFS endpoint above a repo-supplied .lfsconfig, so git-lfs resolves the validated origin, not the attacker host', async () => {
+    if (!(await isGitLfsAvailable())) {
+      // git-lfs absent: the pin MECHANISM (the `-c lfs.url` the worker emits) is still proven
+      // deterministically by the run-git-command per-call config test. This check — that a
+      // command-line `-c lfs.url` actually OVERRIDES a hostile `.lfsconfig` in real git-lfs — runs
+      // wherever git-lfs is installed (e.g. CI); it is characterized, never faked, when it is not.
+      // eslint-disable-next-line no-console
+      console.info('[skipped] git-lfs not installed — `.lfsconfig` override check runs only where git-lfs is present.');
+      return;
+    }
+
+    // A working tree exactly as a clone would leave it: an origin remote plus a tracked `.lfsconfig`
+    // whose `lfs.url` tries to steer every LFS transfer at an internal metadata host (a classic SSRF
+    // target). `git lfs env` resolves the effective endpoint WITHOUT any network I/O.
+    const originRemoteUrl = 'https://origin.example.com/org/repo.git';
+    const attackerHost = '169.254.169.254';
+    const workingTree = await createTemporaryWorkingTree();
+    await execFile('git', ['remote', 'add', 'origin', originRemoteUrl], { cwd: workingTree });
+    await writeFile(path.join(workingTree, '.lfsconfig'), `[lfs]\n\turl = http://${attackerHost}/redirected\n`);
+
+    const readResolvedEndpoint = async (extraConfig: string[]): Promise<string> => {
+      const { stdout } = await execFile('git', [...extraConfig, 'lfs', 'env'], { cwd: workingTree });
+      return stdout.split('\n').find((line) => line.startsWith('Endpoint=')) ?? '';
+    };
+
+    // Baseline (the vulnerability): with no pin, git-lfs honors `.lfsconfig` and would transfer to
+    // the attacker host — proof the attack surface is real and this test would catch a regression.
+    expect(await readResolvedEndpoint([])).toContain(attackerHost);
+
+    // The fix: the worker's highest-precedence `-c lfs.url=<origin-derived>` wins over `.lfsconfig`,
+    // so git-lfs resolves the validated origin endpoint and never the attacker host.
+    const pinnedEndpoint = deriveLfsEndpoint(originRemoteUrl);
+    const resolvedWithPin = await readResolvedEndpoint(['-c', `lfs.url=${pinnedEndpoint}`]);
+    expect(resolvedWithPin).toContain(pinnedEndpoint);
+    expect(resolvedWithPin).not.toContain(attackerHost);
   });
 
   it('returns RepositoryTooLargeError and cleans up the scratch directory when the cloned tree exceeds maxRepoSizeMB', async () => {

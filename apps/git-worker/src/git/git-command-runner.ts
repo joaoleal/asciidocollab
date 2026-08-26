@@ -208,6 +208,27 @@ async function workingTreeUsesLfs(workingDirectory: string): Promise<boolean> {
 }
 
 /**
+ * Derives the Large File Storage transfer endpoint from the ALREADY egress-validated origin remote
+ * URL, replicating `git-lfs`'s own default for an https/http remote: the repository URL (given a
+ * `.git` suffix if it lacks one) plus `/info/lfs`. Pinning this value with a highest-precedence
+ * command-line `-c lfs.url=<endpoint>` on every networked `git lfs` call is what stops a cloned
+ * repo's attacker-controlled `.lfsconfig` (or an `lfs.url` smuggled into `.git/config`) from
+ * redirecting the transfer — and the out-of-band credential — to an internal or otherwise
+ * disallowed host. Because it reproduces git-lfs's default endpoint, an honest repository's LFS
+ * transfer is unchanged; only a repo trying to override the endpoint is neutralized.
+ *
+ * @param remoteUrl - The origin remote URL, already checked against the egress allowlist.
+ * @returns The LFS endpoint URL to pin, always on the same host as `remoteUrl`.
+ */
+export function deriveLfsEndpoint(remoteUrl: string): string {
+  const withoutTrailingSlashes = remoteUrl.replace(/\/+$/, '');
+  const base = withoutTrailingSlashes.endsWith('.git')
+    ? withoutTrailingSlashes
+    : `${withoutTrailingSlashes}.git`;
+  return `${base}/info/lfs`;
+}
+
+/**
  * Extracts `git rev-parse`'s answer from its stdout, discarding the literal `--end-of-options`
  * line it echoes back verbatim as an unrecognized argument.
  *
@@ -888,8 +909,9 @@ export class RealGitCommandRunner implements GitCommandRunner {
    * up checked out); a requested non-default branch is then checked out over it; an LFS pull runs
    * only if the working tree's `.gitattributes` actually declares one (see
    * {@link workingTreeUsesLfs}), so a repository that never uses LFS never requires the
-   * `git-lfs` extension; and finally `headCommit` and the tracked file set are read off whatever
-   * ended up checked out.
+   * `git-lfs` extension — and that LFS transfer's endpoint is pinned to the validated origin (see
+   * {@link deriveLfsEndpoint}) so a repo-supplied `.lfsconfig` cannot redirect it off-host; and
+   * finally `headCommit` and the tracked file set are read off whatever ended up checked out.
    *
    * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
    *   clone (defaults to the remote's default branch).
@@ -950,6 +972,11 @@ export class RealGitCommandRunner implements GitCommandRunner {
           await runGitCommand(workingDirectory, {
             command: 'lfs',
             flags: ['pull'],
+            // Pin the transfer endpoint to the already-egress-validated origin, at git's
+            // highest-precedence command-line config level, so a cloned repo's attacker-controlled
+            // `.lfsconfig` (or an `lfs.url` in `.git/config`) can never redirect this transfer — and
+            // the credential below — to an internal or otherwise disallowed host.
+            config: [`lfs.url=${deriveLfsEndpoint(input.remoteUrl)}`],
             credential: { username: CREDENTIAL_USERNAME, token: input.token },
           });
         } catch {
