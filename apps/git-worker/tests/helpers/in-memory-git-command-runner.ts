@@ -1,7 +1,10 @@
 import type {
   AuthenticationFailedError,
   ClonedRepository,
+  GitAmendError,
+  GitAmendInput,
   GitBehindAhead,
+  GitBlameLine,
   GitBranchList,
   GitCheckoutInput,
   GitCheckoutOutcome,
@@ -11,11 +14,15 @@ import type {
   GitCommitResult,
   GitCreateBranchInput,
   GitCreatedBranch,
+  GitDiffResult,
+  GitDiscardInput,
   GitFetchInput,
   GitFetchResult,
   GitInitializeError,
   GitInitializeInput,
   GitInitializeOutcome,
+  GitLogEntry,
+  GitMergeFileChange,
   GitMergeInput,
   GitMergeOutcome,
   GitPushError,
@@ -71,6 +78,10 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly resolveMergeFailures = new Map<string, GitCommandFailedError>();
   private readonly restoreToSnapshotResults = new Map<string, GitRestoreOutcome>();
   private readonly restoreToSnapshotFailures = new Map<string, GitCommandFailedError>();
+  private readonly discardChangesResults = new Map<string, GitMergeFileChange[]>();
+  private readonly discardChangesFailures = new Map<string, GitCommandFailedError>();
+  private readonly amendCommitResults = new Map<string, GitCommitResult>();
+  private readonly amendCommitFailures = new Map<string, GitAmendError>();
 
   /** Every call made to `checkRemoteAccess`, in call order, for asserting interactions. */
   readonly remoteAccessCalls: GitRemoteAccessCheck[] = [];
@@ -107,6 +118,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `restoreToSnapshot`, in call order, for asserting interactions. */
   readonly restoreToSnapshotCalls: { projectId: ProjectId; input: GitRestoreToSnapshotInput }[] = [];
+
+  /** Every call made to `discardChanges`, in call order, for asserting interactions. */
+  readonly discardChangesCalls: { projectId: ProjectId; input: GitDiscardInput }[] = [];
+
+  /** Every call made to `amendCommit`, in call order, for asserting interactions. */
+  readonly amendCommitCalls: { projectId: ProjectId; input: GitAmendInput }[] = [];
 
   /** Configures `checkRemoteAccess` to fail for a remote URL, taking priority over its default success. */
   seedRemoteAccessFailure(remoteUrl: string, error: RepositoryUnreachableError | AuthenticationFailedError): void {
@@ -224,6 +241,26 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   /** Configures `restoreToSnapshot` to fail for a project, taking priority over any seeded outcome. */
   seedRestoreToSnapshotFailure(projectId: ProjectId, error: GitCommandFailedError): void {
     this.restoreToSnapshotFailures.set(projectId.value, error);
+  }
+
+  /** Configures `discardChanges` to return `changes` for a project. */
+  seedDiscardChanges(projectId: ProjectId, changes: GitMergeFileChange[]): void {
+    this.discardChangesResults.set(projectId.value, changes);
+  }
+
+  /** Configures `discardChanges` to fail for a project, taking priority over any seeded result. */
+  seedDiscardChangesFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.discardChangesFailures.set(projectId.value, error);
+  }
+
+  /** Configures `amendCommit` to return `result` for a project. */
+  seedAmendCommit(projectId: ProjectId, result: GitCommitResult): void {
+    this.amendCommitResults.set(projectId.value, result);
+  }
+
+  /** Configures `amendCommit` to fail for a project, taking priority over any seeded result. */
+  seedAmendCommitFailure(projectId: ProjectId, error: GitAmendError): void {
+    this.amendCommitFailures.set(projectId.value, error);
   }
 
   async getStatus(): Promise<Result<GitWorkingTreeStatus, GitCommandFailedError>> {
@@ -429,5 +466,48 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: outcome };
+  }
+
+  async log(): Promise<Result<GitLogEntry[], GitCommandFailedError>> {
+    throw new Error('not used by these tests');
+  }
+
+  async diff(): Promise<Result<GitDiffResult, GitCommandFailedError>> {
+    throw new Error('not used by these tests');
+  }
+
+  async blame(): Promise<Result<GitBlameLine[], GitCommandFailedError>> {
+    throw new Error('not used by these tests');
+  }
+
+  async discardChanges(
+    projectId: ProjectId,
+    input: GitDiscardInput,
+  ): Promise<Result<GitMergeFileChange[], GitCommandFailedError>> {
+    this.discardChangesCalls.push({ projectId, input });
+
+    const failure = this.discardChangesFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const changes = this.discardChangesResults.get(projectId.value);
+    if (!changes) {
+      throw new Error(`no discardChanges result seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: changes };
+  }
+
+  async amendCommit(projectId: ProjectId, input: GitAmendInput): Promise<Result<GitCommitResult, GitAmendError>> {
+    this.amendCommitCalls.push({ projectId, input });
+
+    const failure = this.amendCommitFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.amendCommitResults.get(projectId.value);
+    if (!result) {
+      throw new Error(`no amendCommit result seeded for ${projectId.value}`);
+    }
+
+    return { success: true, value: result };
   }
 }

@@ -70,6 +70,9 @@ export type {
   GitDiffInput,
   GitDiffResult,
   GitBlameLine,
+  GitDiscardInput,
+  GitAmendInput,
+  GitAmendError,
 } from './git/git-command-runner';
 
 // file-tree/

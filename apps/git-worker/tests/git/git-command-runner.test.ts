@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import {
   AuthenticationFailedError,
+  CommitAlreadyPushedError,
   GitCommandFailedError,
   GitOperationId,
   NonFastForwardError,
@@ -2260,5 +2261,182 @@ describe('RealGitCommandRunner.blame', () => {
     const result = await runner.blame(projectId, { path: 'empty.adoc' });
 
     expect(result).toEqual({ success: true, value: [] });
+  });
+});
+
+describe('RealGitCommandRunner.discardChanges', () => {
+  it('restores a tracked file\'s working-tree edit back to HEAD and reports it as modified', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440130');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'head content\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'edited content\n');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.discardChanges(projectId, { paths: ['tracked.adoc'] });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(await readFile(path.join(cwd, 'tracked.adoc'), 'utf8')).toBe('head content\n');
+    expect(result.value).toEqual([
+      { type: 'modified', path: 'tracked.adoc', content: Buffer.from('head content\n'), mimeType: 'text/asciidoc' },
+    ]);
+  });
+
+  it('removes a newly-created untracked file and reports it as removed', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440131');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'kept\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'new-untracked.adoc'), 'brand new\n');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.discardChanges(projectId, { paths: ['new-untracked.adoc'] });
+
+    expect(result).toEqual({ success: true, value: [{ type: 'removed', path: 'new-untracked.adoc' }] });
+    await expect(stat(path.join(cwd, 'new-untracked.adoc'))).rejects.toThrow();
+    // The tracked sibling, not requested, is untouched.
+    expect(await readFile(path.join(cwd, 'tracked.adoc'), 'utf8')).toBe('kept\n');
+  });
+
+  it('restores a path to its content at a given earlier commit', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440132');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'first');
+    const firstHash = await readHeadCommit(cwd);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v2\n');
+    await commitAll(cwd, 'second');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.discardChanges(projectId, { paths: ['a.adoc'], fromCommit: firstHash });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(await readFile(path.join(cwd, 'a.adoc'), 'utf8')).toBe('v1\n');
+    expect(result.value).toEqual([
+      { type: 'modified', path: 'a.adoc', content: Buffer.from('v1\n'), mimeType: 'text/asciidoc' },
+    ]);
+  });
+
+  it('rejects a path escaping the working tree, leaving the tree untouched', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440133');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const headBefore = await readHeadCommit(cwd);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.discardChanges(projectId, { paths: ['../escaped-by-test.adoc'] });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    await expect(stat(path.join(storageRoot, 'escaped-by-test.adoc'))).rejects.toThrow();
+    expect(await readHeadCommit(cwd)).toBe(headBefore);
+  });
+});
+
+describe('RealGitCommandRunner.amendCommit', () => {
+  it('amends the unpushed HEAD commit with a new message, producing a new hash', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440134');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'original message');
+    const hashBefore = await readHeadCommit(cwd);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.amendCommit(projectId, {
+      message: 'amended message',
+      author: { name: 'Ada Lovelace', email: 'ada@example.com' },
+      flush: [],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.message).toBe('amended message');
+    expect(result.value.hash).not.toBe(hashBefore);
+    expect(result.value.hash).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.value.authoredAt).toBeInstanceOf(Date);
+
+    const { stdout: subject } = await execFile('git', ['log', '-1', '--format=%s'], { cwd });
+    expect(subject.trim()).toBe('amended message');
+    const { stdout: authorLine } = await execFile('git', ['log', '-1', '--format=%an <%ae>'], { cwd });
+    expect(authorLine.trim()).toBe('Ada Lovelace <ada@example.com>');
+  });
+
+  it('folds flushed live content into the amend and keeps the existing message when none is given', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440135');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'v1\n');
+    await commitAll(cwd, 'keep this message');
+    // Stale staged bytes — the flush entry below must override these before the amend.
+    await writeFile(path.join(cwd, 'tracked.adoc'), 'stale staged bytes\n');
+    await stage(cwd, 'tracked.adoc');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.amendCommit(projectId, {
+      author: { name: 'Ada Lovelace', email: 'ada@example.com' },
+      flush: [{ path: 'tracked.adoc', content: 'live flushed content\n' }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.message).toBe('keep this message');
+
+    const { stdout: committed } = await execFile('git', ['show', 'HEAD:tracked.adoc'], { cwd });
+    expect(committed).toBe('live flushed content\n');
+    const { stdout: subject } = await execFile('git', ['log', '-1', '--format=%s'], { cwd });
+    expect(subject.trim()).toBe('keep this message');
+  });
+
+  it('refuses to amend when the current commit is already on the remote-tracking branch, leaving it unchanged', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440136');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    const hashBefore = await readHeadCommit(cwd);
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.amendCommit(projectId, {
+      message: 'trying to rewrite published history',
+      author: { name: 'Eve', email: 'eve@example.com' },
+      flush: [],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(CommitAlreadyPushedError);
+    expect(await readHeadCommit(cwd)).toBe(hashBefore);
+    const { stdout: subject } = await execFile('git', ['log', '-1', '--format=%s'], { cwd });
+    expect(subject.trim()).toBe('base');
+  });
+
+  it('proceeds to amend when the branch has no remote-tracking ref at all', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440137');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'original message');
+    // Deliberately never configure `origin` — no `refs/remotes/origin/main` ref exists.
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.amendCommit(projectId, {
+      message: 'amended after no remote',
+      author: { name: 'Ada Lovelace', email: 'ada@example.com' },
+      flush: [],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.message).toBe('amended after no remote');
+    const { stdout: subject } = await execFile('git', ['log', '-1', '--format=%s'], { cwd });
+    expect(subject.trim()).toBe('amended after no remote');
   });
 });

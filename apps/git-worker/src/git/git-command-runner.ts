@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import {
   AuthenticationFailedError,
+  CommitAlreadyPushedError,
   GitCommandFailedError,
   NonFastForwardError,
   RemoteAlreadyInitializedError,
@@ -12,6 +13,8 @@ import {
   type ClonedFileEntry,
   type ClonedRepository,
   type ConflictStageStore,
+  type GitAmendError,
+  type GitAmendInput,
   type GitBehindAhead,
   type GitBlameLine,
   type GitBranchList,
@@ -25,6 +28,7 @@ import {
   type GitCreatedBranch,
   type GitDiffInput,
   type GitDiffResult,
+  type GitDiscardInput,
   type GitFetchInput,
   type GitFetchResult,
   type GitInitializeError,
@@ -1024,6 +1028,119 @@ export class RealGitCommandRunner implements GitCommandRunner {
   }
 
   /**
+   * Amends the most-recent commit — folding the currently-staged changes (with any live text
+   * supplied via `input.flush`) into it and, when `input.message` is given, replacing its message.
+   * Touches no network — a purely LOCAL operation.
+   *
+   * Ordering (all in the project's own working tree):
+   * 1. **Pushed-detection FIRST, before any mutation.** The current branch is read
+   *    (`git rev-parse --abbrev-ref HEAD`), then `git merge-base --is-ancestor HEAD
+   *    refs/remotes/origin/<branch>` is run: a CLEAN exit (0) means `HEAD` is already an ancestor of
+   *    (or equal to) the remote tip — the most-recent commit is already published — and this returns
+   *    {@link CommitAlreadyPushedError} making NO change at all (no flush write, no `git add`, no
+   *    amend). Any throw from that check — exit 1 (`HEAD` is ahead, genuinely unpushed) OR the
+   *    ancestor check erroring outright because `refs/remotes/origin/<branch>` does not exist (the
+   *    branch was never pushed) — is treated identically as "not (yet) pushed": proceed. Only a
+   *    successful (exit-0) ancestor check refuses; every other outcome proceeds, so a project that
+   *    has never been connected to a remote (no tracking ref at all) is never wrongly refused.
+   * 2. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
+   *    write — an unsafe path fails the whole amend closed, with no partial write. (This guard runs
+   *    before step 1's network-free but still meaningfully ordered check, so an unsafe path is
+   *    rejected without ever inspecting push state.)
+   * 3. Each flush entry is written then `git add`-ed, exactly as {@link commit} does — write the
+   *    live content, then re-stage it, so the amend captures current collaborative text rather than
+   *    stale staged bytes.
+   * 4. `git commit --amend` runs under `identity: input.author` (never a `--author` flag): with
+   *    `input.message` (`-m <message>`, taking its value from the very next argv element, shell-safe)
+   *    when a replacement message was supplied, or `--no-edit` (keeping the existing message) when it
+   *    was not.
+   * 5. `rev-parse HEAD` reads the amended commit's new hash; `git log -1 --format=%aI HEAD` reads its
+   *    authored date (falling back to `new Date()`, mirroring {@link commit}, if that secondary read
+   *    fails — the amend itself already succeeded). The result's `message` is `input.message` when
+   *    supplied, or, when it was not, the amended commit's now-kept subject
+   *    (`git log -1 --format=%s HEAD`), so a message-less amend still reports the message it landed
+   *    with rather than `undefined`.
+   *
+   * @param projectId - The project whose most-recent commit to amend.
+   * @param input - The optional replacement message, the author, and the live-content flush list.
+   * @returns The amended commit on success; a {@link CommitAlreadyPushedError} (making no change)
+   *   when the current commit is already present on the remote-tracking branch, or a
+   *   `GitCommandFailedError` when a flush path is unsafe or the underlying git command fails.
+   */
+  async amendCommit(projectId: ProjectId, input: GitAmendInput): Promise<Result<GitCommitResult, GitAmendError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    for (const entry of input.flush) {
+      if (!staysInsideWorkingTree(cwd, entry.path)) {
+        return {
+          success: false,
+          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
+        };
+      }
+    }
+
+    try {
+      const branchOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--abbrev-ref', 'HEAD'] });
+      const branch = readRevParseAnswer(branchOutput.stdout);
+
+      // A clean (exit-0) ancestor check is the ONLY refusal signal — any throw (exit 1, meaning HEAD
+      // is ahead and genuinely unpushed, OR the remote-tracking ref not existing at all) means
+      // "proceed", never "refuse".
+      const alreadyPushed = await runGitCommand(cwd, {
+        command: 'merge-base',
+        flags: ['--is-ancestor'],
+        positionals: ['HEAD', `refs/remotes/origin/${branch}`],
+      })
+        .then(() => true)
+        .catch(() => false);
+
+      if (alreadyPushed) {
+        return { success: false, error: new CommitAlreadyPushedError() };
+      }
+
+      for (const entry of input.flush) {
+        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
+        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
+      }
+
+      // `--reset-author` is required for the amended commit's AUTHOR (not just its committer) to
+      // pick up `identity`: `git commit --amend` otherwise keeps the ORIGINAL commit's author
+      // unconditionally, ignoring `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` entirely unless this flag (or
+      // an explicit `--author`) is given — confirmed against real `git`, not merely inferred.
+      await runGitCommand(cwd, {
+        command: 'commit',
+        flags:
+          input.message === undefined
+            ? ['--amend', '--reset-author', '--no-edit']
+            : ['--amend', '--reset-author', '-m', input.message],
+        identity: { name: input.author.name, email: input.author.email },
+      });
+
+      const hashOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      const hash = readRevParseAnswer(hashOutput.stdout);
+
+      let authoredAt = new Date();
+      try {
+        const dateOutput = await runGitCommand(cwd, { command: 'log', flags: ['-1', '--format=%aI', 'HEAD'] });
+        const parsed = new Date(dateOutput.stdout.trim());
+        if (!Number.isNaN(parsed.getTime())) authoredAt = parsed;
+      } catch {
+        // Falls back to the `new Date()` set above — the amend itself already succeeded.
+      }
+
+      let message = input.message;
+      if (message === undefined) {
+        const subjectOutput = await runGitCommand(cwd, { command: 'log', flags: ['-1', '--format=%s', 'HEAD'] });
+        message = subjectOutput.stdout.trim();
+      }
+
+      return { success: true, value: { hash, message, authoredAt } };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The commit could not be amended.') };
+    }
+  }
+
+  /**
    * Pushes the project's current branch to its remote, authenticating out-of-band with
    * `input.token` exactly as {@link clone} does — the token rides `GIT_ASKPASS`, never argv.
    *
@@ -1893,6 +2010,86 @@ export class RealGitCommandRunner implements GitCommandRunner {
       return { success: true, value: parseBlameOutput(stdout) };
     } catch {
       return { success: false, error: new GitCommandFailedError('The file could not be blamed.') };
+    }
+  }
+
+  /**
+   * Restores the given files in the working tree — dropping their uncommitted changes back to
+   * `HEAD`, or, with `input.fromCommit`, to their content at that commit — and returns the resulting
+   * change-set. Touches no network — a purely local operation.
+   *
+   * Every requested path is validated with {@link staysInsideWorkingTree} BEFORE anything else runs
+   * — an unsafe path fails the whole discard closed, with nothing touched.
+   *
+   * The restore target is `input.fromCommit` when given, `HEAD` otherwise. Rather than classifying
+   * paths as "tracked"/"untracked" (which a staged-but-never-committed file would answer
+   * ambiguously — tracked in the index, yet absent from `HEAD`), each requested path is checked
+   * directly against the TARGET ref with `git cat-file -e <target>:<path>`: a path that exists there
+   * is restored; one that does not (a newly-added untracked file when discarding to `HEAD`, or any
+   * path absent at `fromCommit`) is instead unstaged (`git reset -- <path>`, a no-op for an already-
+   * untracked path) and deleted from disk, so "restoring" a path to a state where it never existed
+   * actually removes it. Every existing path is restored in ONE `git checkout <target> -- <paths>`
+   * invocation, so git applies them atomically; the deletions run after, one path at a time (each on
+   * its own already-known-absent-at-target path, so there is nothing left for git to fail atomically
+   * on).
+   *
+   * The change-set is built directly from each requested path's POST-restore on-disk state — never by
+   * diffing commits: a path that now has bytes on disk is a `modified` entry carrying them (and their
+   * guessed MIME type); a path that is now absent is a `removed` entry.
+   *
+   * @param projectId - The project whose working tree to restore.
+   * @param input - The paths to restore, and, optionally, the commit to restore them from.
+   * @returns The resulting change-set on success; a `GitCommandFailedError` when a path is unsafe or
+   *   the underlying git command fails.
+   */
+  async discardChanges(
+    projectId: ProjectId,
+    input: GitDiscardInput,
+  ): Promise<Result<GitMergeFileChange[], GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    for (const requestedPath of input.paths) {
+      if (!staysInsideWorkingTree(cwd, requestedPath)) {
+        return { success: false, error: new GitCommandFailedError('A path escapes the project working tree.') };
+      }
+    }
+
+    const targetReference = input.fromCommit ?? 'HEAD';
+
+    try {
+      const toRestore: string[] = [];
+      const toRemove: string[] = [];
+      for (const requestedPath of input.paths) {
+        const existsAtTarget = await runGitCommand(cwd, {
+          command: 'cat-file',
+          flags: ['-e'],
+          positionals: [`${targetReference}:${requestedPath}`],
+        })
+          .then(() => true)
+          .catch(() => false);
+        (existsAtTarget ? toRestore : toRemove).push(requestedPath);
+      }
+
+      if (toRestore.length > 0) {
+        await runGitCommand(cwd, { command: 'checkout', positionals: [targetReference, '--', ...toRestore] });
+      }
+      for (const removedPath of toRemove) {
+        await runGitCommand(cwd, { command: 'reset', positionals: ['--', removedPath] });
+        await rm(path.join(cwd, removedPath), { force: true });
+      }
+
+      const changes: GitMergeFileChange[] = [];
+      for (const requestedPath of input.paths) {
+        try {
+          const content = await readFile(path.join(cwd, requestedPath));
+          changes.push({ type: 'modified', path: requestedPath, content, mimeType: guessMimeType(requestedPath) });
+        } catch {
+          changes.push({ type: 'removed', path: requestedPath });
+        }
+      }
+      return { success: true, value: changes };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The changes could not be discarded.') };
     }
   }
 }
