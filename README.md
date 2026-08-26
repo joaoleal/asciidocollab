@@ -138,6 +138,11 @@ public URL and an email sender address.
 See **[CONFIGURATION.md](CONFIGURATION.md)** for the full reference, or
 `.env.example` for the annotated list of every setting.
 
+Git repository sync (import/commit/push/pull/branch against GitHub, GitLab or Bitbucket) has its own
+delivery app, `apps/git-worker` — see [`apps/git-worker/README.md`](apps/git-worker/README.md) to run
+it, and the [Git repository sync](CONFIGURATION.md#git-repository-sync) section of the configuration
+reference for its security config and the operator actions it requires before real use.
+
 ---
 
 ## Self-hosting
