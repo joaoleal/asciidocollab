@@ -167,6 +167,11 @@ export interface AppContainer {
      * Prisma client is configured.
      */
     gitCredentialStore: GitCredentialStore | undefined;
+    /**
+     * Encrypts/decrypts the OAuth guided-connect flow's stateless `state` parameter, keyed with the
+     * dedicated `git.oauth.stateEncryptionKey` (never the session or credential encryption key).
+     */
+    gitOAuthStateEncryption: SessionEncryption;
   };
 }
 
@@ -361,6 +366,7 @@ declare module 'fastify' {
       emailVerificationNotifier: EmailVerificationNotifier;
       activeCloneRegistry: ActiveCloneRegistry;
       gitCredentialStore: GitCredentialStore | undefined;
+      gitOAuthStateEncryption: SessionEncryption;
     };
   }
 }

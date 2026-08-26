@@ -3,6 +3,7 @@ import path from 'path';
 import { parse as parseYaml } from 'yaml';
 import { createConfig } from './schema';
 import type { Config } from './schema';
+import { assertGitOAuthConfigConsistent } from './schema-git';
 
 let config: ReturnType<typeof createConfig> | null = null;
 
@@ -42,6 +43,10 @@ export function loadConfig(configDirectory: string): void {
   }
 
   cfg.validate({ allowed: 'strict' });
+
+  // A cross-field invariant convict's own per-field format validators cannot express — see the
+  // function's own doc for why an ephemeral fallback key here would be a real security footgun.
+  assertGitOAuthConfigConsistent(cfg.get('git'));
 }
 
 /**

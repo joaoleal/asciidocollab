@@ -54,6 +54,33 @@ describe('git config', () => {
       workerUrl: 'http://127.0.0.1:4010',
       workerSecret: '',
       workerTls: { cert: '', key: '', ca: '' },
+      oauth: {
+        stateEncryptionKey: '',
+        github: {
+          clientId: '',
+          clientSecret: '',
+          redirectUri: '',
+          scopes: 'repo',
+          authorizeUrl: 'https://github.com/login/oauth/authorize',
+          tokenUrl: 'https://github.com/login/oauth/access_token',
+        },
+        gitlab: {
+          clientId: '',
+          clientSecret: '',
+          redirectUri: '',
+          scopes: 'read_repository write_repository',
+          authorizeUrl: 'https://gitlab.com/oauth/authorize',
+          tokenUrl: 'https://gitlab.com/oauth/token',
+        },
+        bitbucket: {
+          clientId: '',
+          clientSecret: '',
+          redirectUri: '',
+          scopes: 'repository repository:write',
+          authorizeUrl: 'https://bitbucket.org/site/oauth2/authorize',
+          tokenUrl: 'https://bitbucket.org/site/oauth2/access_token',
+        },
+      },
     });
   });
 

@@ -24,12 +24,15 @@ import {
   connectRepository,
   disconnectRepository,
   getGitOperation,
+  getOAuthProviders,
   initializeRepository,
   isGitOperationTerminal,
   rotateGitCredential,
+  startGitOAuth,
   type RepositoryConnectionInput,
 } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
+import { navigateTo } from '@/lib/navigate';
 import { GIT_PROVIDERS } from '@asciidocollab/shared';
 import type { GitOperationState, GitOperationStatusDto, GitProvider } from '@asciidocollab/shared';
 
@@ -91,6 +94,25 @@ export function describeConnectFailure(caught: unknown): string {
     }
     default: {
       return "Couldn't connect the repository.";
+    }
+  }
+}
+
+/** Turns a refused `POST …/git/oauth/<provider>/start` into the sentence shown on the connect form. */
+export function describeOAuthStartFailure(caught: unknown): string {
+  if (!(caught instanceof ApiError)) return "Couldn't start the guided connection.";
+  switch (caught.code) {
+    case 'insufficient_role': {
+      return 'You need owner access to connect a repository.';
+    }
+    case 'oauth_not_configured': {
+      return 'Guided connect is not available for this provider.';
+    }
+    case 'validation_error': {
+      return 'Enter a valid remote URL first.';
+    }
+    default: {
+      return "Couldn't start the guided connection.";
     }
   }
 }
@@ -280,6 +302,9 @@ function ConnectOrInitializeForm({ projectId, mode, onOpenChange, onSucceeded }:
   const [pending, setPending] = useState(false);
   const [startFailure, setStartFailure] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'form' });
+  // Providers with the guided OAuth connect flow available; null while still loading (the button
+  // stays hidden either way, so a slow/failed lookup never shows a button that would 404).
+  const [oauthProviders, setOauthProviders] = useState<GitProvider[] | null>(null);
 
   // Whether this form is still on screen, so a request that settles after the dialog was dismissed
   // never touches state on its way out.
@@ -291,8 +316,28 @@ function ConnectOrInitializeForm({ projectId, mode, onOpenChange, onSucceeded }:
     };
   }, []);
 
+  // Only the connect dialog offers guided OAuth (initialize has no existing remote to authorize
+  // against yet). Fetched once per mount — a fresh mount is guaranteed on every dialog open, since
+  // Radix unmounts the portal on close.
+  useEffect(() => {
+    if (mode !== 'connect') return;
+    let active = true;
+    getOAuthProviders()
+      .then((result) => {
+        if (active) setOauthProviders(result.providers);
+      })
+      .catch(() => {
+        if (active) setOauthProviders([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [mode]);
+
   const trimmedRemoteUrl = form.remoteUrl.trim();
   const canSubmit = trimmedRemoteUrl.length > 0 && form.token.length > 0 && !pending;
+  const canStartOAuth = mode === 'connect' && trimmedRemoteUrl.length > 0 && !pending;
+  const oauthAvailableForProvider = mode === 'connect' && (oauthProviders?.includes(form.provider) ?? false);
 
   const handleSubmit = async (event: React.SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -329,6 +374,31 @@ function ConnectOrInitializeForm({ projectId, mode, onOpenChange, onSucceeded }:
       setStartFailure(mode === 'connect' ? describeConnectFailure(caughtError) : describeInitializeStartFailure(caughtError));
     } finally {
       if (onScreen.current) setPending(false);
+    }
+  };
+
+  /**
+   * Starts the guided OAuth connect flow for the form's currently selected provider: posts the
+   * start endpoint with the entered remote URL/branch, then does a full-page redirect to the
+   * returned authorize URL. Manual PAT entry (`handleSubmit` above) is entirely unaffected — this
+   * is a second, independent way to submit the same dialog.
+   */
+  const handleOAuthConnect = async () => {
+    if (!canStartOAuth) return;
+    setPending(true);
+    setStartFailure(null);
+    const trimmedBranch = form.branch.trim();
+    try {
+      const result = await startGitOAuth(projectId, form.provider, {
+        remoteUrl: trimmedRemoteUrl,
+        branch: trimmedBranch.length > 0 ? trimmedBranch : undefined,
+      });
+      if (!onScreen.current) return;
+      navigateTo(result.authorizeUrl);
+    } catch (caughtError) {
+      if (!onScreen.current) return;
+      setStartFailure(describeOAuthStartFailure(caughtError));
+      setPending(false);
     }
   };
 
@@ -401,6 +471,18 @@ function ConnectOrInitializeForm({ projectId, mode, onOpenChange, onSucceeded }:
           )}
 
           <RepositoryConnectionFields mode={mode} form={form} pending={pending} />
+
+          {oauthAvailableForProvider && (
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              disabled={!canStartOAuth}
+              onClick={() => void handleOAuthConnect()}
+            >
+              {pending ? 'Connecting…' : `Connect with ${PROVIDER_LABELS[form.provider]}`}
+            </Button>
+          )}
 
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

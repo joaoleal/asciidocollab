@@ -41,6 +41,7 @@ import { gitActiveOperationRoutes } from '../routes/projects/git/active-operatio
 import { gitStatusRoutes } from '../routes/projects/git/status';
 import { gitInitializeRoutes } from '../routes/projects/git/initialize';
 import { gitConnectRoutes } from '../routes/projects/git/connect';
+import { gitOAuthStartRoutes } from '../routes/projects/git/oauth-start';
 import { gitDisconnectRoutes } from '../routes/projects/git/disconnect';
 import { gitCredentialRoutes } from '../routes/projects/git/credential';
 import { gitBehindAheadRoutes } from '../routes/projects/git/behind-ahead';
@@ -64,6 +65,8 @@ import { gitPreviewPullRoutes } from '../routes/projects/git/preview-pull';
 import { gitPreviewPushRoutes } from '../routes/projects/git/preview-push';
 import { cloneRoutes } from '../routes/projects/clone';
 import { gitImportRoutes } from '../routes/git/import';
+import { gitOAuthCallbackRoutes } from '../routes/git/oauth-callback';
+import { gitOAuthProvidersRoutes } from '../routes/git/oauth-providers';
 import { dictionaryRoutes } from '../routes/grammar/dictionary';
 import { ignoredLintsRoutes } from '../routes/grammar/ignored-lints';
 import { pdfExtensionRoutes } from '../routes/projects/pdf-extensions';
@@ -126,6 +129,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitStatusRoutes);
       await innerApp.register(gitInitializeRoutes);
       await innerApp.register(gitConnectRoutes);
+      await innerApp.register(gitOAuthStartRoutes);
       await innerApp.register(gitDisconnectRoutes);
       await innerApp.register(gitCredentialRoutes);
       await innerApp.register(gitBehindAheadRoutes);
@@ -149,6 +153,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitPreviewPushRoutes);
       await innerApp.register(cloneRoutes);
       await innerApp.register(gitImportRoutes);
+      await innerApp.register(gitOAuthCallbackRoutes);
+      await innerApp.register(gitOAuthProvidersRoutes);
       await innerApp.register(dictionaryRoutes);
       await innerApp.register(ignoredLintsRoutes);
       await innerApp.register(pdfExtensionRoutes);

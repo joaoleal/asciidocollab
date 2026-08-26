@@ -360,6 +360,48 @@ export async function connectRepository(
   });
 }
 
+/**
+ * Reads which providers currently have the guided OAuth authorization-code + PKCE connect flow
+ * available (an operator has registered that provider's OAuth app). A provider absent from this
+ * list still supports manual PAT connect — this only gates the "Connect with <provider>" button.
+ */
+export async function getOAuthProviders(): Promise<{ providers: GitProvider[] }> {
+  return apiRequest('/api/git/oauth/providers');
+}
+
+/** Body accepted by {@link startGitOAuth}. */
+export interface StartGitOAuthInput {
+  /** The remote repository's URL to connect once the OAuth flow completes. */
+  remoteUrl: string;
+  /** The branch to check out initially. Omitted when not given, so the server falls back to its own default. */
+  branch?: string;
+}
+
+/** What starting the guided OAuth connect flow hands back. */
+export interface StartGitOAuthResult {
+  /** The provider's authorize URL to send the browser to next (a full-page redirect, not a fetch). */
+  authorizeUrl: string;
+}
+
+/**
+ * Starts the guided OAuth authorization-code + PKCE connect flow for the given provider: the
+ * server mints an encrypted `state` and returns the provider's authorize URL. The caller is
+ * expected to navigate the browser there next (`window.location.href = result.authorizeUrl`) —
+ * this function itself only performs the initiating request.
+ */
+export async function startGitOAuth(
+  projectId: string,
+  provider: GitProvider,
+  input: StartGitOAuthInput,
+): Promise<StartGitOAuthResult> {
+  const body: { remoteUrl: string; branch?: string } = { remoteUrl: input.remoteUrl };
+  if (input.branch) body.branch = input.branch;
+  return apiRequest(`/api/projects/${projectId}/git/oauth/${provider}/start`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 /** What starting an initialize hands back: the operation to poll and the project it applies to. */
 export interface InitializeRepositoryResult {
   /** Identifier of the newly queued initialize operation. */

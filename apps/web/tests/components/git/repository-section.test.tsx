@@ -7,6 +7,13 @@ const mockInitializeRepository = jest.fn();
 const mockDisconnectRepository = jest.fn();
 const mockRotateGitCredential = jest.fn();
 const mockGetGitOperation = jest.fn();
+const mockGetOAuthProviders = jest.fn();
+const mockStartGitOAuth = jest.fn();
+const mockNavigateTo = jest.fn();
+
+jest.mock('@/lib/navigate', () => ({
+  navigateTo: (...parameters: unknown[]) => mockNavigateTo(...parameters),
+}));
 
 jest.mock('@/lib/api/git', () => ({
   ...jest.requireActual('@/lib/api/git'),
@@ -15,6 +22,8 @@ jest.mock('@/lib/api/git', () => ({
   disconnectRepository: (...parameters: unknown[]) => mockDisconnectRepository(...parameters),
   rotateGitCredential: (...parameters: unknown[]) => mockRotateGitCredential(...parameters),
   getGitOperation: (...parameters: unknown[]) => mockGetGitOperation(...parameters),
+  getOAuthProviders: (...parameters: unknown[]) => mockGetOAuthProviders(...parameters),
+  startGitOAuth: (...parameters: unknown[]) => mockStartGitOAuth(...parameters),
 }));
 
 const mockRefetch = jest.fn();
@@ -74,6 +83,8 @@ beforeEach(() => {
   mockDisconnectRepository.mockResolvedValue({ ok: true });
   mockRotateGitCredential.mockResolvedValue({ tokenHint: '…a1b2' });
   mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'INITIALIZE', state: 'QUEUED', progress: 0, errorCode: null });
+  mockGetOAuthProviders.mockResolvedValue({ providers: [] });
+  mockStartGitOAuth.mockResolvedValue({ authorizeUrl: 'https://github.com/login/oauth/authorize?mock=1' });
 });
 
 afterEach(() => {
@@ -192,6 +203,117 @@ describe('RepositorySection — disconnected', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     fireEvent(document.body, new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+});
+
+describe('RepositorySection — guided OAuth connect', () => {
+  test('the OAuth button is hidden while no provider has guided connect available', async () => {
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    await waitFor(() => expect(mockGetOAuthProviders).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /connect with github/i })).not.toBeInTheDocument(),
+    );
+  });
+
+  test('the OAuth button shows for the selected provider once it is reported available', async () => {
+    mockGetOAuthProviders.mockResolvedValue({ providers: ['github'] });
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+
+    expect(await screen.findByRole('button', { name: /connect with github/i })).toBeInTheDocument();
+  });
+
+  test('the OAuth button hides again after switching to a provider that is not available', async () => {
+    mockGetOAuthProviders.mockResolvedValue({ providers: ['github'] });
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    await screen.findByRole('button', { name: /connect with github/i });
+
+    fireEvent.click(screen.getByRole('radio', { name: /gitlab/i }));
+
+    expect(screen.queryByRole('button', { name: /connect with/i })).not.toBeInTheDocument();
+  });
+
+  test('is disabled until a remote URL is entered, and needs no token', async () => {
+    mockGetOAuthProviders.mockResolvedValue({ providers: ['github'] });
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    const oauthButton = await screen.findByRole('button', { name: /connect with github/i });
+    expect(oauthButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/remote url/i), {
+      target: { value: 'https://github.com/acme/handbook.git' },
+    });
+    expect(oauthButton).toBeEnabled();
+  });
+
+  test('clicking posts the start endpoint with the entered remote/branch, then redirects the browser to the authorize URL', async () => {
+    mockGetOAuthProviders.mockResolvedValue({ providers: ['github'] });
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    const oauthButton = await screen.findByRole('button', { name: /connect with github/i });
+    fireEvent.change(screen.getByLabelText(/remote url/i), {
+      target: { value: 'https://github.com/acme/handbook.git' },
+    });
+    fireEvent.change(screen.getByLabelText(/branch/i), { target: { value: 'develop' } });
+
+    fireEvent.click(oauthButton);
+
+    await waitFor(() =>
+      expect(mockStartGitOAuth).toHaveBeenCalledWith(PROJECT_ID, 'github', {
+        remoteUrl: 'https://github.com/acme/handbook.git',
+        branch: 'develop',
+      }),
+    );
+    await waitFor(() =>
+      expect(mockNavigateTo).toHaveBeenCalledWith('https://github.com/login/oauth/authorize?mock=1'),
+    );
+  });
+
+  test('shows the mapped error, and does not redirect, when the start request is refused', async () => {
+    mockGetOAuthProviders.mockResolvedValue({ providers: ['github'] });
+    mockStartGitOAuth.mockRejectedValueOnce(new ApiError(403, 'insufficient_role', 'nope'));
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    const oauthButton = await screen.findByRole('button', { name: /connect with github/i });
+    fireEvent.change(screen.getByLabelText(/remote url/i), {
+      target: { value: 'https://github.com/acme/handbook.git' },
+    });
+
+    fireEvent.click(oauthButton);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/owner access to connect/i);
+    expect(mockNavigateTo).not.toHaveBeenCalled();
+  });
+
+  test('manual PAT entry still works when the OAuth button is shown', async () => {
+    mockGetOAuthProviders.mockResolvedValue({ providers: ['github'] });
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    await screen.findByRole('button', { name: /connect with github/i });
+    fillValidForm();
+
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    await waitFor(() =>
+      expect(mockConnectRepository).toHaveBeenCalledWith(PROJECT_ID, {
+        provider: 'github',
+        remoteUrl: 'https://github.com/acme/handbook.git',
+        token: 'ghp_super_secret_token',
+        branch: undefined,
+      }),
+    );
+  });
+
+  test('the OAuth button never appears in the initialize dialog', async () => {
+    mockGetOAuthProviders.mockResolvedValue({ providers: ['github'] });
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /initialize & publish/i }));
+    await act(async () => {
+      jest.advanceTimersByTime(0);
+    });
+    expect(screen.queryByRole('button', { name: /connect with/i })).not.toBeInTheDocument();
   });
 });
 

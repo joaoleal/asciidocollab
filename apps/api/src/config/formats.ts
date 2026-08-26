@@ -94,6 +94,36 @@ convict.addFormat({
 });
 
 /**
+ * Custom convict format for an OPTIONAL base64-encoded 32-byte key.
+ *
+ * Same shape check as the `base64-32byte-key` format above, but an empty value is valid — used for a key
+ * that is only conditionally required (e.g. the git OAuth state-encryption key, needed only once an
+ * operator configures at least one provider's `clientId`). That cross-field invariant is enforced
+ * separately, not by this format: a format validator sees only its own field's value, never its
+ * siblings.
+ */
+convict.addFormat({
+  name: 'optional-base64-32byte-key',
+  validate: (value: unknown) => {
+    if (value === null || value === undefined || value === '') {
+      return;
+    }
+    if (typeof value !== 'string') {
+      throw new TypeError('must be a string');
+    }
+    // Validate the alphabet before decoding: Buffer.from silently drops characters outside the
+    // base64 alphabet, so an otherwise-malformed key could coincidentally decode to 32 bytes and
+    // slip through the length check below.
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+      throw new Error('must be a base64-encoded 32-byte string (e.g. openssl rand -base64 32)');
+    }
+    if (Buffer.from(value, 'base64').length !== 32) {
+      throw new Error('must be a base64-encoded 32-byte string (e.g. openssl rand -base64 32)');
+    }
+  },
+});
+
+/**
  * Custom convict format for a comma-separated list of strings.
  *
  * Environment variables carry a single string, so array-valued fields (e.g. the git

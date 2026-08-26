@@ -92,6 +92,15 @@ export function createServices(input: CreateServicesInput): AppContainer['servic
     ? new PrismaGitCredentialStore(prisma, gitCredentialEncryption)
     : undefined;
 
+  // Another dedicated instance, keyed with git.oauth.stateEncryptionKey — encrypts/decrypts the
+  // OAuth guided-connect flow's stateless `state` parameter (never the session or credential key).
+  // Config loading (`assertGitOAuthConfigConsistent`) already guarantees this key is set whenever
+  // any provider's OAuth is actually configured, so an empty key here only ever occurs when OAuth is
+  // unavailable everywhere and this instance is never exercised.
+  const gitOAuthStateEncryption = new SessionEncryption({
+    encryptionKey: appConfig.git.oauth.stateEncryptionKey,
+  });
+
   const passwordResetNotifier = new SmtpPasswordResetNotifier(
     emailSender,
     appConfig.auth.email.templates.resetRequest.subject,
@@ -138,5 +147,6 @@ export function createServices(input: CreateServicesInput): AppContainer['servic
     emailVerificationNotifier,
     activeCloneRegistry,
     gitCredentialStore,
+    gitOAuthStateEncryption,
   };
 }
