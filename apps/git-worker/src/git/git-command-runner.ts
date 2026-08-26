@@ -1569,7 +1569,8 @@ export class RealGitCommandRunner implements GitCommandRunner {
 
     const hasRemoteTrackingRef = await runGitCommand(cwd, {
       command: 'rev-parse',
-      flags: ['--verify', '-q', remoteRef],
+      flags: ['--verify', '-q'],
+      positionals: [remoteRef],
     })
       .then(() => true)
       .catch(() => false);
