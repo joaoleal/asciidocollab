@@ -1,13 +1,30 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describePullFailure, PullDialog } from '@/components/git/pull-dialog';
 import { ApiError } from '@/lib/api/transport';
+import type { CommitDto } from '@asciidocollab/shared';
 
 const mockStartPull = jest.fn();
+const mockGetPullPreview = jest.fn();
+const mockListMembers = jest.fn();
 
 jest.mock('@/lib/api/git', () => ({
   ...jest.requireActual('@/lib/api/git'),
   startPull: (...parameters: unknown[]) => mockStartPull(...parameters),
+  getPullPreview: (...parameters: unknown[]) => mockGetPullPreview(...parameters),
 }));
+
+jest.mock('@/lib/api/members', () => ({
+  membersApi: { list: (...parameters: unknown[]) => mockListMembers(...parameters) },
+}));
+
+jest.mock('@/components/avatar', () => ({
+  Avatar: ({ displayName }: { displayName: string }) =>
+    require('react').createElement('span', { 'data-testid': 'avatar', 'aria-label': displayName }),
+}));
+
+const COMMITS: CommitDto[] = [
+  { hash: 'abc1234567890', message: 'Fix the intro section', authorUserId: 'user1', authoredAt: '2026-08-20T00:00:00.000Z' },
+];
 
 function renderDialog(overrides: Partial<{ onOpenChange: (open: boolean) => void; onConfirmed: (result: unknown) => void }> = {}) {
   const onOpenChange = overrides.onOpenChange ?? jest.fn();
@@ -21,21 +38,85 @@ const confirmButton = () => screen.getByRole('button', { name: /^(Pull anyway|Pu
 beforeEach(() => {
   jest.clearAllMocks();
   mockStartPull.mockResolvedValue({ operationId: 'op1', projectId: 'proj1' });
+  mockGetPullPreview.mockResolvedValue({ incomingCommits: [], changedPaths: [], affectsOpenFiles: false });
+  mockListMembers.mockResolvedValue({ data: { members: [] } });
 });
 
-describe('PullDialog warning', () => {
-  test('renders a real Dialog.Description warning about open files', () => {
+describe('PullDialog structure', () => {
+  test('renders a real Dialog.Description', () => {
     renderDialog();
     const dialog = screen.getByRole('dialog');
     const describedById = dialog.getAttribute('aria-describedby');
     expect(describedById).toBeTruthy();
-    expect(document.querySelector(`#${describedById}`)).toHaveTextContent(/open for live editing/i);
+    expect(document.querySelector(`#${describedById}`)).toHaveTextContent(/incoming commits/i);
   });
 
   test('shows Cancel and Pull anyway actions', () => {
     renderDialog();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(confirmButton()).toBeInTheDocument();
+  });
+});
+
+describe('PullDialog preview', () => {
+  test('fetches the pull preview on open', () => {
+    renderDialog();
+    expect(mockGetPullPreview).toHaveBeenCalledWith('proj1');
+  });
+
+  test('shows a loading state while the preview loads', () => {
+    mockGetPullPreview.mockReturnValue(new Promise(() => undefined));
+    renderDialog();
+    expect(screen.getByText('Loading pull preview…')).toBeInTheDocument();
+  });
+
+  test('shows "Already up to date" when there are no incoming commits', async () => {
+    mockGetPullPreview.mockResolvedValue({ incomingCommits: [], changedPaths: [], affectsOpenFiles: false });
+    renderDialog();
+    expect(await screen.findByText('Already up to date.')).toBeInTheDocument();
+  });
+
+  test('renders incoming commits and changed paths', async () => {
+    mockGetPullPreview.mockResolvedValue({
+      incomingCommits: COMMITS,
+      changedPaths: ['a.adoc', 'b.adoc'],
+      affectsOpenFiles: false,
+    });
+    renderDialog();
+
+    expect(await screen.findByText('Fix the intro section')).toBeInTheDocument();
+    expect(screen.getByText('2 changed paths')).toBeInTheDocument();
+    expect(screen.getByText('a.adoc')).toBeInTheDocument();
+  });
+
+  test('shows the open-files caution when affectsOpenFiles is true', async () => {
+    mockGetPullPreview.mockResolvedValue({
+      incomingCommits: COMMITS,
+      changedPaths: ['a.adoc'],
+      affectsOpenFiles: true,
+    });
+    renderDialog();
+
+    expect(await screen.findByText(/may change files that are currently open for live editing/i)).toBeInTheDocument();
+  });
+
+  test('does not show the open-files caution when affectsOpenFiles is false', async () => {
+    mockGetPullPreview.mockResolvedValue({
+      incomingCommits: COMMITS,
+      changedPaths: ['a.adoc'],
+      affectsOpenFiles: false,
+    });
+    renderDialog();
+
+    await screen.findByText('Fix the intro section');
+    expect(screen.queryByText(/may change files that are currently open for live editing/i)).not.toBeInTheDocument();
+  });
+
+  test('renders an alert for a failed preview load', async () => {
+    mockGetPullPreview.mockRejectedValue(new ApiError(403, 'insufficient_role', 'nope'));
+    renderDialog();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('You need editor access to see what would be pulled.');
   });
 });
 
@@ -74,6 +155,16 @@ describe('PullDialog confirmation', () => {
     const { onOpenChange } = renderDialog();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test('still allows confirming a pull when the preview failed to load (additive, not blocking)', async () => {
+    mockGetPullPreview.mockRejectedValue(new Error('boom'));
+    renderDialog();
+    await screen.findByRole('alert');
+    fireEvent.click(confirmButton());
+    await waitFor(() =>
+      expect(mockStartPull).toHaveBeenCalledWith('proj1', { confirmAffectsOpenFiles: true }),
+    );
   });
 });
 

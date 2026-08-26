@@ -4,6 +4,9 @@
  * Orchestrates starting a pull from the editor and polling it to completion, for the project editor
  * layout: `start()` attempts the pull immediately; a `409 open_files_need_confirm` refusal opens the
  * confirm dialog instead of surfacing an error, and any other refusal becomes an error message.
+ * `openPreview()` opens that same dialog up front, before any pull is attempted, so the status bar's
+ * normal pull entry can show the dry-run preview first too — same dialog either way, since it fetches
+ * its own preview and "Pull anyway" always performs the actual pull.
  * Success queues the operation for polling, on the same interval/shape as the import dialog's
  * polling loop, with one added stop condition: `AWAITING_CONFLICT` halts polling just like a
  * terminal state (see {@link isGitOperationTerminal}, which does not include it) and surfaces as a
@@ -43,6 +46,11 @@ export interface UsePull {
   message: PullMessage | null;
   /** Starts a pull; opens the confirm dialog instead of erroring when open files block it. */
   start: () => void;
+  /**
+   * Opens the same confirm dialog `start()` falls back to on refusal, but up front — before any pull
+   * is attempted — so the normal pull entry can show the dry-run preview before doing anything.
+   */
+  openPreview: () => void;
 }
 
 /**
@@ -83,6 +91,11 @@ export function usePull(projectId: string, onSucceeded: () => void): UsePull {
   }, []);
 
   const closeConfirm = useCallback(() => setConfirmOpen(false), []);
+
+  const openPreview = useCallback(() => {
+    setMessage(null);
+    setConfirmOpen(true);
+  }, []);
 
   // Polls the queued operation, exactly like the import dialog, until it reaches a terminal state OR
   // `AWAITING_CONFLICT` — which `isGitOperationTerminal` deliberately does not count as terminal, so
@@ -127,5 +140,5 @@ export function usePull(projectId: string, onSucceeded: () => void): UsePull {
     };
   }, [operationId, projectId, onSucceeded]);
 
-  return { confirmOpen, closeConfirm, handleConfirmed, pending, message, start };
+  return { confirmOpen, closeConfirm, handleConfirmed, pending, message, start, openPreview };
 }

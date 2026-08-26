@@ -86,6 +86,11 @@ export interface GitConnectionStatusBarProperties {
   onPullClick: () => void;
   /** True while a pull is in flight — disables the Pull button. */
   pullPending?: boolean;
+  /**
+   * Called when the "Preview push" affordance is activated (shown only while `behindAhead.ahead > 0`).
+   * Left undefined to hide the affordance entirely, e.g. while the caller has nothing to open yet.
+   */
+  onPreviewPushClick?: () => void;
 }
 
 /**
@@ -106,6 +111,7 @@ export function GitConnectionStatusBar({
   canPull,
   onPullClick,
   pullPending = false,
+  onPreviewPushClick,
 }: GitConnectionStatusBarProperties): React.JSX.Element | null {
   if (!connected) return null;
   if (loading && !status) return null;
@@ -139,6 +145,12 @@ export function GitConnectionStatusBar({
       <span className="text-muted-foreground">
         {status.lastSyncAt ? formatRelativeTime(status.lastSyncAt) : 'Never synced'}
       </span>
+      {onPreviewPushClick && behindAhead !== null && behindAhead.ahead > 0 && (
+        <Button variant="outline" size="sm" onClick={onPreviewPushClick}>
+          <ArrowUp className="mr-2 h-4 w-4" aria-hidden="true" />
+          Preview push
+        </Button>
+      )}
       {canPull && behindAhead !== null && behindAhead.behind > 0 && (
         <Button
           variant="outline"

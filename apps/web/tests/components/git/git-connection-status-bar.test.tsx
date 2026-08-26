@@ -186,3 +186,41 @@ describe('GitConnectionStatusBar pull affordance', () => {
     expect(button).toHaveTextContent('Pulling…');
   });
 });
+
+describe('GitConnectionStatusBar push-preview affordance', () => {
+  test('shows the preview affordance only when ahead > 0 and a handler is given', () => {
+    const onPreviewPushClick = jest.fn();
+    render(
+      <GitConnectionStatusBar
+        {...barProperties({ behindAhead: { behind: 0, ahead: 2 }, onPreviewPushClick })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /preview push/i })).toBeInTheDocument();
+  });
+
+  test('hides the preview affordance when ahead is 0', () => {
+    const onPreviewPushClick = jest.fn();
+    render(
+      <GitConnectionStatusBar
+        {...barProperties({ behindAhead: { behind: 0, ahead: 0 }, onPreviewPushClick })}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /preview push/i })).not.toBeInTheDocument();
+  });
+
+  test('hides the preview affordance when no handler is given', () => {
+    render(<GitConnectionStatusBar {...barProperties({ behindAhead: { behind: 0, ahead: 2 } })} />);
+    expect(screen.queryByRole('button', { name: /preview push/i })).not.toBeInTheDocument();
+  });
+
+  test('calls onPreviewPushClick when the affordance is activated', () => {
+    const onPreviewPushClick = jest.fn();
+    render(
+      <GitConnectionStatusBar
+        {...barProperties({ behindAhead: { behind: 0, ahead: 2 }, onPreviewPushClick })}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /preview push/i }));
+    expect(onPreviewPushClick).toHaveBeenCalledTimes(1);
+  });
+});

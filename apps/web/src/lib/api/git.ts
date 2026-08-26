@@ -19,6 +19,8 @@ import type {
   GitProvider,
   GitRepositoryDto,
   GitStatusDto,
+  PullPreviewDto,
+  PushPreviewDto,
 } from '@asciidocollab/shared';
 
 /** Appends the defined entries of `parameters` to a query string (empty when none apply). */
@@ -522,4 +524,31 @@ export async function amendCommit(projectId: string, input?: { message?: string 
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+/** Options narrowing {@link getPullPreview}/{@link getPushPreview} to a specific branch. */
+export interface GetGitPreviewOptions {
+  /** The branch to preview against. Omitted to use the server's default (the checked-out branch). */
+  branch?: string;
+}
+
+/**
+ * Reads a dry-run preview of what pulling the connected repository's remote would bring in, without
+ * applying anything: the incoming commits, every path they touch, and whether any of that would
+ * affect a file currently open in a live editing session. Performs a live network fetch server-side,
+ * so this is gated the same as starting a real pull.
+ */
+export async function getPullPreview(projectId: string, options?: GetGitPreviewOptions): Promise<PullPreviewDto> {
+  const query = toQueryString({ branch: options?.branch });
+  return apiRequest(`/api/projects/${projectId}/git/preview/pull${query}`);
+}
+
+/**
+ * Reads a dry-run preview of what pushing the current branch would send to the remote, without
+ * applying anything: the outgoing commits and every path they touch. Purely local (no network
+ * fetch), unlike {@link getPullPreview}.
+ */
+export async function getPushPreview(projectId: string, options?: GetGitPreviewOptions): Promise<PushPreviewDto> {
+  const query = toQueryString({ branch: options?.branch });
+  return apiRequest(`/api/projects/${projectId}/git/preview/push${query}`);
 }

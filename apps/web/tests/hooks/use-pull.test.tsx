@@ -95,6 +95,32 @@ describe('usePull confirmation retry', () => {
     act(() => result.current.closeConfirm());
     expect(result.current.confirmOpen).toBe(false);
   });
+
+  test('openPreview opens the confirm dialog without attempting a pull', () => {
+    const { result } = renderHook(() => usePull('proj1', jest.fn()));
+
+    act(() => result.current.openPreview());
+
+    expect(result.current.confirmOpen).toBe(true);
+    expect(mockStartPull).not.toHaveBeenCalled();
+    expect(result.current.pending).toBe(false);
+  });
+
+  test('openPreview clears any leftover message from a previous attempt', async () => {
+    mockStartPull.mockRejectedValueOnce(new ApiError(403, 'insufficient_role', 'nope'));
+    const { result } = renderHook(() => usePull('proj1', jest.fn()));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.message).not.toBeNull());
+
+    act(() => result.current.openPreview());
+
+    expect(result.current.message).toBeNull();
+  });
 });
 
 describe('usePull polling outcomes', () => {

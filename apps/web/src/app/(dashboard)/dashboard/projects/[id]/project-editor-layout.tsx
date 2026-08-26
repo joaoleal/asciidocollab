@@ -23,6 +23,7 @@ import { CommitDialog } from '@/components/git/commit-dialog';
 import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
 import { GitActivityIndicator } from '@/components/git/git-activity-indicator';
 import { PullDialog } from '@/components/git/pull-dialog';
+import { PushPreviewDialog } from '@/components/git/push-preview-dialog';
 import { BranchSwitcher } from '@/components/git/branch-switcher';
 import { BranchSwitchDialog } from '@/components/git/branch-switch-dialog';
 import { ConflictPanel } from '@/components/git/conflict-panel';
@@ -527,6 +528,10 @@ export function ProjectEditorLayout({
   const pull = usePull(projectId, handlePullSucceeded);
   // Pulling requires the same editor capability as committing (see the route's requirement).
   const canPull = canEdit;
+
+  // Push preview: read-only, so it needs no permission gate of its own beyond the status bar only
+  // showing the trigger once there is something ahead to preview.
+  const [pushPreviewOpen, setPushPreviewOpen] = useState(false);
 
   // Branch switching changes the working tree exactly like a pull does, so it refetches the same
   // three git read models on success — reusing the pull handler rather than duplicating it.
@@ -1390,8 +1395,9 @@ export function ProjectEditorLayout({
             onCommitClick={() => setCommitDialogOpen(true)}
             behindAhead={behindAhead}
             canPull={canPull}
-            onPullClick={pull.start}
+            onPullClick={pull.openPreview}
             pullPending={pull.pending}
+            onPreviewPushClick={() => setPushPreviewOpen(true)}
           />
           {gitStatus?.syncStatus === 'CONFLICTED' && (
             <Button variant="destructive" size="sm" onClick={() => setConflictPanelOpen(true)}>
@@ -1841,6 +1847,7 @@ export function ProjectEditorLayout({
         onOpenChange={pull.closeConfirm}
         onConfirmed={pull.handleConfirmed}
       />
+      <PushPreviewDialog projectId={projectId} open={pushPreviewOpen} onOpenChange={setPushPreviewOpen} />
       <BranchSwitchDialog
         projectId={projectId}
         open={branches.confirmOpen}

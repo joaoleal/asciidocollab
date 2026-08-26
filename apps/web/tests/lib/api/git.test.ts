@@ -22,6 +22,8 @@ import {
   getGitStatus,
   getGitTreeStatus,
   getHistory,
+  getPullPreview,
+  getPushPreview,
   importRepository,
   initializeRepository,
   isGitOperationTerminal,
@@ -899,6 +901,75 @@ describe('amendCommit', () => {
     await expect(amendCommit('proj1')).rejects.toMatchObject({
       status: 409,
       code: 'commit_already_pushed',
+    });
+  });
+});
+
+describe('getPullPreview', () => {
+  test('GETs the project-scoped pull-preview endpoint with no query when no options are given', async () => {
+    const body = {
+      incomingCommits: [{ hash: 'abc1234567', message: 'Fix typo', authoredAt: '2026-08-24T00:00:00Z' }],
+      changedPaths: ['a.adoc'],
+      affectsOpenFiles: false,
+    };
+    okOnce(body);
+
+    const result = await getPullPreview('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/preview/pull`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(body);
+  });
+
+  test('includes branch only when given', async () => {
+    okOnce({ incomingCommits: [], changedPaths: [], affectsOpenFiles: false });
+
+    await getPullPreview('proj1', { branch: 'develop' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/preview/pull?branch=develop`);
+  });
+
+  test('surfaces a not-connected refusal', async () => {
+    failOnce(404, { error: { code: 'repository_not_connected', message: 'This project has no connected Git repository' } });
+
+    await expect(getPullPreview('proj1')).rejects.toMatchObject({
+      status: 404,
+      code: 'repository_not_connected',
+    });
+  });
+});
+
+describe('getPushPreview', () => {
+  test('GETs the project-scoped push-preview endpoint with no query when no options are given', async () => {
+    const body = {
+      outgoingCommits: [{ hash: 'def4567890', message: 'Add section', authoredAt: '2026-08-24T00:00:00Z' }],
+      changedPaths: ['b.adoc'],
+    };
+    okOnce(body);
+
+    const result = await getPushPreview('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/preview/push`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual(body);
+  });
+
+  test('includes branch only when given', async () => {
+    okOnce({ outgoingCommits: [], changedPaths: [] });
+
+    await getPushPreview('proj1', { branch: 'develop' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/preview/push?branch=develop`);
+  });
+
+  test('surfaces a permission refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'You do not have the required role for this action' } });
+
+    await expect(getPushPreview('proj1')).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
     });
   });
 });
