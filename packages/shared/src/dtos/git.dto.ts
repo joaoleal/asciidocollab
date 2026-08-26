@@ -356,3 +356,29 @@ export interface ActiveGitOperationDto {
   /** The project's current active operation (`QUEUED`, `RUNNING`, or `AWAITING_CONFLICT`), or null when none is active. */
   operation: GitOperationStatusDto | null;
 }
+
+/**
+ * A dry-run preview of what pulling the project's current branch would bring in, without applying
+ * anything: the incoming commits and the paths they touch, plus whether any document anywhere in
+ * the project currently has an active live editing session. `affectsOpenFiles` is informational
+ * only here — this route never blocks on it, unlike the real pull's own `409` gate.
+ */
+export interface PullPreviewDto {
+  /** Commits that would land locally, newest first, if the pull actually ran. */
+  readonly incomingCommits: CommitDto[];
+  /** Every path those commits touch. */
+  readonly changedPaths: string[];
+  /** Whether any document in the project currently has an active live editing session. */
+  readonly affectsOpenFiles: boolean;
+}
+
+/**
+ * A dry-run preview of what pushing the project's current branch would send out, without applying
+ * anything: the outgoing commits and the paths they touch.
+ */
+export interface PushPreviewDto {
+  /** Commits that would land on the remote, newest first, if the push actually ran. */
+  readonly outgoingCommits: CommitDto[];
+  /** Every path those commits touch. */
+  readonly changedPaths: string[];
+}

@@ -60,6 +60,8 @@ import { gitUndoPullRoutes } from '../routes/projects/git/undo-pull';
 import { gitHistoryRoutes } from '../routes/projects/git/history';
 import { gitDiffRoutes } from '../routes/projects/git/diff';
 import { gitBlameRoutes } from '../routes/projects/git/blame';
+import { gitPreviewPullRoutes } from '../routes/projects/git/preview-pull';
+import { gitPreviewPushRoutes } from '../routes/projects/git/preview-push';
 import { cloneRoutes } from '../routes/projects/clone';
 import { gitImportRoutes } from '../routes/git/import';
 import { dictionaryRoutes } from '../routes/grammar/dictionary';
@@ -143,6 +145,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitHistoryRoutes);
       await innerApp.register(gitDiffRoutes);
       await innerApp.register(gitBlameRoutes);
+      await innerApp.register(gitPreviewPullRoutes);
+      await innerApp.register(gitPreviewPushRoutes);
       await innerApp.register(cloneRoutes);
       await innerApp.register(gitImportRoutes);
       await innerApp.register(dictionaryRoutes);

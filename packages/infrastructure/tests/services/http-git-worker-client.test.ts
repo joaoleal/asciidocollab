@@ -19,6 +19,8 @@ import {
   GIT_WORKER_BLAME_PATH,
   GIT_WORKER_DISCARD_PATH,
   GIT_WORKER_AMEND_PATH,
+  GIT_WORKER_PREVIEW_PULL_PATH,
+  GIT_WORKER_PREVIEW_PUSH_PATH,
 } from '../../src/services/http-git-worker-client';
 
 describe('HttpGitWorkerClient', () => {
@@ -846,6 +848,120 @@ describe('HttpGitWorkerClient', () => {
     });
 
     await expect(client.amendCommit({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
+  });
+
+  it('POSTs previewPull to the preview-pull endpoint with the branch included, and returns the incoming commits', async () => {
+    const previewData = {
+      incomingCommits: [{ hash: 'abc123', message: 'Remote change', authorUserId: actorId, authoredAt: '2026-01-01T00:00:00.000Z' }],
+      changedPaths: ['chapters/intro.adoc'],
+    };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: previewData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.previewPull({ projectId, actorId, branch: 'main' });
+
+    expect(result).toEqual({ ok: true, data: previewData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_PREVIEW_PULL_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId, branch: 'main' });
+  });
+
+  it('POSTs previewPull omitting branch when none is given', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: true, data: { incomingCommits: [], changedPaths: [] } }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await client.previewPull({ projectId, actorId });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('surfaces a domain refusal envelope from previewPull as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'RepositoryUnreachableError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.previewPull({ projectId, actorId });
+    expect(result).toEqual({ ok: false, error: 'RepositoryUnreachableError' });
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from previewPull on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.previewPull({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
+  });
+
+  it('POSTs previewPush to the preview-push endpoint with the branch included, and returns the outgoing commits', async () => {
+    const previewData = {
+      outgoingCommits: [{ hash: 'def456', message: 'Local change', authorUserId: actorId, authoredAt: '2026-01-02T00:00:00.000Z' }],
+      changedPaths: ['chapters/outro.adoc'],
+    };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: previewData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.previewPush({ projectId, actorId, branch: 'main' });
+
+    expect(result).toEqual({ ok: true, data: previewData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_PREVIEW_PUSH_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId, branch: 'main' });
+  });
+
+  it('POSTs previewPush omitting branch when none is given', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: true, data: { outgoingCommits: [], changedPaths: [] } }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await client.previewPush({ projectId, actorId });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId });
+  });
+
+  it('surfaces a domain refusal envelope from previewPush as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'RepositoryNotConnectedError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.previewPush({ projectId, actorId });
+    expect(result).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from previewPush on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.previewPush({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
   });
 
   it('constructs an mTLS fetch when tls is provided and no explicit fetch', () => {

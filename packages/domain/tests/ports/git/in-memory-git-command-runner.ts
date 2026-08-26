@@ -29,6 +29,10 @@ import {
   GitMergeFileChange,
   GitMergeInput,
   GitMergeOutcome,
+  GitPreviewPullInput,
+  GitPreviewPullResult,
+  GitPreviewPushInput,
+  GitPreviewPushResult,
   GitPushError,
   GitPushInput,
   GitPushResult,
@@ -75,6 +79,13 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly logResults = new Map<string, GitLogEntry[]>();
   private readonly diffFailures = new Map<string, GitCommandFailedError>();
   private readonly diffResults = new Map<string, GitDiffResult>();
+  private readonly previewPullFailures = new Map<
+    string,
+    RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError
+  >();
+  private readonly previewPullResults = new Map<string, GitPreviewPullResult>();
+  private readonly previewPushFailures = new Map<string, GitCommandFailedError>();
+  private readonly previewPushResults = new Map<string, GitPreviewPushResult>();
   private readonly blameFailures = new Map<string, GitCommandFailedError>();
   private readonly blameResults = new Map<string, GitBlameLine[]>();
   private readonly mergeFailures = new Map<string, GitCommandFailedError>();
@@ -130,6 +141,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /** Every call made to `diff`, in call order, for asserting the exact input passed. */
   readonly diffCalls: { projectId: ProjectId; input: GitDiffInput }[] = [];
+
+  /** Every call made to `previewPull`, in call order, for asserting the remote URL, token, and branch previewed. */
+  readonly previewPullCalls: { projectId: ProjectId; input: GitPreviewPullInput }[] = [];
+
+  /** Every call made to `previewPush`, in call order, for asserting the branch previewed. */
+  readonly previewPushCalls: { projectId: ProjectId; input: GitPreviewPushInput }[] = [];
 
   /** Every call made to `blame`, in call order, for asserting the exact path/ref passed. */
   readonly blameCalls: { projectId: ProjectId; input: { readonly path: string; readonly ref?: string } }[] = [];
@@ -785,5 +802,72 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     const changes = this.discardChangesResults.get(projectId.value) ?? [];
 
     return { success: true, value: changes };
+  }
+
+  /** Configures the `GitPreviewPullResult` `previewPull` returns for a project on success. */
+  seedPreviewPull(projectId: ProjectId, result: GitPreviewPullResult): void {
+    this.previewPullResults.set(projectId.value, result);
+  }
+
+  /**
+   * Configures `previewPull` to fail for a project, taking priority over any seeded result — seed
+   * with a `RepositoryUnreachableError`, `AuthenticationFailedError`, or a generic
+   * `GitCommandFailedError`.
+   */
+  seedPreviewPullFailure(
+    projectId: ProjectId,
+    error: RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError,
+  ): void {
+    this.previewPullFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact remote URL, token, and branch, so a test can assert
+   * them — and returns the seeded `GitPreviewPullResult` (defaulting to an empty preview when
+   * unseeded), unless a failure was seeded for this project via `seedPreviewPullFailure`.
+   */
+  async previewPull(
+    projectId: ProjectId,
+    input: GitPreviewPullInput,
+  ): Promise<
+    Result<GitPreviewPullResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>
+  > {
+    this.previewPullCalls.push({ projectId, input });
+
+    const failure = this.previewPullFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.previewPullResults.get(projectId.value) ?? { incoming: [], changedPaths: [] };
+
+    return { success: true, value: result };
+  }
+
+  /** Configures the `GitPreviewPushResult` `previewPush` returns for a project on success. */
+  seedPreviewPush(projectId: ProjectId, result: GitPreviewPushResult): void {
+    this.previewPushResults.set(projectId.value, result);
+  }
+
+  /** Configures `previewPush` to fail for a project, taking priority over any seeded result. */
+  seedPreviewPushFailure(projectId: ProjectId, error: GitCommandFailedError): void {
+    this.previewPushFailures.set(projectId.value, error);
+  }
+
+  /**
+   * Records the call — including the exact branch, so a test can assert it — and returns the seeded
+   * `GitPreviewPushResult` (defaulting to an empty preview when unseeded), unless a failure was
+   * seeded for this project via `seedPreviewPushFailure`.
+   */
+  async previewPush(
+    projectId: ProjectId,
+    input: GitPreviewPushInput,
+  ): Promise<Result<GitPreviewPushResult, GitCommandFailedError>> {
+    this.previewPushCalls.push({ projectId, input });
+
+    const failure = this.previewPushFailures.get(projectId.value);
+    if (failure) return { success: false, error: failure };
+
+    const result = this.previewPushResults.get(projectId.value) ?? { outgoing: [], changedPaths: [] };
+
+    return { success: true, value: result };
   }
 }

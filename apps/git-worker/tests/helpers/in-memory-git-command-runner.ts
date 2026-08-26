@@ -25,6 +25,8 @@ import type {
   GitMergeFileChange,
   GitMergeInput,
   GitMergeOutcome,
+  GitPreviewPullResult,
+  GitPreviewPushResult,
   GitPushError,
   GitPushInput,
   GitPushResult,
@@ -501,6 +503,16 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     }
 
     return { success: true, value: changes };
+  }
+
+  async previewPull(): Promise<
+    Result<GitPreviewPullResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>
+  > {
+    throw new Error('not used by these tests');
+  }
+
+  async previewPush(): Promise<Result<GitPreviewPushResult, GitCommandFailedError>> {
+    throw new Error('not used by these tests');
   }
 
   async amendCommit(projectId: ProjectId, input: GitAmendInput): Promise<Result<GitCommitResult, GitAmendError>> {

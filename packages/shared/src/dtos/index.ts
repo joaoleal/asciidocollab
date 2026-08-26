@@ -78,6 +78,8 @@ export type {
   GitOperationState,
   GitOperationStatusDto,
   ActiveGitOperationDto,
+  PullPreviewDto,
+  PushPreviewDto,
 } from './git.dto';
 export {
   GIT_PROVIDERS,

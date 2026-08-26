@@ -248,6 +248,38 @@ export interface GitBlameLine {
   readonly content: string;
 }
 
+/** Input for {@link GitCommandRunner.previewPull}. */
+export interface GitPreviewPullInput {
+  /** The remote's URL, exactly as stored on the project's `GitRepository` link. */
+  readonly remoteUrl: string;
+  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
+  readonly token: string;
+  /** The branch to preview incoming changes for. */
+  readonly branch: string;
+}
+
+/** What a completed {@link GitCommandRunner.previewPull} call produced: what a pull would bring in, without applying it. */
+export interface GitPreviewPullResult {
+  /** Commits that would land locally, newest first, if the pull actually ran. */
+  readonly incoming: readonly GitLogEntry[];
+  /** Every path those commits touch. */
+  readonly changedPaths: readonly string[];
+}
+
+/** Input for {@link GitCommandRunner.previewPush}. */
+export interface GitPreviewPushInput {
+  /** The branch to preview outgoing changes for. */
+  readonly branch: string;
+}
+
+/** What a completed {@link GitCommandRunner.previewPush} call produced: what a push would send out, without applying it. */
+export interface GitPreviewPushResult {
+  /** Commits that would land on the remote, newest first, if the push actually ran. */
+  readonly outgoing: readonly GitLogEntry[];
+  /** Every path those commits touch. */
+  readonly changedPaths: readonly string[];
+}
+
 /** What to diff. `from`+`to` → between two commits; neither → uncommitted working changes vs HEAD.
  *  `path` scopes to one project-relative file (whole tree when absent). `currentContent`, only meaningful
  *  in the uncommitted mode, overrides that single file's working-tree content with the live editor content
@@ -682,6 +714,53 @@ export interface GitCommandRunner {
    * @returns The unified diff text; a `GitCommandFailedError` when the underlying git command fails.
    */
   diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>>;
+
+  /**
+   * Previews what a {@link fetch}-then-merge pull would bring in, without changing anything beyond
+   * the remote-tracking ref {@link fetch} itself already updates: fetches `input.branch` from the
+   * remote (the same fetch {@link fetch} performs, authenticating out-of-band with `input.token`),
+   * then reads the commits and touched paths between the local branch and that freshly-fetched ref.
+   * A LIVE network read — the fetch is real, so the preview reflects the remote's current state —
+   * but never merges, commits, or flushes anything.
+   *
+   * Adapter contract (implemented later in the worker): fetch exactly as {@link fetch} does, then
+   * `git log`/`git diff --name-only` over `HEAD..<the freshly-fetched remote-tracking ref>`, in the
+   * same `-z`/`%H%x00%ae%x00%aI%x00%s` format {@link log} uses.
+   *
+   * @param projectId - The project whose incoming changes to preview.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to preview.
+   * @returns The incoming commits (newest first) and the paths they touch; a
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as {@link fetch}, or
+   *   a `GitCommandFailedError` for any other failure.
+   */
+  previewPull(
+    projectId: ProjectId,
+    input: GitPreviewPullInput,
+  ): Promise<
+    Result<GitPreviewPullResult, GitCommandFailedError | RepositoryUnreachableError | AuthenticationFailedError>
+  >;
+
+  /**
+   * Previews what a push would send out, without changing anything: reads the commits and touched
+   * paths between the already-fetched remote-tracking ref and the local branch. Purely local — no
+   * network, no credential; a caller wanting a fresh comparison against the remote should
+   * {@link fetch} first.
+   *
+   * Adapter contract (implemented later in the worker): `git log`/`git diff --name-only` over
+   * `<remote-tracking ref>..HEAD`. When the branch has no remote-tracking ref yet (never fetched or
+   * pushed), degrades gracefully to an empty result (`{incoming: [], changedPaths: []}`-shaped, here
+   * `{outgoing: [], changedPaths: []}`) rather than failing — there is nothing yet to compare
+   * against, which is not itself an error.
+   *
+   * @param projectId - The project whose outgoing changes to preview.
+   * @param input - The branch to preview.
+   * @returns The outgoing commits (newest first) and the paths they touch; a `GitCommandFailedError`
+   *   when the underlying git command fails for a reason other than a missing remote-tracking ref.
+   */
+  previewPush(
+    projectId: ProjectId,
+    input: GitPreviewPushInput,
+  ): Promise<Result<GitPreviewPushResult, GitCommandFailedError>>;
 
   /**
    * Reads per-line authorship for a single project-relative file: for each line, the commit that last modified it,

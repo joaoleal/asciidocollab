@@ -2589,3 +2589,180 @@ describe('RealGitCommandRunner.amendCommit', () => {
     expect(subject.trim()).toBe('amended after no remote');
   });
 });
+
+describe('RealGitCommandRunner.previewPull', () => {
+  it('fetches live, then returns the incoming commits and changed paths without merging anything', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440140');
+    const { storageRoot, cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    const headBefore = await readHeadCommit(cwd);
+    await addRemoteCommit(remotePath, 'incoming change', async (clone) => {
+      await writeFile(path.join(clone, 'incoming.adoc'), 'incoming\n');
+    });
+
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.previewPull(projectId, {
+        remoteUrl: `${server.url}/repo.git`,
+        token: 'unused',
+        branch: 'main',
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('expected success');
+      expect(result.value.incoming.map((entry) => entry.message)).toEqual(['incoming change']);
+      expect(result.value.changedPaths).toEqual(['incoming.adoc']);
+
+      // Never merges: the local branch's own HEAD, and its working tree, are untouched.
+      expect(await readHeadCommit(cwd)).toBe(headBefore);
+      await expect(stat(path.join(cwd, 'incoming.adoc'))).rejects.toThrow();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects a preview against a non-allowlisted host before attempting any network operation', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440141');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const runner = new RealGitCommandRunner(storageRoot, ['git.example.com']);
+
+    const capture = await withArgvCapturingGit(async (getCalls) => {
+      const result = await runner.previewPull(projectId, {
+        remoteUrl: 'https://not-allowed.example.com/org/repo.git',
+        token: 'x',
+        branch: 'main',
+      });
+      return { result, calls: await getCalls() };
+    });
+
+    expect(capture.result.success).toBe(false);
+    if (capture.result.success) throw new Error('expected failure');
+    expect(capture.result.error).toBeInstanceOf(RepositoryUnreachableError);
+    expect(capture.calls).toEqual([]);
+  });
+
+  it('never leaks the token into argv across the preview', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440142');
+    const { storageRoot, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'incoming change', async (clone) => {
+      await writeFile(path.join(clone, 'incoming.adoc'), 'incoming\n');
+    });
+
+    const token = 'super-secret-preview-pull-test-token-DO-NOT-LEAK-4f1a';
+    const server = await startGitHttpServer({
+      projectRoot: path.join(remotePath, '..'),
+      requireAuth: { username: 'x-access-token', password: token },
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        const result = await runner.previewPull(projectId, {
+          remoteUrl: `${server.url}/repo.git`,
+          token,
+          branch: 'main',
+        });
+        return { result, calls: await getCalls() };
+      });
+
+      expect(capture.result.success).toBe(true);
+      expect(server.authorizationHeadersSeen.length).toBeGreaterThan(0);
+      for (const call of capture.calls) {
+        for (const argument of call) {
+          expect(argument).not.toContain(token);
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns RepositoryUnreachableError when the remote cannot be reached', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440143');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const port = await unusedLoopbackPort();
+    const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+
+    const result = await runner.previewPull(projectId, {
+      remoteUrl: `http://127.0.0.1:${port}/repo.git`,
+      token: 'x',
+      branch: 'main',
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(RepositoryUnreachableError);
+  });
+});
+
+describe('RealGitCommandRunner.previewPush', () => {
+  it('reports the commits and changed paths the local branch has that the remote-tracking ref lacks', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440150');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await writeFile(path.join(cwd, 'local.adoc'), 'local change\n');
+    await commitAll(cwd, 'local change');
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.previewPush(projectId, { branch: 'main' });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.outgoing.map((entry) => entry.message)).toEqual(['local change']);
+    expect(result.value.changedPaths).toEqual(['local.adoc']);
+  });
+
+  it('reports an empty preview when the local branch already matches its remote-tracking ref', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440151');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.previewPush(projectId, { branch: 'main' });
+
+    expect(result).toEqual({ success: true, value: { outgoing: [], changedPaths: [] } });
+  });
+
+  it('degrades gracefully to an empty preview when the branch has no remote-tracking ref yet', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440152');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    // Deliberately never configure `origin` — no `refs/remotes/origin/main` ref exists.
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.previewPush(projectId, { branch: 'main' });
+
+    expect(result).toEqual({ success: true, value: { outgoing: [], changedPaths: [] } });
+  });
+
+  it('touches no network — no egress allowlist is needed to preview a push', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440153');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await writeFile(path.join(cwd, 'local.adoc'), 'local change\n');
+    await commitAll(cwd, 'local change');
+
+    // No allowedHosts configured — a network call would be rejected by the allowlist; this
+    // succeeding proves previewPush never attempts one.
+    const runner = new RealGitCommandRunner(path.dirname(cwd), []);
+    const result = await runner.previewPush(projectId, { branch: 'main' });
+
+    expect(result.success).toBe(true);
+  });
+});

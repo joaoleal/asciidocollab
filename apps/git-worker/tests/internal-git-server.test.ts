@@ -40,6 +40,8 @@ import {
   GIT_BLAME_PATH,
   GIT_DISCARD_PATH,
   GIT_AMEND_PATH,
+  GIT_PREVIEW_PULL_PATH,
+  GIT_PREVIEW_PUSH_PATH,
   createGitOpsRequestHandler,
   parseGitStatusBody,
   parseStageChangesBody,
@@ -53,6 +55,8 @@ import {
   parseBlameBody,
   parseDiscardBody,
   parseAmendBody,
+  parsePreviewPullBody,
+  parsePreviewPushBody,
   startInternalGitServer,
   type GitOpsHandlerDeps,
 } from '../src/internal-git-server.js';
@@ -133,6 +137,8 @@ interface HandlerDoubles {
   getBlame: jest.Mock;
   discard: jest.Mock;
   amend: jest.Mock;
+  previewPull: jest.Mock;
+  previewPush: jest.Mock;
   logger: { info: jest.Mock; error: jest.Mock };
   secret?: string;
 }
@@ -204,6 +210,24 @@ function handlerDoubles(): HandlerDoubles {
     amend: jest.fn(async () => ({
       success: true,
       value: { commit: { hash: 'def456', message: 'msg', authoredAt: new Date('2026-01-01T00:00:00.000Z') } },
+    })),
+    previewPull: jest.fn(async () => ({
+      success: true,
+      value: {
+        incomingCommits: [
+          { hash: 'abc123', message: 'Remote change', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z' },
+        ],
+        changedPaths: ['chapters/intro.adoc'],
+      },
+    })),
+    previewPush: jest.fn(async () => ({
+      success: true,
+      value: {
+        outgoingCommits: [
+          { hash: 'def456', message: 'Local change', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z' },
+        ],
+        changedPaths: ['chapters/outro.adoc'],
+      },
     })),
     logger: fakeLogger(),
   };
@@ -632,6 +656,60 @@ describe('parseAmendBody', () => {
 
   it('rejects a non-string message when present', () => {
     expect(parseAmendBody(JSON.stringify({ ...valid, message: 5 }))).toBeNull();
+  });
+});
+
+describe('parsePreviewPullBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID };
+
+  it('accepts a well-formed body with no branch', () => {
+    expect(parsePreviewPullBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with a branch', () => {
+    const full = { ...valid, branch: 'release' };
+    expect(parsePreviewPullBody(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parsePreviewPullBody('{bad')).toBeNull();
+    expect(parsePreviewPullBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parsePreviewPullBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parsePreviewPullBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a non-string branch when present', () => {
+    expect(parsePreviewPullBody(JSON.stringify({ ...valid, branch: 5 }))).toBeNull();
+  });
+});
+
+describe('parsePreviewPushBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID };
+
+  it('accepts a well-formed body with no branch', () => {
+    expect(parsePreviewPushBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with a branch', () => {
+    const full = { ...valid, branch: 'release' };
+    expect(parsePreviewPushBody(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parsePreviewPushBody('{bad')).toBeNull();
+    expect(parsePreviewPushBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parsePreviewPushBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parsePreviewPushBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a non-string branch when present', () => {
+    expect(parsePreviewPushBody(JSON.stringify({ ...valid, branch: 5 }))).toBeNull();
   });
 });
 
@@ -1252,6 +1330,68 @@ describe('createGitOpsRequestHandler', () => {
     expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'CommitAlreadyPushedError' });
   });
 
+  const previewBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, branch: 'main' });
+
+  it('answers preview-pull with {ok:true,data} on a success Result', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_PREVIEW_PULL_PATH), recordingResponse(), previewBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: {
+        incomingCommits: [
+          { hash: 'abc123', message: 'Remote change', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z' },
+        ],
+        changedPaths: ['chapters/intro.adoc'],
+      },
+    });
+    expect(doubles.previewPull).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, branch: 'main' });
+  });
+
+  it('answers 400 for preview-pull on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_PREVIEW_PULL_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.previewPull).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for RepositoryUnreachableError from preview-pull', async () => {
+    const doubles = handlerDoubles();
+    doubles.previewPull = jest.fn(async () => ({ success: false, error: new RepositoryUnreachableError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_PREVIEW_PULL_PATH), recordingResponse(), previewBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryUnreachableError' });
+  });
+
+  it('answers preview-push with {ok:true,data} on a success Result', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_PREVIEW_PUSH_PATH), recordingResponse(), previewBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: {
+        outgoingCommits: [
+          { hash: 'def456', message: 'Local change', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z' },
+        ],
+        changedPaths: ['chapters/outro.adoc'],
+      },
+    });
+    expect(doubles.previewPush).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, branch: 'main' });
+  });
+
+  it('answers 400 for preview-push on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_PREVIEW_PUSH_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.previewPush).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for RepositoryNotConnectedError from preview-push', async () => {
+    const doubles = handlerDoubles();
+    doubles.previewPush = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_PREVIEW_PUSH_PATH), recordingResponse(), previewBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
   it('answers 400 with a JSON error object on an invalid body, without calling the op fn', async () => {
     const doubles = handlerDoubles();
     const response = await handle(doubles, fakeRequest('POST', GIT_STATUS_PATH), recordingResponse(), '{bad');
@@ -1399,6 +1539,8 @@ describe('internal git server (HTTP)', () => {
       getBlame: doubles.getBlame,
       discard: doubles.discard,
       amend: doubles.amend,
+      previewPull: doubles.previewPull,
+      previewPush: doubles.previewPush,
       ...options,
     });
     await waitListening(server);
@@ -1484,6 +1626,8 @@ describe('internal git server (HTTP)', () => {
         getBlame: doubles.getBlame,
         discard: doubles.discard,
         amend: doubles.amend,
+        previewPull: doubles.previewPull,
+        previewPush: doubles.previewPush,
       }),
     ).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
@@ -1523,6 +1667,8 @@ describe('startInternalGitServer wiring', () => {
       getBlame: doubles.getBlame,
       discard: doubles.discard,
       amend: doubles.amend,
+      previewPull: doubles.previewPull,
+      previewPush: doubles.previewPush,
     });
     listening = server;
     expect(logger.info).toHaveBeenCalledWith(

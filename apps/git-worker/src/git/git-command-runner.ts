@@ -43,6 +43,10 @@ import {
   type GitOperationId,
   type GitPendingChange,
   type GitPendingChangeType,
+  type GitPreviewPullInput,
+  type GitPreviewPullResult,
+  type GitPreviewPushInput,
+  type GitPreviewPushResult,
   type GitPushError,
   type GitPushInput,
   type GitPushResult,
@@ -588,6 +592,18 @@ function parseLogOutput(stdout: string): GitLogEntry[] {
     });
   }
   return entries;
+}
+
+/**
+ * Parses `git diff --name-only -z`'s NUL-separated output into a plain path array, dropping the
+ * empty trailing token `-z` leaves after the last entry — the same terminator convention
+ * {@link parseLogOutput} handles for `git log -z`.
+ *
+ * @param stdout - The raw `-z`-terminated `git diff --name-only` output.
+ * @returns Every changed path, in the stream's own order.
+ */
+function parseNameOnlyOutput(stdout: string): string[] {
+  return stdout.split('\0').filter((entry) => entry.length > 0);
 }
 
 /**
@@ -1465,6 +1481,120 @@ export class RealGitCommandRunner implements GitCommandRunner {
         success: false,
         error: new GitCommandFailedError('The branch divergence from its remote could not be determined.'),
       };
+    }
+  }
+
+  /**
+   * Previews what a {@link fetch}-then-{@link merge} pull would bring in, without changing anything
+   * beyond the remote-tracking ref {@link fetch} itself already updates: runs the identical fetch
+   * {@link fetch} performs (same explicit refspec, same out-of-band `GIT_ASKPASS` credential), then
+   * reads the commits and touched paths between the local branch and that freshly-fetched ref via
+   * `git log -z --format=<LOG_FORMAT> HEAD..refs/remotes/origin/<branch>` and
+   * `git diff --name-only -z HEAD..refs/remotes/origin/<branch>`. Never merges, commits, or flushes
+   * anything — a LIVE network read, not a mutation.
+   *
+   * @param projectId - The project whose incoming changes to preview.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to preview.
+   * @returns The incoming commits (newest first) and the paths they touch; a
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as {@link fetch}, or
+   *   a `GitCommandFailedError` for any other failure.
+   */
+  async previewPull(
+    projectId: ProjectId,
+    input: GitPreviewPullInput,
+  ): Promise<
+    Result<GitPreviewPullResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>
+  > {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+
+    try {
+      await this.assertRemoteAllowed(input.remoteUrl);
+    } catch {
+      return { success: false, error: new RepositoryUnreachableError() };
+    }
+
+    try {
+      await runGitCommand(cwd, {
+        command: 'fetch',
+        positionals: [input.remoteUrl, `+refs/heads/${input.branch}:refs/remotes/origin/${input.branch}`],
+        credential: { username: CREDENTIAL_USERNAME, token: input.token },
+      });
+    } catch (error) {
+      return { success: false, error: toFetchFailure(error) };
+    }
+
+    const range = `HEAD..refs/remotes/origin/${input.branch}`;
+    try {
+      const { stdout: logStdout } = await runGitCommand(cwd, {
+        command: 'log',
+        flags: ['-z', `--format=${LOG_FORMAT}`],
+        positionals: [range],
+      });
+      const { stdout: diffStdout } = await runGitCommand(cwd, {
+        command: 'diff',
+        flags: ['--name-only', '-z'],
+        positionals: [range],
+      });
+      return {
+        success: true,
+        value: { incoming: parseLogOutput(logStdout), changedPaths: parseNameOnlyOutput(diffStdout) },
+      };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The incoming changes could not be previewed.') };
+    }
+  }
+
+  /**
+   * Previews what a push would send out, without changing anything: reads the commits and touched
+   * paths between the already-fetched `refs/remotes/origin/<branch>` and the local branch via
+   * `git log -z --format=<LOG_FORMAT> refs/remotes/origin/<branch>..HEAD` and
+   * `git diff --name-only -z refs/remotes/origin/<branch>..HEAD`. Purely local — no network, no
+   * credential; a caller wanting a fresh comparison against the remote should {@link fetch} first.
+   *
+   * When the branch has no remote-tracking ref yet (never fetched or pushed), this degrades
+   * gracefully to an empty preview (`{outgoing: [], changedPaths: []}`) rather than failing — there
+   * is nothing yet to compare against, which is not itself an error.
+   *
+   * @param projectId - The project whose outgoing changes to preview.
+   * @param input - The branch to preview.
+   * @returns The outgoing commits (newest first) and the paths they touch; a `GitCommandFailedError`
+   *   when the underlying git command fails for a reason other than a missing remote-tracking ref.
+   */
+  async previewPush(
+    projectId: ProjectId,
+    input: GitPreviewPushInput,
+  ): Promise<Result<GitPreviewPushResult, GitCommandFailedError>> {
+    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
+    const remoteRef = `refs/remotes/origin/${input.branch}`;
+
+    const hasRemoteTrackingRef = await runGitCommand(cwd, {
+      command: 'rev-parse',
+      flags: ['--verify', '-q', remoteRef],
+    })
+      .then(() => true)
+      .catch(() => false);
+    if (!hasRemoteTrackingRef) {
+      return { success: true, value: { outgoing: [], changedPaths: [] } };
+    }
+
+    const range = `${remoteRef}..HEAD`;
+    try {
+      const { stdout: logStdout } = await runGitCommand(cwd, {
+        command: 'log',
+        flags: ['-z', `--format=${LOG_FORMAT}`],
+        positionals: [range],
+      });
+      const { stdout: diffStdout } = await runGitCommand(cwd, {
+        command: 'diff',
+        flags: ['--name-only', '-z'],
+        positionals: [range],
+      });
+      return {
+        success: true,
+        value: { outgoing: parseLogOutput(logStdout), changedPaths: parseNameOnlyOutput(diffStdout) },
+      };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The outgoing changes could not be previewed.') };
     }
   }
 

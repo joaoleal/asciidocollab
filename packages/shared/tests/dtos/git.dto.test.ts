@@ -26,6 +26,8 @@ import type {
   DiffDto,
   BlameLineDto,
   BlameDto,
+  PullPreviewDto,
+  PushPreviewDto,
 } from '../../src/dtos/git.dto';
 
 describe('git provider', () => {
@@ -261,5 +263,36 @@ describe('ConflictStagesDto', () => {
     expect(stages.base).toBeNull();
     expect(stages.ours).toBe('');
     expect(stages.isBinary).toBe(true);
+  });
+});
+
+describe('PullPreviewDto', () => {
+  test('takes the documented shape: incoming commits, changed paths, and affectsOpenFiles', () => {
+    const dto: PullPreviewDto = {
+      incomingCommits: [{ hash: 'a1b2c3d', message: 'Remote change', authoredAt: '2026-08-20T12:00:00.000Z' }],
+      changedPaths: ['chapters/intro.adoc'],
+      affectsOpenFiles: true,
+    };
+    expect(dto.affectsOpenFiles).toBe(true);
+    expect(dto.incomingCommits).toHaveLength(1);
+    expect(dto.changedPaths).toEqual(['chapters/intro.adoc']);
+  });
+
+  test('affectsOpenFiles is false and commits/paths are empty when there is nothing incoming', () => {
+    const dto: PullPreviewDto = { incomingCommits: [], changedPaths: [], affectsOpenFiles: false };
+    expect(dto.affectsOpenFiles).toBe(false);
+    expect(dto.incomingCommits).toEqual([]);
+  });
+});
+
+describe('PushPreviewDto', () => {
+  test('takes the documented shape: outgoing commits and changed paths, with no affectsOpenFiles field', () => {
+    const dto: PushPreviewDto = {
+      outgoingCommits: [{ hash: 'e4f5a6b', message: 'Local change', authoredAt: '2026-08-21T12:00:00.000Z' }],
+      changedPaths: ['chapters/outro.adoc'],
+    };
+    expect(dto.outgoingCommits).toHaveLength(1);
+    expect(dto.changedPaths).toEqual(['chapters/outro.adoc']);
+    expect('affectsOpenFiles' in dto).toBe(false);
   });
 });

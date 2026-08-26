@@ -79,6 +79,12 @@ export const GIT_WORKER_DISCARD_PATH = '/internal/git/discard';
 /** Path of the internal endpoint that amends the project's most-recent commit. Byte-matches the git-worker's own `GIT_AMEND_PATH`. */
 export const GIT_WORKER_AMEND_PATH = '/internal/git/amend';
 
+/** Path of the internal endpoint that previews what a pull would bring in, without applying it. Byte-matches the git-worker's own `GIT_PREVIEW_PULL_PATH`. */
+export const GIT_WORKER_PREVIEW_PULL_PATH = '/internal/git/preview-pull';
+
+/** Path of the internal endpoint that previews what a push would send out, without applying it. Byte-matches the git-worker's own `GIT_PREVIEW_PUSH_PATH`. */
+export const GIT_WORKER_PREVIEW_PUSH_PATH = '/internal/git/preview-push';
+
 /** Header carrying the shared secret expected by the git-worker's internal endpoints. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
 
@@ -335,6 +341,39 @@ export interface GitWorkerDiscardData {
   readonly restoredPaths: readonly string[];
 }
 
+/**
+ * One commit in a pull/push preview's `data` field. `authoredAt` stays an ISO-8601 string, as
+ * received. Structurally identical to `GitWorkerHistoryCommit`, kept as its own named type so this
+ * module owns its own wire vocabulary for the preview endpoints rather than reusing another
+ * endpoint's type by coincidence.
+ */
+export interface GitWorkerPreviewCommit {
+  /** The commit hash. */
+  readonly hash: string;
+  /** The commit message. */
+  readonly message: string;
+  /** ID of the authoring user, when the commit's author maps to one; absent for unmapped authors. */
+  readonly authorUserId?: string;
+  /** ISO-8601 timestamp of when the commit was authored. */
+  readonly authoredAt: string;
+}
+
+/** Wire shape of the pull-preview endpoint's `data` field. */
+export interface GitWorkerPreviewPullData {
+  /** Commits that would land locally, newest first, if the pull actually ran. */
+  readonly incomingCommits: readonly GitWorkerPreviewCommit[];
+  /** Every path those commits touch. */
+  readonly changedPaths: readonly string[];
+}
+
+/** Wire shape of the push-preview endpoint's `data` field. */
+export interface GitWorkerPreviewPushData {
+  /** Commits that would land on the remote, newest first, if the push actually ran. */
+  readonly outgoingCommits: readonly GitWorkerPreviewCommit[];
+  /** Every path those commits touch. */
+  readonly changedPaths: readonly string[];
+}
+
 /** Input shared by every git-worker request: the project and the acting principal. */
 export interface GitWorkerRequestInput {
   /** The project the operation acts on, as a raw UUID v4 string. */
@@ -427,6 +466,12 @@ export interface GitWorkerAmendInput extends GitWorkerRequestInput {
   readonly message?: string;
 }
 
+/** Input for {@link GitWorkerClient.previewPull}/{@link GitWorkerClient.previewPush}. */
+export interface GitWorkerPreviewInput extends GitWorkerRequestInput {
+  /** The branch to preview. Defaults to the project's current branch when omitted. */
+  readonly branch?: string;
+}
+
 /**
  * The worker's own response envelope, reflected as-is: a domain success carries `data`; a domain
  * refusal carries the domain error's stable `name` (plus `path` for a `LiveContentFlushFailedError`).
@@ -481,6 +526,10 @@ export interface GitWorkerClient {
   discardChanges(input: GitWorkerDiscardInput): Promise<GitWorkerResult<GitWorkerDiscardData>>;
   /** Amends the project's most-recent commit. */
   amendCommit(input: GitWorkerAmendInput): Promise<GitWorkerResult<GitWorkerCommitData>>;
+  /** Previews what a pull would bring in, without applying it: a live fetch, then the incoming commits and the paths they touch. */
+  previewPull(input: GitWorkerPreviewInput): Promise<GitWorkerResult<GitWorkerPreviewPullData>>;
+  /** Previews what a push would send out, without applying it: the outgoing commits and the paths they touch, purely local. */
+  previewPush(input: GitWorkerPreviewInput): Promise<GitWorkerResult<GitWorkerPreviewPushData>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -715,6 +764,22 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       projectId: input.projectId,
       actorId: input.actorId,
       ...(input.message !== undefined ? { message: input.message } : {}),
+    });
+  }
+
+  async previewPull(input: GitWorkerPreviewInput): Promise<GitWorkerResult<GitWorkerPreviewPullData>> {
+    return this.post<GitWorkerPreviewPullData>(GIT_WORKER_PREVIEW_PULL_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      ...(input.branch !== undefined ? { branch: input.branch } : {}),
+    });
+  }
+
+  async previewPush(input: GitWorkerPreviewInput): Promise<GitWorkerResult<GitWorkerPreviewPushData>> {
+    return this.post<GitWorkerPreviewPushData>(GIT_WORKER_PREVIEW_PUSH_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      ...(input.branch !== undefined ? { branch: input.branch } : {}),
     });
   }
 }

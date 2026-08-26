@@ -87,6 +87,12 @@ export const GIT_DISCARD_PATH = '/internal/git/discard';
 /** Path of the internal endpoint the API calls to amend the project's most-recent commit. */
 export const GIT_AMEND_PATH = '/internal/git/amend';
 
+/** Path of the internal endpoint the API calls to preview what a pull would bring in, without applying it. */
+export const GIT_PREVIEW_PULL_PATH = '/internal/git/preview-pull';
+
+/** Path of the internal endpoint the API calls to preview what a push would send out, without applying it. */
+export const GIT_PREVIEW_PUSH_PATH = '/internal/git/preview-push';
+
 /** Header carrying the optional shared secret. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
 
@@ -496,6 +502,19 @@ export interface AmendRequest {
 }
 
 /**
+ * The raw (still-string) input shared by the pull-preview and push-preview endpoints, as parsed
+ * from the request body — both take the identical shape.
+ */
+export interface PreviewRequest {
+  /** The project whose preview to compute, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** The branch to preview. Defaults to the project's current branch when omitted. */
+  readonly branch?: string;
+}
+
+/**
  * One commit in the history endpoint's wire-shaped result, mirroring the domain's `HistoryCommit`
  * with `authorUserId` mapped to a plain string and `authoredAt` to an ISO-8601 string.
  * `composition-root.ts`'s `getHistory` binding maps to this shape before handing its result to this
@@ -516,6 +535,26 @@ export interface HistoryWireCommit {
 export interface GetHistoryWireResult {
   /** The matching commits, newest first. */
   readonly commits: readonly HistoryWireCommit[];
+}
+
+/**
+ * Wire-shaped mirror of the domain's `PreviewPullResult`, its commits mapped via
+ * {@link HistoryWireCommit} — `PreviewPullResult.incomingCommits` reuses `HistoryCommit`'s exact
+ * shape, so the same wire mapping applies unchanged.
+ */
+export interface PreviewPullWireResult {
+  /** Commits that would land locally, newest first, if the pull actually ran. */
+  readonly incomingCommits: readonly HistoryWireCommit[];
+  /** Every path those commits touch. */
+  readonly changedPaths: readonly string[];
+}
+
+/** Wire-shaped mirror of the domain's `PreviewPushResult`, its commits mapped via {@link HistoryWireCommit}. See {@link PreviewPullWireResult}. */
+export interface PreviewPushWireResult {
+  /** Commits that would land on the remote, newest first, if the push actually ran. */
+  readonly outgoingCommits: readonly HistoryWireCommit[];
+  /** Every path those commits touch. */
+  readonly changedPaths: readonly string[];
 }
 
 /**
@@ -679,6 +718,49 @@ export function parseAmendBody(raw: string): AmendRequest | null {
   if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
   if (message !== undefined && typeof message !== 'string') return null;
   return { projectId, actorId, ...(message !== undefined ? { message } : {}) };
+}
+
+/**
+ * Validates and normalises a pull/push preview request body. Returns null on any malformed input —
+ * non-UUID ids, or a non-string `branch` when present. Shared implementation for
+ * {@link parsePreviewPullBody}/{@link parsePreviewPushBody}, which take the identical shape.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+function parsePreviewBody(raw: string): PreviewRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, branch } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (branch !== undefined && typeof branch !== 'string') return null;
+  return { projectId, actorId, ...(branch !== undefined ? { branch } : {}) };
+}
+
+/**
+ * Validates and normalises a pull-preview request body. See {@link parsePreviewBody}.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parsePreviewPullBody(raw: string): PreviewRequest | null {
+  return parsePreviewBody(raw);
+}
+
+/**
+ * Validates and normalises a push-preview request body. See {@link parsePreviewBody}.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parsePreviewPushBody(raw: string): PreviewRequest | null {
+  return parsePreviewBody(raw);
 }
 
 function readBody(request: IncomingMessage): Promise<string> {
@@ -854,6 +936,22 @@ export interface GitOpsHandlerDeps {
    * @returns The use case's own `Result`.
    */
   amend: (request: AmendRequest) => Promise<Result<AmendCommitResult, DomainError>>;
+  /**
+   * Previews what a pull would bring in, without applying it: a live fetch, then the incoming
+   * commits and the paths they touch.
+   *
+   * @param request - The validated preview request.
+   * @returns The binding's wire-mapped `Result` (`authorUserId`/`authoredAt` already plain strings).
+   */
+  previewPull: (request: PreviewRequest) => Promise<Result<PreviewPullWireResult, DomainError>>;
+  /**
+   * Previews what a push would send out, without applying it: the outgoing commits and the paths
+   * they touch, purely local.
+   *
+   * @param request - The validated preview request.
+   * @returns The binding's wire-mapped `Result` (`authorUserId`/`authoredAt` already plain strings).
+   */
+  previewPush: (request: PreviewRequest) => Promise<Result<PreviewPushWireResult, DomainError>>;
   /** Optional shared secret; when set, requests without a matching header are rejected (401). */
   secret?: string;
   /** Logger for failures. */
@@ -893,7 +991,9 @@ export function createGitOpsRequestHandler(
         path !== GIT_DIFF_PATH &&
         path !== GIT_BLAME_PATH &&
         path !== GIT_DISCARD_PATH &&
-        path !== GIT_AMEND_PATH)
+        path !== GIT_AMEND_PATH &&
+        path !== GIT_PREVIEW_PULL_PATH &&
+        path !== GIT_PREVIEW_PUSH_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -1048,7 +1148,7 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.discard(parsed);
       label = 'discard';
-    } else {
+    } else if (path === GIT_AMEND_PATH) {
       const parsed = parseAmendBody(raw);
       if (!parsed) {
         response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
@@ -1056,6 +1156,22 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.amend(parsed);
       label = 'amend';
+    } else if (path === GIT_PREVIEW_PULL_PATH) {
+      const parsed = parsePreviewPullBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.previewPull(parsed);
+      label = 'preview-pull';
+    } else {
+      const parsed = parsePreviewPushBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.previewPush(parsed);
+      label = 'preview-push';
     }
 
     try {
@@ -1116,6 +1232,10 @@ export interface InternalGitServerOptions {
   discard: GitOpsHandlerDeps['discard'];
   /** Amends the project's most-recent commit. */
   amend: GitOpsHandlerDeps['amend'];
+  /** Previews what a pull would bring in, without applying it. */
+  previewPull: GitOpsHandlerDeps['previewPull'];
+  /** Previews what a push would send out, without applying it. */
+  previewPush: GitOpsHandlerDeps['previewPush'];
 }
 
 /**
@@ -1148,6 +1268,8 @@ export function startInternalGitServer(options: InternalGitServerOptions): Promi
     getBlame: options.getBlame,
     discard: options.discard,
     amend: options.amend,
+    previewPull: options.previewPull,
+    previewPush: options.previewPush,
     ...(options.secret ? { secret: options.secret } : {}),
     logger: options.logger,
   });
