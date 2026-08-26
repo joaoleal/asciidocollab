@@ -150,6 +150,31 @@ describe('useThemePreview — snapshot', () => {
     expect(snapshot?.attributes.backend).toBe('pdf');
   });
 
+  it("leaves out the project attributes that resolve into the project's own files", () => {
+    // Layering the project's WHOLE attribute map brought its path attributes with it. The sample and
+    // its figure are constants mounted at the snapshot root and the project's files are not in this
+    // snapshot at all, so a project that set an images directory — an ordinary render-config option —
+    // sent every `image::` target in the sample to `<dir>/theme-preview-figure.svg` and turned the
+    // entire Figures section into missing-image placeholders. Confirmed against the engine: with
+    // `imagesdir` set the page carries `[A diagram of three linked stages]` where the drawing belongs.
+    //
+    // Dropped rather than blanked, because unset is what the engine already does for a project that
+    // names no images directory, and it is what resolves the figure at the root it is mounted at. The
+    // project's page setup rides along untouched — that distinction, setup versus paths, is the rule.
+    renderHook(() =>
+      useThemePreview('page:', true, undefined, undefined, undefined, undefined, {
+        imagesdir: 'assets/images@',
+        'bibtex-file': 'refs.bib@',
+        'pdf-page-size': 'A4@',
+      }),
+    );
+    const [snapshot] = snapshots();
+    expect(snapshot?.attributes.imagesdir).toBeUndefined();
+    expect(snapshot?.attributes['bibtex-file']).toBeUndefined();
+    // The setup the theme is judged under still arrives.
+    expect(snapshot?.attributes['pdf-page-size']).toBe('A4@');
+  });
+
   it('keeps one snapshot identity while the project attributes are unchanged', () => {
     // Snapshot identity schedules a render, so the attribute map must not rebuild it per render.
     const attributes = { 'pdf-page-size': 'A4@' };

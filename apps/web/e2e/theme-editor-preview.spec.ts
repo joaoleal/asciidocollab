@@ -268,7 +268,15 @@ async function projectShowingTheme(page: Page, name: string, config: unknown): P
 }
 
 test.describe('Theme editor — the sample preview shows what the project renders', () => {
-  test.describe.configure({ timeout: 600_000 });
+  // Budgeted so that a run in which BOTH tests fail honestly still reaches the end and reports which
+  // assertion failed. The per-test budget covers the waits inside each test with margin (the export
+  // test's own timeouts sum to ~330 s, the extension test's to ~390 s, and on an idle machine they
+  // finish in 25 s and 49 s), and one retry rather than the suite's two keeps the worst case —
+  // 2 tests x 2 attempts x 7 minutes = 28 minutes — inside the config's 45-minute `globalTimeout`.
+  // At the suite's default retries that worst case is an hour, and a ceiling that truncates a real
+  // failure into "timed out" replaces the diagnostic with a hang. Locally the retry count matches the
+  // config's own, so a bare `npx playwright test` still reports the first, un-retried result.
+  test.describe.configure({ timeout: 420_000, retries: process.env.CI ? 1 : 0 });
 
   test.beforeAll(async () => {
     await ensureTestUser();

@@ -61,6 +61,47 @@ const NO_EXTENSIONS: readonly string[] = [];
 const NO_PROJECT_ATTRIBUTES: Readonly<Record<string, string>> = Object.freeze({});
 
 /**
+ * Project attributes that name a location inside the PROJECT, which this sample is not part of.
+ *
+ * The sample and its figure are constants from this module, mounted at the snapshot root; the project's
+ * files are not in this snapshot at all. So an attribute that redirects resolution into the project
+ * points at nothing here. `imagesdir` is the one that shows: a project that sets an images directory —
+ * an ordinary render-config option — sent all three of the sample's `image::` targets to
+ * `<dir>/theme-preview-figure.svg`, and the whole Figures section came out as missing-image
+ * placeholders. That is the part of the sample whose only job is to let a figure and its caption be
+ * judged, so the setting silently disabled a section of the preview for exactly the projects that use
+ * it. Verified against the engine both ways: with `imagesdir` set the pages carry
+ * `[A diagram of three linked stages]` where the drawing should be, and without it they carry the
+ * drawing and its caption.
+ *
+ * `bibtex-file` is here for the same reason rather than for an observed failure — it names a project
+ * file, and the sample cites nothing. It happens to be inert today only because the citations stage
+ * gates on the snapshot's own `bibPath`, which is a coincidence and not a promise.
+ *
+ * Everything else the project sets is deliberately kept: page size, layout, media, folio placement,
+ * hyphenation and the document options are the CONDITIONS a theme is judged under, which is the whole
+ * reason the project's map is layered here. The distinction is setup versus paths.
+ */
+const PROJECT_PATH_ATTRIBUTES: ReadonlySet<string> = new Set(['imagesdir', 'bibtex-file']);
+
+/**
+ * The project's attributes with {@link PROJECT_PATH_ATTRIBUTES} removed.
+ *
+ * Removed rather than blanked: unset is what the engine already does for a project that names no
+ * images directory, and it is what makes the sample's figure resolve at the root it is mounted at.
+ *
+ * @param projectAttributes - The project's resolved render attributes.
+ * @returns The same map without the attributes that resolve into the project.
+ */
+function withoutProjectPaths(
+  projectAttributes: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(projectAttributes).filter(([key]) => !PROJECT_PATH_ATTRIBUTES.has(key)),
+  );
+}
+
+/**
  * Separator for the extension-list cache key below.
  *
  * A NUL, because it is the one character an extension id can never contain, so two different lists
@@ -185,7 +226,12 @@ function buildThemeSnapshot(
     // `pdf-theme` is the one exception, and it is handled below the app entirely — `invokeConvert`
     // derives it from `themePath` after the attribute map is built, so the theme being edited is
     // applied whatever the project has selected.
-    attributes: { ...Object.fromEntries(PDF_RENDER_INTRINSIC_ATTRIBUTES), ...projectAttributes },
+    //
+    // What is layered is the project's SETUP, never its paths: see {@link PROJECT_PATH_ATTRIBUTES}.
+    attributes: {
+      ...Object.fromEntries(PDF_RENDER_INTRINSIC_ATTRIBUTES),
+      ...withoutProjectPaths(projectAttributes),
+    },
     enabledExtensions,
   };
 }
