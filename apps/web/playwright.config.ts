@@ -44,6 +44,9 @@ const PDF_ENGINE_SPECS = [
   // Left in the default project it failed all three retries under gate load while passing alone,
   // which is precisely the starvation the `chromium-pdf` project exists to prevent.
   '**/pdf-extensions.spec.ts',
+  // Renders the theme editor's sample in the browser and exports a PDF beside it, so it boots the
+  // engine twice over and reads the painted canvas — both of which want the box to itself.
+  '**/theme-editor-preview.spec.ts',
 ];
 
 // The specs that read or write the EDITOR PREFERENCES, serialized into their own project below.
