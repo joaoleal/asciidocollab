@@ -61,7 +61,7 @@ const DEFAULT_BRANCH = 'main';
  */
 export async function gitInitializeRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitInitializeBody }>(
-    '/projects/:projectId/git/initialize',
+    '/api/projects/:projectId/git/initialize',
     {
       config: {
         rateLimit: {

@@ -76,7 +76,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function connectRepository(app: FastifyInstance, projectId: string, payload: Record<string, unknown> = VALID_BODY) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/connect`, payload });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/connect`, payload });
 }
 
 describe('POST /projects/:projectId/git/connect', () => {

@@ -28,7 +28,7 @@ import { requireProjectMembership } from '../../../lib/git-write-lock';
  */
 export async function gitOperationStatusRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string; opId: string } }>(
-    '/projects/:projectId/git/operations/:opId',
+    '/api/projects/:projectId/git/operations/:opId',
     {
       schema: {
         params: {

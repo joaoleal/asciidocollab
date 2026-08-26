@@ -50,7 +50,7 @@ describe('GET /projects/:projectId/git/behind-ahead', () => {
   }
 
   function getBehindAhead(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/behind-ahead` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/behind-ahead` });
   }
 
   test('returns 200 with the behind/ahead counts for a viewer-tier member', async () => {

@@ -28,7 +28,7 @@ export function toHistoryCommits(data: GitWorkerHistoryData): CommitDto[] {
  */
 export async function gitHistoryRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string }; Querystring: { path?: string; limit?: string } }>(
-    '/projects/:projectId/git/history',
+    '/api/projects/:projectId/git/history',
     {
       schema: {
         params: {

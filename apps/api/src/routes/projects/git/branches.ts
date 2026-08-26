@@ -41,7 +41,7 @@ export function toBranchListDto(data: GitWorkerBranchListData): BranchListDto {
  */
 export async function gitBranchesRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string } }>(
-    '/projects/:projectId/git/branches',
+    '/api/projects/:projectId/git/branches',
     {
       schema: {
         params: {
@@ -82,7 +82,7 @@ export async function gitBranchesRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.post<{ Params: { projectId: string }; Body: { name: string } }>(
-    '/projects/:projectId/git/branches',
+    '/api/projects/:projectId/git/branches',
     {
       config: {
         rateLimit: {

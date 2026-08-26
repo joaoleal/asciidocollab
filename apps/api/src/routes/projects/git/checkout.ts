@@ -48,7 +48,7 @@ interface GitCheckoutBody {
  */
 export async function gitCheckoutRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitCheckoutBody }>(
-    '/projects/:projectId/git/checkout',
+    '/api/projects/:projectId/git/checkout',
     {
       config: {
         rateLimit: {

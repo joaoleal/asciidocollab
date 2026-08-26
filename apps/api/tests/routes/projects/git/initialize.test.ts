@@ -96,7 +96,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function initialize(app: FastifyInstance, projectId: string, payload: Record<string, unknown> = VALID_BODY) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/initialize`, payload });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/initialize`, payload });
 }
 
 function existingConnectedRepository(overrides: Partial<{ syncStatus: string }> = {}): GitRepository {

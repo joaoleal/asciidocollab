@@ -72,7 +72,7 @@ export function normalizeDiscardBody(body: GitDiscardBody): NormalizedDiscard | 
  */
 export async function gitDiscardRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitDiscardBody }>(
-    '/projects/:projectId/git/discard',
+    '/api/projects/:projectId/git/discard',
     {
       config: {
         rateLimit: {

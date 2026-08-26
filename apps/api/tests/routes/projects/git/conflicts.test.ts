@@ -129,15 +129,15 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function getConflicts(app: FastifyInstance, projectId: string) {
-  return app.inject({ method: 'GET', url: `/projects/${projectId}/git/conflicts` });
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/conflicts` });
 }
 
 function getConflictStagesAt(app: FastifyInstance, projectId: string, encodedPath: string) {
-  return app.inject({ method: 'GET', url: `/projects/${projectId}/git/conflicts/${encodedPath}` });
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/conflicts/${encodedPath}` });
 }
 
 function postResolve(app: FastifyInstance, projectId: string, encodedPath: string, body: Record<string, unknown>) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/conflicts/${encodedPath}`, payload: body });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/conflicts/${encodedPath}`, payload: body });
 }
 
 describe('GET /projects/:projectId/git/conflicts', () => {

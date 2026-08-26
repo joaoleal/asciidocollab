@@ -95,7 +95,7 @@ describe('GET /projects/:projectId/git/status', () => {
   }
 
   function getStatus(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/status` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/status` });
   }
 
   test('returns 200 with the bucketed status for a viewer-tier member', async () => {

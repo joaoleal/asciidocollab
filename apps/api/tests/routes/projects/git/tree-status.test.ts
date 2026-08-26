@@ -135,7 +135,7 @@ describe('GET /projects/:projectId/git/tree-status', () => {
   }
 
   function getTreeStatus(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/tree-status` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/tree-status` });
   }
 
   test('returns 200 with the FileNodeId -> FileGitStatus map', async () => {

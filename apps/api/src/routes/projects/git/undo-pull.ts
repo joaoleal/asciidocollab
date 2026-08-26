@@ -24,7 +24,7 @@ import { sendGitErrorResponse, sendGitWorkerUnavailableResponse } from '../../..
  */
 export async function gitUndoPullRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: Record<string, never> }>(
-    '/projects/:projectId/git/undo-pull',
+    '/api/projects/:projectId/git/undo-pull',
     {
       config: {
         rateLimit: {

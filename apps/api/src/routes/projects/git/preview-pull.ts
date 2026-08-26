@@ -43,7 +43,7 @@ export function toPullPreviewDto(data: GitWorkerPreviewPullData, affectsOpenFile
  */
 export async function gitPreviewPullRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string }; Querystring: { branch?: string } }>(
-    '/projects/:projectId/git/preview/pull',
+    '/api/projects/:projectId/git/preview/pull',
     {
       config: {
         rateLimit: {

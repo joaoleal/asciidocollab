@@ -56,7 +56,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function discard(app: FastifyInstance, projectId: string, payload: Record<string, unknown>) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/discard`, payload });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/discard`, payload });
 }
 
 describe('normalizeDiscardBody', () => {

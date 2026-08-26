@@ -25,7 +25,7 @@ interface GitStageBody {
  */
 export async function gitStageRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitStageBody }>(
-    '/projects/:projectId/git/stage',
+    '/api/projects/:projectId/git/stage',
     {
       config: {
         rateLimit: {

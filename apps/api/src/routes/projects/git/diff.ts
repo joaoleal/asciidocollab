@@ -25,7 +25,7 @@ export function toDiffDto(data: GitWorkerDiffData): DiffDto {
  */
 export async function gitDiffRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string }; Querystring: { path?: string; from?: string; to?: string } }>(
-    '/projects/:projectId/git/diff',
+    '/api/projects/:projectId/git/diff',
     {
       schema: {
         params: {

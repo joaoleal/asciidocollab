@@ -31,7 +31,7 @@ export function toBlameDto(data: GitWorkerBlameData): BlameDto {
  */
 export async function gitBlameRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string }; Querystring: { path?: string; ref?: string } }>(
-    '/projects/:projectId/git/blame',
+    '/api/projects/:projectId/git/blame',
     {
       schema: {
         params: {

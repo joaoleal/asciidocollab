@@ -34,7 +34,7 @@ interface GitCommitBody {
  */
 export async function gitCommitRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitCommitBody }>(
-    '/projects/:projectId/git/commit',
+    '/api/projects/:projectId/git/commit',
     {
       config: {
         rateLimit: {

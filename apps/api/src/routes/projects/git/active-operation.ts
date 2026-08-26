@@ -21,7 +21,7 @@ import { sendGitErrorResponse } from '../../../lib/git-error-response';
  */
 export async function gitActiveOperationRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string } }>(
-    '/projects/:projectId/git/active-operation',
+    '/api/projects/:projectId/git/active-operation',
     {
       schema: {
         params: {

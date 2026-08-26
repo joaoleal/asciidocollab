@@ -76,7 +76,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function rotateCredential(app: FastifyInstance, projectId: string, token = NEW_TOKEN) {
-  return app.inject({ method: 'PUT', url: `/projects/${projectId}/git/credential`, payload: { token } });
+  return app.inject({ method: 'PUT', url: `/api/projects/${projectId}/git/credential`, payload: { token } });
 }
 
 describe('PUT /projects/:projectId/git/credential', () => {
@@ -214,7 +214,7 @@ describe('PUT /projects/:projectId/git/credential', () => {
     const { build, save } = buildHarness();
     const app = await build();
 
-    const response = await app.inject({ method: 'PUT', url: `/projects/${PROJECT_ID}/git/credential`, payload: {} });
+    const response = await app.inject({ method: 'PUT', url: `/api/projects/${PROJECT_ID}/git/credential`, payload: {} });
 
     expect(response.statusCode).toBe(400);
     expect(save).not.toHaveBeenCalled();

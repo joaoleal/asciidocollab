@@ -59,7 +59,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function commit(app: FastifyInstance, projectId: string, message: string) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/commit`, payload: { message } });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/commit`, payload: { message } });
 }
 
 describe('POST /projects/:projectId/git/commit', () => {

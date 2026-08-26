@@ -82,7 +82,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function disconnect(app: FastifyInstance, projectId: string) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/disconnect`, payload: {} });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/disconnect`, payload: {} });
 }
 
 describe('POST /projects/:projectId/git/disconnect', () => {

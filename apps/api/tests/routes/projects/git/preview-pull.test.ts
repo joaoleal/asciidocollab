@@ -61,7 +61,7 @@ describe('GET /projects/:projectId/git/preview/pull', () => {
   }
 
   function previewPull(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/preview/pull${query}` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/preview/pull${query}` });
   }
 
   test('returns 200 with the mapped preview and affectsOpenFiles:false when nothing is open', async () => {

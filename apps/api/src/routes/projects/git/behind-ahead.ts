@@ -19,7 +19,7 @@ import { sendGitErrorResponse, sendGitWorkerUnavailableResponse } from '../../..
  */
 export async function gitBehindAheadRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string } }>(
-    '/projects/:projectId/git/behind-ahead',
+    '/api/projects/:projectId/git/behind-ahead',
     {
       schema: {
         params: {

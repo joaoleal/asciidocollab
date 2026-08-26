@@ -71,7 +71,7 @@ function buildServer(options: ServerOptions): { app: Promise<FastifyInstance>; a
 }
 
 function getStatus(app: FastifyInstance, projectId: string, opId: string) {
-  return app.inject({ method: 'GET', url: `/projects/${projectId}/git/operations/${opId}` });
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/operations/${opId}` });
 }
 
 describe('GET /projects/:projectId/git/operations/:opId', () => {

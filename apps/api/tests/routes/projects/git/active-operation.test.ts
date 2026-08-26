@@ -56,7 +56,7 @@ function buildServer(options: {
 }
 
 function getActiveOperation(app: FastifyInstance, projectId: string) {
-  return app.inject({ method: 'GET', url: `/projects/${projectId}/git/active-operation` });
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/active-operation` });
 }
 
 describe('GET /projects/:projectId/git/active-operation', () => {

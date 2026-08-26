@@ -55,7 +55,7 @@ describe('GET /projects/:projectId/git/history', () => {
   }
 
   function getHistory(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/history${query}` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/history${query}` });
   }
 
   test('returns 200 with the mapped commits for a viewer-tier member', async () => {

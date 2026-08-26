@@ -20,7 +20,7 @@ interface GitUnstageBody {
  */
 export async function gitUnstageRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitUnstageBody }>(
-    '/projects/:projectId/git/unstage',
+    '/api/projects/:projectId/git/unstage',
     {
       config: {
         rateLimit: {

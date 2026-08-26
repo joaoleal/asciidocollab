@@ -24,7 +24,7 @@ import { sendGitErrorResponse } from '../../../lib/git-error-response';
  */
 export async function gitPushRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: Record<string, never> }>(
-    '/projects/:projectId/git/push',
+    '/api/projects/:projectId/git/push',
     {
       config: {
         rateLimit: {

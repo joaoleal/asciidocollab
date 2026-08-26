@@ -53,7 +53,7 @@ export function bucketStatus(data: GitWorkerStatusData): GitStatusDto {
  */
 export async function gitStatusRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string } }>(
-    '/projects/:projectId/git/status',
+    '/api/projects/:projectId/git/status',
     {
       schema: {
         params: {

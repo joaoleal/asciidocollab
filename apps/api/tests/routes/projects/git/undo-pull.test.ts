@@ -50,7 +50,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function postUndo(app: FastifyInstance, projectId: string) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/undo-pull`, payload: {} });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/undo-pull`, payload: {} });
 }
 
 describe('POST /projects/:projectId/git/undo-pull', () => {

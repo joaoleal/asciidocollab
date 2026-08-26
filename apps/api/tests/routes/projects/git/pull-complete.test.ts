@@ -54,7 +54,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function postComplete(app: FastifyInstance, projectId: string) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/pull/complete`, payload: {} });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/pull/complete`, payload: {} });
 }
 
 describe('POST /projects/:projectId/git/pull/complete', () => {

@@ -24,7 +24,7 @@ import { sendGitErrorResponse, sendGitWorkerUnavailableResponse } from '../../..
  */
 export async function gitPullCompleteRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: Record<string, never> }>(
-    '/projects/:projectId/git/pull/complete',
+    '/api/projects/:projectId/git/pull/complete',
     {
       config: {
         rateLimit: {

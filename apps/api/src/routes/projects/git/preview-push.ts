@@ -32,7 +32,7 @@ export function toPushPreviewDto(data: GitWorkerPreviewPushData): PushPreviewDto
  */
 export async function gitPreviewPushRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string }; Querystring: { branch?: string } }>(
-    '/projects/:projectId/git/preview/push',
+    '/api/projects/:projectId/git/preview/push',
     {
       schema: {
         params: {

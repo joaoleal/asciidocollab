@@ -34,7 +34,7 @@ interface GitAmendBody {
  */
 export async function gitAmendRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitAmendBody }>(
-    '/projects/:projectId/git/amend',
+    '/api/projects/:projectId/git/amend',
     {
       config: {
         rateLimit: {

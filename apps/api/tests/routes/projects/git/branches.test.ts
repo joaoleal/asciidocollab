@@ -66,7 +66,7 @@ describe('GET /projects/:projectId/git/branches', () => {
   }
 
   function getBranches(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/branches` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/branches` });
   }
 
   it('returns 200 with the branch list for a viewer-tier member', async () => {
@@ -169,7 +169,7 @@ describe('POST /projects/:projectId/git/branches', () => {
   }
 
   function createBranch(app: FastifyInstance, projectId: string, body: Record<string, unknown>) {
-    return app.inject({ method: 'POST', url: `/projects/${projectId}/git/branches`, payload: body });
+    return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/branches`, payload: body });
   }
 
   it('returns 200 with the created branch (isCurrent: false) for an editor', async () => {

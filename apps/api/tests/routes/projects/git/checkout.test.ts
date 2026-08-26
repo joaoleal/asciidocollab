@@ -89,7 +89,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function checkout(app: FastifyInstance, projectId: string, body: Record<string, unknown>) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/checkout`, payload: body });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/checkout`, payload: body });
 }
 
 describe('POST /projects/:projectId/git/checkout', () => {

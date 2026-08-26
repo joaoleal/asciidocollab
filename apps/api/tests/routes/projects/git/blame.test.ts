@@ -55,7 +55,7 @@ describe('GET /projects/:projectId/git/blame', () => {
   }
 
   function getBlame(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/blame${query}` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/blame${query}` });
   }
 
   test('returns 200 with the mapped BlameDto for a viewer-tier member', async () => {

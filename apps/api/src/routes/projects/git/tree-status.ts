@@ -77,7 +77,7 @@ export function buildTreeStatus(
  */
 export async function gitTreeStatusRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string } }>(
-    '/projects/:projectId/git/tree-status',
+    '/api/projects/:projectId/git/tree-status',
     {
       schema: {
         params: {

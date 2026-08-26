@@ -36,7 +36,7 @@ interface GitConnectBody {
  */
 export async function gitConnectRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: GitConnectBody }>(
-    '/projects/:projectId/git/connect',
+    '/api/projects/:projectId/git/connect',
     {
       config: {
         rateLimit: {

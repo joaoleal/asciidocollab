@@ -50,7 +50,7 @@ describe('GET /projects/:projectId/git/diff', () => {
   }
 
   function getDiff(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/projects/${projectId}/git/diff${query}` });
+    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/diff${query}` });
   }
 
   test('returns 200 with the mapped DiffDto for a viewer-tier member', async () => {

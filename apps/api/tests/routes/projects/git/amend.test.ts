@@ -59,7 +59,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function amend(app: FastifyInstance, projectId: string, payload: Record<string, unknown> = {}) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/amend`, payload });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/amend`, payload });
 }
 
 describe('POST /projects/:projectId/git/amend', () => {

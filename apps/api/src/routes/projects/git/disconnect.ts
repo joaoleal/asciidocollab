@@ -22,7 +22,7 @@ import { sendGitErrorResponse } from '../../../lib/git-error-response';
  */
 export async function gitDisconnectRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: Record<string, never> }>(
-    '/projects/:projectId/git/disconnect',
+    '/api/projects/:projectId/git/disconnect',
     {
       config: {
         rateLimit: {

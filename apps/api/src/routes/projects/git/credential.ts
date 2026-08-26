@@ -30,7 +30,7 @@ interface GitCredentialBody {
  */
 export async function gitCredentialRoutes(app: FastifyInstance): Promise<void> {
   app.put<{ Params: { projectId: string }; Body: GitCredentialBody }>(
-    '/projects/:projectId/git/credential',
+    '/api/projects/:projectId/git/credential',
     {
       config: {
         rateLimit: {

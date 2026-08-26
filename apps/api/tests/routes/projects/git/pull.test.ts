@@ -62,7 +62,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function pull(app: FastifyInstance, projectId: string, body: Record<string, unknown> = {}) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/pull`, payload: body });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/pull`, payload: body });
 }
 
 describe('POST /projects/:projectId/git/pull', () => {

@@ -52,7 +52,7 @@ function buildHarness(options: HarnessOptions = {}) {
 }
 
 function stage(app: FastifyInstance, projectId: string, paths: string[]) {
-  return app.inject({ method: 'POST', url: `/projects/${projectId}/git/stage`, payload: { paths } });
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/stage`, payload: { paths } });
 }
 
 describe('POST /projects/:projectId/git/stage', () => {

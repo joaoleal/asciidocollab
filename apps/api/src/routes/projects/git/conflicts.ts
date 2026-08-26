@@ -65,7 +65,7 @@ export function validateConflictPath(decodedParam: string): string | null {
  */
 export async function gitConflictsRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { projectId: string } }>(
-    '/projects/:projectId/git/conflicts',
+    '/api/projects/:projectId/git/conflicts',
     {
       schema: {
         params: {
@@ -106,7 +106,7 @@ export async function gitConflictsRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get<{ Params: { projectId: string; path: string } }>(
-    '/projects/:projectId/git/conflicts/:path',
+    '/api/projects/:projectId/git/conflicts/:path',
     {
       schema: {
         params: {
@@ -153,7 +153,7 @@ export async function gitConflictsRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.post<{ Params: { projectId: string; path: string }; Body: { resolution: string; mergedContent?: string } }>(
-    '/projects/:projectId/git/conflicts/:path',
+    '/api/projects/:projectId/git/conflicts/:path',
     {
       config: {
         rateLimit: {

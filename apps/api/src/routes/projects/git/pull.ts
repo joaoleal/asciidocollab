@@ -33,7 +33,7 @@ import { sendGitErrorResponse, type GitErrorResponseBody } from '../../../lib/gi
  */
 export async function gitPullRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { projectId: string }; Body: { confirmAffectsOpenFiles?: boolean } }>(
-    '/projects/:projectId/git/pull',
+    '/api/projects/:projectId/git/pull',
     {
       config: {
         rateLimit: {
