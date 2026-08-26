@@ -4,19 +4,24 @@
  */
 import { API_BASE_URL } from '@/lib/api/base-url';
 import {
+  amendCommit,
   checkoutBranch,
   commitChanges,
   completePull,
   connectRepository,
   createBranch,
+  discardChanges,
   disconnectRepository,
   getBehindAhead,
+  getBlame,
   getBranches,
   getConflicts,
   getConflictStages,
+  getDiff,
   getGitOperation,
   getGitStatus,
   getGitTreeStatus,
+  getHistory,
   importRepository,
   initializeRepository,
   isGitOperationTerminal,
@@ -746,6 +751,155 @@ describe('rotateGitCredential', () => {
     logSpy.mockRestore();
     warnSpy.mockRestore();
     errorSpy.mockRestore();
+  });
+});
+
+describe('getHistory', () => {
+  test('GETs the project-scoped history endpoint with no query when no options are given', async () => {
+    const commits = [{ hash: 'abc1234567', message: 'Initial commit', authoredAt: '2026-08-24T00:00:00Z' }];
+    okOnce({ commits });
+
+    const result = await getHistory('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/history`);
+    expect(requestInit().method).toBeUndefined();
+    expect(requestInit().credentials).toBe('include');
+    expect(result).toEqual({ commits });
+  });
+
+  test('includes path and limit only when given', async () => {
+    okOnce({ commits: [] });
+
+    await getHistory('proj1', { path: 'docs/intro.adoc', limit: 20 });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/history?path=docs%2Fintro.adoc&limit=20`);
+  });
+
+  test('includes only path when limit is omitted', async () => {
+    okOnce({ commits: [] });
+
+    await getHistory('proj1', { path: 'docs/intro.adoc' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/history?path=docs%2Fintro.adoc`);
+  });
+
+  test('surfaces a not-connected refusal for a project with no git repo', async () => {
+    failOnce(404, { error: { code: 'NOT_FOUND', message: 'Project is not connected to a git repository' } });
+
+    await expect(getHistory('proj1')).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+  });
+});
+
+describe('getDiff', () => {
+  test('GETs the project-scoped diff endpoint with no query when no options are given', async () => {
+    const diff = { unified: '@@ -1 +1 @@\n-old\n+new\n' };
+    okOnce(diff);
+
+    const result = await getDiff('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/diff`);
+    expect(requestInit().method).toBeUndefined();
+    expect(result).toEqual(diff);
+  });
+
+  test('includes path, from, and to only when given', async () => {
+    okOnce({ unified: '' });
+
+    await getDiff('proj1', { path: 'a.adoc', from: 'abc123', to: 'def456' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/diff?path=a.adoc&from=abc123&to=def456`);
+  });
+
+  test('omits from/to when not given', async () => {
+    okOnce({ unified: '' });
+
+    await getDiff('proj1', { path: 'a.adoc' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/diff?path=a.adoc`);
+  });
+});
+
+describe('getBlame', () => {
+  test('GETs the project-scoped blame endpoint, always including the required path', async () => {
+    const blame = { lines: [{ lineNumber: 1, hash: 'abc123', authoredAt: '2026-08-24T00:00:00Z', content: '= Title' }] };
+    okOnce(blame);
+
+    const result = await getBlame('proj1', 'a.adoc');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/blame?path=a.adoc`);
+    expect(requestInit().method).toBeUndefined();
+    expect(result).toEqual(blame);
+  });
+
+  test('includes ref only when given', async () => {
+    okOnce({ lines: [] });
+
+    await getBlame('proj1', 'a.adoc', { ref: 'feature-branch' });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/blame?path=a.adoc&ref=feature-branch`);
+  });
+});
+
+describe('discardChanges', () => {
+  test('POSTs a paths body as-is for a discard', async () => {
+    okOnce({ ok: true });
+
+    const result = await discardChanges('proj1', { paths: ['a.adoc', 'b.adoc'] });
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/discard`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({ paths: ['a.adoc', 'b.adoc'] });
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('POSTs a path+commit body as-is for a restore', async () => {
+    okOnce({ ok: true });
+
+    await discardChanges('proj1', { path: 'a.adoc', commit: 'abc123' });
+
+    expect(requestBody()).toEqual({ path: 'a.adoc', commit: 'abc123' });
+  });
+
+  test('surfaces a permission refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'nope' } });
+
+    await expect(discardChanges('proj1', { paths: ['a.adoc'] })).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
+    });
+  });
+});
+
+describe('amendCommit', () => {
+  test('POSTs an empty body to the project-scoped amend endpoint when no message is given', async () => {
+    const commit = { hash: 'def456', message: 'Fix typo', authoredAt: '2026-08-24T00:00:00Z' };
+    okOnce({ commit });
+
+    const result = await amendCommit('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/amend`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({});
+    expect(result).toEqual({ commit });
+  });
+
+  test('includes the message only when given', async () => {
+    okOnce({ commit: { hash: 'def456', message: 'Better message', authoredAt: '2026-08-24T00:00:00Z' } });
+
+    await amendCommit('proj1', { message: 'Better message' });
+
+    expect(requestBody()).toEqual({ message: 'Better message' });
+  });
+
+  test('surfaces the already-pushed refusal', async () => {
+    failOnce(409, { error: { code: 'commit_already_pushed', message: 'This commit has already been pushed' } });
+
+    await expect(amendCommit('proj1')).rejects.toMatchObject({
+      status: 409,
+      code: 'commit_already_pushed',
+    });
   });
 });
 

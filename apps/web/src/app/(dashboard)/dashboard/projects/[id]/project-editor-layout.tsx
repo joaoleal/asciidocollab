@@ -1,7 +1,7 @@
 'use client';
 import { useLayoutEffect, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Settings, Users } from 'lucide-react';
+import { ChevronLeft, History, Settings, Trash2, Users } from 'lucide-react';
 import type { CreateAnchorInput, ReviewItemDto } from '@asciidocollab/shared';
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels';
 import { Button } from '@/components/ui/button';
@@ -26,6 +26,8 @@ import { PullDialog } from '@/components/git/pull-dialog';
 import { BranchSwitcher } from '@/components/git/branch-switcher';
 import { BranchSwitchDialog } from '@/components/git/branch-switch-dialog';
 import { ConflictPanel } from '@/components/git/conflict-panel';
+import { HistoryPanel } from '@/components/git/history-panel';
+import { DiscardDialog } from '@/components/git/discard-dialog';
 import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
 import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
@@ -542,6 +544,19 @@ export function ProjectEditorLayout({
     setConflictPanelOpen(false);
   }, [handlePullSucceeded]);
   const conflicts = useConflicts(projectId, handleConflictsResolved);
+
+  // History panel: read-only, so it needs no permission gate beyond having a connected repository
+  // to read history from. `HistoryPanel` only fetches while it is open, so mounting it here
+  // unconditionally never fires a request until the viewer actually opens it.
+  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+
+  // Discard dialog: every unstaged/untracked path is discardable in one action. Reuses the same
+  // `gitStatus` this header already reads, rather than a separate fetch.
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
+  const discardablePaths = useMemo(
+    () => [...(gitStatus?.unstaged ?? []), ...(gitStatus?.untracked ?? [])].map((change) => change.path),
+    [gitStatus],
+  );
 
   // Collaboration-facing "git activity" signal: lets a member notice that ANOTHER member's (or the
   // system's) whole-project git operation is running, purely from polling the same `GitOperation`
@@ -1378,6 +1393,18 @@ export function ProjectEditorLayout({
               Resolve conflicts
             </Button>
           )}
+          {gitConnected && (
+            <Button variant="outline" size="sm" onClick={() => setHistoryPanelOpen(true)}>
+              <History className="mr-2 h-4 w-4" aria-hidden="true" />
+              History
+            </Button>
+          )}
+          {canEdit && discardablePaths.length > 0 && (
+            <Button variant="outline" size="sm" onClick={() => setDiscardDialogOpen(true)}>
+              <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
+              Discard changes
+            </Button>
+          )}
           <PdfExportButton
             onExport={handleExportPdf}
             isExporting={isExportingPdf}
@@ -1810,6 +1837,18 @@ export function ProjectEditorLayout({
         code={branches.confirmCode}
         onOpenChange={branches.closeConfirm}
         onConfirmed={branches.handleConfirmed}
+      />
+      <HistoryPanel
+        projectId={projectId}
+        open={historyPanelOpen}
+        onOpenChange={setHistoryPanelOpen}
+      />
+      <DiscardDialog
+        projectId={projectId}
+        open={discardDialogOpen}
+        onOpenChange={setDiscardDialogOpen}
+        paths={discardablePaths}
+        onDone={handlePullSucceeded}
       />
       <ConflictPanel
         projectId={projectId}

@@ -6,18 +6,30 @@ import { apiRequest } from '@/lib/api/transport';
 import type {
   ActiveGitOperationDto,
   BehindAheadDto,
+  BlameDto,
   BranchDto,
   BranchListDto,
   CommitDto,
   ConflictListDto,
   ConflictResolution,
   ConflictStagesDto,
+  DiffDto,
   FileGitStatus,
   GitOperationStatusDto,
   GitProvider,
   GitRepositoryDto,
   GitStatusDto,
 } from '@asciidocollab/shared';
+
+/** Appends the defined entries of `parameters` to a query string (empty when none apply). */
+function toQueryString(parameters: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(parameters)) {
+    if (value !== undefined) search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : '';
+}
 
 /** Request body for `POST /api/git/import`. */
 export interface ImportRepositoryInput {
@@ -414,5 +426,100 @@ export async function rotateGitCredential(
   return apiRequest(`/api/projects/${projectId}/git/credential`, {
     method: 'PUT',
     body: JSON.stringify({ token: input.token }),
+  });
+}
+
+/** Options narrowing {@link getHistory} to one file's commits and/or a maximum count. */
+export interface GetHistoryOptions {
+  /** Project-relative path to scope the history to a single file's commits. Omitted for whole-repository history. */
+  path?: string;
+  /** Maximum number of commits to return. Omitted to use the server's default. */
+  limit?: number;
+}
+
+/**
+ * Reads the connected repository's commit history, most recent first — optionally scoped to one
+ * file's commits and/or capped at a maximum count. Query parameters are sent only when given.
+ */
+export async function getHistory(
+  projectId: string,
+  options?: GetHistoryOptions,
+): Promise<{ commits: CommitDto[] }> {
+  const query = toQueryString({ path: options?.path, limit: options?.limit });
+  return apiRequest(`/api/projects/${projectId}/git/history${query}`);
+}
+
+/** Options narrowing {@link getDiff} to a path and/or a `from`/`to` commit range. */
+export interface GetDiffOptions {
+  /** Project-relative path to scope the diff to a single file. Omitted for the whole tree's diff. */
+  path?: string;
+  /** The diff's older endpoint (a commit hash). Omitted to use the server's default. */
+  from?: string;
+  /** The diff's newer endpoint (a commit hash). Omitted to use the server's default. */
+  to?: string;
+}
+
+/**
+ * Reads a unified diff between two points in the repository's history. Rendering the returned
+ * text is left entirely to the caller — this client only fetches it. Query parameters are sent
+ * only when given.
+ */
+export async function getDiff(projectId: string, options?: GetDiffOptions): Promise<DiffDto> {
+  const query = toQueryString({ path: options?.path, from: options?.from, to: options?.to });
+  return apiRequest(`/api/projects/${projectId}/git/diff${query}`);
+}
+
+/** Options narrowing {@link getBlame} to a specific ref. */
+export interface GetBlameOptions {
+  /** The commit/branch to blame at. Omitted to blame the checked-out working tree. */
+  ref?: string;
+}
+
+/**
+ * Reads one file's per-line authorship ("blame"). Rendering the returned lines as a gutter is
+ * left entirely to the caller — this client only fetches the data. `path` is always sent; `ref`
+ * is sent only when given.
+ */
+export async function getBlame(projectId: string, path: string, options?: GetBlameOptions): Promise<BlameDto> {
+  const query = toQueryString({ path, ref: options?.ref });
+  return apiRequest(`/api/projects/${projectId}/git/blame${query}`);
+}
+
+/**
+ * Discards or restores files, depending on which shape of `input` is given: `{ paths }` discards
+ * uncommitted changes to those paths back to HEAD; `{ path, commit }` restores that one file's
+ * content from the given commit. The two shapes are mutually exclusive — pass exactly one — and
+ * are forwarded to the server as-is; the server validates and normalizes the body.
+ */
+export interface DiscardChangesInput {
+  /** Paths to discard uncommitted changes for. Mutually exclusive with `path`/`commit`. */
+  paths?: string[];
+  /** The single file to restore from `commit`. Mutually exclusive with `paths`. */
+  path?: string;
+  /** The commit to restore `path`'s content from. Required together with `path`. */
+  commit?: string;
+}
+
+/**
+ * Discards uncommitted changes to a set of paths, or restores one file from a commit — see
+ * {@link DiscardChangesInput} for the two mutually exclusive shapes `input` may take.
+ */
+export async function discardChanges(projectId: string, input: DiscardChangesInput): Promise<{ ok: true }> {
+  return apiRequest(`/api/projects/${projectId}/git/discard`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * Amends the most recent commit, replacing its message when one is given. Refused with `409
+ * commit_already_pushed` once that commit has already been pushed to the remote.
+ */
+export async function amendCommit(projectId: string, input?: { message?: string }): Promise<{ commit: CommitDto }> {
+  const body: { message?: string } = {};
+  if (input?.message !== undefined) body.message = input.message;
+  return apiRequest(`/api/projects/${projectId}/git/amend`, {
+    method: 'POST',
+    body: JSON.stringify(body),
   });
 }
