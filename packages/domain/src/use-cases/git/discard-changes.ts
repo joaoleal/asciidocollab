@@ -12,6 +12,8 @@ import { requireGitRole } from './git-role-guard';
 import { FileChangeReconciler } from './pull-changes';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
+import { recordAuditSuccess } from '../audit-recording';
+import { AUDIT_GIT_CHANGES_DISCARDED } from '../../audit-actions';
 
 /** Everything `DiscardChangesUseCase.execute` needs to restore one or more files. */
 export interface DiscardChangesInput {
@@ -122,6 +124,20 @@ export class DiscardChangesUseCase {
 
     const landed = await this.reconciler.apply(input.projectId, changeSet.value);
     if (!landed.success) return landed;
+
+    await recordAuditSuccess(
+      this.auditLogRepo,
+      {
+        actorId: input.actorId,
+        projectId: input.projectId,
+        action: AUDIT_GIT_CHANGES_DISCARDED,
+        resourceType: 'Project',
+        resourceId: input.projectId.value,
+        metadata: { count: landed.value.changedPaths.length },
+        context: input.context,
+      },
+      this.logger,
+    );
 
     return { success: true, value: { restoredPaths: landed.value.changedPaths } };
   }

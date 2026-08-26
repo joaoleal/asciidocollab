@@ -11,6 +11,8 @@ import { ValidationError } from '../../errors/common/validation-error';
 import { requireGitRole } from './git-role-guard';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
+import { recordAuditSuccess } from '../audit-recording';
+import { AUDIT_GIT_BRANCH_CREATED } from '../../audit-actions';
 
 /** Everything `CreateBranchUseCase.execute` needs to create a new branch. */
 export interface CreateBranchInput {
@@ -89,6 +91,20 @@ export class CreateBranchUseCase {
 
     const createResult = await this.commandRunner.createBranch(input.projectId, { name });
     if (!createResult.success) return createResult;
+
+    await recordAuditSuccess(
+      this.auditLogRepo,
+      {
+        actorId: input.actorId,
+        projectId: input.projectId,
+        action: AUDIT_GIT_BRANCH_CREATED,
+        resourceType: 'Project',
+        resourceId: input.projectId.value,
+        metadata: { name },
+        context: input.context,
+      },
+      this.logger,
+    );
 
     return { success: true, value: { branch: createResult.value } };
   }

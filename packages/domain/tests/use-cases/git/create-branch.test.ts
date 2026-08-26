@@ -1,4 +1,5 @@
 import { CreateBranchUseCase } from '../../../src/use-cases/git/create-branch';
+import { AUDIT_GIT_BRANCH_CREATED } from '../../../src/audit-actions';
 import { InsufficientRoleError } from '../../../src/errors/git/insufficient-role';
 import { RepositoryNotConnectedError } from '../../../src/errors/git/repository-not-connected';
 import { ValidationError } from '../../../src/errors/common/validation-error';
@@ -30,6 +31,7 @@ async function memberRepoWithRole(role: string | null): Promise<InMemoryProjectM
 interface Harness {
   useCase: CreateBranchUseCase;
   commandRunner: InMemoryGitCommandRunner;
+  auditRepo: InMemoryAuditLogRepository;
 }
 
 interface HarnessOptions {
@@ -59,7 +61,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
 
   const useCase = new CreateBranchUseCase(memberRepo, auditRepo, gitRepositoryRepo, commandRunner);
 
-  return { useCase, commandRunner };
+  return { useCase, commandRunner, auditRepo };
 }
 
 describe('CreateBranchUseCase', () => {
@@ -137,5 +139,21 @@ describe('CreateBranchUseCase', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+
+  test('a successful branch creation records an AUDIT_GIT_BRANCH_CREATED audit entry with the branch name', async () => {
+    const harness = await buildHarness();
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      name: BRANCH_NAME,
+    });
+    expect(result.success).toBe(true);
+
+    const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    const entry = entries.find((e) => e.action === AUDIT_GIT_BRANCH_CREATED);
+    expect(entry).toBeDefined();
+    expect(entry?.metadata).toMatchObject({ name: BRANCH_NAME });
   });
 });

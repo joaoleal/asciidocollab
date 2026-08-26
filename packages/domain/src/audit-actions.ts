@@ -64,3 +64,12 @@ export const AUDIT_GIT_PULL_UNDONE = 'git.pull_undone';
 
 // Project-level maintainer-editable git-ignore patterns
 export const AUDIT_PROJECT_GIT_IGNORE_PATTERNS_UPDATED = 'project.git_ignore_patterns_updated';
+
+// Short, synchronous mutating git actions (commit/amend/discard/stage/branch/credential)
+export const AUDIT_GIT_CHANGES_COMMITTED = 'git.changes_committed';
+export const AUDIT_GIT_COMMIT_AMENDED = 'git.commit_amended';
+export const AUDIT_GIT_CHANGES_DISCARDED = 'git.changes_discarded';
+export const AUDIT_GIT_CHANGES_STAGED = 'git.changes_staged';
+export const AUDIT_GIT_CHANGES_UNSTAGED = 'git.changes_unstaged';
+export const AUDIT_GIT_BRANCH_CREATED = 'git.branch_created';
+export const AUDIT_GIT_CREDENTIAL_ROTATED = 'git.credential_rotated';

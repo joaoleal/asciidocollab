@@ -17,11 +17,22 @@ import { InMemoryGitRepositoryRepository } from '../../ports/project/in-memory-g
 import { InMemoryGitCredentialStore } from '../../ports/git/in-memory-git-credential-store';
 import { InMemoryGitCommandRunner } from '../../ports/git/in-memory-git-command-runner';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
+import type { Logger } from '../../../src/ports/observability/logger';
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440000');
 const OWNER_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
 const REMOTE_URL = 'https://github.com/example/repo.git';
 const TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890';
+
+function makeLogger(): Logger & { warnCalls: { message: string; meta?: Record<string, unknown> }[] } {
+  const warnCalls: { message: string; meta?: Record<string, unknown> }[] = [];
+  return {
+    warnCalls,
+    warn(message: string, meta?: Record<string, unknown>) {
+      warnCalls.push({ message, meta });
+    },
+  };
+}
 
 async function memberRepoWithRole(role: string | null): Promise<InMemoryProjectMemberRepository> {
   const repo = new InMemoryProjectMemberRepository();
@@ -39,6 +50,7 @@ interface Harness {
   gitOperationRepo: InMemoryGitOperationRepository;
   auditRepo: InMemoryAuditLogRepository;
   memberRepo: InMemoryProjectMemberRepository;
+  logger: Logger & { warnCalls: { message: string; meta?: Record<string, unknown> }[] };
 }
 
 async function buildHarness(role: string | null = 'owner'): Promise<Harness> {
@@ -48,6 +60,7 @@ async function buildHarness(role: string | null = 'owner'): Promise<Harness> {
   const credentialStore = new InMemoryGitCredentialStore();
   const commandRunner = new InMemoryGitCommandRunner();
   const gitOperationRepo = new InMemoryGitOperationRepository();
+  const logger = makeLogger();
 
   const useCase = new ConnectRepositoryUseCase(
     gitRepositoryRepo,
@@ -56,6 +69,7 @@ async function buildHarness(role: string | null = 'owner'): Promise<Harness> {
     gitOperationRepo,
     memberRepo,
     auditRepo,
+    logger,
   );
 
   return {
@@ -66,6 +80,7 @@ async function buildHarness(role: string | null = 'owner'): Promise<Harness> {
     gitOperationRepo,
     auditRepo,
     memberRepo,
+    logger,
   };
 }
 
@@ -277,5 +292,40 @@ describe('ConnectRepositoryUseCase', () => {
 
     const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
     expect(entries.some((entry) => entry.action === 'git.repository_connected')).toBe(true);
+  });
+
+  test('the token never appears in anything logged, nor in any audit entry, on either a denied or a failed connect', async () => {
+    const denied = await buildHarness('editor');
+    await denied.useCase.execute({
+      actorId: OWNER_ID,
+      projectId: PROJECT_ID,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+    for (const call of denied.logger.warnCalls) {
+      expect(call.message).not.toContain(TOKEN);
+      expect(JSON.stringify(call.meta ?? {})).not.toContain(TOKEN);
+    }
+    for (const entry of await denied.auditRepo.findByProjectId(PROJECT_ID)) {
+      expect(JSON.stringify(entry.metadata)).not.toContain(TOKEN);
+    }
+
+    const failed = await buildHarness('owner');
+    failed.commandRunner.seedRemoteAccessFailure(REMOTE_URL, new AuthenticationFailedError());
+    await failed.useCase.execute({
+      actorId: OWNER_ID,
+      projectId: PROJECT_ID,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+    for (const call of failed.logger.warnCalls) {
+      expect(call.message).not.toContain(TOKEN);
+      expect(JSON.stringify(call.meta ?? {})).not.toContain(TOKEN);
+    }
+    for (const entry of await failed.auditRepo.findByProjectId(PROJECT_ID)) {
+      expect(JSON.stringify(entry.metadata)).not.toContain(TOKEN);
+    }
   });
 });

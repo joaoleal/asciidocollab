@@ -1,4 +1,5 @@
 import { CommitChangesUseCase } from '../../../src/use-cases/git/commit-changes';
+import { AUDIT_GIT_CHANGES_COMMITTED } from '../../../src/audit-actions';
 import { InsufficientRoleError } from '../../../src/errors/git/insufficient-role';
 import { EmptyCommitMessageError } from '../../../src/errors/git/empty-commit-message';
 import { NothingStagedError } from '../../../src/errors/git/nothing-staged';
@@ -93,6 +94,7 @@ interface Harness {
   useCase: CommitChangesUseCase;
   commandRunner: InMemoryGitCommandRunner;
   gitOperationRepo: InMemoryGitOperationRepository;
+  auditRepo: InMemoryAuditLogRepository;
 }
 
 interface HarnessOptions {
@@ -161,7 +163,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     userRepo,
   );
 
-  return { useCase, commandRunner, gitOperationRepo };
+  return { useCase, commandRunner, gitOperationRepo, auditRepo };
 }
 
 const MIXED_STATUS: GitWorkingTreeStatus = {
@@ -325,5 +327,27 @@ describe('CommitChangesUseCase', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+
+  test('a successful commit records an AUDIT_GIT_CHANGES_COMMITTED audit entry with the new hash', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatus(PROJECT_ID, MIXED_STATUS);
+    harness.commandRunner.seedCommitResult(PROJECT_ID, {
+      hash: COMMIT_HASH,
+      message: MESSAGE,
+      authoredAt: new Date('2024-06-01T12:00:00.000Z'),
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+    expect(result.success).toBe(true);
+
+    const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    const entry = entries.find((e) => e.action === AUDIT_GIT_CHANGES_COMMITTED);
+    expect(entry).toBeDefined();
+    expect(entry?.metadata).toMatchObject({ hash: COMMIT_HASH, messageLength: MESSAGE.length });
   });
 });

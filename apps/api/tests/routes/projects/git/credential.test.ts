@@ -108,6 +108,70 @@ describe('PUT /projects/:projectId/git/credential', () => {
     await app.close();
   });
 
+  it('records a rotation audit entry whose metadata never contains the token', async () => {
+    const auditSave = jest.fn();
+    const { build } = buildHarness();
+    const app = await build();
+    (app.repos as unknown as { auditLog: { save: jest.Mock } }).auditLog.save = auditSave;
+
+    const response = await rotateCredential(app, PROJECT_ID);
+    expect(response.statusCode).toBe(200);
+
+    expect(auditSave).toHaveBeenCalledTimes(1);
+    const savedAuditLog = auditSave.mock.calls[0][0] as { action: string; metadata: Record<string, unknown> };
+    expect(savedAuditLog.action).toBe('git.credential_rotated');
+    expect(JSON.stringify(savedAuditLog.metadata)).not.toContain(NEW_TOKEN);
+
+    await app.close();
+  });
+
+  it('never leaks the token into an observed log line, even when recording the audit entry fails', async () => {
+    const warnCalls: unknown[][] = [];
+    const existing = existingRepository();
+    const app = Fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(rateLimit, { global: false });
+    app.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
+    app.decorate('repos', {
+      projectMember: {
+        findByCompositeKey: jest.fn(async () => ({ role: { value: 'owner' } })),
+      },
+      // A rejected save exercises the best-effort swallow path (`recordAuditSuccess` -> `logger.warn`)
+      // — the branch the redaction check needs, since a successful save never calls it.
+      auditLog: { save: jest.fn().mockRejectedValue(new Error('audit store unavailable')) },
+      gitRepository: { findByProjectId: jest.fn(async () => existing) },
+    } as never);
+    app.decorate('services', {
+      gitCredentialStore: {
+        save: jest.fn(),
+        load: jest.fn(async () => ({ encryptedToken: 'iv:tag:cipher', tokenHint: '...oken' })),
+        delete: jest.fn(),
+      },
+    } as never);
+    app.addHook('onRequest', (request, _reply, done) => {
+      const log = request.log as unknown as { warn: (...args: unknown[]) => void };
+      const originalWarn = log.warn.bind(log);
+      log.warn = (...args: unknown[]) => {
+        warnCalls.push(args);
+        originalWarn(...args);
+      };
+      done();
+    });
+    await app.register(gitCredentialRoutes);
+    await app.ready();
+
+    const response = await rotateCredential(app, PROJECT_ID);
+    // The rotation itself still succeeds — the swallowed audit failure never turns it into an error.
+    expect(response.statusCode).toBe(200);
+
+    expect(warnCalls.length).toBeGreaterThan(0);
+    for (const call of warnCalls) {
+      expect(JSON.stringify(call)).not.toContain(NEW_TOKEN);
+    }
+
+    await app.close();
+  });
+
   it('answers 403 for a non-owner and never rotates the credential', async () => {
     const { build, save } = buildHarness({ role: 'editor' });
     const app = await build();

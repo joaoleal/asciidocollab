@@ -25,6 +25,8 @@ import { requireGitRole } from './git-role-guard';
 import { resolveDownloadContentSource } from '../project/download-content-source';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
+import { recordAuditSuccess } from '../audit-recording';
+import { AUDIT_GIT_COMMIT_AMENDED } from '../../audit-actions';
 
 /** Everything `AmendCommitUseCase.execute` needs to amend the most-recent commit. */
 export interface AmendCommitInput {
@@ -208,6 +210,20 @@ export class AmendCommitUseCase {
       flush,
     });
     if (!amendResult.success) return amendResult;
+
+    await recordAuditSuccess(
+      this.auditLogRepo,
+      {
+        actorId: input.actorId,
+        projectId: input.projectId,
+        action: AUDIT_GIT_COMMIT_AMENDED,
+        resourceType: 'Project',
+        resourceId: input.projectId.value,
+        metadata: { hash: amendResult.value.hash },
+        context: input.context,
+      },
+      this.logger,
+    );
 
     return {
       success: true,

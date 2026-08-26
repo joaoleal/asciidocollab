@@ -12,6 +12,8 @@ import { RepositoryNotConnectedError } from '../../errors/git/repository-not-con
 import { requireGitRole } from './git-role-guard';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
+import { recordAuditSuccess } from '../audit-recording';
+import { AUDIT_GIT_CHANGES_STAGED, AUDIT_GIT_CHANGES_UNSTAGED } from '../../audit-actions';
 
 /** Which side of the index a `StageChangesUseCase` call moves files toward. */
 export type StageChangesAction = 'stage' | 'unstage';
@@ -123,6 +125,20 @@ export class StageChangesUseCase {
 
     const statusResult = await this.commandRunner.getStatus(input.projectId);
     if (!statusResult.success) return statusResult;
+
+    await recordAuditSuccess(
+      this.auditLogRepo,
+      {
+        actorId: input.actorId,
+        projectId: input.projectId,
+        action: input.action === 'stage' ? AUDIT_GIT_CHANGES_STAGED : AUDIT_GIT_CHANGES_UNSTAGED,
+        resourceType: 'Project',
+        resourceId: input.projectId.value,
+        metadata: { count: input.paths.length },
+        context: input.context,
+      },
+      this.logger,
+    );
 
     return {
       success: true,

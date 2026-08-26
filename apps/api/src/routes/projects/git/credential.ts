@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
-import { ProjectId, UserId } from '@asciidocollab/domain';
+import { ProjectId, UserId, recordAuditSuccess, AUDIT_GIT_CREDENTIAL_ROTATED } from '@asciidocollab/domain';
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireOwnerRole } from '../../../lib/git-write-lock';
+import { requestContextFrom } from '../../../lib/request-context';
+import { requestLogger } from '../../../lib/request-logger';
 import { sendGitErrorResponse } from '../../../lib/git-error-response';
 
 /** Body accepted by `PUT /projects/:projectId/git/credential`. */
@@ -84,6 +86,23 @@ export async function gitCredentialRoutes(app: FastifyInstance): Promise<void> {
       // recomputing it here keeps this route from ever holding a second opinion about what a safe
       // hint looks like.
       const record = await gitCredentialStore.load(projectId);
+
+      // Best-effort, post-commit: the rotation already succeeded above, so a failure recording this
+      // can never turn it into an error response. Metadata deliberately carries only the provider —
+      // never the token or any part of it.
+      await recordAuditSuccess(
+        request.server.repos.auditLog,
+        {
+          actorId,
+          projectId,
+          action: AUDIT_GIT_CREDENTIAL_ROTATED,
+          resourceType: 'Project',
+          resourceId: projectId.value,
+          metadata: { provider: existing.provider.value },
+          context: requestContextFrom(request),
+        },
+        requestLogger(request),
+      );
 
       return reply.status(200).send({ tokenHint: record?.tokenHint ?? null });
     },

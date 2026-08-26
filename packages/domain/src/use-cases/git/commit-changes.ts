@@ -26,6 +26,8 @@ import { requireGitRole } from './git-role-guard';
 import { resolveDownloadContentSource } from '../project/download-content-source';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
+import { recordAuditSuccess } from '../audit-recording';
+import { AUDIT_GIT_CHANGES_COMMITTED } from '../../audit-actions';
 
 /** Everything `CommitChangesUseCase.execute` needs to record one commit. */
 export interface CommitChangesInput {
@@ -206,6 +208,20 @@ export class CommitChangesUseCase {
       flush,
     });
     if (!commitResult.success) return commitResult;
+
+    await recordAuditSuccess(
+      this.auditLogRepo,
+      {
+        actorId: input.actorId,
+        projectId: input.projectId,
+        action: AUDIT_GIT_CHANGES_COMMITTED,
+        resourceType: 'Project',
+        resourceId: input.projectId.value,
+        metadata: { hash: commitResult.value.hash, messageLength: input.message.length },
+        context: input.context,
+      },
+      this.logger,
+    );
 
     return {
       success: true,

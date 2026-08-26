@@ -1,4 +1,5 @@
 import { DiscardChangesUseCase } from '../../../src/use-cases/git/discard-changes';
+import { AUDIT_GIT_CHANGES_DISCARDED } from '../../../src/audit-actions';
 import { InsufficientRoleError } from '../../../src/errors/git/insufficient-role';
 import { RepositoryNotConnectedError } from '../../../src/errors/git/repository-not-connected';
 import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
@@ -198,5 +199,18 @@ describe('DiscardChangesUseCase', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+
+  test('a successful discard records an AUDIT_GIT_CHANGES_DISCARDED audit entry with the restored count', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedDiscardChanges(PROJECT_ID, CHANGE_SET);
+
+    const result = await harness.useCase.execute(discardInput());
+    expect(result.success).toBe(true);
+
+    const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    const entry = entries.find((e) => e.action === AUDIT_GIT_CHANGES_DISCARDED);
+    expect(entry).toBeDefined();
+    expect(entry?.metadata).toMatchObject({ count: RESTORED_PATHS.length });
   });
 });

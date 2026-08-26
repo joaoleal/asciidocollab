@@ -1,4 +1,5 @@
 import { StageChangesUseCase } from '../../../src/use-cases/git/stage-changes';
+import { AUDIT_GIT_CHANGES_STAGED, AUDIT_GIT_CHANGES_UNSTAGED } from '../../../src/audit-actions';
 import { InsufficientRoleError } from '../../../src/errors/git/insufficient-role';
 import { ValidationError } from '../../../src/errors/common/validation-error';
 import { RepositoryNotConnectedError } from '../../../src/errors/git/repository-not-connected';
@@ -224,5 +225,41 @@ describe('StageChangesUseCase', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+  });
+
+  test('a successful stage records AUDIT_GIT_CHANGES_STAGED, and a successful unstage records the distinguishable AUDIT_GIT_CHANGES_UNSTAGED', async () => {
+    const staging = await buildHarness();
+    staging.commandRunner.seedStatus(PROJECT_ID, {
+      currentBranch: 'main',
+      changes: [{ path: 'chapters/intro.adoc', changeType: 'modified', state: 'staged' }],
+    });
+    const stageResult = await staging.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      paths: ['chapters/intro.adoc'],
+      action: 'stage',
+    });
+    expect(stageResult.success).toBe(true);
+
+    const stageEntries = await staging.auditRepo.findByProjectId(PROJECT_ID);
+    expect(stageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_STAGED)).toBe(true);
+    expect(stageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_UNSTAGED)).toBe(false);
+
+    const unstaging = await buildHarness();
+    unstaging.commandRunner.seedStatus(PROJECT_ID, {
+      currentBranch: 'main',
+      changes: [{ path: 'chapters/intro.adoc', changeType: 'modified', state: 'unstaged' }],
+    });
+    const unstageResult = await unstaging.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      paths: ['chapters/intro.adoc'],
+      action: 'unstage',
+    });
+    expect(unstageResult.success).toBe(true);
+
+    const unstageEntries = await unstaging.auditRepo.findByProjectId(PROJECT_ID);
+    expect(unstageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_UNSTAGED)).toBe(true);
+    expect(unstageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_STAGED)).toBe(false);
   });
 });
