@@ -122,7 +122,7 @@ function PullPreviewSection({ projectId, open }: { projectId: string; open: bool
         />
       )}
       {preview.affectsOpenFiles && (
-        <div className="flex items-start gap-2 rounded-md border-[hsl(var(--warning-border))] bg-[hsl(var(--warning-bg))] p-2 text-sm text-[hsl(var(--warning))]">
+        <div className="flex items-start gap-2 rounded-md border border-[hsl(var(--warning-border))] bg-[hsl(var(--warning-bg))] p-2 text-sm text-[hsl(var(--warning))]">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span>Pulling now may change files that are currently open for live editing.</span>
         </div>

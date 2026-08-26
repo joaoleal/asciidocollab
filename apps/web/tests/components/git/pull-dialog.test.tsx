@@ -97,7 +97,10 @@ describe('PullDialog preview', () => {
     });
     renderDialog();
 
-    expect(await screen.findByText(/may change files that are currently open for live editing/i)).toBeInTheDocument();
+    const caution = await screen.findByText(/may change files that are currently open for live editing/i);
+    // The caution banner must carry the `border` width utility, not just a border color — without it
+    // the border renders zero-width (invisible) under Tailwind v4.
+    expect(caution.closest('div')).toHaveClass('border');
   });
 
   test('does not show the open-files caution when affectsOpenFiles is false', async () => {
