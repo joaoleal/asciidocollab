@@ -14,6 +14,7 @@ import { DocumentRepository } from '../../ports/file-tree/document.repository';
 import { FileNodeRepository } from '../../ports/file-tree/file-node.repository';
 import { CollaborativeContentReader } from '../../ports/storage/collaborative-content-reader';
 import { UserRepository } from '../../ports/user/user.repository';
+import { EditorPreferencesRepository } from '../../ports/user/editor-preferences.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
 import { Logger } from '../../ports/observability/logger';
 import { DomainError } from '../../errors/domain-error';
@@ -23,6 +24,7 @@ import { NothingStagedError } from '../../errors/git/nothing-staged';
 import { LiveContentFlushFailedError } from '../../errors/git/live-content-flush-failed';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { requireGitRole } from './git-role-guard';
+import { resolveCommitAuthorEmail } from './resolve-commit-author-email';
 import { resolveDownloadContentSource } from '../project/download-content-source';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
@@ -81,6 +83,8 @@ export class CommitChangesUseCase {
    * @param collaborativeContentReader - Reads a document's current live text.
    * @param collaborationSessionRepo - Tells whether a document has an active collaborative session.
    * @param userRepo - Resolves the triggering user as the commit author.
+   * @param editorPreferencesRepo - Resolves the author's editor preferences, to check whether they
+   *   have opted into a privacy-preserving commit email.
    * @param logger - Optional sink for best-effort audit-write failures.
    */
   constructor(
@@ -94,6 +98,7 @@ export class CommitChangesUseCase {
     private readonly collaborativeContentReader: CollaborativeContentReader,
     private readonly collaborationSessionRepo: CollaborationSessionRepository,
     private readonly userRepo: UserRepository,
+    private readonly editorPreferencesRepo: EditorPreferencesRepository,
     private readonly logger?: Logger,
   ) {}
 
@@ -202,9 +207,11 @@ export class CommitChangesUseCase {
       };
     }
 
+    const preferences = await this.editorPreferencesRepo.findByUserId(input.actorId);
+
     const commitResult = await this.commandRunner.commit(input.projectId, {
       message: input.message,
-      author: { name: user.displayName, email: user.email.value },
+      author: { name: user.displayName, email: resolveCommitAuthorEmail(user, preferences) },
       flush,
     });
     if (!commitResult.success) return commitResult;

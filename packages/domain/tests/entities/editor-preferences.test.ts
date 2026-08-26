@@ -74,4 +74,14 @@ describe('EditorPreferences entity', () => {
     const prefs = new EditorPreferences(validId, validUserId, 14, defaultTheme, false, undefined, true, PreviewStyle.default(), true, true);
     expect(prefs.minimapEnabled).toBe(true);
   });
+
+  test('privacy-preserving commit email opt-in defaults to disabled', () => {
+    const prefs = new EditorPreferences(validId, validUserId, 14, defaultTheme);
+    expect(prefs.privateCommitEmail).toBe(false);
+  });
+
+  test('reflects the provided privateCommitEmail flag', () => {
+    const prefs = new EditorPreferences(validId, validUserId, 14, defaultTheme, false, undefined, true, PreviewStyle.default(), true, true, true);
+    expect(prefs.privateCommitEmail).toBe(true);
+  });
 });

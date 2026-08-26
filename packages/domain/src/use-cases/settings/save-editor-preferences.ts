@@ -6,7 +6,11 @@ import { EditorPreferencesId } from '../../value-objects/ids/editor-preferences-
 import { EditorTheme } from '../../value-objects/editor/editor-theme';
 import { PreviewStyle } from '../../value-objects/editor/preview-style';
 import { ValidationError } from '../../errors/common/validation-error';
-import { DEFAULT_SPELLCHECK_ENABLED, DEFAULT_MINIMAP_ENABLED } from '../../constants/editor-preferences';
+import {
+  DEFAULT_SPELLCHECK_ENABLED,
+  DEFAULT_MINIMAP_ENABLED,
+  DEFAULT_PRIVATE_COMMIT_EMAIL,
+} from '../../constants/editor-preferences';
 import { randomUUID } from 'node:crypto';
 
 interface SaveEditorPreferencesInput {
@@ -17,6 +21,7 @@ interface SaveEditorPreferencesInput {
   previewStyle?: string;
   spellcheckEnabled?: boolean;
   minimapEnabled?: boolean;
+  privateCommitEmail?: boolean;
 }
 
 /** Validates and persists updated editor preferences for a user. */
@@ -58,8 +63,9 @@ export class SaveEditorPreferencesUseCase {
 
       const spellcheckEnabled = input.spellcheckEnabled ?? existing?.spellcheckEnabled ?? DEFAULT_SPELLCHECK_ENABLED;
       const minimapEnabled = input.minimapEnabled ?? existing?.minimapEnabled ?? DEFAULT_MINIMAP_ENABLED;
+      const privateCommitEmail = input.privateCommitEmail ?? existing?.privateCommitEmail ?? DEFAULT_PRIVATE_COMMIT_EMAIL;
 
-      prefs = new EditorPreferences(id, userId, input.fontSize, themeResult.value, scrollSyncEnabled, existing?.timestamps, softWrap, previewStyle, spellcheckEnabled, minimapEnabled);
+      prefs = new EditorPreferences(id, userId, input.fontSize, themeResult.value, scrollSyncEnabled, existing?.timestamps, softWrap, previewStyle, spellcheckEnabled, minimapEnabled, privateCommitEmail);
     } catch (error) {
       if (error instanceof ValidationError) {
         return { success: false, error: error };

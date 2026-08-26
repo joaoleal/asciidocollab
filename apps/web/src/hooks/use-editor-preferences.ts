@@ -65,6 +65,11 @@ interface EditorPrefs {
   spellcheckEnabled: boolean;
   /** Whether the editor shows the document text-preview (minimap). Synced to the account; defaults off. */
   minimapEnabled: boolean;
+  /**
+   * Whether a git commit authored by this account uses a privacy-preserving email instead of the
+   * account's real email. Synced to the account; defaults off.
+   */
+  privateCommitEmail: boolean;
   /** 028: the active left-panel view. Client-only — kept in localStorage, never PUT to the account. */
   leftPanelTab: LeftPanelTab;
   rightPanelTab: RightPanelTab;
@@ -76,7 +81,7 @@ interface EditorPrefs {
   commentsPanelOpen: boolean;
 }
 
-const DEFAULT_PREFS: EditorPrefs = { fontSize: 14, theme: 'default', scrollSyncEnabled: false, softWrap: true, previewStyle: 'asciidocollab', spellIgnore: [], spellcheckEnabled: true, minimapEnabled: false, leftPanelTab: 'files', rightPanelTab: 'comments', showIncludedFiles: false, outlineScope: 'full', commentsPanelOpen: false };
+const DEFAULT_PREFS: EditorPrefs = { fontSize: 14, theme: 'default', scrollSyncEnabled: false, softWrap: true, previewStyle: 'asciidocollab', spellIgnore: [], spellcheckEnabled: true, minimapEnabled: false, privateCommitEmail: false, leftPanelTab: 'files', rightPanelTab: 'comments', showIncludedFiles: false, outlineScope: 'full', commentsPanelOpen: false };
 
 // Preference keys kept on THIS device only — never sent to (or read back from) the account API. The
 // PUT-payload strip in schedulePut() is driven by this list, so a new client-only preference can never
@@ -125,7 +130,7 @@ function isSyncedKey(key: string): key is keyof EditorPrefs {
  */
 const SYNCED_KEYS: readonly (keyof EditorPrefs)[] = Object.keys(DEFAULT_PREFS).filter(isSyncedKey);
 
-function isStoredPrefs(value: unknown): value is { fontSize?: number; theme?: string; scrollSyncEnabled?: boolean; softWrap?: boolean; previewStyle?: string; spellIgnore?: unknown; spellcheckEnabled?: boolean; minimapEnabled?: boolean; leftPanelTab?: unknown; rightPanelTab?: unknown; showIncludedFiles?: unknown; outlineScope?: unknown; commentsPanelOpen?: unknown } {
+function isStoredPrefs(value: unknown): value is { fontSize?: number; theme?: string; scrollSyncEnabled?: boolean; softWrap?: boolean; previewStyle?: string; spellIgnore?: unknown; spellcheckEnabled?: boolean; minimapEnabled?: boolean; privateCommitEmail?: boolean; leftPanelTab?: unknown; rightPanelTab?: unknown; showIncludedFiles?: unknown; outlineScope?: unknown; commentsPanelOpen?: unknown } {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -150,6 +155,7 @@ function loadFromStorage(): EditorPrefs {
           spellIgnore: toStringArray(parsed.spellIgnore),
           spellcheckEnabled: typeof parsed.spellcheckEnabled === 'boolean' ? parsed.spellcheckEnabled : DEFAULT_PREFS.spellcheckEnabled,
           minimapEnabled: typeof parsed.minimapEnabled === 'boolean' ? parsed.minimapEnabled : DEFAULT_PREFS.minimapEnabled,
+          privateCommitEmail: typeof parsed.privateCommitEmail === 'boolean' ? parsed.privateCommitEmail : DEFAULT_PREFS.privateCommitEmail,
           leftPanelTab: isLeftPanelTab(parsed.leftPanelTab) ? parsed.leftPanelTab : DEFAULT_PREFS.leftPanelTab,
           rightPanelTab: isRightPanelTab(parsed.rightPanelTab) ? parsed.rightPanelTab : DEFAULT_PREFS.rightPanelTab,
           showIncludedFiles: typeof parsed.showIncludedFiles === 'boolean' ? parsed.showIncludedFiles : DEFAULT_PREFS.showIncludedFiles,
@@ -544,6 +550,7 @@ interface UseEditorPreferencesResult {
   spellIgnore: string[];
   spellcheckEnabled: boolean;
   minimapEnabled: boolean;
+  privateCommitEmail: boolean;
   leftPanelTab: LeftPanelTab;
   rightPanelTab: RightPanelTab;
   showIncludedFiles: boolean;
@@ -557,6 +564,7 @@ interface UseEditorPreferencesResult {
   addSpellIgnore: (word: string) => void;
   setSpellcheckEnabled: (enabled: boolean) => void;
   setMinimapEnabled: (enabled: boolean) => void;
+  setPrivateCommitEmail: (enabled: boolean) => void;
   setLeftPanelTab: (tab: LeftPanelTab) => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
   setShowIncludedFiles: (value: boolean) => void;
@@ -635,6 +643,7 @@ export function useEditorPreferences(): UseEditorPreferencesResult {
             previewStyle: settle('previewStyle', typeof data.previewStyle === 'string' && isPreviewStyleValue(data.previewStyle) ? data.previewStyle : undefined),
             spellcheckEnabled: settle('spellcheckEnabled', typeof data.spellcheckEnabled === 'boolean' ? data.spellcheckEnabled : undefined),
             minimapEnabled: settle('minimapEnabled', typeof data.minimapEnabled === 'boolean' ? data.minimapEnabled : undefined),
+            privateCommitEmail: settle('privateCommitEmail', typeof data.privateCommitEmail === 'boolean' ? data.privateCommitEmail : undefined),
             // Client-only keys (see CLIENT_ONLY_KEYS) are never returned by the account API, so always keep
             // the local value — the server response can never overwrite the chosen view or scope.
             //
@@ -744,6 +753,10 @@ export function useEditorPreferences(): UseEditorPreferencesResult {
     applyChange((previous) => ({ ...previous, minimapEnabled }), { sync: true });
   }, []);
 
+  const setPrivateCommitEmail = useCallback((privateCommitEmail: boolean) => {
+    applyChange((previous) => ({ ...previous, privateCommitEmail }), { sync: true });
+  }, []);
+
   // Client-only setter (028): persists the chosen view to localStorage but never schedules a PUT, so
   // the value stays on this device and is excluded from the account preferences.
   const setLeftPanelTab = useCallback((leftPanelTab: LeftPanelTab) => {
@@ -773,5 +786,5 @@ export function useEditorPreferences(): UseEditorPreferencesResult {
     applyChange((previous) => ({ ...previous, commentsPanelOpen }), { sync: false });
   }, []);
 
-  return { fontSize: prefs.fontSize, theme: prefs.theme, scrollSyncEnabled: prefs.scrollSyncEnabled, softWrap: prefs.softWrap, previewStyle: prefs.previewStyle, spellIgnore: prefs.spellIgnore, spellcheckEnabled: prefs.spellcheckEnabled, minimapEnabled: prefs.minimapEnabled, leftPanelTab: prefs.leftPanelTab, rightPanelTab: prefs.rightPanelTab, showIncludedFiles: prefs.showIncludedFiles, outlineScope: prefs.outlineScope, commentsPanelOpen: prefs.commentsPanelOpen, setFontSize, setTheme, setScrollSyncEnabled, setSoftWrap, setPreviewStyle, addSpellIgnore, setSpellcheckEnabled, setMinimapEnabled, setLeftPanelTab, setRightPanelTab, setShowIncludedFiles, setOutlineScope, setCommentsPanelOpen };
+  return { fontSize: prefs.fontSize, theme: prefs.theme, scrollSyncEnabled: prefs.scrollSyncEnabled, softWrap: prefs.softWrap, previewStyle: prefs.previewStyle, spellIgnore: prefs.spellIgnore, spellcheckEnabled: prefs.spellcheckEnabled, minimapEnabled: prefs.minimapEnabled, privateCommitEmail: prefs.privateCommitEmail, leftPanelTab: prefs.leftPanelTab, rightPanelTab: prefs.rightPanelTab, showIncludedFiles: prefs.showIncludedFiles, outlineScope: prefs.outlineScope, commentsPanelOpen: prefs.commentsPanelOpen, setFontSize, setTheme, setScrollSyncEnabled, setSoftWrap, setPreviewStyle, addSpellIgnore, setSpellcheckEnabled, setMinimapEnabled, setPrivateCommitEmail, setLeftPanelTab, setRightPanelTab, setShowIncludedFiles, setOutlineScope, setCommentsPanelOpen };
 }

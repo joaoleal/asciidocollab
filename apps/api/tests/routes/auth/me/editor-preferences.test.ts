@@ -11,7 +11,7 @@ jest.mock('../../../../src/plugins/require-auth', () => ({
 const USER_ID = '550e8400-e29b-41d4-a716-446655440001';
 
 function buildTestServer(
-  storedPrefs: { fontSize: number; theme: string; scrollSyncEnabled?: boolean; previewStyle?: string; spellcheckEnabled?: boolean } | null = null
+  storedPrefs: { fontSize: number; theme: string; scrollSyncEnabled?: boolean; previewStyle?: string; spellcheckEnabled?: boolean; privateCommitEmail?: boolean } | null = null
 ) {
   const app = Fastify();
 
@@ -29,11 +29,12 @@ function buildTestServer(
               softWrap: true,
               previewStyle: { value: currentPrefs.previewStyle ?? 'asciidocollab' },
               spellcheckEnabled: currentPrefs.spellcheckEnabled ?? true,
+              privateCommitEmail: currentPrefs.privateCommitEmail ?? false,
             }
           : null
       ),
-      save: jest.fn().mockImplementation((prefs: { fontSize: number; theme: { value: string }; previewStyle: { value: string }; spellcheckEnabled: boolean }) => {
-        currentPrefs = { fontSize: prefs.fontSize, theme: prefs.theme.value, previewStyle: prefs.previewStyle.value, spellcheckEnabled: prefs.spellcheckEnabled };
+      save: jest.fn().mockImplementation((prefs: { fontSize: number; theme: { value: string }; previewStyle: { value: string }; spellcheckEnabled: boolean; privateCommitEmail: boolean }) => {
+        currentPrefs = { fontSize: prefs.fontSize, theme: prefs.theme.value, previewStyle: prefs.previewStyle.value, spellcheckEnabled: prefs.spellcheckEnabled, privateCommitEmail: prefs.privateCommitEmail };
       }),
     },
   });
@@ -193,6 +194,28 @@ describe('Editor Preferences Routes', () => {
     const getResponse = await app.inject({ method: 'GET', url: '/auth/me/editor-preferences' });
     const body = JSON.parse(getResponse.body);
     expect(body).toHaveProperty('spellcheckEnabled', false);
+  });
+
+  test('PUT persists the privacy-preserving commit email opt-in and GET returns it', async () => {
+    const app = buildTestServer(null);
+    const putResponse = await app.inject({
+      method: 'PUT',
+      url: '/auth/me/editor-preferences',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fontSize: 14, theme: 'default', privateCommitEmail: true }),
+    });
+    expect(putResponse.statusCode).toBe(204);
+
+    const getResponse = await app.inject({ method: 'GET', url: '/auth/me/editor-preferences' });
+    const body = JSON.parse(getResponse.body);
+    expect(body).toHaveProperty('privateCommitEmail', true);
+  });
+
+  test('GET returns the privacy-preserving commit email opt-in disabled by default', async () => {
+    const app = buildTestServer(null);
+    const response = await app.inject({ method: 'GET', url: '/auth/me/editor-preferences' });
+    const body = JSON.parse(response.body);
+    expect(body).toHaveProperty('privateCommitEmail', false);
   });
 
   test('PUT ignores the removed spellcheckLanguage field (now a project setting)', async () => {

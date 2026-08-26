@@ -27,7 +27,7 @@ export class PrismaEditorPreferencesRepository implements EditorPreferencesRepos
   async save(prefs: EditorPreferences): Promise<void> {
     await this.prisma.editorPreferences.upsert({
       where: { userId: prefs.userId.value },
-      update: { fontSize: prefs.fontSize, theme: prefs.theme.value, scrollSyncEnabled: prefs.scrollSyncEnabled, softWrap: prefs.softWrap, previewStyle: prefs.previewStyle.value, spellcheckEnabled: prefs.spellcheckEnabled, minimapEnabled: prefs.minimapEnabled },
+      update: { fontSize: prefs.fontSize, theme: prefs.theme.value, scrollSyncEnabled: prefs.scrollSyncEnabled, softWrap: prefs.softWrap, previewStyle: prefs.previewStyle.value, spellcheckEnabled: prefs.spellcheckEnabled, minimapEnabled: prefs.minimapEnabled, privateCommitEmail: prefs.privateCommitEmail },
       create: {
         id: prefs.id.value,
         userId: prefs.userId.value,
@@ -38,6 +38,7 @@ export class PrismaEditorPreferencesRepository implements EditorPreferencesRepos
         previewStyle: prefs.previewStyle.value,
         spellcheckEnabled: prefs.spellcheckEnabled,
         minimapEnabled: prefs.minimapEnabled,
+        privateCommitEmail: prefs.privateCommitEmail,
       },
     });
   }
@@ -52,6 +53,7 @@ export class PrismaEditorPreferencesRepository implements EditorPreferencesRepos
     previewStyle: string;
     spellcheckEnabled: boolean;
     minimapEnabled: boolean;
+    privateCommitEmail: boolean;
     createdAt: Date;
     updatedAt: Date;
   }): EditorPreferences {
@@ -73,6 +75,7 @@ export class PrismaEditorPreferencesRepository implements EditorPreferencesRepos
       previewStyle,
       row.spellcheckEnabled,
       row.minimapEnabled,
+      row.privateCommitEmail,
     );
   }
 }

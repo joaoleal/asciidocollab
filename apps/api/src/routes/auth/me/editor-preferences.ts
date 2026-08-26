@@ -21,6 +21,7 @@ const putBodySchema = {
     previewStyle: { type: 'string', enum: [...PREVIEW_STYLE_VALUES] },
     spellcheckEnabled: { type: 'boolean' },
     minimapEnabled: { type: 'boolean' },
+    privateCommitEmail: { type: 'boolean' },
   },
   additionalProperties: false,
 };
@@ -47,12 +48,13 @@ export async function editorPreferencesRoutes(app: FastifyInstance): Promise<voi
         previewStyle: result.value.previewStyle.value,
         spellcheckEnabled: result.value.spellcheckEnabled,
         minimapEnabled: result.value.minimapEnabled,
+        privateCommitEmail: result.value.privateCommitEmail,
       };
       return reply.status(200).send(dto);
     }
   );
 
-  app.put<{ Body: { fontSize: number; theme: string; scrollSyncEnabled?: boolean; softWrap?: boolean; previewStyle?: string; spellcheckEnabled?: boolean; minimapEnabled?: boolean } }>(
+  app.put<{ Body: { fontSize: number; theme: string; scrollSyncEnabled?: boolean; softWrap?: boolean; previewStyle?: string; spellcheckEnabled?: boolean; minimapEnabled?: boolean; privateCommitEmail?: boolean } }>(
     '/auth/me/editor-preferences',
     {
       preHandler: requireAuth,
@@ -69,6 +71,7 @@ export async function editorPreferencesRoutes(app: FastifyInstance): Promise<voi
         previewStyle: request.body.previewStyle,
         spellcheckEnabled: request.body.spellcheckEnabled,
         minimapEnabled: request.body.minimapEnabled,
+        privateCommitEmail: request.body.privateCommitEmail,
       });
 
       if (!result.success) {

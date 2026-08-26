@@ -59,6 +59,7 @@ import {
   PrismaProjectMemberRepository,
   PrismaCollaborationSessionRepository,
   PrismaUserRepository,
+  PrismaEditorPreferencesRepository,
   FilesystemProjectFileStore,
   HttpCollaborativeContentEditor,
   SessionEncryption,
@@ -385,6 +386,9 @@ export async function compositionRoot() {
   // internal RPC server `src/index.ts` starts once this composition root resolves — see that
   // file for the `startInternalGitServer` call.
   const userRepository = new PrismaUserRepository(prisma);
+  // Commit/amend consult this to resolve whether the author has opted into a privacy-preserving
+  // commit email (see `resolveCommitAuthorEmail` in the domain package).
+  const editorPreferencesRepository = new PrismaEditorPreferencesRepository(prisma);
 
   const getGitStatusUseCase = new GetGitStatusUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
   const getBehindAheadUseCase = new GetBehindAheadUseCase(gitRepositoryRepository, gitCommandRunner, useCaseLogger);
@@ -407,6 +411,7 @@ export async function compositionRoot() {
     collaborativeContentReader,
     collaborationSessionRepository,
     userRepository,
+    editorPreferencesRepository,
     useCaseLogger,
   );
   // Connect (attaching an existing project to an already-existing remote — no clone, no push) runs
@@ -505,6 +510,7 @@ export async function compositionRoot() {
     collaborativeContentReader,
     collaborationSessionRepository,
     userRepository,
+    editorPreferencesRepository,
     useCaseLogger,
   );
 

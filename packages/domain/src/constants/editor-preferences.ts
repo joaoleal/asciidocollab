@@ -9,6 +9,12 @@ export const DEFAULT_PREVIEW_STYLE = 'asciidocollab' as const;
 export const DEFAULT_MINIMAP_ENABLED = false;
 
 /**
+ * The privacy-preserving commit-author-email opt-in is off by default — a commit is authored under
+ * the user's real account email unless they explicitly choose otherwise.
+ */
+export const DEFAULT_PRIVATE_COMMIT_EMAIL = false;
+
+/**
  * Selectable editor spellcheck languages (ISO 639-1 codes). The list is limited to languages with a
  * bundled Hunspell dictionary that actually spell-check — offering a language that produces no
  * diagnostics would be misleading. Hunspell does not suit CJK / most Indic / Arabic-script

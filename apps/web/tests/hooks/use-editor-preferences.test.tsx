@@ -379,6 +379,42 @@ test('setMinimapEnabled updates state and includes minimapEnabled in PUT payload
   }
 });
 
+// ── privateCommitEmail (privacy-preserving commit email opt-in) ─────────────
+
+test('privateCommitEmail defaults to false', () => {
+  const { result } = renderHook(() => useEditorPreferences());
+  expect(result.current.privateCommitEmail).toBe(false);
+});
+
+test('privateCommitEmail included in initial GET response', async () => {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    json: () => Promise.resolve({ fontSize: 14, theme: 'default', privateCommitEmail: true }),
+  });
+  const { result } = renderHook(() => useEditorPreferences());
+  await waitFor(() => expect(result.current.privateCommitEmail).toBe(true));
+});
+
+test('setPrivateCommitEmail updates state and includes privateCommitEmail in PUT payload', async () => {
+  const { result } = renderHook(() => useEditorPreferences());
+  await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+  mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+  await act(async () => {
+    result.current.setPrivateCommitEmail(true);
+    jest.advanceTimersByTime(600);
+  });
+  await waitFor(() => expect(result.current.privateCommitEmail).toBe(true));
+  const putCall = mockFetch.mock.calls.find((c: unknown[]) => {
+    const options = c[1] as { method?: string };
+    return options?.method === 'PUT';
+  });
+  expect(putCall).toBeDefined();
+  if (putCall) {
+    const body = JSON.parse((putCall[1] as { body: string }).body);
+    expect(body).toHaveProperty('privateCommitEmail', true);
+  }
+});
+
 test('localStorage cache updated when softWrap changes', async () => {
   const { result } = renderHook(() => useEditorPreferences());
   await waitFor(() => expect(mockFetch).toHaveBeenCalled());
@@ -1187,6 +1223,7 @@ test('every stored preference is read back, not only the ones with a default wor
     spellIgnore: ['codeblock'],
     spellcheckEnabled: false,
     minimapEnabled: true,
+    privateCommitEmail: true,
     leftPanelTab: 'outline',
     rightPanelTab: 'writing',
     showIncludedFiles: true,
@@ -1204,6 +1241,7 @@ test('every stored preference is read back, not only the ones with a default wor
     spellIgnore: result.current.spellIgnore,
     spellcheckEnabled: result.current.spellcheckEnabled,
     minimapEnabled: result.current.minimapEnabled,
+    privateCommitEmail: result.current.privateCommitEmail,
     leftPanelTab: result.current.leftPanelTab,
     rightPanelTab: result.current.rightPanelTab,
     showIncludedFiles: result.current.showIncludedFiles,
@@ -1218,6 +1256,7 @@ test('every stored preference is read back, not only the ones with a default wor
     spellIgnore: ['codeblock'],
     spellcheckEnabled: false,
     minimapEnabled: true,
+    privateCommitEmail: true,
     leftPanelTab: 'outline',
     rightPanelTab: 'writing',
     showIncludedFiles: true,

@@ -9,6 +9,7 @@ const setSoftWrap = jest.fn();
 const setPreviewStyle = jest.fn();
 const setSpellcheckEnabled = jest.fn();
 const setMinimapEnabled = jest.fn();
+const setPrivateCommitEmail = jest.fn();
 
 const preferences = {
   fontSize: 14,
@@ -19,6 +20,7 @@ const preferences = {
   spellIgnore: [],
   spellcheckEnabled: true,
   minimapEnabled: false,
+  privateCommitEmail: false,
   setFontSize,
   setTheme,
   setScrollSyncEnabled,
@@ -27,6 +29,7 @@ const preferences = {
   addSpellIgnore: jest.fn(),
   setSpellcheckEnabled,
   setMinimapEnabled,
+  setPrivateCommitEmail,
 };
 
 jest.mock('@/hooks/use-editor-preferences', () => ({
@@ -57,6 +60,7 @@ describe('EditorPreferencesCard', () => {
     preferences.scrollSyncEnabled = false;
     preferences.softWrap = true;
     preferences.minimapEnabled = false;
+    preferences.privateCommitEmail = false;
   });
 
   test('renders the font-size select with the current value', () => {
@@ -124,5 +128,19 @@ describe('EditorPreferencesCard', () => {
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     expect(setMinimapEnabled).toHaveBeenCalledWith(true);
+  });
+
+  test('privacy-preserving commit email is off by default and reflects the loaded value', () => {
+    preferences.privateCommitEmail = true;
+    render(<EditorPreferencesCard />);
+    expect(screen.getByLabelText('Privacy-Preserving Commit Email')).toBeChecked();
+  });
+
+  test('toggling privacy-preserving commit email on calls setPrivateCommitEmail', () => {
+    render(<EditorPreferencesCard />);
+    const toggle = screen.getByLabelText('Privacy-Preserving Commit Email');
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    expect(setPrivateCommitEmail).toHaveBeenCalledWith(true);
   });
 });

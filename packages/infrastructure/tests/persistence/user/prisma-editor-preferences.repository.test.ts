@@ -161,4 +161,35 @@ describe('PrismaEditorPreferencesRepository', () => {
     const retrieved = await repo.findByUserId(userId);
     expect(retrieved?.previewStyle.value).toBe('asciidocollab');
   });
+
+  it('privateCommitEmail defaults to false when the column holds its default', async () => {
+    const prefs = new EditorPreferences(
+      EditorPreferencesId.create('550e8400-e29b-41d4-a716-446655440000'),
+      userId,
+      14,
+      makeTheme('default'),
+    );
+    await repo.save(prefs);
+    const retrieved = await repo.findByUserId(userId);
+    expect(retrieved?.privateCommitEmail).toBe(false);
+  });
+
+  it('round-trips an enabled privateCommitEmail opt-in', async () => {
+    const prefs = new EditorPreferences(
+      EditorPreferencesId.create('550e8400-e29b-41d4-a716-446655440000'),
+      userId,
+      14,
+      makeTheme('default'),
+      false,
+      undefined,
+      true,
+      makePreviewStyle('asciidocollab'),
+      true,
+      false,
+      true,
+    );
+    await repo.save(prefs);
+    const retrieved = await repo.findByUserId(userId);
+    expect(retrieved?.privateCommitEmail).toBe(true);
+  });
 });

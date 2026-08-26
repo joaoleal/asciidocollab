@@ -179,4 +179,41 @@ describe('SaveEditorPreferencesUseCase', () => {
     const getResult = await getUseCase.execute(userId);
     if (getResult.success) expect(getResult.value.minimapEnabled).toBe(true);
   });
+
+  test('privateCommitEmail defaults to false when never set', async () => {
+    const repo = new InMemoryEditorPreferencesRepository();
+    const getUseCase = new GetEditorPreferencesUseCase(repo);
+
+    const getResult = await getUseCase.execute(userId);
+    expect(getResult.success).toBe(true);
+    if (getResult.success) {
+      expect(getResult.value.privateCommitEmail).toBe(false);
+    }
+  });
+
+  test('persists the privacy-preserving commit email opt-in', async () => {
+    const repo = new InMemoryEditorPreferencesRepository();
+    const saveUseCase = new SaveEditorPreferencesUseCase(repo);
+    const getUseCase = new GetEditorPreferencesUseCase(repo);
+
+    await saveUseCase.execute(userId, { fontSize: 14, theme: 'default', privateCommitEmail: true });
+
+    const getResult = await getUseCase.execute(userId);
+    expect(getResult.success).toBe(true);
+    if (getResult.success) {
+      expect(getResult.value.privateCommitEmail).toBe(true);
+    }
+  });
+
+  test('an omitted privateCommitEmail flag preserves the previously saved value', async () => {
+    const repo = new InMemoryEditorPreferencesRepository();
+    const saveUseCase = new SaveEditorPreferencesUseCase(repo);
+    const getUseCase = new GetEditorPreferencesUseCase(repo);
+
+    await saveUseCase.execute(userId, { fontSize: 14, theme: 'default', privateCommitEmail: true });
+    await saveUseCase.execute(userId, { fontSize: 16, theme: 'default' });
+
+    const getResult = await getUseCase.execute(userId);
+    if (getResult.success) expect(getResult.value.privateCommitEmail).toBe(true);
+  });
 });

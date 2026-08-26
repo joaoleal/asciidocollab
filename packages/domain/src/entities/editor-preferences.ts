@@ -9,9 +9,10 @@ import {
   FONT_SIZE_MAX,
   DEFAULT_SPELLCHECK_ENABLED,
   DEFAULT_MINIMAP_ENABLED,
+  DEFAULT_PRIVATE_COMMIT_EMAIL,
 } from '../constants/editor-preferences';
 
-/** Stores a user's editor display preferences (font size, theme, scroll sync, soft wrap, preview style, spellcheck toggle, minimap toggle). */
+/** Stores a user's editor display preferences (font size, theme, scroll sync, soft wrap, preview style, spellcheck toggle, minimap toggle, privacy-preserving commit email opt-in). */
 export class EditorPreferences {
   public readonly timestamps: Timestamps;
 
@@ -28,6 +29,9 @@ export class EditorPreferences {
    *  spellcheck language is a project-level setting, not a user preference.
    * @param minimapEnabled - When true, the editor shows the document text-preview (minimap).
    *  Defaults to off.
+   * @param privateCommitEmail - When true, a git commit authored by this user records a
+   *  deterministic privacy-preserving email instead of the user's real account email (see
+   *  `resolveCommitAuthorEmail`). The author's display name is unaffected. Defaults to off.
    */
   constructor(
     public readonly id: EditorPreferencesId,
@@ -40,6 +44,7 @@ export class EditorPreferences {
     public readonly previewStyle: PreviewStyle = PreviewStyle.default(),
     public readonly spellcheckEnabled: boolean = DEFAULT_SPELLCHECK_ENABLED,
     public readonly minimapEnabled: boolean = DEFAULT_MINIMAP_ENABLED,
+    public readonly privateCommitEmail: boolean = DEFAULT_PRIVATE_COMMIT_EMAIL,
   ) {
     if (fontSize < FONT_SIZE_MIN || fontSize > FONT_SIZE_MAX) {
       throw new ValidationError(

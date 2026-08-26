@@ -16,6 +16,11 @@ export interface EditorPreferencesDto {
   spellcheckEnabled?: boolean;
   /** When true, the editor shows the document text-preview (minimap). Defaults to false. */
   minimapEnabled?: boolean;
+  /**
+   * When true, a git commit authored by this user records a privacy-preserving email instead of
+   * the user's real account email. Defaults to false.
+   */
+  privateCommitEmail?: boolean;
 }
 
 /**

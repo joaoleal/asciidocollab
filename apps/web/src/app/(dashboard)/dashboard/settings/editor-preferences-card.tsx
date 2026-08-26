@@ -7,6 +7,7 @@ import {
   Map as MapIcon,
   FileText,
   Palette,
+  ShieldCheck,
   SpellCheck,
   WrapText,
 } from 'lucide-react';
@@ -48,8 +49,8 @@ const EDITOR_THEMES: { value: EditorThemeValue; label: string }[] = [
 /** Card exposing editor font size, theme, scroll sync, and soft wrap preferences. */
 export function EditorPreferencesCard() {
   const {
-    fontSize, theme, scrollSyncEnabled, softWrap, previewStyle, spellcheckEnabled, minimapEnabled,
-    setFontSize, setTheme, setScrollSyncEnabled, setSoftWrap, setPreviewStyle, setSpellcheckEnabled, setMinimapEnabled,
+    fontSize, theme, scrollSyncEnabled, softWrap, previewStyle, spellcheckEnabled, minimapEnabled, privateCommitEmail,
+    setFontSize, setTheme, setScrollSyncEnabled, setSoftWrap, setPreviewStyle, setSpellcheckEnabled, setMinimapEnabled, setPrivateCommitEmail,
   } = useEditorPreferences();
 
   return (
@@ -158,6 +159,22 @@ export function EditorPreferencesCard() {
           </div>
           <CardDescription>
             Shows a scaled-down overview of the whole document down the editor&rsquo;s right edge.
+          </CardDescription>
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              id="privateCommitEmail"
+              checked={privateCommitEmail}
+              onChange={(event) => setPrivateCommitEmail(event.target.checked)}
+              className="h-4 w-4 rounded border"
+            />
+            <Label htmlFor="privateCommitEmail">
+              <SettingLabel icon={ShieldCheck}>Privacy-Preserving Commit Email</SettingLabel>
+            </Label>
+          </div>
+          <CardDescription>
+            When enabled, git commits you author record a private, non-identifying email instead of
+            your account email. Your display name is still shown as usual.
           </CardDescription>
         </div>
       </CardContent>

@@ -36,6 +36,10 @@ import { InMemoryFileNodeRepository } from '../../ports/file-tree/in-memory-file
 import { InMemoryDocumentRepository } from '../../ports/file-tree/in-memory-document.repository';
 import { InMemoryCollaborationSessionRepository } from '../../ports/project/in-memory-collaboration-session-repository';
 import { InMemoryUserRepository } from '../../ports/user/in-memory-user.repository';
+import { InMemoryEditorPreferencesRepository } from '../../ports/user/in-memory-editor-preferences.repository';
+import { EditorPreferences } from '../../../src/entities/editor-preferences';
+import { EditorPreferencesId } from '../../../src/value-objects/ids/editor-preferences-id';
+import { EditorTheme } from '../../../src/value-objects/editor/editor-theme';
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440000');
 const ACTOR_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
@@ -102,6 +106,7 @@ interface HarnessOptions {
   connected?: boolean;
   reader?: CollaborativeContentReader;
   withUser?: boolean;
+  privateCommitEmail?: boolean;
 }
 
 async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -110,6 +115,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     connected = true,
     reader = makeReader({ success: true, value: LIVE_TEXT }),
     withUser = true,
+    privateCommitEmail = false,
   } = options;
 
   const memberRepo = await memberRepoWithRole(role);
@@ -121,6 +127,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
   const documentRepo = new InMemoryDocumentRepository();
   const collaborationSessionRepo = new InMemoryCollaborationSessionRepository();
   const userRepo = new InMemoryUserRepository();
+  const editorPreferencesRepo = new InMemoryEditorPreferencesRepository();
 
   for (const { node, document } of [stagedLive, stagedDormant, unstagedLive]) {
     await fileNodeRepo.save(node);
@@ -135,6 +142,26 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
   if (withUser) {
     await userRepo.save(
       new User(ACTOR_ID, Email.create('ada@example.com'), 'Ada Editor', 'argon2-hash', [], null, null),
+    );
+  }
+
+  if (privateCommitEmail) {
+    const themeResult = EditorTheme.parse('default');
+    if (!themeResult.success) throw themeResult.error;
+    await editorPreferencesRepo.save(
+      new EditorPreferences(
+        EditorPreferencesId.create('660e8400-e29b-41d4-a716-446655440001'),
+        ACTOR_ID,
+        14,
+        themeResult.value,
+        false,
+        undefined,
+        true,
+        undefined,
+        true,
+        false,
+        true,
+      ),
     );
   }
 
@@ -161,6 +188,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     reader,
     collaborationSessionRepo,
     userRepo,
+    editorPreferencesRepo,
   );
 
   return { useCase, commandRunner, gitOperationRepo, auditRepo };
@@ -202,6 +230,28 @@ describe('CommitChangesUseCase', () => {
     expect(call.input.flush).toEqual([{ path: STAGED_LIVE_PATH, content: LIVE_TEXT }]);
     expect(call.input.message).toBe(MESSAGE);
     expect(call.input.author).toEqual({ name: 'Ada Editor', email: 'ada@example.com' });
+  });
+
+  test('uses a privacy-preserving commit email when the author has opted in, keeping their display name', async () => {
+    const harness = await buildHarness({ privateCommitEmail: true });
+    harness.commandRunner.seedStatus(PROJECT_ID, MIXED_STATUS);
+    harness.commandRunner.seedCommitResult(PROJECT_ID, {
+      hash: COMMIT_HASH,
+      message: MESSAGE,
+      authoredAt: new Date('2024-06-01T12:00:00.000Z'),
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(true);
+    const call = harness.commandRunner.commitCalls[0];
+    expect(call.input.author.name).toBe('Ada Editor');
+    expect(call.input.author.email).not.toBe('ada@example.com');
+    expect(call.input.author.email).toBe(`${ACTOR_ID.value}@users.noreply.asciidocollab.invalid`);
   });
 
   test('an empty (whitespace) message refuses with EmptyCommitMessageError before any git call', async () => {

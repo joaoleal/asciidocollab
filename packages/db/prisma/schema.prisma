@@ -450,6 +450,11 @@ model EditorPreferences {
   previewStyle      String   @default("asciidocollab")
   spellcheckEnabled Boolean  @default(true)
   minimapEnabled    Boolean  @default(false)
+  // Per-user opt-in: when true, a commit authored by this user records a deterministic
+  // privacy-preserving email instead of the user's real account email (see
+  // `resolveCommitAuthorEmail` in the domain package). Schema-only addition: no migration
+  // generated yet (see this project's migration policy).
+  privateCommitEmail Boolean @default(false)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
