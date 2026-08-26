@@ -105,6 +105,25 @@ const SELECTION_TIMEOUT_MS = 90_000;
 /** Aspect-ratio agreement between the painted page and the exported one, absorbing canvas rounding. */
 const ASPECT_TOLERANCE = 0.02;
 
+/**
+ * How long an extension's Ruby is held back before it reaches the browser.
+ *
+ * Not a slowdown for its own sake — it is the CONDITION the defect needs, and without it the test
+ * cannot see the defect at all. The preview posts its render after a short delay; the source is
+ * fetched over the network. Against a stack on the same machine the fetch reliably wins that race,
+ * so the render carries the source, the extension applies, and a preview with no correcting
+ * re-render whatsoever passes this test. Anywhere real — a deployment across a network, a cold
+ * cache, a loaded server — the fetch loses, and then the render is posted with the extension's id
+ * but not its code, the registry refuses the id, and the sample renders without it.
+ *
+ * Held for long enough to lose that race by a wide margin, so what is being tested is whether the
+ * preview corrects itself when the source finally lands, and not how fast localhost is today.
+ */
+const SOURCE_FETCH_DELAY_MS = 8000;
+
+/** The endpoint serving one extension's Ruby, which {@link SOURCE_FETCH_DELAY_MS} is applied to. */
+const EXTENSION_SOURCE_ROUTE = /\/pdf-extensions\/[^/]+\/source$/;
+
 /** The theme editor's preview half of the split view. */
 function previewPanel(page: Page): Locator {
   return page.getByTestId('theme-preview-panel');
@@ -312,6 +331,13 @@ test.describe('Theme editor — the sample preview shows what the project render
     await signIn(page);
     const projectId = await projectShowingTheme(page, `Theme Preview Extension ${Date.now()}`, {
       extensions: { enabled: [EXTENSION_ID] },
+    });
+    // Put the fetch behind the render, which is the order it arrives in everywhere but here.
+    await page.route(EXTENSION_SOURCE_ROUTE, async (route) => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, SOURCE_FETCH_DELAY_MS);
+      });
+      await route.continue();
     });
     try {
       await openProject(page, projectId);
