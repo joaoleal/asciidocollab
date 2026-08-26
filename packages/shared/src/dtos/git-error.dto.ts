@@ -20,7 +20,8 @@ export type GitErrorCode =
   | 'remote_history_rewritten'
   | 'unresolved_conflicts'
   | 'nothing_to_undo'
-  | 'commit_already_pushed';
+  | 'commit_already_pushed'
+  | 'repository_too_large';
 
 /** The exhaustive, stable set of typed git-sync error codes. */
 export const GIT_ERROR_CODES: readonly GitErrorCode[] = [
@@ -38,6 +39,7 @@ export const GIT_ERROR_CODES: readonly GitErrorCode[] = [
   'unresolved_conflicts',
   'nothing_to_undo',
   'commit_already_pushed',
+  'repository_too_large',
 ];
 
 /** Narrows an arbitrary string to a {@link GitErrorCode}. */

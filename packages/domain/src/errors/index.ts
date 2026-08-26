@@ -51,6 +51,7 @@ export { RepositoryNotConnectedError } from './git/repository-not-connected';
 export { EmptyCommitMessageError } from './git/empty-commit-message';
 export { NothingStagedError } from './git/nothing-staged';
 export { CommitAlreadyPushedError } from './git/commit-already-pushed';
+export { RepositoryTooLargeError } from './git/repository-too-large';
 export { LiveContentFlushFailedError } from './git/live-content-flush-failed';
 export { NonFastForwardError } from './git/non-fast-forward';
 export { GitConflictNotFoundError } from './git/git-conflict-not-found';

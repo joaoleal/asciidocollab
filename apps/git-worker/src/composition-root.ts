@@ -254,7 +254,14 @@ export async function compositionRoot() {
   // outside every project's working tree (never under storageRoot) so ensureCleanWorkingTree's
   // `git clean -fdx` can never delete it while a conflict awaits resolution.
   const conflictStageStore = new FilesystemConflictStageStore(config.get('conflictStoreRoot'));
-  const gitCommandRunner = new RealGitCommandRunner(storageRoot, config.get('egressAllowedHosts'), undefined, conflictStageStore);
+  const gitCommandRunner = new RealGitCommandRunner(
+    storageRoot,
+    config.get('egressAllowedHosts'),
+    undefined,
+    conflictStageStore,
+    config.get('maxRepoSizeMB'),
+    config.get('lfsThresholdBytes'),
+  );
 
   // Adapts this app's structured pino logger to the domain's minimal `Logger` port (best-effort
   // `warn`-only sink), the same shape apps/api's `requestLogger` adapter presents.

@@ -6,6 +6,7 @@ import { AuthenticationFailedError } from '../../errors/git/authentication-faile
 import { RemoteAlreadyInitializedError } from '../../errors/git/remote-already-initialized';
 import { NonFastForwardError } from '../../errors/git/non-fast-forward';
 import { CommitAlreadyPushedError } from '../../errors/git/commit-already-pushed';
+import { RepositoryTooLargeError } from '../../errors/git/repository-too-large';
 import { ConflictResolution } from '../../types/conflict-resolution';
 import { Result } from '../../types/result';
 
@@ -478,12 +479,17 @@ export interface GitCommandRunner {
    *   clone (defaults to the remote's default branch).
    * @returns The cloned repository's files and the branch/commit they were cloned at; a
    *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
-   *   {@link checkRemoteAccess}, or a `GitCommandFailedError` for any other failure (for example,
-   *   the remote exceeds a configured size limit).
+   *   {@link checkRemoteAccess}, a `RepositoryTooLargeError` when the cloned working tree exceeds
+   *   the configured size ceiling, or a `GitCommandFailedError` for any other failure.
    */
   clone(
     input: GitCloneInput,
-  ): Promise<Result<ClonedRepository, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>>;
+  ): Promise<
+    Result<
+      ClonedRepository,
+      RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError
+    >
+  >;
 
   /**
    * Stages the given files for the next commit (the real adapter runs `git add -- <paths>` inside

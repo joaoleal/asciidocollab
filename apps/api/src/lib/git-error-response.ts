@@ -103,6 +103,11 @@ const GIT_ERROR_TABLE: Readonly<Record<string, GitErrorTableEntry>> = {
     code: 'commit_already_pushed',
     message: 'The most recent commit has already been pushed and cannot be amended',
   },
+  RepositoryTooLargeError: {
+    status: 413,
+    code: 'repository_too_large',
+    message: 'The repository exceeds the maximum allowed size',
+  },
 };
 
 /**

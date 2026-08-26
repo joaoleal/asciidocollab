@@ -1,4 +1,4 @@
-import { declaresLfsFilter, isUnsmudgedLfsPointer } from '../../src/git/lfs-pointer.js';
+import { declaresLfsFilter, isUnsmudgedLfsPointer, shouldTrackWithLfs } from '../../src/git/lfs-pointer.js';
 
 describe('declaresLfsFilter', () => {
   it('recognizes a filter=lfs attribute line', () => {
@@ -37,5 +37,28 @@ describe('isUnsmudgedLfsPointer', () => {
 
   it('returns false for binary content shorter than the signature', () => {
     expect(isUnsmudgedLfsPointer(Buffer.from([0x89, 0x50, 0x4E, 0x47]))).toBe(false);
+  });
+});
+
+describe('shouldTrackWithLfs', () => {
+  it('returns false for a size below the threshold', () => {
+    expect(shouldTrackWithLfs(1023, 1024, false)).toBe(false);
+  });
+
+  it('returns true for a size exactly at the threshold', () => {
+    expect(shouldTrackWithLfs(1024, 1024, false)).toBe(true);
+  });
+
+  it('returns true for a size over the threshold', () => {
+    expect(shouldTrackWithLfs(2048, 1024, false)).toBe(true);
+  });
+
+  it('returns false when already tracked, even far over the threshold', () => {
+    expect(shouldTrackWithLfs(10_000_000, 1024, true)).toBe(false);
+  });
+
+  it('returns false for a size below the threshold whether or not already tracked', () => {
+    expect(shouldTrackWithLfs(100, 1024, true)).toBe(false);
+    expect(shouldTrackWithLfs(100, 1024, false)).toBe(false);
   });
 });

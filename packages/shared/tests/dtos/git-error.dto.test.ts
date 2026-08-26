@@ -18,6 +18,7 @@ describe('git error codes', () => {
       'unresolved_conflicts',
       'nothing_to_undo',
       'commit_already_pushed',
+      'repository_too_large',
     ]);
   });
 

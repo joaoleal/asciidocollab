@@ -35,6 +35,7 @@ import type {
   GitRestoreToSnapshotInput,
   GitWorkingTreeStatus,
   ProjectId,
+  RepositoryTooLargeError,
   RepositoryUnreachableError,
   Result,
 } from '@asciidocollab/domain';
@@ -56,7 +57,7 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   private readonly clonedRepositories = new Map<string, ClonedRepository>();
   private readonly cloneFailures = new Map<
     string,
-    RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError
+    RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError
   >();
   private readonly pushResults = new Map<string, GitPushResult>();
   private readonly pushFailures = new Map<string, GitPushError>();
@@ -138,7 +139,7 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
   /** Configures `clone` to fail for a remote URL, taking priority over any seeded repository. */
   seedCloneFailure(
     remoteUrl: string,
-    error: RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError,
+    error: RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError,
   ): void {
     this.cloneFailures.set(remoteUrl, error);
   }
@@ -284,7 +285,12 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   async clone(
     input: GitCloneInput,
-  ): Promise<Result<ClonedRepository, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>> {
+  ): Promise<
+    Result<
+      ClonedRepository,
+      RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError
+    >
+  > {
     this.cloneCalls.push(input);
 
     const failure = this.cloneFailures.get(input.remoteUrl);

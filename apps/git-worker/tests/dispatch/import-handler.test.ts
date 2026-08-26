@@ -9,6 +9,7 @@ import {
   Project,
   ProjectId,
   ProjectName,
+  RepositoryTooLargeError,
   RepositoryUnreachableError,
   UserId,
 } from '@asciidocollab/domain';
@@ -167,6 +168,18 @@ describe('createImportHandler', () => {
     const outcome = await harness.handler(buildImportOperation(projectId));
 
     expect(outcome).toEqual({ kind: 'failed', errorCode: 'authentication_failed' });
+    expect(await harness.projectMemberRepository.findByCompositeKey(projectId, ACTOR_ID)).toBeNull();
+  });
+
+  test('clone failure (repository too large) fails with the mapped safe code and grants no membership', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    seedPendingImport(harness, projectId);
+    harness.commandRunner.seedCloneFailure(REMOTE_URL, new RepositoryTooLargeError());
+
+    const outcome = await harness.handler(buildImportOperation(projectId));
+
+    expect(outcome).toEqual({ kind: 'failed', errorCode: 'repository_too_large' });
     expect(await harness.projectMemberRepository.findByCompositeKey(projectId, ACTOR_ID)).toBeNull();
   });
 

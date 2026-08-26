@@ -117,6 +117,22 @@ export interface GitWorkerConfig {
     };
   };
 
+  /**
+   * Maximum repository size (megabytes) permitted for import/clone. Same env var, format, and
+   * default as `apps/api`'s `git.maxRepoSizeMB` (`apps/api/src/config/schema-git.ts`), so the two
+   * never drift. Enforced by `RealGitCommandRunner.clone` against the cloned working tree, before
+   * every tracked file's bytes are read into memory.
+   */
+  maxRepoSizeMB: number;
+
+  /**
+   * File size (bytes) at or above which a staged file is tracked as a Git LFS object rather than
+   * stored inline. Same env var, format, and default as `apps/api`'s `git.lfsThresholdBytes`
+   * (`apps/api/src/config/schema-git.ts`), so the two never drift. Enforced by
+   * `RealGitCommandRunner.stage`.
+   */
+  lfsThresholdBytes: number;
+
   /** Interface the internal git-ops RPC server binds to (loopback by default for safety). */
   internalGitHost: string;
   /** Port for the internal HTTP server the API calls to run git short ops (status, stage, unstage, commit). */
@@ -227,6 +243,18 @@ export function createGitWorkerConfig() {
           env: 'ASCIIDOCOLLAB_COLLAB_EDIT_TLS_CA',
         },
       },
+    },
+    maxRepoSizeMB: {
+      doc: 'Maximum repository size (megabytes) permitted for import/clone. Must match apps/api\'s git.maxRepoSizeMB.',
+      format: positiveInt,
+      default: 500,
+      env: 'ASCIIDOCOLLAB_GIT_MAX_REPO_SIZE_MB',
+    },
+    lfsThresholdBytes: {
+      doc: "File size (bytes) at or above which a staged file is tracked as a Git LFS object rather than stored inline. Must match apps/api's git.lfsThresholdBytes.",
+      format: positiveInt,
+      default: 10_485_760, // 10 MiB
+      env: 'ASCIIDOCOLLAB_GIT_LFS_THRESHOLD_BYTES',
     },
     internalGitHost: {
       doc: 'Interface the internal git-ops RPC server binds to. Defaults to loopback; do not expose publicly.',

@@ -41,3 +41,21 @@ const LFS_POINTER_SIGNATURE = 'version https://git-lfs.github.com/spec/v1';
 export function isUnsmudgedLfsPointer(content: Buffer): boolean {
   return content.subarray(0, LFS_POINTER_SIGNATURE.length).toString('utf8') === LFS_POINTER_SIGNATURE;
 }
+
+/**
+ * Decides whether a path being staged should be handed off to Git LFS rather than staged inline —
+ * a path at or over the configured threshold, unless it is already declared `filter=lfs` (in which
+ * case `git add` alone already routes it through the existing LFS filter, and re-tracking it would
+ * be redundant). Pure — takes the already-resolved size/threshold/already-tracked facts rather than
+ * touching the filesystem itself, so it is unit-testable without a working tree or the `git-lfs`
+ * binary.
+ *
+ * @param sizeBytes - The path's on-disk size, in bytes.
+ * @param thresholdBytes - The configured `lfsThresholdBytes` ceiling.
+ * @param alreadyTracked - Whether `.gitattributes` already declares this exact path `filter=lfs`.
+ * @returns True if the path should be LFS-tracked before it is staged.
+ */
+export function shouldTrackWithLfs(sizeBytes: number, thresholdBytes: number, alreadyTracked: boolean): boolean {
+  if (alreadyTracked) return false;
+  return sizeBytes >= thresholdBytes;
+}

@@ -10,6 +10,8 @@ describe('createGitWorkerConfig', () => {
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_STALE_HEARTBEAT_AFTER_MS;
     delete process.env.ASCIIDOCOLLAB_GIT_EGRESS_ALLOWED_HOSTS;
     delete process.env.ASCIIDOCOLLAB_GIT_CONFLICT_STORE_ROOT;
+    delete process.env.ASCIIDOCOLLAB_GIT_MAX_REPO_SIZE_MB;
+    delete process.env.ASCIIDOCOLLAB_GIT_LFS_THRESHOLD_BYTES;
   });
 
   it('defaults storageRoot to ./storage', () => {
@@ -113,5 +115,30 @@ describe('createGitWorkerConfig', () => {
     const config = createGitWorkerConfig();
 
     expect(config.get('egressAllowedHosts')).toEqual(['git.example.com', 'self-hosted.internal']);
+  });
+
+  it('defaults maxRepoSizeMB and lfsThresholdBytes to the same values as apps/api\'s git schema', () => {
+    const config = createGitWorkerConfig();
+
+    expect(config.get('maxRepoSizeMB')).toBe(500);
+    expect(config.get('lfsThresholdBytes')).toBe(10_485_760);
+  });
+
+  it('reads maxRepoSizeMB and lfsThresholdBytes from the same env vars as apps/api\'s git schema', () => {
+    process.env.ASCIIDOCOLLAB_GIT_MAX_REPO_SIZE_MB = '250';
+    process.env.ASCIIDOCOLLAB_GIT_LFS_THRESHOLD_BYTES = '1048576';
+
+    const config = createGitWorkerConfig();
+
+    expect(config.get('maxRepoSizeMB')).toBe(250);
+    expect(config.get('lfsThresholdBytes')).toBe(1_048_576);
+  });
+
+  it('rejects a zero or negative maxRepoSizeMB', () => {
+    process.env.ASCIIDOCOLLAB_GIT_MAX_REPO_SIZE_MB = '0';
+
+    const config = createGitWorkerConfig();
+
+    expect(() => config.validate({ allowed: 'strict' })).toThrow();
   });
 });

@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, lstat, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, lstat, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -9,6 +9,7 @@ import {
   GitCommandFailedError,
   NonFastForwardError,
   RemoteAlreadyInitializedError,
+  RepositoryTooLargeError,
   RepositoryUnreachableError,
   type ClonedFileEntry,
   type ClonedRepository,
@@ -56,8 +57,10 @@ import {
 } from '@asciidocollab/domain';
 import { assertRemoteHostAllowed, type HostAddressResolver } from './egress-allowlist.js';
 import { guessMimeType } from './guess-mime-type.js';
-import { declaresLfsFilter } from './lfs-pointer.js';
+import { declaresLfsFilter, shouldTrackWithLfs } from './lfs-pointer.js';
+import { isPathAlreadyLfsTracked, writeManagedGitattributes } from './managed-gitattributes.js';
 import { writeManagedGitignore } from './managed-gitignore.js';
+import { measureWorkingTreeSizeBytes, repoSizeExceedsLimit } from './repo-size.js';
 import { GitProcessError, runGitCommand, runGitCommandForBytes } from './run-git-command.js';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './working-tree.js';
 
@@ -232,14 +235,24 @@ function readRevParseAnswer(stdout: string): string {
  * path (`/etc/passwd`, another project's storage, ...) must never be allowed to smuggle that
  * file's bytes into the imported project under an innocuous-looking name.
  *
+ * A running total of every materialized file's size is checked against `maxRepoSizeMB` on every
+ * iteration — defense-in-depth against unbounded memory growth: {@link RealGitCommandRunner.clone}
+ * already rejects an oversized working tree before this ever runs, but this second, cheaper-to-miss
+ * check means a race, or any future caller that skips that pre-check, still cannot read an unbounded
+ * number of bytes into memory before failing. The same {@link repoSizeExceedsLimit} comparison
+ * enforces both checks, so there is exactly one limit.
+ *
  * @param workingDirectory - The clone's working tree root.
+ * @param maxRepoSizeMB - The configured maximum repository size, in megabytes.
  * @returns Every safely-readable tracked file, as a `ClonedFileEntry`.
+ * @throws {RepositoryTooLargeError} If the running total of materialized bytes exceeds `maxRepoSizeMB`.
  */
-async function materializeEntries(workingDirectory: string): Promise<ClonedFileEntry[]> {
+async function materializeEntries(workingDirectory: string, maxRepoSizeMB: number): Promise<ClonedFileEntry[]> {
   const { stdout } = await runGitCommand(workingDirectory, { command: 'ls-files', flags: ['-z'] });
   const relativePaths = stdout.split('\0').filter((entry) => entry.length > 0);
 
   const entries: ClonedFileEntry[] = [];
+  let totalBytes = 0;
   for (const relativePath of relativePaths) {
     const absolutePath = path.join(workingDirectory, relativePath);
 
@@ -250,6 +263,11 @@ async function materializeEntries(workingDirectory: string): Promise<ClonedFileE
       const escapesWorkingTree =
         relativeToRoot === null || relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot);
       if (escapesWorkingTree) continue;
+    }
+
+    totalBytes += stats.size;
+    if (repoSizeExceedsLimit(totalBytes, maxRepoSizeMB)) {
+      throw new RepositoryTooLargeError();
     }
 
     const content = await readFile(absolutePath);
@@ -663,12 +681,20 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *   exercising unrelated behavior need not construct one; the composition root always supplies a
    *   real one rooted OUTSIDE every project's working tree. When omitted, `merge`/`checkout` skip
    *   the snapshot/stage capture entirely (their conflicted/clean outcomes are unaffected).
+   * @param maxRepoSizeMB - Maximum repository size, in megabytes, {@link clone} enforces against the
+   *   cloned working tree (`git.maxRepoSizeMB`). Defaults to the same 500 MB default as
+   *   `apps/api`'s schema, so a test that omits it still exercises realistic behavior.
+   * @param lfsThresholdBytes - File size, in bytes, at or above which {@link stage} tracks a path
+   *   with Git LFS before staging it (`git.lfsThresholdBytes`). Defaults to the same 10 MiB default
+   *   as `apps/api`'s schema.
    */
   constructor(
     private readonly storageRoot: string,
     private readonly allowedHosts: readonly string[] = [],
     private readonly resolveHost?: HostAddressResolver,
     private readonly conflictStageStore?: ConflictStageStore,
+    private readonly maxRepoSizeMB: number = 500,
+    private readonly lfsThresholdBytes: number = 10_485_760,
   ) {}
 
   /**
@@ -853,11 +879,17 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *   clone (defaults to the remote's default branch).
    * @returns The cloned repository's files and the branch/commit they were cloned at; a
    *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
-   *   {@link checkRemoteAccess}, or a `GitCommandFailedError` for any other failure.
+   *   {@link checkRemoteAccess}, a `RepositoryTooLargeError` when the cloned working tree exceeds
+   *   `maxRepoSizeMB`, or a `GitCommandFailedError` for any other failure.
    */
   async clone(
     input: GitCloneInput,
-  ): Promise<Result<ClonedRepository, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>> {
+  ): Promise<
+    Result<
+      ClonedRepository,
+      RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError
+    >
+  > {
     try {
       await this.assertRemoteAllowed(input.remoteUrl);
     } catch {
@@ -915,10 +947,21 @@ export class RealGitCommandRunner implements GitCommandRunner {
       const headCommitOutput = await runGitCommand(workingDirectory, { command: 'rev-parse', flags: ['HEAD'] });
       const headCommit = readRevParseAnswer(headCommitOutput.stdout);
 
-      const entries = await materializeEntries(workingDirectory);
+      // Measured BEFORE materializeEntries reads a single byte of tracked-file content into
+      // memory — a clone that already exceeds the ceiling fails here, rather than after paying the
+      // cost (and OOM risk) of reading every file first. Measures the checked-out working tree
+      // (post `git lfs pull`), so a smudged LFS object's real size is counted, not just what git's
+      // own object store holds.
+      const totalSizeBytes = await measureWorkingTreeSizeBytes(workingDirectory);
+      if (repoSizeExceedsLimit(totalSizeBytes, this.maxRepoSizeMB)) {
+        return { success: false, error: new RepositoryTooLargeError() };
+      }
+
+      const entries = await materializeEntries(workingDirectory, this.maxRepoSizeMB);
 
       return { success: true, value: { defaultBranch, headCommit, entries } };
-    } catch {
+    } catch (error) {
+      if (error instanceof RepositoryTooLargeError) return { success: false, error };
       return { success: false, error: new GitCommandFailedError('The repository could not be cloned.') };
     } finally {
       await rm(scratchParent, { recursive: true, force: true });
@@ -926,7 +969,9 @@ export class RealGitCommandRunner implements GitCommandRunner {
   }
 
   /**
-   * Stages the given files for the next commit (`git add <paths>`).
+   * Stages the given files for the next commit (`git add <paths>`), first routing any path at or
+   * over {@link lfsThresholdBytes} through Git LFS (see {@link trackLargeFilesWithLfs}) rather than
+   * letting it land inline in pack history.
    *
    * The paths are passed as plain positionals, with no extra leading `--` separator: unlike `git
    * reset`, a real `git add` invoked after `--end-of-options` (which already disables all option
@@ -935,16 +980,61 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *
    * @param projectId - The project whose working tree to stage files in.
    * @param paths - Workspace-relative POSIX paths of the files to stage.
-   * @returns Success once staged; a `GitCommandFailedError` when the underlying git command fails.
+   * @returns Success once staged; a `GitCommandFailedError` when the underlying git command fails
+   *   (including a `git-lfs` invocation this required but could not run).
    */
   async stage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>> {
     const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
     try {
-      await runGitCommand(cwd, { command: 'add', positionals: [...paths] });
+      const gitattributesTouched = await this.trackLargeFilesWithLfs(cwd, paths);
+      const pathsToAdd =
+        gitattributesTouched && !paths.includes('.gitattributes') ? [...paths, '.gitattributes'] : [...paths];
+      await runGitCommand(cwd, { command: 'add', positionals: pathsToAdd });
       return { success: true, value: undefined };
     } catch {
       return { success: false, error: new GitCommandFailedError('The files could not be staged.') };
     }
+  }
+
+  /**
+   * Ensures every path in `paths` that is at or over {@link lfsThresholdBytes} — and not already
+   * declared `filter=lfs` for that exact path — is tracked with Git LFS before `stage` runs `git
+   * add`: writes the managed `.gitattributes` entry for it ({@link writeManagedGitattributes}),
+   * installs the local `git lfs` filter once per call (mirroring how {@link clone} installs it), and
+   * runs `git lfs track <path>`. A path that does not exist (staging a deletion) or is not a regular
+   * file is left untouched — there is nothing to size-check or track.
+   *
+   * Scoped to `stage` only: `unstage` and the commit flush-write path never call this — live
+   * documents are text/AsciiDoc, and the binary/asset case always arrives via a stage.
+   *
+   * @param cwd - The project's working tree.
+   * @param paths - The workspace-relative paths about to be staged.
+   * @returns True if `.gitattributes` was written to (so the caller also stages it).
+   */
+  private async trackLargeFilesWithLfs(cwd: string, paths: readonly string[]): Promise<boolean> {
+    let gitattributesTouched = false;
+    let lfsInstalled = false;
+
+    for (const relativePath of paths) {
+      const stats = await stat(path.join(cwd, relativePath)).catch(() => null);
+      if (!stats || !stats.isFile()) continue;
+
+      const gitattributesContent = await readFile(path.join(cwd, '.gitattributes'), 'utf8').catch(() => '');
+      const alreadyTracked = isPathAlreadyLfsTracked(gitattributesContent, relativePath);
+
+      if (!shouldTrackWithLfs(stats.size, this.lfsThresholdBytes, alreadyTracked)) continue;
+
+      await writeManagedGitattributes(cwd, [relativePath]);
+      gitattributesTouched = true;
+
+      if (!lfsInstalled) {
+        await runGitCommand(cwd, { command: 'lfs', flags: ['install', '--local'] });
+        lfsInstalled = true;
+      }
+      await runGitCommand(cwd, { command: 'lfs', flags: ['track'], positionals: [relativePath] });
+    }
+
+    return gitattributesTouched;
   }
 
   /**

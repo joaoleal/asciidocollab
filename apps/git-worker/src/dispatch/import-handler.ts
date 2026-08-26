@@ -13,7 +13,12 @@ import type {
   ProjectMemberRepository,
   ProjectRepository,
 } from '@asciidocollab/domain';
-import { AuthenticationFailedError, ImportRepositoryUseCase, RepositoryUnreachableError } from '@asciidocollab/domain';
+import {
+  AuthenticationFailedError,
+  ImportRepositoryUseCase,
+  RepositoryTooLargeError,
+  RepositoryUnreachableError,
+} from '@asciidocollab/domain';
 import type { GitErrorCode } from '@asciidocollab/shared';
 import type { GitOperationOutcome } from './git-operation-dispatcher.js';
 
@@ -85,6 +90,10 @@ function mapImportErrorToCode(error: DomainError): string {
   }
   if (error instanceof AuthenticationFailedError) {
     const code: GitErrorCode = 'authentication_failed';
+    return code;
+  }
+  if (error instanceof RepositoryTooLargeError) {
+    const code: GitErrorCode = 'repository_too_large';
     return code;
   }
   return IMPORT_FAILED_ERROR_CODE;

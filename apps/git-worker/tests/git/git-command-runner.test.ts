@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import path from 'node:path';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import {
   AuthenticationFailedError,
@@ -12,6 +12,7 @@ import {
   NonFastForwardError,
   ProjectId,
   RemoteAlreadyInitializedError,
+  RepositoryTooLargeError,
   RepositoryUnreachableError,
 } from '@asciidocollab/domain';
 import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
@@ -77,6 +78,20 @@ async function unusedLoopbackPort(): Promise<number> {
 /** Stages exactly the given files (test setup helper — not the code under test). */
 async function stage(cwd: string, ...files: string[]): Promise<void> {
   await execFile('git', ['add', ...files], { cwd });
+}
+
+/**
+ * Probes whether the `git-lfs` extension is installed, so an LFS round-trip test can branch to a
+ * skip-with-log rather than fail when it is not (confirmed absent in this sandbox — see the
+ * existing LFS-unavailable clone test above).
+ */
+async function isGitLfsAvailable(): Promise<boolean> {
+  try {
+    await execFile('git', ['lfs', 'version']);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1220,6 +1235,53 @@ describe('RealGitCommandRunner.clone', () => {
   it.skip('smudges an LFS pointer to the real object bytes (requires git-lfs; unrunnable in this sandbox)', async () => {
     expect(true).toBe(true);
   });
+
+  it('returns RepositoryTooLargeError and cleans up the scratch directory when the cloned tree exceeds maxRepoSizeMB', async () => {
+    const workingTree = await createTemporaryWorkingTree();
+    await writeFile(path.join(workingTree, 'big.txt'), 'x'.repeat(200_000));
+    await commitAll(workingTree, 'big file');
+
+    const remotePath = await createTemporaryBareRemote();
+    await pushToOrigin(workingTree, remotePath);
+
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+    try {
+      const scratchDirsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith('git-worker-clone-'));
+
+      // A tiny fractional MB ceiling — well below the ~200 KB fixture above — so the clone is
+      // rejected regardless of any other content this fixture happens to carry.
+      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver, undefined, 0.001);
+      const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(RepositoryTooLargeError);
+
+      const scratchDirsAfter = (await readdir(tmpdir())).filter((name) => name.startsWith('git-worker-clone-'));
+      expect(scratchDirsAfter).toEqual(scratchDirsBefore);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('succeeds when the cloned tree is within maxRepoSizeMB', async () => {
+    const workingTree = await createTemporaryWorkingTree();
+    await writeFile(path.join(workingTree, 'small.txt'), 'hello\n');
+    await commitAll(workingTree, 'small file');
+
+    const remotePath = await createTemporaryBareRemote();
+    await pushToOrigin(workingTree, remotePath);
+
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+    try {
+      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver, undefined, 500);
+      const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+
+      expect(result.success).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe('RealGitCommandRunner.checkRemoteAccess', () => {
@@ -1364,6 +1426,93 @@ describe('RealGitCommandRunner.stage / unstage', () => {
     expect(unstageResult.success).toBe(false);
     if (unstageResult.success) throw new Error('expected failure');
     expect(unstageResult.error).toBeInstanceOf(GitCommandFailedError);
+  });
+});
+
+describe('RealGitCommandRunner.stage — Git LFS threshold', () => {
+  it('does not modify .gitattributes for a path below lfsThresholdBytes', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440064');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'init.adoc'), 'init\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'small.adoc'), 'small content\n');
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, undefined, 500, 1_000_000);
+    const result = await runner.stage(projectId, ['small.adoc']);
+
+    expect(result).toEqual({ success: true, value: undefined });
+
+    const gitattributesExists = await stat(path.join(cwd, '.gitattributes')).then(
+      () => true,
+      () => false,
+    );
+    expect(gitattributesExists).toBe(false);
+
+    const status = await runner.getStatus(projectId);
+    expect(status).toEqual({
+      success: true,
+      value: { currentBranch: 'main', changes: [{ path: 'small.adoc', changeType: 'added', state: 'staged' }] },
+    });
+  });
+
+  it('leaves an already-declared filter=lfs path untouched and stages it without invoking git-lfs at all', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440065');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'init.adoc'), 'init\n');
+    await commitAll(cwd, 'init');
+
+    // An exact literal declaration for this path — mirrors what `writeManagedGitattributes` itself
+    // produces (this mechanism's own idempotency case), as opposed to a broader glob pattern
+    // (`*.bin`) it makes no attempt to recognize.
+    const preExisting = 'big.bin filter=lfs diff=lfs merge=lfs -text\n';
+    await writeFile(path.join(cwd, '.gitattributes'), preExisting);
+    await writeFile(path.join(cwd, 'big.bin'), 'x'.repeat(2048));
+
+    // `git lfs install`/`git lfs track` are never invoked here — the path is already declared
+    // `filter=lfs`, so this succeeds regardless of whether the `git-lfs` binary happens to be
+    // installed in this environment (proof this is the fast, no-binary-needed path).
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, undefined, 500, 1024);
+    const result = await runner.stage(projectId, ['.gitattributes', 'big.bin']);
+
+    expect(result).toEqual({ success: true, value: undefined });
+    const gitattributesContent = await readFile(path.join(cwd, '.gitattributes'), 'utf8');
+    expect(gitattributesContent).toBe(preExisting);
+  });
+
+  it('tracks a path at/over lfsThresholdBytes with Git LFS, gaining a managed .gitattributes entry', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440066');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'init.adoc'), 'init\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'big.bin'), 'x'.repeat(2048));
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, undefined, 500, 1024);
+    const result = await runner.stage(projectId, ['big.bin']);
+
+    if (!(await isGitLfsAvailable())) {
+      // eslint-disable-next-line no-console
+      console.log(
+        'Skipping the LFS round-trip assertion: git-lfs is not installed in this environment; ' +
+          'asserting the safe-failure path instead (mirrors the clone-side LFS-unavailable test).',
+      );
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      return;
+    }
+
+    expect(result).toEqual({ success: true, value: undefined });
+
+    const gitattributesContent = await readFile(path.join(cwd, '.gitattributes'), 'utf8');
+    expect(gitattributesContent).toContain('big.bin filter=lfs diff=lfs merge=lfs -text');
+
+    const status = await runner.getStatus(projectId);
+    expect(status.success).toBe(true);
+    if (!status.success) throw new Error('expected success');
+    expect(status.value.changes.map((change) => change.path).toSorted()).toEqual(['.gitattributes', 'big.bin']);
   });
 });
 
