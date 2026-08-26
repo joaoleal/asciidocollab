@@ -19,6 +19,7 @@ import {
   NoConflictInProgressError,
   GitConflictNotFoundError,
   InvalidResolutionError,
+  CommitAlreadyPushedError,
 } from '@asciidocollab/domain';
 import {
   GIT_STATUS_PATH,
@@ -37,6 +38,8 @@ import {
   GIT_HISTORY_PATH,
   GIT_DIFF_PATH,
   GIT_BLAME_PATH,
+  GIT_DISCARD_PATH,
+  GIT_AMEND_PATH,
   createGitOpsRequestHandler,
   parseGitStatusBody,
   parseStageChangesBody,
@@ -48,6 +51,8 @@ import {
   parseHistoryBody,
   parseDiffBody,
   parseBlameBody,
+  parseDiscardBody,
+  parseAmendBody,
   startInternalGitServer,
   type GitOpsHandlerDeps,
 } from '../src/internal-git-server.js';
@@ -126,6 +131,8 @@ interface HandlerDoubles {
   getHistory: jest.Mock;
   getDiff: jest.Mock;
   getBlame: jest.Mock;
+  discard: jest.Mock;
+  amend: jest.Mock;
   logger: { info: jest.Mock; error: jest.Mock };
   secret?: string;
 }
@@ -192,6 +199,11 @@ function handlerDoubles(): HandlerDoubles {
           { lineNumber: 1, hash: 'abc123', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
         ],
       },
+    })),
+    discard: jest.fn(async () => ({ success: true, value: { restoredPaths: ['a.adoc'] } })),
+    amend: jest.fn(async () => ({
+      success: true,
+      value: { commit: { hash: 'def456', message: 'msg', authoredAt: new Date('2026-01-01T00:00:00.000Z') } },
     })),
     logger: fakeLogger(),
   };
@@ -551,6 +563,75 @@ describe('parseBlameBody', () => {
 
   it('rejects a non-string ref when present', () => {
     expect(parseBlameBody(JSON.stringify({ ...valid, ref: 5 }))).toBeNull();
+  });
+});
+
+describe('parseDiscardBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID, paths: ['a.adoc', 'b.adoc'] };
+
+  it('accepts a well-formed body without fromCommit', () => {
+    expect(parseDiscardBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with fromCommit', () => {
+    const full = { ...valid, fromCommit: 'abc123' };
+    expect(parseDiscardBody(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('accepts an empty paths array (the route boundary rejects an empty restore set, not the transport)', () => {
+    expect(parseDiscardBody(JSON.stringify({ ...valid, paths: [] }))).toEqual({ ...valid, paths: [] });
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseDiscardBody('{bad')).toBeNull();
+    expect(parseDiscardBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseDiscardBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseDiscardBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a missing, non-array paths, or a non-string entry', () => {
+    const withoutPaths = { projectId: PROJECT_ID, actorId: ACTOR_ID };
+    expect(parseDiscardBody(JSON.stringify(withoutPaths))).toBeNull();
+    expect(parseDiscardBody(JSON.stringify({ ...valid, paths: 'a.adoc' }))).toBeNull();
+    expect(parseDiscardBody(JSON.stringify({ ...valid, paths: [1] }))).toBeNull();
+  });
+
+  it('rejects a non-string fromCommit when present', () => {
+    expect(parseDiscardBody(JSON.stringify({ ...valid, fromCommit: 5 }))).toBeNull();
+  });
+});
+
+describe('parseAmendBody', () => {
+  const valid = { projectId: PROJECT_ID, actorId: ACTOR_ID };
+
+  it('accepts a well-formed body with no message', () => {
+    expect(parseAmendBody(JSON.stringify(valid))).toEqual(valid);
+  });
+
+  it('accepts a well-formed body with a message', () => {
+    const full = { ...valid, message: 'Fix typo' };
+    expect(parseAmendBody(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('accepts an empty message (the use case itself rejects an empty/whitespace message)', () => {
+    expect(parseAmendBody(JSON.stringify({ ...valid, message: '' }))).toEqual({ ...valid, message: '' });
+  });
+
+  it('rejects malformed JSON and a JSON null body', () => {
+    expect(parseAmendBody('{bad')).toBeNull();
+    expect(parseAmendBody('null')).toBeNull();
+  });
+
+  it('rejects non-UUID ids', () => {
+    expect(parseAmendBody(JSON.stringify({ ...valid, projectId: '../etc' }))).toBeNull();
+    expect(parseAmendBody(JSON.stringify({ ...valid, actorId: 'x' }))).toBeNull();
+  });
+
+  it('rejects a non-string message when present', () => {
+    expect(parseAmendBody(JSON.stringify({ ...valid, message: 5 }))).toBeNull();
   });
 });
 
@@ -1120,6 +1201,57 @@ describe('createGitOpsRequestHandler', () => {
     expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
   });
 
+  const discardBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, paths: ['a.adoc'] });
+
+  it('answers discard with {ok:true,data} on a success Result, dispatching with the parsed fields', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_DISCARD_PATH), recordingResponse(), discardBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({ ok: true, data: { restoredPaths: ['a.adoc'] } });
+    expect(doubles.discard).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, paths: ['a.adoc'] });
+  });
+
+  it('answers 400 for discard on a malformed/non-UUID/non-array-paths body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_DISCARD_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.discard).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for RepositoryNotConnectedError from discard', async () => {
+    const doubles = handlerDoubles();
+    doubles.discard = jest.fn(async () => ({ success: false, error: new RepositoryNotConnectedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_DISCARD_PATH), recordingResponse(), discardBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
+  const amendBody = JSON.stringify({ projectId: PROJECT_ID, actorId: ACTOR_ID, message: 'msg' });
+
+  it('answers amend with {ok:true,data} on a success Result, serializing the date as ISO-8601', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_AMEND_PATH), recordingResponse(), amendBody);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body!)).toEqual({
+      ok: true,
+      data: { commit: { hash: 'def456', message: 'msg', authoredAt: '2026-01-01T00:00:00.000Z' } },
+    });
+    expect(doubles.amend).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, message: 'msg' });
+  });
+
+  it('answers 400 for amend on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_AMEND_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(doubles.amend).not.toHaveBeenCalled();
+  });
+
+  it('answers {ok:false,error} for CommitAlreadyPushedError from amend', async () => {
+    const doubles = handlerDoubles();
+    doubles.amend = jest.fn(async () => ({ success: false, error: new CommitAlreadyPushedError() }));
+    const response = await handle(doubles, fakeRequest('POST', GIT_AMEND_PATH), recordingResponse(), amendBody);
+    expect(JSON.parse(response.body!)).toEqual({ ok: false, error: 'CommitAlreadyPushedError' });
+  });
+
   it('answers 400 with a JSON error object on an invalid body, without calling the op fn', async () => {
     const doubles = handlerDoubles();
     const response = await handle(doubles, fakeRequest('POST', GIT_STATUS_PATH), recordingResponse(), '{bad');
@@ -1265,6 +1397,8 @@ describe('internal git server (HTTP)', () => {
       getHistory: doubles.getHistory,
       getDiff: doubles.getDiff,
       getBlame: doubles.getBlame,
+      discard: doubles.discard,
+      amend: doubles.amend,
       ...options,
     });
     await waitListening(server);
@@ -1348,6 +1482,8 @@ describe('internal git server (HTTP)', () => {
         getHistory: doubles.getHistory,
         getDiff: doubles.getDiff,
         getBlame: doubles.getBlame,
+        discard: doubles.discard,
+        amend: doubles.amend,
       }),
     ).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
@@ -1385,6 +1521,8 @@ describe('startInternalGitServer wiring', () => {
       getHistory: doubles.getHistory,
       getDiff: doubles.getDiff,
       getBlame: doubles.getBlame,
+      discard: doubles.discard,
+      amend: doubles.amend,
     });
     listening = server;
     expect(logger.info).toHaveBeenCalledWith(

@@ -17,6 +17,7 @@ describe('gitErrorResponse', () => {
     ['RepositoryUnreachableError', 422, 'repository_unreachable'],
     ['AuthenticationFailedError', 401, 'authentication_failed'],
     ['RepositoryAlreadyConnectedError', 409, 'already_connected'],
+    ['CommitAlreadyPushedError', 409, 'commit_already_pushed'],
   ])('maps %s to %i / %s', (name, status, code) => {
     const result = gitErrorResponse(name);
     expect(result.status).toBe(status);

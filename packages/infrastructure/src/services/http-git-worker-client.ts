@@ -73,6 +73,12 @@ export const GIT_WORKER_DIFF_PATH = '/internal/git/diff';
 /** Path of the internal endpoint that reads a single file's per-line authorship (blame). Byte-matches the git-worker's own `GIT_BLAME_PATH`. */
 export const GIT_WORKER_BLAME_PATH = '/internal/git/blame';
 
+/** Path of the internal endpoint that discards uncommitted changes, or restores a file from a commit. Byte-matches the git-worker's own `GIT_DISCARD_PATH`. */
+export const GIT_WORKER_DISCARD_PATH = '/internal/git/discard';
+
+/** Path of the internal endpoint that amends the project's most-recent commit. Byte-matches the git-worker's own `GIT_AMEND_PATH`. */
+export const GIT_WORKER_AMEND_PATH = '/internal/git/amend';
+
 /** Header carrying the shared secret expected by the git-worker's internal endpoints. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
 
@@ -323,6 +329,12 @@ export interface GitWorkerBlameData {
   readonly lines: readonly GitWorkerBlameLine[];
 }
 
+/** Wire shape of the discard endpoint's `data` field. */
+export interface GitWorkerDiscardData {
+  /** Every path this run restored. */
+  readonly restoredPaths: readonly string[];
+}
+
 /** Input shared by every git-worker request: the project and the acting principal. */
 export interface GitWorkerRequestInput {
   /** The project the operation acts on, as a raw UUID v4 string. */
@@ -401,6 +413,20 @@ export interface GitWorkerBlameInput extends GitWorkerRequestInput {
   readonly ref?: string;
 }
 
+/** Input for {@link GitWorkerClient.discardChanges}. */
+export interface GitWorkerDiscardInput extends GitWorkerRequestInput {
+  /** Project-relative paths of the files to restore. */
+  readonly paths: readonly string[];
+  /** When given, restores each path to its content at this commit instead of dropping back to HEAD. */
+  readonly fromCommit?: string;
+}
+
+/** Input for {@link GitWorkerClient.amendCommit}. */
+export interface GitWorkerAmendInput extends GitWorkerRequestInput {
+  /** The replacement commit message. When absent, the amended commit keeps its existing message. */
+  readonly message?: string;
+}
+
 /**
  * The worker's own response envelope, reflected as-is: a domain success carries `data`; a domain
  * refusal carries the domain error's stable `name` (plus `path` for a `LiveContentFlushFailedError`).
@@ -451,6 +477,10 @@ export interface GitWorkerClient {
   getDiff(input: GitWorkerDiffInput): Promise<GitWorkerResult<GitWorkerDiffData>>;
   /** Reads a single project-relative file's per-line authorship (a "blame"). */
   getBlame(input: GitWorkerBlameInput): Promise<GitWorkerResult<GitWorkerBlameData>>;
+  /** Discards a file's uncommitted working-tree changes, or restores it to a chosen commit. */
+  discardChanges(input: GitWorkerDiscardInput): Promise<GitWorkerResult<GitWorkerDiscardData>>;
+  /** Amends the project's most-recent commit. */
+  amendCommit(input: GitWorkerAmendInput): Promise<GitWorkerResult<GitWorkerCommitData>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -668,6 +698,23 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       actorId: input.actorId,
       path: input.path,
       ...(input.ref !== undefined ? { ref: input.ref } : {}),
+    });
+  }
+
+  async discardChanges(input: GitWorkerDiscardInput): Promise<GitWorkerResult<GitWorkerDiscardData>> {
+    return this.post<GitWorkerDiscardData>(GIT_WORKER_DISCARD_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      paths: input.paths,
+      ...(input.fromCommit !== undefined ? { fromCommit: input.fromCommit } : {}),
+    });
+  }
+
+  async amendCommit(input: GitWorkerAmendInput): Promise<GitWorkerResult<GitWorkerCommitData>> {
+    return this.post<GitWorkerCommitData>(GIT_WORKER_AMEND_PATH, {
+      projectId: input.projectId,
+      actorId: input.actorId,
+      ...(input.message !== undefined ? { message: input.message } : {}),
     });
   }
 }

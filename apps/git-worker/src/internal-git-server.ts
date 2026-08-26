@@ -6,10 +6,12 @@ import type { Logger } from 'pino';
 import {
   DomainError,
   LiveContentFlushFailedError,
+  type AmendCommitResult,
   type CommitChangesResult,
   type CompleteMergeResult,
   type ConflictResolution,
   type CreateBranchResult,
+  type DiscardChangesResult,
   type GetBranchesResult,
   type GetConflictStagesResult,
   type GetGitStatusResult,
@@ -78,6 +80,12 @@ export const GIT_DIFF_PATH = '/internal/git/diff';
 
 /** Path of the internal endpoint the API calls to read a single file's per-line authorship (blame). */
 export const GIT_BLAME_PATH = '/internal/git/blame';
+
+/** Path of the internal endpoint the API calls to discard uncommitted changes, or restore a file from a commit. */
+export const GIT_DISCARD_PATH = '/internal/git/discard';
+
+/** Path of the internal endpoint the API calls to amend the project's most-recent commit. */
+export const GIT_AMEND_PATH = '/internal/git/amend';
 
 /** Header carrying the optional shared secret. */
 const SECRET_HEADER = 'x-git-worker-internal-secret';
@@ -465,6 +473,28 @@ export interface BlameRequest {
   readonly ref?: string;
 }
 
+/** The raw (still-string) input for the discard endpoint, as parsed from the request body. */
+export interface DiscardRequest {
+  /** The project whose working tree to restore, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** Project-relative paths of the files to restore. */
+  readonly paths: readonly string[];
+  /** When given, restores each path to its content at this commit instead of dropping back to HEAD. */
+  readonly fromCommit?: string;
+}
+
+/** The raw (still-string) input for the amend endpoint, as parsed from the request body. */
+export interface AmendRequest {
+  /** The project whose most-recent commit to amend, as a raw UUID string. */
+  readonly projectId: string;
+  /** The API's authenticated principal, as a raw UUID string. */
+  readonly actorId: string;
+  /** The replacement commit message. When absent, the amended commit keeps its existing message. */
+  readonly message?: string;
+}
+
 /**
  * One commit in the history endpoint's wire-shaped result, mirroring the domain's `HistoryCommit`
  * with `authorUserId` mapped to a plain string and `authoredAt` to an ISO-8601 string.
@@ -595,6 +625,60 @@ export function parseBlameBody(raw: string): BlameRequest | null {
   if (typeof path !== 'string' || path.length === 0) return null;
   if (ref !== undefined && typeof ref !== 'string') return null;
   return { projectId, actorId, path, ...(ref !== undefined ? { ref } : {}) };
+}
+
+/**
+ * Validates and normalises a discard request body. Returns null on any malformed input — non-UUID
+ * ids, a non-array `paths` or a non-string entry within it, or a non-string `fromCommit` when
+ * present. An empty `paths` array is accepted here (mirroring `parseStageChangesBody`): rejecting
+ * an empty restore set is the route boundary's own dual-body validation, not a transport-level
+ * shape problem.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseDiscardBody(raw: string): DiscardRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, paths, fromCommit } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (!Array.isArray(paths)) return null;
+  const cleanPaths: string[] = [];
+  for (const entry of paths) {
+    if (typeof entry !== 'string') return null;
+    cleanPaths.push(entry);
+  }
+  if (fromCommit !== undefined && typeof fromCommit !== 'string') return null;
+  return { projectId, actorId, paths: cleanPaths, ...(fromCommit !== undefined ? { fromCommit } : {}) };
+}
+
+/**
+ * Validates and normalises an amend request body. Returns null on any malformed input — non-UUID
+ * ids, or a non-string `message` when present. An empty/whitespace message is accepted here: rejecting
+ * it is the use case's own `EmptyCommitMessageError` refusal, not a transport-level shape problem.
+ *
+ * @param raw - The raw JSON request body.
+ * @returns The parsed request, or null if invalid.
+ */
+export function parseAmendBody(raw: string): AmendRequest | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(json)) return null;
+  const { projectId, actorId, message } = json;
+  if (typeof projectId !== 'string' || !UUID_REGEX.test(projectId)) return null;
+  if (typeof actorId !== 'string' || !UUID_REGEX.test(actorId)) return null;
+  if (message !== undefined && typeof message !== 'string') return null;
+  return { projectId, actorId, ...(message !== undefined ? { message } : {}) };
 }
 
 function readBody(request: IncomingMessage): Promise<string> {
@@ -756,6 +840,20 @@ export interface GitOpsHandlerDeps {
    * @returns The binding's wire-mapped `Result` (`authorUserId`/`authoredAt` already plain strings).
    */
   getBlame: (request: BlameRequest) => Promise<Result<GetBlameWireResult, DomainError>>;
+  /**
+   * Discards a file's uncommitted working-tree changes, or restores it to a chosen commit.
+   *
+   * @param request - The validated discard request.
+   * @returns The use case's own `Result`.
+   */
+  discard: (request: DiscardRequest) => Promise<Result<DiscardChangesResult, DomainError>>;
+  /**
+   * Amends the project's most-recent commit.
+   *
+   * @param request - The validated amend request.
+   * @returns The use case's own `Result`.
+   */
+  amend: (request: AmendRequest) => Promise<Result<AmendCommitResult, DomainError>>;
   /** Optional shared secret; when set, requests without a matching header are rejected (401). */
   secret?: string;
   /** Logger for failures. */
@@ -793,7 +891,9 @@ export function createGitOpsRequestHandler(
         path !== GIT_CONFLICT_RESOLVE_PATH &&
         path !== GIT_HISTORY_PATH &&
         path !== GIT_DIFF_PATH &&
-        path !== GIT_BLAME_PATH)
+        path !== GIT_BLAME_PATH &&
+        path !== GIT_DISCARD_PATH &&
+        path !== GIT_AMEND_PATH)
     ) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
@@ -932,7 +1032,7 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.getDiff(parsed);
       label = 'diff';
-    } else {
+    } else if (path === GIT_BLAME_PATH) {
       const parsed = parseBlameBody(raw);
       if (!parsed) {
         response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
@@ -940,6 +1040,22 @@ export function createGitOpsRequestHandler(
       }
       call = () => deps.getBlame(parsed);
       label = 'blame';
+    } else if (path === GIT_DISCARD_PATH) {
+      const parsed = parseDiscardBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.discard(parsed);
+      label = 'discard';
+    } else {
+      const parsed = parseAmendBody(raw);
+      if (!parsed) {
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+        return;
+      }
+      call = () => deps.amend(parsed);
+      label = 'amend';
     }
 
     try {
@@ -996,6 +1112,10 @@ export interface InternalGitServerOptions {
   getDiff: GitOpsHandlerDeps['getDiff'];
   /** Reads a single project-relative file's per-line authorship (a "blame"). */
   getBlame: GitOpsHandlerDeps['getBlame'];
+  /** Discards a file's uncommitted working-tree changes, or restores it to a chosen commit. */
+  discard: GitOpsHandlerDeps['discard'];
+  /** Amends the project's most-recent commit. */
+  amend: GitOpsHandlerDeps['amend'];
 }
 
 /**
@@ -1026,6 +1146,8 @@ export function startInternalGitServer(options: InternalGitServerOptions): Promi
     getHistory: options.getHistory,
     getDiff: options.getDiff,
     getBlame: options.getBlame,
+    discard: options.discard,
+    amend: options.amend,
     ...(options.secret ? { secret: options.secret } : {}),
     logger: options.logger,
   });

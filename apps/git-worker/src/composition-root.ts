@@ -19,6 +19,8 @@ import {
   GetHistoryUseCase,
   GetDiffUseCase,
   GetBlameUseCase,
+  DiscardChangesUseCase,
+  AmendCommitUseCase,
   ProjectId,
   UserId,
   type GitOperationId,
@@ -40,6 +42,8 @@ import {
   type GetConflictStagesResult,
   type ResolveConflictsResult,
   type ConflictResolution,
+  type DiscardChangesResult,
+  type AmendCommitResult,
   type DomainError,
   type Result,
 } from '@asciidocollab/domain';
@@ -469,6 +473,34 @@ export async function compositionRoot() {
   );
   const getBlameUseCase = new GetBlameUseCase(gitRepositoryRepository, gitCommandRunner, userRepository, useCaseLogger);
 
+  // Discard/restore and amend likewise run SYNC over this same internal RPC seam — both are
+  // whole-project mutating git actions (EDITOR-tier), so they self-gate role and take the project's
+  // single-flight guard just like commit does. Discard reuses the SAME `gitChangeReconciler`
+  // instance the PULL handler above already constructed, rather than building a second one; amend is
+  // built from the same deps `CommitChangesUseCase` uses.
+  const discardChangesUseCase = new DiscardChangesUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitRepositoryRepository,
+    gitOperationRepository,
+    gitCommandRunner,
+    gitChangeReconciler,
+    useCaseLogger,
+  );
+  const amendCommitUseCase = new AmendCommitUseCase(
+    projectMemberRepository,
+    auditLogRepository,
+    gitRepositoryRepository,
+    gitOperationRepository,
+    gitCommandRunner,
+    fileNodeRepository,
+    documentRepository,
+    collaborativeContentReader,
+    collaborationSessionRepository,
+    userRepository,
+    useCaseLogger,
+  );
+
   // Bound as the internal RPC server's op fns (`src/index.ts`): each converts the raw UUID
   // strings the transport validated into the domain's own `ProjectId`/`UserId` value objects at
   // this boundary, then hands the request straight to the use case's own `execute`.
@@ -600,6 +632,23 @@ export async function compositionRoot() {
       },
     };
   };
+  const discard = (
+    input: { projectId: string; actorId: string; paths: readonly string[]; fromCommit?: string },
+  ): Promise<Result<DiscardChangesResult, DomainError>> =>
+    discardChangesUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+      paths: input.paths,
+      ...(input.fromCommit !== undefined ? { fromCommit: input.fromCommit } : {}),
+    });
+  const amend = (
+    input: { projectId: string; actorId: string; message?: string },
+  ): Promise<Result<AmendCommitResult, DomainError>> =>
+    amendCommitUseCase.execute({
+      projectId: ProjectId.create(input.projectId),
+      actorId: UserId.create(input.actorId),
+      ...(input.message !== undefined ? { message: input.message } : {}),
+    });
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
     gitOperationRepository,
@@ -656,5 +705,7 @@ export async function compositionRoot() {
     getHistory,
     getDiff,
     getBlame,
+    discard,
+    amend,
   };
 }

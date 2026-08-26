@@ -17,6 +17,8 @@ import {
   GIT_WORKER_HISTORY_PATH,
   GIT_WORKER_DIFF_PATH,
   GIT_WORKER_BLAME_PATH,
+  GIT_WORKER_DISCARD_PATH,
+  GIT_WORKER_AMEND_PATH,
 } from '../../src/services/http-git-worker-client';
 
 describe('HttpGitWorkerClient', () => {
@@ -724,6 +726,126 @@ describe('HttpGitWorkerClient', () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).not.toContain(secret);
     expect(JSON.stringify(caught)).not.toContain(secret);
+  });
+
+  it('POSTs discardChanges to the discard endpoint with paths and fromCommit, and returns the restored paths', async () => {
+    const discardData = { restoredPaths: ['docs/a.adoc'] };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: discardData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      secret: 'w0rkersecret',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.discardChanges({ projectId, actorId, paths: ['docs/a.adoc'], fromCommit: 'abc123' });
+
+    expect(result).toEqual({ ok: true, data: discardData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_DISCARD_PATH}`);
+    expect(init.method).toBe('POST');
+    expect(init.headers['x-git-worker-internal-secret']).toBe('w0rkersecret');
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId, paths: ['docs/a.adoc'], fromCommit: 'abc123' });
+  });
+
+  it('POSTs discardChanges omitting fromCommit when not given', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: true, data: { restoredPaths: [] } }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await client.discardChanges({ projectId, actorId, paths: ['docs/a.adoc'] });
+
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({ projectId, actorId, paths: ['docs/a.adoc'] });
+    expect(Object.prototype.hasOwnProperty.call(body, 'fromCommit')).toBe(false);
+  });
+
+  it('surfaces a domain refusal envelope from discardChanges as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'RepositoryNotConnectedError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.discardChanges({ projectId, actorId, paths: ['docs/a.adoc'] });
+    expect(result).toEqual({ ok: false, error: 'RepositoryNotConnectedError' });
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from discardChanges on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.discardChanges({ projectId, actorId, paths: ['docs/a.adoc'] })).rejects.toBeInstanceOf(
+      GitWorkerTransportError,
+    );
+  });
+
+  it('POSTs amendCommit to the amend endpoint with the message, and returns the amended commit', async () => {
+    const amendData = { commit: { hash: 'def456', message: 'Amended message', authoredAt: '2026-08-24T00:00:00.000Z' } };
+    const fetchMock = jest.fn().mockResolvedValue(Response.json({ ok: true, data: amendData }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.amendCommit({ projectId, actorId, message: 'Amended message' });
+
+    expect(result).toEqual({ ok: true, data: amendData });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`http://127.0.0.1:4010${GIT_WORKER_AMEND_PATH}`);
+    expect(JSON.parse(init.body)).toEqual({ projectId, actorId, message: 'Amended message' });
+  });
+
+  it('POSTs amendCommit omitting message when not given', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      Response.json(
+        { ok: true, data: { commit: { hash: 'def456', message: 'kept', authoredAt: '2026-08-24T00:00:00.000Z' } } },
+        { status: 200 },
+      ),
+    );
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await client.amendCommit({ projectId, actorId });
+
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({ projectId, actorId });
+    expect(Object.prototype.hasOwnProperty.call(body, 'message')).toBe(false);
+  });
+
+  it('surfaces a CommitAlreadyPushedError refusal from amendCommit as ok:false, without throwing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(Response.json({ ok: false, error: 'CommitAlreadyPushedError' }, { status: 200 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    const result = await client.amendCommit({ projectId, actorId });
+    expect(result).toEqual({ ok: false, error: 'CommitAlreadyPushedError' });
+  });
+
+  it('throws GitWorkerTransportError (not a domain refusal) from amendCommit on a 500 response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const client = new HttpGitWorkerClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.amendCommit({ projectId, actorId })).rejects.toBeInstanceOf(GitWorkerTransportError);
   });
 
   it('constructs an mTLS fetch when tls is provided and no explicit fetch', () => {

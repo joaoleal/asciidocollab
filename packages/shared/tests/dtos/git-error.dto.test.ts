@@ -17,6 +17,7 @@ describe('git error codes', () => {
       'remote_history_rewritten',
       'unresolved_conflicts',
       'nothing_to_undo',
+      'commit_already_pushed',
     ]);
   });
 

@@ -98,6 +98,11 @@ const GIT_ERROR_TABLE: Readonly<Record<string, GitErrorTableEntry>> = {
     code: 'authentication_failed',
     message: 'Authentication with the remote repository failed',
   },
+  CommitAlreadyPushedError: {
+    status: 409,
+    code: 'commit_already_pushed',
+    message: 'The most recent commit has already been pushed and cannot be amended',
+  },
 };
 
 /**

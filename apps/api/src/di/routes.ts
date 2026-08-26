@@ -48,6 +48,8 @@ import { gitTreeStatusRoutes } from '../routes/projects/git/tree-status';
 import { gitStageRoutes } from '../routes/projects/git/stage';
 import { gitUnstageRoutes } from '../routes/projects/git/unstage';
 import { gitCommitRoutes } from '../routes/projects/git/commit';
+import { gitDiscardRoutes } from '../routes/projects/git/discard';
+import { gitAmendRoutes } from '../routes/projects/git/amend';
 import { gitPushRoutes } from '../routes/projects/git/push';
 import { gitPullRoutes } from '../routes/projects/git/pull';
 import { gitBranchesRoutes } from '../routes/projects/git/branches';
@@ -129,6 +131,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitStageRoutes);
       await innerApp.register(gitUnstageRoutes);
       await innerApp.register(gitCommitRoutes);
+      await innerApp.register(gitDiscardRoutes);
+      await innerApp.register(gitAmendRoutes);
       await innerApp.register(gitPushRoutes);
       await innerApp.register(gitPullRoutes);
       await innerApp.register(gitBranchesRoutes);
