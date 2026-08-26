@@ -85,6 +85,44 @@ describe('runGitCommand', () => {
     });
   });
 
+  describe('optionsTerminator override (external subcommands like `git lfs <verb>`)', () => {
+    it('emits `--` (never `--end-of-options`) before positionals when optionsTerminator is `--`', async () => {
+      const workingDirectory = await createTemporaryWorkingTree();
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        // `git-lfs` may or may not be installed in the environment running this test — irrelevant
+        // here: the argv is captured before the top-level `git` process would ever try to dispatch
+        // to the external `git-lfs` binary, so this assertion holds either way.
+        await runGitCommand(workingDirectory, {
+          command: 'lfs',
+          flags: ['track'],
+          positionals: ['big.bin'],
+          optionsTerminator: '--',
+        }).catch(() => undefined);
+        return getCalls();
+      });
+
+      const lastCall = capture.at(-1) ?? [];
+      expect(lastCall).toContain('--');
+      expect(lastCall).not.toContain('--end-of-options');
+      // `--` sits immediately before the positional, exactly where `--end-of-options` sits by
+      // default — same guard, different (Cobra-compatible) token.
+      expect(lastCall.indexOf('--') + 1).toBe(lastCall.indexOf('big.bin'));
+    });
+
+    it('still defaults to `--end-of-options` when optionsTerminator is omitted', async () => {
+      const workingDirectory = await createTemporaryWorkingTree();
+
+      const capture = await withArgvCapturingGit(async (getCalls) => {
+        await runGitCommand(workingDirectory, { command: 'log', positionals: ['HEAD'] }).catch(() => undefined);
+        return getCalls();
+      });
+
+      const lastCall = capture.at(-1) ?? [];
+      expect(lastCall).toContain('--end-of-options');
+    });
+  });
+
   describe('out-of-band credential handling', () => {
     const username = 'x-access-token';
     const token = 'super-secret-test-token-DO-NOT-LEAK-93f1';

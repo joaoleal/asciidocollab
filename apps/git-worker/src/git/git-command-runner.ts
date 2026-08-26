@@ -1031,7 +1031,19 @@ export class RealGitCommandRunner implements GitCommandRunner {
         await runGitCommand(cwd, { command: 'lfs', flags: ['install', '--local'] });
         lfsInstalled = true;
       }
-      await runGitCommand(cwd, { command: 'lfs', flags: ['track'], positionals: [relativePath] });
+      // `git lfs track` is run by the separate `git-lfs` binary (a Go/Cobra CLI), not `git` itself
+      // — unlike every other call in this file, it does NOT understand `git`'s own
+      // `--end-of-options` disambiguator (it exits nonzero: "unknown flag: --end-of-options").
+      // Cobra DOES understand the conventional `--` terminator, so this overrides
+      // `optionsTerminator` to keep the same injection-safe guarantee (a path starting with `-` can
+      // never be reparsed as a flag) without relying on a `git`-specific convention the external
+      // binary never promised to honor.
+      await runGitCommand(cwd, {
+        command: 'lfs',
+        flags: ['track'],
+        positionals: [relativePath],
+        optionsTerminator: '--',
+      });
     }
 
     return gitattributesTouched;

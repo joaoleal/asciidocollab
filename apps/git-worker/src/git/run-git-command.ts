@@ -73,11 +73,21 @@ export interface GitCommandSpec {
   readonly flags?: readonly string[];
   /**
    * Caller/user-influenced positional arguments (paths, refs, branch names, remote URLs, commit
-   * messages). Always placed AFTER `--end-of-options`, so a value that happens to start with `-`
-   * can never be parsed as a git option — the option-injection defense this wrapper exists to
-   * provide.
+   * messages). Always placed AFTER the {@link optionsTerminator}, so a value that happens to start
+   * with `-` can never be parsed as a git option — the option-injection defense this wrapper exists
+   * to provide.
    */
   readonly positionals?: readonly string[];
+  /**
+   * The option-parsing terminator emitted immediately before `positionals` (only when there are
+   * any). Defaults to `--end-of-options`, `git`'s own disambiguator, understood by every real `git`
+   * subcommand. An EXTERNAL subcommand implemented by a separate binary — `git lfs <verb>`, run by
+   * the standalone `git-lfs` program rather than `git` itself — does NOT understand
+   * `--end-of-options` (a Go/Cobra argument parser rejects it as an unknown flag) but DOES
+   * understand the conventional `--` terminator every well-behaved CLI recognizes; such a call must
+   * pass `'--'` here instead.
+   */
+  readonly optionsTerminator?: '--end-of-options' | '--';
   /** An out-of-band credential to supply for this invocation only, or omit for none needed. */
   readonly credential?: GitCredential;
   /** The author/committer identity to record for this invocation only (only meaningful for `commit`). */
@@ -218,18 +228,20 @@ const ASKPASS_SCRIPT = [
  * @throws {GitProcessError} If `git` cannot be spawned or exits non-zero.
  */
 export async function runGitCommand(cwd: string, spec: GitCommandSpec): Promise<GitCommandResult> {
-  // `--end-of-options` guards the caller-supplied positionals from being reparsed as options; it is
-  // appended only when there ARE positionals to guard. With none, it is not merely redundant but
-  // actively harmful for the subcommands that reject a trailing argument outright (`git merge
+  // The options terminator guards the caller-supplied positionals from being reparsed as options;
+  // it is appended only when there ARE positionals to guard. With none, it is not merely redundant
+  // but actively harmful for the subcommands that reject a trailing argument outright (`git merge
   // --abort` fails with "--abort expects no arguments"). Omitting it here changes nothing for any
   // call that passes positionals — the injection defense is unchanged for exactly the inputs it
-  // exists to neutralize.
+  // exists to neutralize. `spec.optionsTerminator` defaults to `--end-of-options` (see its own
+  // docs for why an external subcommand like `git lfs <verb>` must override it to `--`).
   const positionals = spec.positionals ?? [];
+  const optionsTerminator = spec.optionsTerminator ?? '--end-of-options';
   const arguments_ = [
     ...SECURE_GLOBAL_CONFIG,
     spec.command,
     ...(spec.flags ?? []),
-    ...(positionals.length > 0 ? ['--end-of-options', ...positionals] : []),
+    ...(positionals.length > 0 ? [optionsTerminator, ...positionals] : []),
   ];
 
   const environment: NodeJS.ProcessEnv = {
