@@ -579,6 +579,47 @@ describe('usePdfPreview', () => {
     expect(renders[1]!.request.extensions?.sources).toHaveLength(1);
   });
 
+  it('does not re-render when only the catalogue lands, with no source behind it yet', async () => {
+    // The bundle is replaced TWICE on a project with something enabled: once when the catalogue
+    // arrives and again when the sources do. The middle bundle carries no sources, so the registry
+    // still refuses every id and the document it yields is byte-identical to the one already on
+    // screen — bought with a full wasm render. Both the bundle object and its `sources` array are new
+    // at that moment (the empty bundle's `[]` is not the same array as the hook's own), so neither
+    // identity tells the two apart; only the ids that actually arrived do.
+    const snapshot = makeSnapshot({ 'main.adoc': '= Doc' });
+    const props = (extensions: PdfExtensionBundle) => ({
+      snapshot,
+      isEnabled: true,
+      extensions,
+      prerenderer: makePrerenderer(),
+    });
+
+    const { rerender } = renderHook(
+      (current: { extensions: PdfExtensionBundle }) => usePdfPreview(props(current.extensions)),
+      { initialProps: { extensions: { catalogue: [], sources: [] } as PdfExtensionBundle } },
+    );
+
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+    act(() => lastWorker().emit({ type: 'result', result: makeResult('1') }));
+
+    // The catalogue lands. New bundle, new empty `sources` array — and nothing new to render with.
+    act(() => rerender({ extensions: { catalogue: [EXTENSION_ENTRY], sources: [] } }));
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+    expect(renderCalls(lastWorker())).toHaveLength(1);
+
+    // The sources land, which IS new, and still triggers the render the extension needs.
+    act(() => rerender({ extensions: bundleWithSources([EXTENSION_SOURCE]) }));
+    act(() => jest.advanceTimersByTime(200));
+    await flushPrepass();
+
+    const renders = renderCalls(lastWorker());
+    expect(renders).toHaveLength(2);
+    expect(renders[1]!.request.extensions?.sources).toHaveLength(1);
+  });
+
 });
 
 // ── usePdfPreview — refreshing while typing never pauses ─────────────────────

@@ -69,6 +69,15 @@ function resolveSnapshot(source: PreviewSnapshotSource): ProjectSnapshot | null 
   return typeof source === 'function' ? source() : source;
 }
 
+/**
+ * Separator for the arrived-sources key below.
+ *
+ * A NUL, the one character an extension id cannot contain, so no two different lists of ids can join
+ * to the same key. Written as an escape rather than as a raw byte: a literal NUL in the source makes
+ * the whole file binary to `grep`, `ripgrep` and every diff tool.
+ */
+const EXTENSION_SOURCE_KEY_SEPARATOR = '\u0000';
+
 /** What a pre-pass that failed contributes: nothing to pre-seed, and no reason to stop the render. */
 const NO_PRERENDERED_ASSETS: MermaidPrerenderResult = { assets: [], diagnostics: [], aborted: false };
 
@@ -429,13 +438,22 @@ export function usePdfPreview({
   // render immediate: an author sees their document at once and the extensions land a render later,
   // instead of the panel sitting empty until a fetch completes.
   //
-  // Safe to depend on identity: `usePdfExtensionBundle` memoises the bundle, so it changes only when
-  // the catalogue, the selection or the fetched sources actually change — a project with nothing
-  // enabled holds one stable empty bundle and never re-renders for this.
+  // Keyed on WHICH SOURCES ARRIVED, not on the bundle's identity. `usePdfExtensionBundle` swaps that
+  // identity twice on a project with something enabled — once when the catalogue lands and again when
+  // the sources do — and the middle bundle carries `sources: []`, so the registry still refuses every
+  // id and the render it triggers produces a byte-identical document at the price of a full wasm pass.
+  // Keying on the sources ARRAY's identity would not help either: it starts as this hook's own `[]`,
+  // which is a different array from the empty bundle's, so it changes at that same moment. What
+  // decides the output is which sources are loadable, so that is what this compares.
+  //
+  // A project with nothing enabled holds an empty key for its whole life and never re-renders here.
+  const arrivedSourceKey = (extensions?.sources ?? [])
+    .map((source) => source.id)
+    .join(EXTENSION_SOURCE_KEY_SEPARATOR);
   useEffect(() => {
     if (!isEnabled || snapshot === null || extensions === undefined) return;
     scheduleRender(snapshot);
-  }, [extensions]);
+  }, [arrivedSourceKey]);
 
   // Mirror the render lifecycle into the debounce: while one is in flight the max-wait cap holds its
   // run back instead of stacking a second render on it, and reporting completion — a result or an
