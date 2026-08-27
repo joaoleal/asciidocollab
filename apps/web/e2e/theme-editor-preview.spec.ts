@@ -269,14 +269,20 @@ async function projectShowingTheme(page: Page, name: string, config: unknown): P
 
 test.describe('Theme editor — the sample preview shows what the project renders', () => {
   // Budgeted so that a run in which BOTH tests fail honestly still reaches the end and reports which
-  // assertion failed. The per-test budget covers the waits inside each test with margin (the export
-  // test's own timeouts sum to ~330 s, the extension test's to ~390 s, and on an idle machine they
-  // finish in 25 s and 49 s), and one retry rather than the suite's two keeps the worst case —
-  // 2 tests x 2 attempts x 7 minutes = 28 minutes — inside the config's 45-minute `globalTimeout`.
-  // At the suite's default retries that worst case is an hour, and a ceiling that truncates a real
-  // failure into "timed out" replaces the diagnostic with a hang. Locally the retry count matches the
-  // config's own, so a bare `npx playwright test` still reports the first, un-retried result.
-  test.describe.configure({ timeout: 420_000, retries: process.env.CI ? 1 : 0 });
+  // assertion failed. The per-test ceiling covers the waits inside each test with margin — the export
+  // test's own timeouts sum to ~330 s and the extension test's to ~390 s, so it cannot be the binding
+  // constraint on a legitimately slow pass; on an idle machine they finish in 25 s and 49 s.
+  //
+  // NO retries, unlike the suite's two. This budget does not get the run to itself: `chromium-pdf`
+  // runs before `chromium-timing`, which documents a worst case of ~43 minutes per attempt against a
+  // 45-minute whole-run `globalTimeout`, so every minute spent here is a minute that phase loses. At
+  // the suite's two retries a doubly-red run costs an hour on its own; even one retry costs 28
+  // minutes. Retrying also buys little here: the waits above already absorb a slow render — they are
+  // 120 s ceilings on operations that take seconds — and the phase runs at `workers: 1`, so there is
+  // no contention for a retry to shake off. A genuine one-off is worth a re-run; a red run whose
+  // failing assertion was replaced by "timed out" is not, and that is what the ceiling exists to
+  // prevent.
+  test.describe.configure({ timeout: 420_000, retries: 0 });
 
   test.beforeAll(async () => {
     await ensureTestUser();
