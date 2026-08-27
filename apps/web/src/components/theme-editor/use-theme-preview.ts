@@ -78,11 +78,24 @@ const NO_PROJECT_ATTRIBUTES: Readonly<Record<string, string>> = Object.freeze({}
  * file, and the sample cites nothing. It happens to be inert today only because the citations stage
  * gates on the snapshot's own `bibPath`, which is a coincidence and not a promise.
  *
+ * `title-logo-image` is the second attribute that SHOWS. Set as a custom attribute it put a `[] |`
+ * placeholder and the literal path — `logos/mark.png` in the run that measured it — on the sample's
+ * title page, above the title, so the one page a title-page rule is judged on came out wrong.
+ * `front-cover-image` and `back-cover-image` are here on the `bibtex-file` argument: the same engine
+ * run left them inert, because asciidoctor-pdf silently skips a cover image it cannot resolve, but
+ * they name project files and that tolerance belongs to the engine rather than to this contract.
+ *
  * Everything else the project sets is deliberately kept: page size, layout, media, folio placement,
  * hyphenation and the document options are the CONDITIONS a theme is judged under, which is the whole
  * reason the project's map is layered here. The distinction is setup versus paths.
  */
-const PROJECT_PATH_ATTRIBUTES: ReadonlySet<string> = new Set(['imagesdir', 'bibtex-file']);
+const PROJECT_PATH_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'imagesdir',
+  'bibtex-file',
+  'front-cover-image',
+  'back-cover-image',
+  'title-logo-image',
+]);
 
 /**
  * The project's attributes with {@link PROJECT_PATH_ATTRIBUTES} removed.

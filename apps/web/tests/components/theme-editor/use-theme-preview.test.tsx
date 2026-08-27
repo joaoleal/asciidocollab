@@ -175,6 +175,29 @@ describe('useThemePreview — snapshot', () => {
     expect(snapshot?.attributes['pdf-page-size']).toBe('A4@');
   });
 
+  it('leaves out the custom attributes that name a project image', () => {
+    // Same defect class as `imagesdir`, reached through custom attributes instead of a curated
+    // option: none of these is pinned, so a project may set any of them, and each names a file the
+    // theme snapshot does not contain. `title-logo-image` is the one that shows — measured against
+    // the engine, it put a `[] |` placeholder and the literal path on the sample's title page, above
+    // the title, ruining the single page a title-page theme rule is read on. The two covers were
+    // inert in that run because asciidoctor-pdf skips a cover it cannot resolve, and they are filtered
+    // for the same reason `bibtex-file` is: that tolerance is the engine's, not this hook's contract.
+    renderHook(() =>
+      useThemePreview('page:', true, undefined, undefined, undefined, undefined, {
+        'title-logo-image': 'image:logos/mark.png[]@',
+        'front-cover-image': 'image:covers/front.png[]@',
+        'back-cover-image': 'image:covers/back.png[]@',
+        'pdf-page-layout': 'landscape@',
+      }),
+    );
+    const [snapshot] = snapshots();
+    expect(snapshot?.attributes['title-logo-image']).toBeUndefined();
+    expect(snapshot?.attributes['front-cover-image']).toBeUndefined();
+    expect(snapshot?.attributes['back-cover-image']).toBeUndefined();
+    expect(snapshot?.attributes['pdf-page-layout']).toBe('landscape@');
+  });
+
   it('keeps one snapshot identity while the project attributes are unchanged', () => {
     // Snapshot identity schedules a render, so the attribute map must not rebuild it per render.
     const attributes = { 'pdf-page-size': 'A4@' };
