@@ -16,7 +16,9 @@ export type OAuthExchangeFailureReason =
 
 /** Refusal returned by {@link exchangeCodeForToken}. Carries no part of the request or response body. */
 export interface OAuthExchangeError {
+  /** Discriminant tag identifying this as an {@link OAuthExchangeError}. */
   readonly name: 'OAuthExchangeError';
+  /** The coarse, caller-mappable reason the exchange failed. */
   readonly reason: OAuthExchangeFailureReason;
 }
 
@@ -112,6 +114,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Upper bound on the token-endpoint request. Node's global `fetch` has no default request timeout, so
+ * a provider that accepts the connection but never answers would otherwise hang the OAuth callback
+ * indefinitely. Matches the git-worker HTTP client's default. A trip is surfaced as `network_error`,
+ * the same reason any other unreachable-endpoint failure maps to.
+ */
+const TOKEN_EXCHANGE_TIMEOUT_MS = 5000;
+
+/**
  * Exchanges an authorization code for an access token at a provider's token endpoint: a
  * server-to-server `POST` (via Node's built-in `fetch`), form-encoded, with `Accept:
  * application/json` sent so every provider — including GitHub, whose default response is
@@ -146,8 +156,11 @@ export async function exchangeCodeForToken(
         Accept: 'application/json',
       },
       body: body.toString(),
+      signal: AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS),
     });
   } catch {
+    // Any throw here — connection refused, DNS/TLS failure, or the timeout above aborting the
+    // request — is a "could not reach the endpoint" outcome and maps to the same coarse reason.
     return { success: false, error: oauthExchangeError('network_error') };
   }
 
@@ -165,9 +178,12 @@ export async function exchangeCodeForToken(
   if (!isPlainObject(parsed)) {
     return { success: false, error: oauthExchangeError('invalid_response') };
   }
-  const tokenBody = parsed as TokenResponseBody;
-  if (typeof tokenBody.error === 'string' || typeof tokenBody.access_token !== 'string' || tokenBody.access_token.length === 0) {
+  const tokenBody: TokenResponseBody = parsed;
+  if (typeof tokenBody.error === 'string') {
     return { success: false, error: oauthExchangeError('provider_rejected') };
+  }
+  if (typeof tokenBody.access_token !== 'string' || tokenBody.access_token.length === 0) {
+    return { success: false, error: oauthExchangeError('invalid_response') };
   }
 
   return { success: true, value: { accessToken: tokenBody.access_token } };

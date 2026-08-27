@@ -6,7 +6,7 @@
  * project with no connected git repository must render its file tree exactly as before, with no
  * badges and no error surfaced.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getGitTreeStatus } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
 import type { FileGitStatus } from '@asciidocollab/shared';
@@ -34,17 +34,20 @@ export function useGitTreeStatus(projectId: string): UseGitTreeStatus {
   const [statusByFileNodeId, setStatusByFileNodeId] = useState<Record<string, FileGitStatus>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestSeq = useRef(0);
 
   const load = useCallback(async (active: () => boolean) => {
+    const seq = ++requestSeq.current;
+    const isCurrent = () => active() && seq === requestSeq.current;
     setLoading(true);
     setError(null);
     try {
       const result = await getGitTreeStatus(projectId);
-      if (active()) {
+      if (isCurrent()) {
         setStatusByFileNodeId(result.statusByFileNodeId);
       }
     } catch (error_) {
-      if (!active()) return;
+      if (!isCurrent()) return;
       if (error_ instanceof ApiError && NOT_CONNECTED_STATUSES.has(error_.status)) {
         // No connected git repository: an empty map, not an error — badges simply don't appear.
         setStatusByFileNodeId({});
@@ -53,7 +56,7 @@ export function useGitTreeStatus(projectId: string): UseGitTreeStatus {
         setError('Failed to load git status.');
       }
     } finally {
-      if (active()) {
+      if (isCurrent()) {
         setLoading(false);
       }
     }

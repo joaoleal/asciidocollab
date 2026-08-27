@@ -70,7 +70,12 @@ export function ConflictMergeEditor({ projectId, path, onSave, onCancel }: Confl
   }, [projectId, path]);
 
   useEffect(() => {
-    if (!stages || stages.isBinary || !containerReference.current) return;
+    // Skip the inline MergeView not only for a binary conflict but also for a modify/delete one:
+    // a null `ours`/`theirs` means that side deleted the file, which a two-document MergeView cannot
+    // represent. Both cases fall back to the whole-file Keep-ours/Take-theirs actions in the panel.
+    if (!stages || stages.isBinary || stages.ours === null || stages.theirs === null || !containerReference.current) {
+      return;
+    }
     const view = new MergeView({
       a: {
         doc: stages.ours,
@@ -98,6 +103,11 @@ export function ConflictMergeEditor({ projectId, path, onSave, onCancel }: Confl
     setSaving(true);
     try {
       await onSave(view.a.state.doc.toString());
+    } catch {
+      // The parent surfaces a resolve failure as a per-file message beside this editor, so there is
+      // nothing to display here — the editor only needs to re-enable its controls (via `finally`
+      // below) so the author can retry or adjust the merge. Awaiting still matters: it keeps the
+      // Save button disabled until the resolve network call settles, whether it succeeds or fails.
     } finally {
       setSaving(false);
     }
@@ -121,6 +131,14 @@ export function ConflictMergeEditor({ projectId, path, onSave, onCancel }: Confl
     return (
       <p className="mt-2 text-sm text-muted-foreground">
         This is a binary file — use Keep ours or Take theirs above.
+      </p>
+    );
+  }
+
+  if (stages.ours === null || stages.theirs === null) {
+    return (
+      <p className="mt-2 text-sm text-muted-foreground">
+        This file was modified on one side and deleted on the other — use Keep ours or Take theirs above.
       </p>
     );
   }

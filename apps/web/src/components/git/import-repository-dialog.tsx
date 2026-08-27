@@ -134,7 +134,7 @@ function ImportRepositoryForm({ onOpenChange }: ImportRepositoryFormProperties) 
         kind: 'polling',
         projectId: result.projectId,
         operationId: result.operationId,
-        status: { id: result.operationId, kind: 'IMPORT', state: 'QUEUED', progress: 0, errorCode: null },
+        status: { id: result.operationId, kind: 'IMPORT', state: 'QUEUED', progress: 0, errorCode: null, driftSummary: null },
       });
     } catch (caughtError) {
       if (!onScreen.current) return;

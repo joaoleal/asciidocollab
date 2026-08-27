@@ -90,11 +90,25 @@ Internet → Load Balancer (TLS) → Fastify API → Domain Use Cases → Infras
 
 ## Git Sandbox Security
 
-- Each git operation MUST spawn a short-lived Docker container (FR-011).
-- The container mounts only the requesting project's directory.
-- No git commands execute on the host machine or share process state between projects.
-- Container runs with minimal privileges — no network access, read-only filesystem
-  except the mounted project directory.
+- Git operations MUST run inside sandboxed git-worker containers — **never on the API host or
+  any application host process**. They MAY be served by a **bounded, warm pool of git-worker
+  containers sized to load** (not necessarily one container per operation, and not one per
+  project); a short-lived container-per-operation is permitted but no longer required.
+- Each **job** MUST be scoped to a single project: it operates only on that project's storage
+  directory, in a **freshly cleaned workspace**, and MUST NOT retain or share filesystem or
+  process state (working tree, index, credentials, environment) with any other project's job on
+  the same worker. A worker MUST scrub per-job state between jobs.
+- Network egress from git-worker containers MUST be **deny-by-default with an allowlist**: only
+  the host(s) of the connection's configured remote (and the provider's known git endpoints) are
+  reachable. Unrestricted egress is prohibited (SSRF / exfiltration control). This is the sole,
+  narrow exception to a fully network-isolated sandbox and exists only because remote
+  synchronization inherently requires reaching the remote.
+- Credentials used at execution time MUST be supplied out-of-band (ephemeral credential helper /
+  askpass or environment — never process argv) and MUST NOT be written into the remote URL,
+  `.git/config`, the working tree, logs, or any persisted artifact. They are decrypted only in
+  worker memory for the duration of the job and scrubbed afterward.
+- Workers run with minimal privileges and a filesystem writable only within the mounted project
+  directory.
 
 ---
 
@@ -116,9 +130,25 @@ Internet → Load Balancer (TLS) → Fastify API → Domain Use Cases → Infras
 
 ---
 
-**Version**: 1.2.0 | **Ratified**: 2026-05-27 | **Last Amended**: 2026-07-05
+**Version**: 1.3.0 | **Ratified**: 2026-05-27 | **Last Amended**: 2026-08-24
 
 <!--
+AMENDMENT 1.2.0 → 1.3.0 (2026-08-24, MINOR): "Git Sandbox Security" reconciled with the real git
+synchronization design (feature 048). The prior wording predated an actual sync feature (it derived from
+the dormant FR-011 scaffold) and mandated one short-lived container per operation with "no network
+access" — both impossible for interactive, remote-synchronizing git. Reframed to: git MUST still run in
+sandboxed worker containers and NEVER on a host process; a bounded warm worker pool is now permitted
+PROVIDED each job is single-project-scoped, runs in a freshly cleaned workspace, and shares no
+filesystem/process/credential state across projects; network egress is deny-by-default with an allowlist
+restricted to the configured remote (the sole narrow exception, since sync requires the remote); and
+execution-time credentials MUST be supplied out-of-band and never persisted to URL/.git config/argv/logs/
+working tree. Isolation intent (no host git, minimal blast radius, project isolation) is preserved and
+strengthened (explicit per-job scrub + egress allowlist + credential-handling rule); nothing removed.
+No conflict with the governance or architecture constitutions (aligned in the same cycle: architecture
+2.6.0). Governance Principle X is unchanged; git-sync egress is handled as a user-consented, allowlisted
+publish documented at feature scope (see specs/048-git-repository-sync/plan.md), not by amending a
+non-negotiable principle.
+
 AMENDMENT 1.0.0 → 1.1.0 (2026-06-13, MINOR): "API & Integration Security" rate-limiting rule expanded.
 The prior "Rate limiting on all public endpoints" was literally inaccurate (the limiter runs `global: false`
 and some authenticated/internal routes are intentionally unlimited). Reframed as a deliberate, documented,

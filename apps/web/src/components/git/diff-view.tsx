@@ -57,7 +57,11 @@ export interface DiffViewProperties {
   projectId: string;
   /** Whether the view is currently shown. */
   open: boolean;
-  /** Called whenever the view asks to open or close. */
+  /**
+   * Called whenever the view asks to open or close.
+   *
+   * @param open - True to show the view, false to hide it.
+   */
   onOpenChange: (open: boolean) => void;
   /** Project-relative path to scope the diff to a single file. Omitted for the whole tree's diff. */
   path?: string;
@@ -91,9 +95,9 @@ export function DiffView({ projectId, open, onOpenChange, path, from, to }: Diff
         if (!active) return;
         setDiff(result);
       })
-      .catch((caught: unknown) => {
+      .catch((error_: unknown) => {
         if (!active) return;
-        setError(describeDiffFailure(caught));
+        setError(describeDiffFailure(error_));
       })
       .finally(() => {
         if (active) setLoading(false);

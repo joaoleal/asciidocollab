@@ -6,7 +6,7 @@ import {
   AUDIT_GIT_OPERATION_FAILED,
   AUDIT_GIT_OPERATION_ABORTED,
 } from '@asciidocollab/domain';
-import type { GitOperationTransitionTarget } from '@asciidocollab/domain';
+import type { GitOperationTransitionTarget, GitOperationTransitionInput } from '@asciidocollab/domain';
 import { dispatchGitOperation, ENSURE_CLEAN_WORKING_TREE_FAILED_ERROR_CODE } from './dispatch/git-operation-dispatcher.js';
 import type { GitOperationHandlerRegistry, GitOperationOutcome } from './dispatch/git-operation-dispatcher.js';
 
@@ -18,6 +18,17 @@ function terminalStateFor(outcome: TerminalGitOperationOutcome): GitOperationTra
   if (outcome.kind === 'succeeded') return 'SUCCEEDED';
   if (outcome.kind === 'failed') return 'FAILED';
   return 'ABORTED';
+}
+
+/**
+ * Builds the transition input for a terminal outcome: the failure's error code, or a successful
+ * pull's drift summary (persisted on the row so the triggering user can be warned). Undefined when
+ * the outcome carries neither.
+ */
+function transitionInputFor(outcome: TerminalGitOperationOutcome): GitOperationTransitionInput | undefined {
+  if (outcome.kind === 'failed') return { errorCode: outcome.errorCode };
+  if (outcome.kind === 'succeeded' && outcome.driftSummary) return { driftSummary: outcome.driftSummary };
+  return undefined;
 }
 
 /** Maps a terminal outcome to the `AuditLog` action string recorded for it. */
@@ -134,7 +145,7 @@ export function createGitWorkerLoop(deps: GitWorkerLoopDeps): GitWorkerLoop {
     const result = await deps.gitOperationRepository.transition(
       operation.id,
       toState,
-      outcome.kind === 'failed' ? { errorCode: outcome.errorCode } : undefined,
+      transitionInputFor(outcome),
     );
     if (!result.success) {
       deps.logger.error(

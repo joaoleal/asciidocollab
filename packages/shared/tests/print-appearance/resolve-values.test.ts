@@ -2,6 +2,7 @@ import { DEFAULT_THEME_YAML } from '../../src/render-config/default-theme.genera
 import { parseThemeDocument } from '../../src/print-appearance/parse-theme';
 import { CLAIMED_THEME_KEYS } from '../../src/print-appearance/resolve-appearance';
 import type { ResolvableEntry } from '../../src/print-appearance/resolve-values';
+import { expectWithinBudget } from './perf-budget';
 import {
   createExpansionBudget,
   deriveLoaderSettings,
@@ -372,7 +373,7 @@ describe('resolveThemeValues', () => {
     const started = process.hrtime.bigint();
     for (const expression of pathological) evaluateExpression(expression);
     const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-    expect(elapsedMs).toBeLessThan(2000);
+    expectWithinBudget(elapsedMs, 2000);
   });
 
   it('reports a value whose references expand without bound rather than throwing', () => {
@@ -399,7 +400,7 @@ describe('resolveThemeValues', () => {
         bounded: true,
       });
     }
-    expect(elapsedMs).toBeLessThan(2000);
+    expectWithinBudget(elapsedMs, 2000);
   });
 
   it('spends a bounded total on expansion however many values ask for one', () => {
@@ -413,7 +414,7 @@ describe('resolveThemeValues', () => {
     const { oversized } = resolveThemeValues(entries);
     const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
     expect(oversized.length).toBeGreaterThan(0);
-    expect(elapsedMs).toBeLessThan(2000);
+    expectWithinBudget(elapsedMs, 2000);
   });
 
   it('spends ONE allowance across the passes of a single resolution', () => {

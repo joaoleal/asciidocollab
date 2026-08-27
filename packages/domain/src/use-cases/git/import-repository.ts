@@ -25,7 +25,7 @@ import { AssetRepository } from '../../ports/file-tree/asset.repository';
 import { ProjectFileStore } from '../../ports/storage/project-file-store';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
-import { ClonedFileEntry, GitCommandRunner } from '../../ports/git/git-command-runner';
+import { ClonedFileEntry, GitRemotePort } from '../../ports/git/git-command-runner';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
 import { Logger } from '../../ports/observability/logger';
 import { DomainError } from '../../errors/domain-error';
@@ -37,7 +37,9 @@ import { recordAuditSuccess } from '../audit-recording';
 import { AUDIT_GIT_OPERATION_SUCCEEDED } from '../../audit-actions';
 // Referenced only from this file's own JSDoc @link tags (never thrown directly here) — both are
 // raised inside GitCommandRunner.clone; kept imported so the links resolve to real symbols.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { AuthenticationFailedError } from '../../errors/git/authentication-failed';
 
 /**
@@ -160,7 +162,7 @@ export class ImportRepositoryUseCase {
     private readonly assetRepo: AssetRepository,
     private readonly fileStore: ProjectFileStore,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitRemotePort,
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly auditLogRepo: AuditLogRepository,
     private readonly logger?: Logger,
@@ -220,9 +222,7 @@ export class ImportRepositoryUseCase {
         branch: input.branch,
       });
 
-      if (!cloneResult.success) {
-        outcome = { built: false, error: cloneResult.error };
-      } else {
+      if (cloneResult.success) {
         await this.materializeTree(input.projectId, rootFolderId, cloneResult.value.entries);
 
         // Reuses the loaded row's own id, provider, remote URL, and credential reference — the
@@ -254,6 +254,8 @@ export class ImportRepositoryUseCase {
         await this.projectMemberRepo.addMember(new ProjectMember(input.projectId, input.actorId, Role.create('owner')));
 
         outcome = { built: true, project, repository: updatedRepository };
+      } else {
+        outcome = { built: false, error: cloneResult.error };
       }
     } catch (error) {
       outcome = {
@@ -311,7 +313,7 @@ export class ImportRepositoryUseCase {
       const segments = entry.path.split('/').filter((segment) => segment.length > 0);
       if (segments.length === 0) continue;
 
-      const fileName = segments[segments.length - 1];
+      const fileName = segments.at(-1)!;
       const parentId = await this.ensureFolder(projectId, segments.slice(0, -1), folderIdByPath);
 
       const fileNodeId = FileNodeId.create(randomUUID());
@@ -326,17 +328,15 @@ export class ImportRepositoryUseCase {
 
       // A cloned AsciiDoc file, or a theme file (which the theme editor needs live Yjs state to
       // co-edit — the same rule `UploadAssetUseCase` applies to an uploaded theme file), becomes a
-      // `Document`; everything else becomes an opaque `Asset`. Nothing here inspects file bytes —
-      // an LFS pointer is already resolved to real bytes by the time `GitCommandRunner.clone`
-      // returns an entry, so a large binary is handled exactly like any other asset.
-      if (isAsciiDocumentFileName(fileName) || isThemeFilePath(entry.path)) {
-        await this.documentRepo.save(
-          new Document(DocumentId.create(randomUUID()), fileNodeId, ContentId.create(randomUUID()), YjsStateId.create(randomUUID()), mimeType),
-        );
-      } else {
-        // Asset.id == FileNode.id (1:1 FK relationship).
-        await this.assetRepo.save(new Asset(fileNodeId, mimeType, BigInt(entry.content.length)));
-      }
+      // `Document`; everything else becomes an opaque `Asset` (Asset.id == FileNode.id, a 1:1 FK
+      // relationship). Nothing here inspects file bytes — an LFS pointer is already resolved to
+      // real bytes by the time `GitCommandRunner.clone` returns an entry, so a large binary is
+      // handled exactly like any other asset.
+      await (isAsciiDocumentFileName(fileName) || isThemeFilePath(entry.path)
+        ? this.documentRepo.save(
+            new Document(DocumentId.create(randomUUID()), fileNodeId, ContentId.create(randomUUID()), YjsStateId.create(randomUUID()), mimeType),
+          )
+        : this.assetRepo.save(new Asset(fileNodeId, mimeType, BigInt(entry.content.length))));
     }
   }
 
@@ -357,7 +357,7 @@ export class ImportRepositoryUseCase {
 
     const parentId = await this.ensureFolder(projectId, segments.slice(0, -1), folderIdByPath);
     const folderId = FileNodeId.create(randomUUID());
-    const name = segments[segments.length - 1];
+    const name = segments.at(-1)!;
     const path = FilePath.create(`/${segments.join('/')}`);
     await this.fileNodeRepo.save(new FileNode(folderId, projectId, parentId, name, FileNodeType.create('folder'), path));
 

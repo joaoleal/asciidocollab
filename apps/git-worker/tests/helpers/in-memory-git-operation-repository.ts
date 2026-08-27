@@ -117,11 +117,12 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
       operation.triggeredByUserId,
       operation.branch,
       isTerminal ? 100 : operation.progress,
-      operation.heartbeatAt,
+      toState === 'RUNNING' ? now : operation.heartbeatAt,
       toState === 'FAILED' ? (input.errorCode ?? null) : null,
       operation.startedAt,
       isTerminal ? now : operation.finishedAt,
       operation.createdAt,
+      toState === 'SUCCEEDED' ? (input.driftSummary ?? null) : null,
     );
     this.store(transitioned);
     return { success: true, value: transitioned };

@@ -195,12 +195,29 @@ const AUTHENTICATION_FAILED_PATTERNS: readonly RegExp[] = [
   /returned error: 40[13]\b/i,
 ];
 
+const REJECTED_MARKER = '[rejected]';
+const NON_FAST_FORWARD_MARKERS = ['non-fast-forward', 'fetch first'];
+
 /**
- * Stderr substrings indicating `push` refused a ref update because the remote already has commits
- * this branch does not — git's `! [rejected] ... (non-fast-forward)` / `(fetch first)` — as
- * opposed to the push never reaching the remote, or the remote rejecting the credential.
+ * Reports whether `stderr` contains a line where git's `! [rejected]` marker is followed, later on
+ * that same line, by `non-fast-forward` or `fetch first` — the shape of git's own
+ * `! [rejected] ... (non-fast-forward)` / `(fetch first)` push-refusal message, as opposed to the
+ * push never reaching the remote, or the remote rejecting the credential. Written as a per-line
+ * substring scan (rather than a `[^\n]*` regex spanning the two markers) to avoid the quadratic
+ * backtracking that shape allows on adversarial stderr text.
+ *
+ * @param stderr - The failed invocation's raw stderr text.
+ * @returns Whether a non-fast-forward rejection line was found.
  */
-const NON_FAST_FORWARD_PATTERNS: readonly RegExp[] = [/\[rejected\][^\n]*(non-fast-forward|fetch first)/i];
+function hasNonFastForwardRejection(stderr: string): boolean {
+  const lowerCaseStderr = stderr.toLowerCase();
+  return lowerCaseStderr.split('\n').some((line) => {
+    const rejectedIndex = line.indexOf(REJECTED_MARKER);
+    if (rejectedIndex === -1) return false;
+    const rest = line.slice(rejectedIndex + REJECTED_MARKER.length);
+    return NON_FAST_FORWARD_MARKERS.some((marker) => rest.includes(marker));
+  });
+}
 
 /**
  * Classifies a failed network `git` invocation's stderr into a {@link NetworkFailureKind}, or
@@ -216,7 +233,7 @@ const NON_FAST_FORWARD_PATTERNS: readonly RegExp[] = [/\[rejected\][^\n]*(non-fa
 export function classifyNetworkFailure(stderr: string): NetworkFailureKind | undefined {
   if (UNREACHABLE_PATTERNS.some((pattern) => pattern.test(stderr))) return 'unreachable';
   if (AUTHENTICATION_FAILED_PATTERNS.some((pattern) => pattern.test(stderr))) return 'authentication-failed';
-  if (NON_FAST_FORWARD_PATTERNS.some((pattern) => pattern.test(stderr))) return 'non-fast-forward';
+  if (hasNonFastForwardRejection(stderr)) return 'non-fast-forward';
   return undefined;
 }
 

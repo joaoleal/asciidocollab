@@ -11,7 +11,7 @@ import {
   Role,
   UserId,
 } from '@asciidocollab/domain';
-import type { DomainError, FileChangeReconciler, GitMergeFileChange, Result } from '@asciidocollab/domain';
+import type { DomainError, FileChangeReconciler, GitMergeFileChange, GitReconcileAnomaly, Result } from '@asciidocollab/domain';
 import {
   createSwitchBranchHandler,
   SWITCH_BRANCH_MISSING_ERROR_CODE,
@@ -34,15 +34,20 @@ const TARGET_BRANCH = 'feature';
 /** A `FileChangeReconciler` test double: lands cleanly, recording every call for assertions. */
 class StubReconciler implements FileChangeReconciler {
   readonly calls: Array<{ projectId: ProjectId; changes: readonly GitMergeFileChange[] }> = [];
+  /** Anomalies the next apply reports back, so a test can exercise the drift-summary path. */
+  anomaliesToReturn: readonly GitReconcileAnomaly[] = [];
 
   async apply(
     projectId: ProjectId,
     changes: readonly GitMergeFileChange[],
-  ): Promise<Result<{ changedPaths: readonly string[] }, DomainError>> {
+  ): Promise<Result<{ changedPaths: readonly string[]; anomalies: readonly GitReconcileAnomaly[] }, DomainError>> {
     this.calls.push({ projectId, changes });
     return {
       success: true,
-      value: { changedPaths: changes.map((change) => ('path' in change ? change.path : change.toPath)) },
+      value: {
+        changedPaths: changes.map((change) => ('path' in change ? change.path : change.toPath)),
+        anomalies: this.anomaliesToReturn,
+      },
     };
   }
 }
@@ -126,6 +131,36 @@ describe('createSwitchBranchHandler', () => {
 
     const saved = await harness.gitRepositoryRepository.findByProjectId(projectId);
     expect(saved?.currentBranch).toBe(TARGET_BRANCH);
+  });
+
+  test('a switch that drops content surfaces a driftSummary on the succeeded outcome, mirroring pull', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingSwitch(harness, projectId);
+    harness.commandRunner.seedCheckout(projectId, {
+      status: 'switched',
+      headCommit: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+      changes: [{ type: 'modified', path: 'docs', content: Buffer.from('content\n'), mimeType: 'text/asciidoc' }],
+    });
+    harness.reconciler.anomaliesToReturn = [
+      { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false, message: 'dropped' },
+      { path: 'ghost.adoc', kind: 'modified_missing_node', applied: true, message: 'created' },
+    ];
+
+    const outcome = await harness.handler(buildSwitchOperation(projectId, TARGET_BRANCH));
+
+    // The drift rides out on the row exactly as a pull's does, so the triggering user is warned.
+    expect(outcome).toEqual({
+      kind: 'succeeded',
+      driftSummary: {
+        total: 2,
+        droppedCount: 1,
+        anomalies: [
+          { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false },
+          { path: 'ghost.adoc', kind: 'modified_missing_node', applied: true },
+        ],
+      },
+    });
   });
 
   test('a conflicted switch reports awaitingConflict, not a failure, and lands nothing', async () => {

@@ -453,7 +453,7 @@ describe('AmendCommitUseCase', () => {
     expect(result.success).toBe(true);
 
     const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    const entry = entries.find((e) => e.action === AUDIT_GIT_COMMIT_AMENDED);
+    const entry = entries.find((entry) => entry.action === AUDIT_GIT_COMMIT_AMENDED);
     expect(entry).toBeDefined();
     expect(entry?.metadata).toMatchObject({ hash: AMENDED_HASH });
   });

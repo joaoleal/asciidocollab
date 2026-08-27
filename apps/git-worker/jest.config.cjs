@@ -17,7 +17,10 @@ const config = {
       tsconfig: 'tsconfig.eslint.json',
     }],
   },
-  collectCoverageFrom: ['src/**/*.ts', '!src/index.ts'],
+  // The composition root is dependency wiring — it constructs and connects concretions and is
+  // exercised end-to-end by integration/e2e, not unit-tested for branch coverage. Excluded to match
+  // the sibling convention (apps/collab excludes src/composition-root.ts; apps/api excludes src/di/**).
+  collectCoverageFrom: ['src/**/*.ts', '!src/index.ts', '!src/composition-root.ts'],
   coverageThreshold: {
     global: {
       statements: 90,

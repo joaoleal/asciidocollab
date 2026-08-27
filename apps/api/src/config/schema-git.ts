@@ -82,6 +82,8 @@ export interface GitConfig {
   workerUrl: string;
   /** Optional shared secret sent to the git-worker's internal endpoint (must match the worker's own secret). */
   workerSecret: string;
+  /** Timeout (milliseconds) bounding each synchronous git-worker RPC (connect/preview run git ls-remote/fetch against the remote). */
+  workerTimeoutMs: number;
   /** Client mTLS material for the git-worker's internal endpoint. All fields empty disables mTLS (loopback HTTP). */
   workerTls: {
     /** Path to the PEM file containing the client certificate presented to the git-worker. */
@@ -204,6 +206,12 @@ export const gitSchema: convict.Schema<GitConfig> = {
     sensitive: true,
     env: 'ASCIIDOCOLLAB_GIT_WORKER_SECRET',
   },
+  workerTimeoutMs: {
+    doc: 'Timeout (milliseconds) bounding each synchronous git-worker RPC. Connect and pull/push preview run git ls-remote/fetch against the remote inside this budget; raise it for very large remotes, lower it to fail a hung worker sooner.',
+    format: 'positive-int',
+    default: 30_000,
+    env: 'ASCIIDOCOLLAB_GIT_WORKER_TIMEOUT_MS',
+  },
   workerTls: {
     cert: {
       doc: 'Path to PEM file containing the client certificate presented to the git-worker (mTLS). Empty disables mTLS.',
@@ -259,9 +267,12 @@ export const GIT_OAUTH_PROVIDER_NAMES = ['github', 'gitlab', 'bitbucket'] as con
 /** One of the guided OAuth connect flow's supported providers. */
 export type GitOAuthProviderName = (typeof GIT_OAUTH_PROVIDER_NAMES)[number];
 
+/** {@link GIT_OAUTH_PROVIDER_NAMES} widened to `readonly string[]` so `.includes` accepts an arbitrary string. */
+const GIT_OAUTH_PROVIDER_NAME_STRINGS: readonly string[] = GIT_OAUTH_PROVIDER_NAMES;
+
 /** True when `value` names one of the guided OAuth connect flow's supported providers. */
 export function isGitOAuthProviderName(value: string): value is GitOAuthProviderName {
-  return (GIT_OAUTH_PROVIDER_NAMES as readonly string[]).includes(value);
+  return GIT_OAUTH_PROVIDER_NAME_STRINGS.includes(value);
 }
 
 /** Looks up one provider's OAuth config fragment by name — the one place that indexes `GitOAuthConfig` by a dynamic key. */

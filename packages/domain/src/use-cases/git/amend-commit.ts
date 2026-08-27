@@ -3,8 +3,9 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { FilePath } from '../../value-objects/files/file-path';
 import { FileNode } from '../../entities/file-node';
 import {
-  GitCommandRunner,
   GitCommitFlushEntry,
+  GitMutationPort,
+  GitReadPort,
 } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
@@ -36,8 +37,10 @@ export interface AmendCommitInput {
   readonly actorId: UserId;
   /** The project whose most-recent commit to amend. */
   readonly projectId: ProjectId;
-  /** The replacement commit message. When absent, the amended commit keeps its existing message.
-   *  Rejected if supplied but empty or whitespace-only. */
+  /**
+   * The replacement commit message. When absent, the amended commit keeps its existing message.
+   *  Rejected if supplied but empty or whitespace-only.
+   */
   readonly message?: string;
   /** Request origin, captured into audit metadata for a denial. */
   readonly context?: RequestContext;
@@ -97,7 +100,7 @@ export class AmendCommitUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort & GitMutationPort,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly documentRepo: DocumentRepository,
     private readonly collaborativeContentReader: CollaborativeContentReader,

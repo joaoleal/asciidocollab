@@ -14,6 +14,15 @@ CREATE TYPE "FileNodeType" AS ENUM ('FILE', 'FOLDER');
 CREATE TYPE "GitProvider" AS ENUM ('GITHUB', 'GITLAB', 'BITBUCKET');
 
 -- CreateEnum
+CREATE TYPE "GitSyncStatus" AS ENUM ('UP_TO_DATE', 'AHEAD', 'BEHIND', 'DIVERGED', 'CONFLICTED', 'DISCONNECTED', 'NEEDS_REAUTH');
+
+-- CreateEnum
+CREATE TYPE "GitOperationKind" AS ENUM ('IMPORT', 'INITIALIZE', 'CONNECT', 'DISCONNECT', 'COMMIT', 'PUSH', 'PULL', 'FETCH', 'BRANCH_CREATE', 'BRANCH_SWITCH', 'RESOLVE', 'DISCARD', 'AMEND', 'UNDO_PULL');
+
+-- CreateEnum
+CREATE TYPE "GitOperationState" AS ENUM ('QUEUED', 'RUNNING', 'AWAITING_CONFLICT', 'SUCCEEDED', 'FAILED', 'ABORTED');
+
+-- CreateEnum
 CREATE TYPE "ReviewItemKind" AS ENUM ('COMMENT', 'TASK');
 
 -- CreateEnum
@@ -51,6 +60,7 @@ CREATE TABLE "Project" (
     "language" TEXT,
     "archivedAt" TIMESTAMP(3),
     "mainFileNodeId" UUID,
+    "gitIgnorePatterns" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -135,10 +145,60 @@ CREATE TABLE "GitRepository" (
     "remoteUrl" TEXT NOT NULL,
     "credentialRef" TEXT NOT NULL,
     "currentBranch" TEXT NOT NULL DEFAULT 'main',
+    "defaultBranch" TEXT,
+    "lastKnownRemoteHead" TEXT,
+    "syncStatus" "GitSyncStatus" NOT NULL DEFAULT 'UP_TO_DATE',
+    "connectedByUserId" UUID,
     "lastSyncAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "GitRepository_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "GitCredential" (
+    "id" UUID NOT NULL,
+    "projectId" UUID NOT NULL,
+    "provider" "GitProvider" NOT NULL,
+    "encryptedToken" TEXT NOT NULL,
+    "tokenHint" TEXT,
+    "createdByUserId" UUID NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "GitCredential_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "GitOperation" (
+    "id" UUID NOT NULL,
+    "projectId" UUID NOT NULL,
+    "kind" "GitOperationKind" NOT NULL,
+    "state" "GitOperationState" NOT NULL DEFAULT 'QUEUED',
+    "branch" TEXT,
+    "triggeredByUserId" UUID NOT NULL,
+    "progress" INTEGER NOT NULL DEFAULT 0,
+    "heartbeatAt" TIMESTAMP(3),
+    "errorCode" TEXT,
+    "driftSummary" JSONB,
+    "startedAt" TIMESTAMP(3),
+    "finishedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "GitOperation_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "GitConflict" (
+    "id" UUID NOT NULL,
+    "operationId" UUID NOT NULL,
+    "path" TEXT NOT NULL,
+    "isBinary" BOOLEAN NOT NULL DEFAULT false,
+    "resolved" BOOLEAN NOT NULL DEFAULT false,
+    "resolution" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "GitConflict_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -264,6 +324,7 @@ CREATE TABLE "editor_preferences" (
     "previewStyle" TEXT NOT NULL DEFAULT 'asciidocollab',
     "spellcheckEnabled" BOOLEAN NOT NULL DEFAULT true,
     "minimapEnabled" BOOLEAN NOT NULL DEFAULT false,
+    "privateCommitEmail" BOOLEAN NOT NULL DEFAULT false,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -367,6 +428,15 @@ CREATE UNIQUE INDEX "collaboration_sessions_projectId_documentId_key" ON "collab
 
 -- CreateIndex
 CREATE UNIQUE INDEX "GitRepository_projectId_key" ON "GitRepository"("projectId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "GitCredential_projectId_key" ON "GitCredential"("projectId");
+
+-- CreateIndex
+CREATE INDEX "GitOperation_projectId_idx" ON "GitOperation"("projectId");
+
+-- CreateIndex
+CREATE INDEX "GitConflict_operationId_idx" ON "GitConflict"("operationId");
 
 -- CreateIndex
 CREATE INDEX "AuditLog_projectId_idx" ON "AuditLog"("projectId");
@@ -505,6 +575,15 @@ ALTER TABLE "Template" ADD CONSTRAINT "Template_sourceProjectId_fkey" FOREIGN KE
 
 -- AddForeignKey
 ALTER TABLE "GitRepository" ADD CONSTRAINT "GitRepository_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "GitCredential" ADD CONSTRAINT "GitCredential_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "GitOperation" ADD CONSTRAINT "GitOperation_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "GitConflict" ADD CONSTRAINT "GitConflict_operationId_fkey" FOREIGN KEY ("operationId") REFERENCES "GitOperation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;

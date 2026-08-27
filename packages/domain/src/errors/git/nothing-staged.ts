@@ -8,6 +8,7 @@ import { DomainError } from '../domain-error';
 export class NothingStagedError extends DomainError {
   readonly name = 'NothingStagedError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('There are no staged changes to commit');
   }

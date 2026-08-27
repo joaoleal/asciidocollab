@@ -368,4 +368,18 @@ describe('DashboardPage', () => {
     const { container } = render(<DashboardPage />);
     expect(container.querySelectorAll('.animate-pulse')).toHaveLength(3);
   });
+
+  test('opens the import dialog when the "Import from Git" button is clicked', async () => {
+    await renderWithOneProject();
+
+    fireEvent.click(screen.getByRole('button', { name: /import from git/i }));
+
+    expect(await screen.findByText('Import a repository')).toBeInTheDocument();
+  });
+
+  test('the import dialog is closed until the trigger is clicked', async () => {
+    await renderWithOneProject();
+
+    expect(screen.queryByText('Import a repository')).not.toBeInTheDocument();
+  });
 });

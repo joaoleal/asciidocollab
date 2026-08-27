@@ -3,7 +3,7 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitRepository } from '../../entities/git-repository';
 import { GitConflict } from '../../entities/git-conflict';
-import { GitCommandRunner, GitMergeFileChange } from '../../ports/git/git-command-runner';
+import { GitMergeFileChange, GitMutationPort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
@@ -16,12 +16,16 @@ import { NoConflictInProgressError } from '../../errors/git/no-conflict-in-progr
 import { UnresolvedConflictsError } from '../../errors/git/unresolved-conflicts';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { requireGitRole } from './git-role-guard';
+import { deriveSyncStatus } from './derive-sync-status';
 import { FileChangeReconciler } from './pull-changes';
+import { anomalyAuditMetadata } from './git-change-reconciler';
+import { buildGitDriftSummary } from '../../types/git-drift-summary';
 import { recordAuditSuccess } from '../audit-recording';
 import { AUDIT_GIT_CONFLICTS_RESOLVED } from '../../audit-actions';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 // Referenced only from this file's own JSDoc @link tags; kept imported so the links resolve.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { InsufficientRoleError } from '../../errors/git/insufficient-role';
 
 /** Everything `CompleteMergeUseCase.execute` needs to complete a project's currently conflicted operation. */
@@ -81,7 +85,7 @@ export class CompleteMergeUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitMutationPort,
     private readonly conflictStageStore: ConflictStageStore,
     private readonly reconciler: FileChangeReconciler,
     private readonly logger?: Logger,
@@ -150,15 +154,15 @@ export class CompleteMergeUseCase {
       return landed;
     }
 
-    if (operation.kind === 'PULL') {
-      await this.refreshRowForPull(gitRepository, changesResult.value.headCommit);
-    } else {
-      await this.refreshRowForSwitch(gitRepository);
-    }
+    await (operation.kind === 'PULL' ? this.refreshRowForPull(gitRepository, changesResult.value.headCommit) : this.refreshRowForSwitch(gitRepository));
 
     await this.gitOperationRepo.clearConflicts(operation.id);
     await this.conflictStageStore.clear(operation.id);
-    await this.gitOperationRepo.transition(operation.id, 'SUCCEEDED');
+    // Persist the same reconcile-drift summary a clean pull records on its SUCCEEDED row, built from
+    // this landing's anomalies, so the polling user is warned that a pulled change was dropped —
+    // exactly as the non-conflict pull path does. Null (a clean landing) leaves `driftSummary` unset.
+    const driftSummary = buildGitDriftSummary(landed.value.anomalies);
+    await this.gitOperationRepo.transition(operation.id, 'SUCCEEDED', driftSummary ? { driftSummary } : undefined);
 
     await recordAuditSuccess(
       this.auditLogRepo,
@@ -168,7 +172,10 @@ export class CompleteMergeUseCase {
         action: AUDIT_GIT_CONFLICTS_RESOLVED,
         resourceType: 'GitOperation',
         resourceId: operation.id.value,
-        metadata: { kind: operation.kind },
+        // Fold any reconciler drift into this completion's audit so the user (no log access) can see
+        // which pulled paths were auto-repaired or — folder-occupied — dropped, exactly as a clean pull
+        // records via `git.pull_partially_applied`.
+        metadata: { kind: operation.kind, ...anomalyAuditMetadata(landed.value.anomalies) },
         context: input.context,
       },
       this.logger,
@@ -227,6 +234,13 @@ export class CompleteMergeUseCase {
       const content = await this.readResolvedBytes(operationId, conflict);
       if (!content.success) return content;
 
+      if (content.value === null) {
+        // The chosen side DELETED the file (a modify/delete conflict) — accepting it removes the
+        // file rather than landing any bytes for it.
+        changes.push({ type: 'removed', path: conflict.path });
+        continue;
+      }
+
       changes.push({
         type: 'modified',
         path: conflict.path,
@@ -238,11 +252,16 @@ export class CompleteMergeUseCase {
     return { success: true, value: { headCommit: '', changes } };
   }
 
-  /** Reads the bytes a single conflict's chosen resolution resolves to, off the stage store. */
+  /**
+   * Reads the bytes a single conflict's chosen resolution resolves to, off the stage store.
+   * Returns `null` when the chosen `ours`/`theirs` side DELETED the file (a modify/delete conflict)
+   * — that resolution accepts the deletion, so there are no bytes to land. A `merged` resolution
+   * always carries real bytes and so never yields null.
+   */
   private async readResolvedBytes(
     operationId: GitOperationId,
     conflict: GitConflict,
-  ): Promise<Result<Buffer, DomainError>> {
+  ): Promise<Result<Buffer | null, DomainError>> {
     if (conflict.resolution === 'merged') {
       const merged = await this.conflictStageStore.readMerged(operationId, conflict.path);
       if (!merged.success) return merged;
@@ -268,11 +287,17 @@ export class CompleteMergeUseCase {
   }
 
   /**
-   * Rewrites the loaded repository link after a completed `PULL`: `UP_TO_DATE`, the resolving
-   * commit as the observed remote head, and a fresh `lastSyncAt` — the same shape `PullChangesUseCase`
-   * writes on a clean merge. Every other field is carried over from the loaded row.
+   * Rewrites the loaded repository link after a completed `PULL` — the same shape
+   * `PullChangesUseCase` writes on a clean merge. Completing a conflicted pull normally creates a
+   * resolving merge commit the remote does not have, leaving the branch AHEAD; only when the re-run
+   * merge fast-forwarded (the remote resolved itself) is it UP_TO_DATE. The observed remote head is
+   * the one fetched when the conflict was detected, preserved on the CONFLICTED row's
+   * `lastKnownRemoteHead` — NOT the local resolving commit, which the remote lacks. Every other field
+   * is carried over from the loaded row.
    */
   private async refreshRowForPull(loaded: GitRepository, headCommit: string): Promise<void> {
+    const remoteHead = loaded.lastKnownRemoteHead;
+    const ahead = remoteHead !== null && headCommit === remoteHead ? 0 : 1;
     const updated = new GitRepository(
       loaded.id,
       loaded.projectId,
@@ -280,9 +305,11 @@ export class CompleteMergeUseCase {
       loaded.remoteUrl,
       loaded.credentialReference,
       loaded.currentBranch,
-      'UP_TO_DATE',
+      deriveSyncStatus(0, ahead),
       loaded.defaultBranch,
-      headCommit,
+      // The observed remote head fetched at conflict detection — left null when none was recorded.
+      // Never the local resolving `headCommit`, which the remote lacks (see this method's JSDoc).
+      remoteHead,
       new Date(),
       loaded.createdAt,
       loaded.connectedByUserId,

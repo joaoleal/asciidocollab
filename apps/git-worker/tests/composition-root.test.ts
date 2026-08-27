@@ -1,7 +1,6 @@
 import { randomUUID } from 'crypto';
 import {
   AuthenticationFailedError,
-  GitOperationId,
   GitProvider,
   GitRepository,
   GitRepositoryId,
@@ -13,7 +12,7 @@ import {
   Role,
   UserId,
 } from '@asciidocollab/domain';
-import { compositionRoot, createConnectOpFn, mapGitRepositoryToWire, mapOperationId } from '../src/composition-root.js';
+import { compositionRoot, createConnectOpFunction } from '../src/composition-root.js';
 import { InMemoryGitRepositoryRepository } from './helpers/in-memory-git-repository-repository.js';
 import { InMemoryGitCredentialStore } from './helpers/in-memory-git-credential-store.js';
 import { InMemoryGitCommandRunner } from './helpers/in-memory-git-command-runner.js';
@@ -35,102 +34,7 @@ describe('git-worker composition root', () => {
   });
 });
 
-describe('mapOperationId', () => {
-  // The regression this closes: GitOperationId (a Uuid subclass) defines no toJSON, so handing a
-  // domain result straight to JSON.stringify serializes operationId as {"_value": "<uuid>"} instead
-  // of a plain string — malformed for the API route/client, which decode operationId as a string.
-  // A prior version of this binding's own server test missed this because its doubles already used
-  // pre-stringified fixtures; this exercises the REAL mapping over a REAL GitOperationId instance,
-  // then round-trips it through JSON exactly as the wire response would.
-  it('serializes a real GitOperationId as a plain string, not {_value}, in the wire-mapped envelope', () => {
-    const uuid = '990e8400-e29b-41d4-a716-446655440099';
-    const operationId = GitOperationId.create(uuid);
-
-    const mapped = mapOperationId({ status: 'resolved' as const, operationId, headCommit: 'abc123' });
-    const envelope = { ok: true, data: mapped };
-    const roundTripped = JSON.parse(JSON.stringify(envelope));
-
-    expect(typeof roundTripped.data.operationId).toBe('string');
-    expect(roundTripped.data.operationId).toBe(uuid);
-    expect(roundTripped.data.headCommit).toBe('abc123');
-    expect(roundTripped.data.status).toBe('resolved');
-  });
-
-  it('preserves every other field unchanged, mapping only operationId', () => {
-    const uuid = '990e8400-e29b-41d4-a716-446655440098';
-    const operationId = GitOperationId.create(uuid);
-
-    const mapped = mapOperationId({
-      operationId,
-      files: [{ path: 'a.adoc', isBinary: false, resolved: true }],
-    });
-
-    expect(mapped).toEqual({ operationId: uuid, files: [{ path: 'a.adoc', isBinary: false, resolved: true }] });
-  });
-});
-
-describe('mapGitRepositoryToWire', () => {
-  // The regression this closes: GitRepositoryId/ProjectId/GitProvider/UserId are value objects with
-  // no toJSON, so handing a domain GitRepository straight to JSON.stringify would serialize each as
-  // {"_value": "..."} instead of a plain string — malformed for the API route/client. This exercises
-  // the REAL mapping over a REAL GitRepository entity, then round-trips it through JSON exactly as
-  // the wire response would.
-  it('serializes a real GitRepository as plain strings, not {_value}, in the wire-mapped envelope', () => {
-    const repository = new GitRepository(
-      GitRepositoryId.create('990e8400-e29b-41d4-a716-446655440020'),
-      ProjectId.create('990e8400-e29b-41d4-a716-446655440021'),
-      GitProvider.create('github'),
-      'https://github.com/example/repo.git',
-      '990e8400-e29b-41d4-a716-446655440021',
-      'main',
-      'UP_TO_DATE',
-      'main',
-      null,
-      new Date('2026-01-01T00:00:00.000Z'),
-      new Date('2026-01-02T00:00:00.000Z'),
-      UserId.create('990e8400-e29b-41d4-a716-446655440022'),
-    );
-
-    const mapped = mapGitRepositoryToWire(repository);
-    const roundTripped = JSON.parse(JSON.stringify({ ok: true, data: { repository: mapped } }));
-
-    expect(roundTripped).toEqual({
-      ok: true,
-      data: {
-        repository: {
-          id: '990e8400-e29b-41d4-a716-446655440020',
-          projectId: '990e8400-e29b-41d4-a716-446655440021',
-          provider: 'github',
-          remoteUrl: 'https://github.com/example/repo.git',
-          currentBranch: 'main',
-          defaultBranch: 'main',
-          syncStatus: 'UP_TO_DATE',
-          lastSyncAt: '2026-01-01T00:00:00.000Z',
-          connectedByUserId: '990e8400-e29b-41d4-a716-446655440022',
-          createdAt: '2026-01-02T00:00:00.000Z',
-        },
-      },
-    });
-    expect(JSON.stringify(roundTripped)).not.toContain('_value');
-  });
-
-  it('maps a null lastSyncAt/connectedByUserId through unchanged', () => {
-    const repository = new GitRepository(
-      GitRepositoryId.create('990e8400-e29b-41d4-a716-446655440023'),
-      ProjectId.create('990e8400-e29b-41d4-a716-446655440024'),
-      GitProvider.create('gitlab'),
-      'https://gitlab.com/example/repo.git',
-      '990e8400-e29b-41d4-a716-446655440024',
-    );
-
-    const mapped = mapGitRepositoryToWire(repository);
-
-    expect(mapped.lastSyncAt).toBeNull();
-    expect(mapped.connectedByUserId).toBeNull();
-  });
-});
-
-describe('createConnectOpFn', () => {
+describe('createConnectOpFunction', () => {
   const PROJECT_ID = ProjectId.create('990e8400-e29b-41d4-a716-446655440030');
   const OWNER_ID = UserId.create('990e8400-e29b-41d4-a716-446655440031');
   const REMOTE_URL = 'https://github.com/example/handbook.git';
@@ -150,7 +54,7 @@ describe('createConnectOpFn', () => {
       await projectMemberRepository.addMember(new ProjectMember(PROJECT_ID, OWNER_ID, Role.create(role)));
     }
 
-    const connect = createConnectOpFn({
+    const connect = createConnectOpFunction({
       gitRepositoryRepository,
       gitCredentialStore,
       gitCommandRunner,
@@ -183,6 +87,7 @@ describe('createConnectOpFn', () => {
 
     expect(result.success).toBe(true);
     if (!result.success) return;
+    // eslint-disable-next-line unicorn/prefer-structured-clone -- intentionally testing JSON.stringify wire serialization (no {_value} leaking through), not a deep clone; structuredClone would not exercise the same semantics.
     const roundTripped = JSON.parse(JSON.stringify(result.value));
     expect(roundTripped.repository).toEqual({
       id: expect.any(String),

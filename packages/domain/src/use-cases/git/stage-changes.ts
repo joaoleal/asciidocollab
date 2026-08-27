@@ -1,6 +1,6 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitMutationPort, GitReadPort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
@@ -60,7 +60,7 @@ export class StageChangesUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort & GitMutationPort,
     private readonly logger?: Logger,
   ) {}
 

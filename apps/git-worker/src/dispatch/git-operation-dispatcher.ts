@@ -1,4 +1,4 @@
-import type { GitOperation, GitOperationKind } from '@asciidocollab/domain';
+import type { GitOperation, GitOperationKind, GitDriftSummary } from '@asciidocollab/domain';
 
 /**
  * How a dispatched `GitOperation` finished. `succeeded`/`failed`/`aborted` are terminal — the run
@@ -8,7 +8,7 @@ import type { GitOperation, GitOperationKind } from '@asciidocollab/domain';
  * task's concern, not this one's).
  */
 export type GitOperationOutcome =
-  | { readonly kind: 'succeeded' }
+  | { readonly kind: 'succeeded'; readonly driftSummary?: GitDriftSummary }
   | { readonly kind: 'failed'; readonly errorCode: string }
   | { readonly kind: 'aborted' }
   | { readonly kind: 'awaitingConflict' };

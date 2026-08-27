@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { useGitTreeStatus } from '@/hooks/use-git-tree-status';
 import { getGitTreeStatus } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
+import type { FileGitStatus } from '@asciidocollab/shared';
 
 jest.mock('@/lib/api/git', () => ({ getGitTreeStatus: jest.fn() }));
 
@@ -57,6 +58,46 @@ describe('useGitTreeStatus', () => {
     });
     expect(result.current.statusByFileNodeId).toEqual({ 'file-1': 'staged' });
     expect(mockGetGitTreeStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a slower older refetch overwrite a newer one that resolves first', async () => {
+    let resolveFirst!: (value: { statusByFileNodeId: Record<string, FileGitStatus> }) => void;
+    let resolveSecond!: (value: { statusByFileNodeId: Record<string, FileGitStatus> }) => void;
+    mockGetGitTreeStatus.mockResolvedValueOnce({ statusByFileNodeId: { 'file-1': 'modified' } });
+    const { result } = renderHook(() => useGitTreeStatus('proj1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    mockGetGitTreeStatus.mockReturnValueOnce(
+      new Promise((resolveFunction) => {
+        resolveFirst = resolveFunction;
+      }),
+    );
+    mockGetGitTreeStatus.mockReturnValueOnce(
+      new Promise((resolveFunction) => {
+        resolveSecond = resolveFunction;
+      }),
+    );
+
+    let firstRefetch!: Promise<void>;
+    let secondRefetch!: Promise<void>;
+    act(() => {
+      firstRefetch = result.current.refetch();
+      secondRefetch = result.current.refetch();
+    });
+
+    // The newer (second) request resolves before the older (first) one.
+    await act(async () => {
+      resolveSecond({ statusByFileNodeId: { 'file-1': 'staged' } });
+      await secondRefetch;
+    });
+    expect(result.current.statusByFileNodeId).toEqual({ 'file-1': 'staged' });
+
+    // The older, slower request resolving afterward must not overwrite the newer result.
+    await act(async () => {
+      resolveFirst({ statusByFileNodeId: { 'file-1': 'untracked' } });
+      await firstRefetch;
+    });
+    expect(result.current.statusByFileNodeId).toEqual({ 'file-1': 'staged' });
   });
 
   it('ignores a resolved load after unmount (no state update)', async () => {

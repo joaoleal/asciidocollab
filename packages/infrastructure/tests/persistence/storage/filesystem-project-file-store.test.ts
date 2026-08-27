@@ -1,10 +1,19 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { FilesystemProjectFileStore } from '../../../src/persistence/storage/filesystem-project-file-store';
 import { ProjectId } from '@asciidocollab/domain';
 import { FilePath } from '@asciidocollab/domain';
 import { FileConflictError } from '@asciidocollab/domain';
+
+// The fs/promises module is mocked so a single write can be made to fail partway. Every export
+// defaults to the real implementation via requireActual — only `writeFile` is a jest.fn wrapping
+// the real one, and a per-test mockImplementationOnce reproduces a partial-then-failing write.
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual('node:fs/promises');
+  return { __esModule: true, ...actual, writeFile: jest.fn(actual.writeFile) };
+});
 
 describe('FilesystemProjectFileStore', () => {
   let storageRoot: string;
@@ -48,6 +57,31 @@ describe('FilesystemProjectFileStore', () => {
       await store.write(projectId, nestedPath, content);
       const result = await store.read(projectId, nestedPath);
       expect(result).toEqual(content);
+    });
+
+    it('leaves no .tmp orphan when writeFile fails partway, and does not touch the final path', async () => {
+      // Materialise the project directory so we can read it back after the failed write.
+      await store.createDirectory(projectId, FilePath.create('/'));
+      const projectDirectory = path.join(storageRoot, projectId.value);
+
+      // Reproduce a partial write that then fails (disk full / quota / I/O error): create the temp
+      // file on disk via a DIFFERENT fs call, then throw. If cleanup only wrapped the rename, this
+      // unique-suffix temp would be left behind forever. mockImplementationOnce reverts writeFile to
+      // the real implementation afterwards, so the rest of the suite is unaffected.
+      const failingWrite = jest.mocked(fsPromises.writeFile);
+      failingWrite.mockImplementationOnce(async (target) => {
+        await fsPromises.appendFile(target, Buffer.from('partial bytes'));
+        throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+      });
+
+      await expect(store.write(projectId, filePath, content)).rejects.toMatchObject({ code: 'ENOSPC' });
+
+      // No `.tmp` orphan is left in the target directory...
+      const entries = await fsPromises.readdir(projectDirectory);
+      const orphans = entries.filter((entry) => entry.endsWith('.tmp'));
+      expect(orphans).toEqual([]);
+      // ...and the final path was never created.
+      expect(await store.read(projectId, filePath)).toBeNull();
     });
   });
 

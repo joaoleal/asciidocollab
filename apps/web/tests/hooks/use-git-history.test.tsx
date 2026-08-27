@@ -74,6 +74,49 @@ describe('useGitHistory', () => {
     expect(mockGetHistory).toHaveBeenCalledTimes(2);
   });
 
+  it('does not let a slower older refetch overwrite a newer one that resolves first', async () => {
+    let resolveFirst!: (value: { commits: CommitDto[] }) => void;
+    let resolveSecond!: (value: { commits: CommitDto[] }) => void;
+    mockGetHistory.mockResolvedValueOnce({ commits: COMMITS });
+    const { result } = renderHook(() => useGitHistory('proj1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    mockGetHistory.mockReturnValueOnce(
+      new Promise((resolveFunction) => {
+        resolveFirst = resolveFunction;
+      }),
+    );
+    mockGetHistory.mockReturnValueOnce(
+      new Promise((resolveFunction) => {
+        resolveSecond = resolveFunction;
+      }),
+    );
+
+    let firstRefetch!: Promise<void>;
+    let secondRefetch!: Promise<void>;
+    act(() => {
+      firstRefetch = result.current.refetch();
+      secondRefetch = result.current.refetch();
+    });
+
+    const newerCommits: CommitDto[] = [{ hash: 'newer000001', message: 'Newer commit', authoredAt: '2026-08-26T00:00:00.000Z' }];
+    const olderCommits: CommitDto[] = [{ hash: 'older000001', message: 'Stale commit', authoredAt: '2026-08-22T00:00:00.000Z' }];
+
+    // The newer (second) request resolves before the older (first) one.
+    await act(async () => {
+      resolveSecond({ commits: newerCommits });
+      await secondRefetch;
+    });
+    expect(result.current.commits).toEqual(newerCommits);
+
+    // The older, slower request resolving afterward must not overwrite the newer result.
+    await act(async () => {
+      resolveFirst({ commits: olderCommits });
+      await firstRefetch;
+    });
+    expect(result.current.commits).toEqual(newerCommits);
+  });
+
   it('ignores a resolved load after unmount (no state update)', async () => {
     let resolve!: (value: { commits: CommitDto[] }) => void;
     mockGetHistory.mockReturnValue(

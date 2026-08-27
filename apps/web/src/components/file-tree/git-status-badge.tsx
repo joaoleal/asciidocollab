@@ -42,7 +42,7 @@ export function gitStatusBadgeStyle(status: FileGitStatus): GitStatusBadgeStyle 
 
 /**
  * Descendant-file statuses that mean a folder gets a roll-up badge, most urgent first. A folder shows
- * whichever of these is present among its descendants, in this order — e.g. One conflicted file
+ * whichever of these is present among its descendants, in this order — e.g. one conflicted file
  * outranks any number of merely-staged ones.
  */
 const FOLDER_ROLLUP_PRECEDENCE: readonly FileGitStatus[] = ['conflicted', 'removed', 'modified', 'untracked', 'staged'];

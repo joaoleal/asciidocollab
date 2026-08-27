@@ -100,6 +100,47 @@ describe('useConflicts loading', () => {
     });
     expect(mockGetConflicts).toHaveBeenCalled();
   });
+
+  it('ignores an older list load resolving after a newer one', async () => {
+    let resolveFirst!: (value: ConflictListDto) => void;
+    let resolveSecond!: (value: ConflictListDto) => void;
+    mockGetConflicts
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+
+    const { result } = renderHook(() => useConflicts('proj1', jest.fn()));
+    expect(result.current.loading).toBe(true);
+
+    // Start a second (newer) load before the mount's (older) load has resolved.
+    let refetchPromise!: Promise<void>;
+    act(() => {
+      refetchPromise = result.current.refetch();
+    });
+
+    const NEWER: ConflictListDto = {
+      operationId: 'op2',
+      files: [{ path: 'c.adoc', isBinary: false, resolved: false }],
+    };
+
+    // The newer load resolves first.
+    await act(async () => {
+      resolveSecond(NEWER);
+      await refetchPromise;
+    });
+    expect(result.current.operationId).toBe('op2');
+    expect(result.current.files).toEqual(NEWER.files);
+
+    // The older (mount) load resolves last, with stale data — it must not overwrite the newer state.
+    await act(async () => {
+      resolveFirst(LIST);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.operationId).toBe('op2');
+    expect(result.current.files).toEqual(NEWER.files);
+    expect(result.current.loading).toBe(false);
+  });
 });
 
 describe('useConflicts resolve', () => {
@@ -171,6 +212,7 @@ describe('useConflicts complete', () => {
       state: 'SUCCEEDED',
       progress: 100,
       errorCode: null,
+      driftSummary: null,
     });
 
     act(() => {
@@ -184,6 +226,136 @@ describe('useConflicts complete', () => {
 
     await waitFor(() => expect(result.current.completing).toBe(false));
     expect(onResolvedAndCleared).toHaveBeenCalled();
+  });
+
+  it('SUCCEEDED with a dropped-change drift summary shows a neutral recovery message', async () => {
+    mockGetConflicts.mockResolvedValue({ operationId: 'op1', files: [] });
+    const onResolvedAndCleared = jest.fn();
+    const { result } = renderHook(() => useConflicts('proj1', onResolvedAndCleared));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    mockCompletePull.mockResolvedValue({ operationId: 'complete-op' });
+    mockGetGitOperation.mockResolvedValue({
+      id: 'complete-op',
+      kind: 'RESOLVE',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 1,
+        anomalies: [{ path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false }],
+      },
+    });
+
+    act(() => {
+      result.current.complete();
+    });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    await waitFor(() => expect(result.current.completing).toBe(false));
+    expect(onResolvedAndCleared).toHaveBeenCalled();
+    expect(result.current.message?.tone).toBe('neutral');
+    expect(result.current.message?.text).toContain('Conflicts resolved');
+    expect(result.current.message?.text).toContain('docs');
+    expect(result.current.message?.text).toContain('Remove or rename the folder');
+    expect(result.current.message?.text).toContain('try the operation again');
+    expect(result.current.message?.text).not.toContain('pull again');
+  });
+
+  it('SUCCEEDED with no drift summary sets no message', async () => {
+    mockGetConflicts.mockResolvedValue({ operationId: 'op1', files: [] });
+    const onResolvedAndCleared = jest.fn();
+    const { result } = renderHook(() => useConflicts('proj1', onResolvedAndCleared));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    mockCompletePull.mockResolvedValue({ operationId: 'complete-op' });
+    mockGetGitOperation.mockResolvedValue({
+      id: 'complete-op',
+      kind: 'RESOLVE',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: null,
+    });
+
+    act(() => {
+      result.current.complete();
+    });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    await waitFor(() => expect(result.current.completing).toBe(false));
+    expect(onResolvedAndCleared).toHaveBeenCalled();
+    expect(result.current.message).toBeNull();
+  });
+
+  it('an older poll tick resolving after a newer tick does not incorrectly settle complete()', async () => {
+    mockGetConflicts.mockResolvedValue({ operationId: 'op1', files: [] });
+    const onResolvedAndCleared = jest.fn();
+    const { result } = renderHook(() => useConflicts('proj1', onResolvedAndCleared));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    mockCompletePull.mockResolvedValue({ operationId: 'complete-op' });
+    let resolveTick1!: (value: Awaited<ReturnType<typeof getGitOperation>>) => void;
+    let resolveTick2!: (value: Awaited<ReturnType<typeof getGitOperation>>) => void;
+    mockGetGitOperation
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveTick1 = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveTick2 = resolve; }));
+
+    act(() => {
+      result.current.complete();
+    });
+    expect(result.current.completing).toBe(true);
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    // A second (newer) tick starts before the first (older) tick has resolved.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1500);
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(2));
+
+    // The newer tick resolves first, with a still-running status.
+    await act(async () => {
+      resolveTick2({
+        id: 'complete-op',
+        kind: 'RESOLVE',
+        state: 'RUNNING',
+        progress: 10,
+        errorCode: null,
+        driftSummary: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.completing).toBe(true);
+
+    // The older tick resolves last, with a stale SUCCEEDED status — since a newer tick has already
+    // been observed as still running, this must be ignored rather than incorrectly settling complete().
+    await act(async () => {
+      resolveTick1({
+        id: 'complete-op',
+        kind: 'RESOLVE',
+        state: 'SUCCEEDED',
+        progress: 100,
+        errorCode: null,
+        driftSummary: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.completing).toBe(true);
+    expect(onResolvedAndCleared).not.toHaveBeenCalled();
   });
 
   it('maps a 409 unresolved_conflicts refusal to an error message', async () => {
@@ -221,6 +393,7 @@ describe('useConflicts undo', () => {
       state: 'SUCCEEDED',
       progress: 100,
       errorCode: null,
+      driftSummary: null,
     });
 
     act(() => {

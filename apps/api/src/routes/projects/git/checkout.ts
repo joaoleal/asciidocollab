@@ -15,9 +15,11 @@ interface GitCheckoutBody {
   name: string;
   /** Acknowledges that files open in live editing sessions may be affected by the switch. */
   confirmAffectsOpenFiles?: boolean;
-  /** Acknowledges that any uncommitted local changes should ride across the switch (stashed and
+  /**
+   * Acknowledges that any uncommitted local changes should ride across the switch (stashed and
    * re-applied), rather than blocking the switch. Route-level only: never persisted onto the
-   * enqueued `GitOperation` — the worker's switch handler already always preserves local edits. */
+   * enqueued `GitOperation` — the worker's switch handler already always preserves local edits.
+   */
   stashLocal?: boolean;
 }
 

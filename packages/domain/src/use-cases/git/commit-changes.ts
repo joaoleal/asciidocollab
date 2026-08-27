@@ -3,8 +3,9 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { FilePath } from '../../value-objects/files/file-path';
 import { FileNode } from '../../entities/file-node';
 import {
-  GitCommandRunner,
   GitCommitFlushEntry,
+  GitMutationPort,
+  GitReadPort,
 } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
@@ -92,7 +93,7 @@ export class CommitChangesUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort & GitMutationPort,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly documentRepo: DocumentRepository,
     private readonly collaborativeContentReader: CollaborativeContentReader,

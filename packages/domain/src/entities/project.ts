@@ -5,8 +5,10 @@ import { Timestamps } from '../value-objects/common/timestamps';
 import { isSpellcheckLanguage, type SpellcheckLanguage } from '../constants/editor-preferences';
 import { ValidationError } from '../errors/common/validation-error';
 
-/** Upper bound on the stored length of {@link Project.gitIgnorePatterns}, a defensive cap on an
- *  otherwise-unbounded free-text field a project owner controls. */
+/**
+ * Upper bound on the stored length of {@link Project.gitIgnorePatterns}, a defensive cap on an
+ *  otherwise-unbounded free-text field a project owner controls.
+ */
 const GIT_IGNORE_PATTERNS_MAX_LENGTH = 20_000;
 
 /**

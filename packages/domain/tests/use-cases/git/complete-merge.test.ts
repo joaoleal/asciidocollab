@@ -13,6 +13,7 @@ import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { UserId } from '../../../src/value-objects/ids/user-id';
 import { Role } from '../../../src/value-objects/identity/role';
 import { AUDIT_AUTHZ_DENIED, AUDIT_GIT_CONFLICTS_RESOLVED } from '../../../src/audit-actions';
+import { buildGitDriftSummary } from '../../../src/types/git-drift-summary';
 import type { GitMergeFileChange, GitResolveMergeOutcome } from '../../../src/ports/git/git-command-runner';
 import type { FileChangeReconciler } from '../../../src/use-cases/git/pull-changes';
 import { InMemoryProjectMemberRepository } from '../../ports/project/in-memory-project-member.repository';
@@ -42,7 +43,7 @@ const RESOLVED_OUTCOME: GitResolveMergeOutcome = {
 
 function makeReconciler(): FileChangeReconciler & { apply: jest.Mock } {
   return {
-    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: [CONFLICT_PATH] } }),
+    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: [CONFLICT_PATH], anomalies: [] } }),
   };
 }
 
@@ -65,6 +66,8 @@ interface HarnessOptions {
   awaitingConflict?: boolean;
   /** When false, the second conflict is left unresolved. */
   allResolved?: boolean;
+  /** The remote head preserved on the CONFLICTED row; null when none was recorded at detection. */
+  remoteHead?: string | null;
 }
 
 async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -74,6 +77,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     kind = 'PULL',
     awaitingConflict = true,
     allResolved = true,
+    remoteHead = 'previous-head-commit-hash',
   } = options;
 
   const memberRepo = new InMemoryProjectMemberRepository();
@@ -98,7 +102,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
         CURRENT_BRANCH,
         'CONFLICTED',
         'main',
-        'previous-head-commit-hash',
+        remoteHead,
         new Date('2024-01-01T00:00:00.000Z'),
         new Date('2024-01-01T00:00:00.000Z'),
         ACTOR_ID,
@@ -176,7 +180,7 @@ describe('CompleteMergeUseCase', () => {
     const call = harness.commandRunner.resolveMergeCalls[0];
     expect(call.input.branch).toBe(CURRENT_BRANCH);
     expect(call.input.operationId).toBe(harness.operationId);
-    const sortedResolutions = [...call.input.resolutions].sort((a, b) => a.path.localeCompare(b.path));
+    const sortedResolutions = call.input.resolutions.toSorted((a, b) => a.path.localeCompare(b.path));
     expect(sortedResolutions).toEqual([
       { path: CONFLICT_PATH, resolution: 'ours' },
       { path: OTHER_PATH, resolution: 'theirs' },
@@ -190,11 +194,78 @@ describe('CompleteMergeUseCase', () => {
     expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(harness.operationId);
 
     const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
-    expect(saved?.syncStatus).toBe('UP_TO_DATE');
-    expect(saved?.lastKnownRemoteHead).toBe(RESOLVED_HEAD);
+    // The resolving merge commit is a local commit the remote lacks, so the branch is AHEAD — not
+    // UP_TO_DATE — and the observed remote head stays the one fetched when the conflict was detected
+    // (preserved on the CONFLICTED row), never the local resolving commit.
+    expect(saved?.syncStatus).toBe('AHEAD');
+    expect(saved?.lastKnownRemoteHead).toBe('previous-head-commit-hash');
 
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
     expect(audits.some((entry) => entry.action === AUDIT_GIT_CONFLICTS_RESOLVED)).toBe(true);
+  });
+
+  test('a PULL completed with no recorded remote head leaves lastKnownRemoteHead null, never the local resolving commit', async () => {
+    const harness = await buildHarness({ remoteHead: null });
+    harness.commandRunner.seedResolveMerge(PROJECT_ID, RESOLVED_OUTCOME);
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(true);
+
+    const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    // The local resolving commit is one the remote lacks, so it must never be written as the
+    // observed remote head. With none recorded at detection, the field stays null (not RESOLVED_HEAD).
+    expect(saved?.lastKnownRemoteHead).toBeNull();
+    expect(saved?.lastKnownRemoteHead).not.toBe(RESOLVED_HEAD);
+    expect(saved?.syncStatus).toBe('AHEAD');
+  });
+
+  test('folds reconciler drift into the completion audit metadata', async () => {
+    const harness = await buildHarness();
+    const anomalies = [
+      { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false, message: 'dropped' },
+    ];
+    harness.reconciler.apply.mockResolvedValue({ success: true, value: { changedPaths: [CONFLICT_PATH], anomalies } });
+
+    await harness.useCase.execute(completeInput());
+
+    const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    const entry = audits.find((audit) => audit.action === AUDIT_GIT_CONFLICTS_RESOLVED);
+    expect(entry).toBeDefined();
+    expect(entry!.metadata).toMatchObject({ kind: 'PULL', total: 1, droppedCount: 1 });
+  });
+
+  test('persists a drift summary on the SUCCEEDED row when a resolved landing dropped content, matching buildGitDriftSummary', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedResolveMerge(PROJECT_ID, RESOLVED_OUTCOME);
+    const anomalies = [
+      { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false, message: 'dropped' },
+    ];
+    harness.reconciler.apply.mockResolvedValue({ success: true, value: { changedPaths: [CONFLICT_PATH], anomalies } });
+
+    const result = await harness.useCase.execute(completeInput());
+    expect(result.success).toBe(true);
+
+    // The conflict-resolution success path must persist the SAME summary a clean pull records, so the
+    // polling client warns the user that a pulled change was dropped.
+    const operation = await harness.gitOperationRepo.findById(harness.operationId);
+    expect(operation?.state).toBe('SUCCEEDED');
+    expect(operation?.driftSummary).toEqual(buildGitDriftSummary(anomalies));
+    expect(operation?.driftSummary?.total).toBe(1);
+    expect(operation?.driftSummary?.droppedCount).toBe(1);
+  });
+
+  test('leaves the SUCCEEDED row drift summary null when the resolved landing was clean', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedResolveMerge(PROJECT_ID, RESOLVED_OUTCOME);
+    // The default reconciler returns no anomalies — a clean landing, consistent with the clean pull path.
+
+    const result = await harness.useCase.execute(completeInput());
+    expect(result.success).toBe(true);
+
+    const operation = await harness.gitOperationRepo.findById(harness.operationId);
+    expect(operation?.state).toBe('SUCCEEDED');
+    expect(operation?.driftSummary).toBeNull();
   });
 
   test('any unresolved conflict refuses with UnresolvedConflictsError and changes nothing', async () => {

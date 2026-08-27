@@ -9,6 +9,7 @@ import { DomainError } from '../domain-error';
 export class RepositoryAlreadyConnectedError extends DomainError {
   readonly name = 'RepositoryAlreadyConnectedError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('This project is already connected to a remote repository');
   }

@@ -104,7 +104,7 @@ interface ConflictFileRowProperties {
   onKeepOurs: (path: string) => void;
   onTakeTheirs: (path: string) => void;
   onEditMerge: (path: string) => void;
-  onMergeSaved: (path: string, mergedContent: string) => void;
+  onMergeSaved: (path: string, mergedContent: string) => Promise<void>;
   onMergeCancelled: () => void;
 }
 
@@ -236,19 +236,33 @@ export function ConflictPanel({
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [rowMessage, setRowMessage] = useState<{ path: string; text: string } | null>(null);
 
-  const runResolve = (path: string, resolution: ConflictResolution, mergedContent?: string) => {
+  // Returns the underlying resolve promise so the merge editor's Save button can stay disabled until
+  // the network call settles. A failure is surfaced as a per-file message here and re-thrown, so the
+  // awaiting caller sees the rejection rather than mistaking a failed resolve for a completed one.
+  const runResolve = async (
+    path: string,
+    resolution: ConflictResolution,
+    mergedContent?: string,
+  ): Promise<void> => {
     setResolvingPath(path);
     setRowMessage(null);
-    resolve(path, resolution, mergedContent)
-      .then(() => {
-        setEditingPath((current) => (current === path ? null : current));
-      })
-      .catch((caughtError: unknown) => {
-        setRowMessage({ path, text: describeConflictFailure(caughtError) });
-      })
-      .finally(() => {
-        setResolvingPath(null);
-      });
+    try {
+      await resolve(path, resolution, mergedContent);
+      setEditingPath((current) => (current === path ? null : current));
+    } catch (caughtError: unknown) {
+      setRowMessage({ path, text: describeConflictFailure(caughtError) });
+      throw caughtError;
+    } finally {
+      setResolvingPath(null);
+    }
+  };
+
+  // Whole-file Keep-ours / Take-theirs have no awaiting caller, so start the resolve and swallow the
+  // rejection here — the failure is already shown as the per-file message set inside `runResolve`.
+  const startResolve = (path: string, resolution: ConflictResolution) => {
+    void runResolve(path, resolution).catch(() => {
+      // Already surfaced as a per-file message.
+    });
   };
 
   return (
@@ -305,8 +319,8 @@ export function ConflictPanel({
                     resolvingPath={resolvingPath}
                     editingPath={editingPath}
                     rowMessage={rowMessage}
-                    onKeepOurs={(path) => runResolve(path, 'ours')}
-                    onTakeTheirs={(path) => runResolve(path, 'theirs')}
+                    onKeepOurs={(path) => startResolve(path, 'ours')}
+                    onTakeTheirs={(path) => startResolve(path, 'theirs')}
                     onEditMerge={(path) => setEditingPath(path)}
                     onMergeSaved={(path, mergedContent) => runResolve(path, 'merged', mergedContent)}
                     onMergeCancelled={() => setEditingPath(null)}

@@ -9,6 +9,7 @@ import { DomainError } from '../domain-error';
 export class RepositoryNotConnectedError extends DomainError {
   readonly name = 'RepositoryNotConnectedError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('This project has no connected Git repository');
   }

@@ -1,4 +1,4 @@
-import { parsePorcelainStatus } from '../../src/git/git-command-runner.js';
+import { parsePorcelainStatus } from '../../src/git/output-parsers.js';
 
 /**
  * Unit tests for {@link parsePorcelainStatus} against SYNTHETIC porcelain v2 text.

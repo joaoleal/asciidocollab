@@ -8,7 +8,9 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequestArrow,
+  KeyRound,
   Unplug,
+  Upload,
   type LucideIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -49,6 +51,10 @@ export function syncStatusStyle(status: GitSyncStatus): SyncStatusStyle {
     case 'DISCONNECTED': {
       return { className: 'text-muted-foreground', label: 'Disconnected' };
     }
+    case 'NEEDS_REAUTH': {
+      // The stored credential was rejected — an attention state that steers the owner to rotate it.
+      return { className: 'text-[hsl(var(--warning))]', label: 'Reconnect needed' };
+    }
   }
 }
 
@@ -60,6 +66,7 @@ const SYNC_STATUS_ICON: Readonly<Record<GitSyncStatus, LucideIcon>> = {
   DIVERGED: GitMerge,
   CONFLICTED: AlertTriangle,
   DISCONNECTED: Unplug,
+  NEEDS_REAUTH: KeyRound,
 };
 
 /** Props for {@link GitConnectionStatusBar}. */
@@ -91,6 +98,12 @@ export interface GitConnectionStatusBarProperties {
    * Left undefined to hide the affordance entirely, e.g. while the caller has nothing to open yet.
    */
   onPreviewPushClick?: () => void;
+  /** Whether the viewer may push — shows the Push button (when a push is available) when true. */
+  canPush?: boolean;
+  /** Called when the Push button is clicked. */
+  onPushClick?: () => void;
+  /** True while a push is in flight — disables the Push button. */
+  pushPending?: boolean;
 }
 
 /**
@@ -112,6 +125,9 @@ export function GitConnectionStatusBar({
   onPullClick,
   pullPending = false,
   onPreviewPushClick,
+  canPush = false,
+  onPushClick,
+  pushPending = false,
 }: GitConnectionStatusBarProperties): React.JSX.Element | null {
   if (!connected) return null;
   if (loading && !status) return null;
@@ -119,6 +135,11 @@ export function GitConnectionStatusBar({
 
   const syncStyle = syncStatusStyle(status.syncStatus);
   const SyncIcon = SYNC_STATUS_ICON[status.syncStatus];
+  // A rejected credential ("Reconnect needed"): the ahead count still reports commits from the last
+  // known remote head, but a push would fail auth immediately. Suppress the Push affordance so the
+  // owner is steered to reconnect rather than into a guaranteed auth failure. Keyed on the same sync
+  // status that drives the "Reconnect needed" label so the affordance and the label never disagree.
+  const needsReauth = status.syncStatus === 'NEEDS_REAUTH';
 
   return (
     <div className="flex items-center gap-3 text-sm">
@@ -149,6 +170,18 @@ export function GitConnectionStatusBar({
         <Button variant="outline" size="sm" onClick={onPreviewPushClick}>
           <ArrowUp className="mr-2 h-4 w-4" aria-hidden="true" />
           Preview push
+        </Button>
+      )}
+      {canPush && !needsReauth && behindAhead !== null && behindAhead.behind === 0 && behindAhead.ahead > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onPushClick}
+          disabled={pushPending}
+          aria-label={`ahead by ${behindAhead.ahead} — push available`}
+        >
+          <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
+          {pushPending ? 'Pushing…' : 'Push'}
         </Button>
       )}
       {canPull && behindAhead !== null && behindAhead.behind > 0 && (

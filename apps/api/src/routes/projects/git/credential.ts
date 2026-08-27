@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { ProjectId, UserId, recordAuditSuccess, AUDIT_GIT_CREDENTIAL_ROTATED } from '@asciidocollab/domain';
+import { GitRepository, ProjectId, UserId, recordAuditSuccess, AUDIT_GIT_CREDENTIAL_ROTATED } from '@asciidocollab/domain';
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireOwnerRole } from '../../../lib/git-write-lock';
 import { requestContextFrom } from '../../../lib/request-context';
@@ -81,6 +81,29 @@ export async function gitCredentialRoutes(app: FastifyInstance): Promise<void> {
         provider: existing.provider,
         createdByUserId: actorId,
       });
+
+      // Rotating the credential re-admits a repo the previous credential locked out: if it was
+      // parked in NEEDS_REAUTH, optimistically reset it to UP_TO_DATE so the next background sweep
+      // re-fetches and computes the real status. Only this case is touched — every other status is
+      // left exactly as stored. (The token itself is never part of this row and is never logged.)
+      if (existing.syncStatus === 'NEEDS_REAUTH') {
+        await request.server.repos.gitRepository.save(
+          new GitRepository(
+            existing.id,
+            existing.projectId,
+            existing.provider,
+            existing.remoteUrl,
+            existing.credentialReference,
+            existing.currentBranch,
+            'UP_TO_DATE',
+            existing.defaultBranch,
+            existing.lastKnownRemoteHead,
+            existing.lastSyncAt,
+            existing.createdAt,
+            existing.connectedByUserId,
+          ),
+        );
+      }
 
       // The store derives the display hint from the token itself; reading it back rather than
       // recomputing it here keeps this route from ever holding a second opinion about what a safe

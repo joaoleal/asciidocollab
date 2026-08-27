@@ -6,6 +6,8 @@ describe('diffLineRole', () => {
     ['index abc123..def456 100644', 'file-header'],
     ['--- a/foo.adoc', 'file-header'],
     ['+++ b/foo.adoc', 'file-header'],
+    ['--- /dev/null', 'file-header'],
+    ['+++ /dev/null', 'file-header'],
     ['---', 'file-header'],
     ['+++', 'file-header'],
     ['new file mode 100644', 'file-header'],
@@ -24,6 +26,16 @@ describe('diffLineRole', () => {
 
   test('a removed line beginning with extra dashes is still classified as removed, not a file header', () => {
     expect(diffLineRole('-- a heading in the old content')).toBe('removed');
+  });
+
+  test('a removed body line whose own content begins with "-- " (so the diff line reads "--- …") is removed, not a file header', () => {
+    // The removal prefix `-` plus content `-- a heading` renders as `--- a heading`, which the loose
+    // `--- ` prefix used to mis-color as a muted file header instead of a destructive removal.
+    expect(diffLineRole('--- a heading in the old content')).toBe('removed');
+  });
+
+  test('an added body line whose own content begins with "++ " (so the diff line reads "+++ …") is added, not a file header', () => {
+    expect(diffLineRole('+++ a heading in the new content')).toBe('added');
   });
 });
 

@@ -82,7 +82,7 @@ beforeEach(() => {
   mockInitializeRepository.mockResolvedValue({ operationId: 'op1', projectId: PROJECT_ID });
   mockDisconnectRepository.mockResolvedValue({ ok: true });
   mockRotateGitCredential.mockResolvedValue({ tokenHint: '…a1b2' });
-  mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'INITIALIZE', state: 'QUEUED', progress: 0, errorCode: null });
+  mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'INITIALIZE', state: 'QUEUED', progress: 0, errorCode: null, driftSummary: null });
   mockGetOAuthProviders.mockResolvedValue({ providers: [] });
   mockStartGitOAuth.mockResolvedValue({ authorizeUrl: 'https://github.com/login/oauth/authorize?mock=1' });
 });
@@ -162,7 +162,7 @@ describe('RepositorySection — disconnected', () => {
     fireEvent.click(screen.getByRole('button', { name: /^initialize & publish$/i }));
     await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'INITIALIZE', state: 'SUCCEEDED', progress: 100, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'INITIALIZE', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
     await act(async () => {
       jest.advanceTimersByTime(1500);
     });
@@ -363,7 +363,7 @@ describe('RepositorySection — connected', () => {
     const dialog = screen.getByRole('dialog');
     const describedBy = dialog.getAttribute('aria-describedby');
     expect(describedBy).toBeTruthy();
-    expect(document.getElementById(describedBy as string)?.textContent).toMatch(/credential/i);
+    expect(document.querySelector(`[id="${describedBy}"]`)?.textContent).toMatch(/credential/i);
   });
 
   test('disconnecting only happens on the explicit confirm button', async () => {

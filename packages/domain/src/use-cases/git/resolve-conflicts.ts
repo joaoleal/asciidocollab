@@ -33,7 +33,10 @@ export interface ResolveConflictsInput {
 }
 
 /** What a successful resolution hands back. */
-export type ResolveConflictsResult = { readonly resolved: true };
+export type ResolveConflictsResult = {
+  /** Always `true` on success — there is no other success outcome. */
+  readonly resolved: true;
+};
 
 /**
  * Records a per-file resolution decision for one file of a conflicted pull/switch: keep-local

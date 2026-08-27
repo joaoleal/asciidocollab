@@ -35,6 +35,7 @@ enum GitSyncStatus {
   DIVERGED
   CONFLICTED
   DISCONNECTED
+  NEEDS_REAUTH
 }
 
 enum GitOperationKind {
@@ -123,7 +124,6 @@ model Project {
   mainFileNodeId String?   @db.Uuid
   // Maintainer-editable git-ignore patterns (owner-gated), merged by the git-worker into the
   // project's managed .gitignore alongside the always-ignored internal entries (.collab/, *.tmp).
-  // Schema-only addition: no migration generated yet (see project's migration policy).
   gitIgnorePatterns String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -272,6 +272,7 @@ model GitOperation {
   progress          Int               @default(0) // 0..100
   heartbeatAt       DateTime? // worker liveness; a stale heartbeat on a non-terminal op → swept to FAILED
   errorCode         String? // typed domain error code (safe, no internals)
+  driftSummary      Json? // set on a SUCCEEDED pull/switch whose reconcile hit drift: { total, droppedCount, anomalies[] } — surfaced to the user who has no log access
   startedAt         DateTime?
   finishedAt        DateTime?
   createdAt         DateTime          @default(now())
@@ -452,8 +453,7 @@ model EditorPreferences {
   minimapEnabled    Boolean  @default(false)
   // Per-user opt-in: when true, a commit authored by this user records a deterministic
   // privacy-preserving email instead of the user's real account email (see
-  // `resolveCommitAuthorEmail` in the domain package). Schema-only addition: no migration
-  // generated yet (see this project's migration policy).
+  // `resolveCommitAuthorEmail` in the domain package).
   privateCommitEmail Boolean @default(false)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt

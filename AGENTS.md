@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
-Active feature plan: specs/047-project-clone/plan.md
+Active feature plan: specs/048-git-repository-sync/plan.md
 <!-- SPECKIT END -->
 
 ## Hard Constraints (MUST NOT)

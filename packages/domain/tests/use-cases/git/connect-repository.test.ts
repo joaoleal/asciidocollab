@@ -294,6 +294,54 @@ describe('ConnectRepositoryUseCase', () => {
     expect(entries.some((entry) => entry.action === 'git.repository_connected')).toBe(true);
   });
 
+  test('when the repository link fails to save after the credential was stored, the credential is rolled back and the original error propagates', async () => {
+    const harness = await buildHarness('owner');
+    const linkSaveError = new Error('database constraint violation');
+    harness.gitRepositoryRepo.save = async () => {
+      throw linkSaveError;
+    };
+
+    await expect(
+      harness.useCase.execute({
+        actorId: OWNER_ID,
+        projectId: PROJECT_ID,
+        provider: 'github',
+        remoteUrl: REMOTE_URL,
+        token: TOKEN,
+      }),
+    ).rejects.toBe(linkSaveError);
+
+    // No orphaned credential material: the just-saved credential was rolled back.
+    expect(await harness.credentialStore.load(PROJECT_ID)).toBeNull();
+    expect(await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID)).toBeNull();
+  });
+
+  test('a rollback-delete failure is swallowed and logged without the token, and the original save error still propagates', async () => {
+    const harness = await buildHarness('owner');
+    const linkSaveError = new Error('database constraint violation');
+    harness.gitRepositoryRepo.save = async () => {
+      throw linkSaveError;
+    };
+    harness.credentialStore.delete = async () => {
+      throw new Error('credential store unavailable');
+    };
+
+    await expect(
+      harness.useCase.execute({
+        actorId: OWNER_ID,
+        projectId: PROJECT_ID,
+        provider: 'github',
+        remoteUrl: REMOTE_URL,
+        token: TOKEN,
+      }),
+    ).rejects.toBe(linkSaveError);
+
+    for (const call of harness.logger.warnCalls) {
+      expect(call.message).not.toContain(TOKEN);
+      expect(JSON.stringify(call.meta ?? {})).not.toContain(TOKEN);
+    }
+  });
+
   test('the token never appears in anything logged, nor in any audit entry, on either a denied or a failed connect', async () => {
     const denied = await buildHarness('editor');
     await denied.useCase.execute({

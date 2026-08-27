@@ -1,6 +1,10 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
+import { ValidationError } from '@asciidocollab/domain';
 import { gitIgnorePatternsRoutes } from '../../../src/routes/projects/git-ignore-patterns';
+
+/** Mirrors `Project`'s own limit (`GIT_IGNORE_PATTERNS_MAX_LENGTH`), which the real domain entity enforces. */
+const GIT_IGNORE_PATTERNS_MAX_LENGTH = 20_000;
 
 jest.mock('../../../src/plugins/require-auth', () => ({
   requireAuth: jest.fn((_request: unknown, _rep: unknown, done: () => void) => done()),
@@ -36,7 +40,15 @@ function buildServer(options: ServerOptions = {}): {
             ? {
                 id: { value: PROJECT_ID },
                 gitIgnorePatterns: stored,
+                // Mirrors the real `Project.setGitIgnorePatterns` behavior closely enough for this
+                // route's error-mapping to be exercised: it rejects an over-long value with the same
+                // `ValidationError` the real domain entity throws, and otherwise just stores the value.
                 setGitIgnorePatterns: jest.fn(function (this: { gitIgnorePatterns: string | null }, value: string | null) {
+                  if (value !== null && value.length > GIT_IGNORE_PATTERNS_MAX_LENGTH) {
+                    throw new ValidationError(
+                      `gitIgnorePatterns must not exceed ${GIT_IGNORE_PATTERNS_MAX_LENGTH} characters`,
+                    );
+                  }
                   this.gitIgnorePatterns = value;
                 }),
               }
@@ -202,6 +214,20 @@ describe('PUT /projects/:projectId/git-ignore-patterns', () => {
       payload: { gitIgnorePatterns: 'build/' },
     });
     expect(response.statusCode).toBe(404);
+    expect(save).not.toHaveBeenCalled();
+    await instance.close();
+  });
+
+  it('rejects a value exceeding the maximum stored length with 400', async () => {
+    const { app, save } = buildServer({ role: 'owner' });
+    const instance = await app;
+    const response = await instance.inject({
+      method: 'PUT',
+      url: `/api/projects/${PROJECT_ID}/git-ignore-patterns`,
+      payload: { gitIgnorePatterns: 'x'.repeat(GIT_IGNORE_PATTERNS_MAX_LENGTH + 1) },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('ValidationFailed');
     expect(save).not.toHaveBeenCalled();
     await instance.close();
   });

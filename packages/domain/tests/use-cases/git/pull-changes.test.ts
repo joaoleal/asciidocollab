@@ -68,6 +68,9 @@ const MERGE_CHANGES: readonly GitMergeFileChange[] = [
 const CHANGED_PATHS = ['chapters/new.adoc'];
 
 const MERGED_OUTCOME: GitMergeOutcome = { status: 'merged', headCommit: MERGE_HEAD, changes: MERGE_CHANGES };
+// A pure fast-forward leaves the local branch tip exactly ON the fetched remote head: no local
+// commit the remote lacks, so the project is genuinely UP_TO_DATE afterwards.
+const FAST_FORWARD_OUTCOME: GitMergeOutcome = { status: 'merged', headCommit: REMOTE_HEAD, changes: MERGE_CHANGES };
 const CONFLICTED_OUTCOME: GitMergeOutcome = {
   status: 'conflicted',
   conflicts: [
@@ -84,7 +87,7 @@ function makeReader(
 
 function makeReconciler(): FileChangeReconciler & { apply: jest.Mock } {
   return {
-    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: CHANGED_PATHS } }),
+    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: CHANGED_PATHS, anomalies: [] } }),
   };
 }
 
@@ -178,9 +181,11 @@ function pullInput() {
 }
 
 describe('PullChangesUseCase', () => {
-  test('a clean merge reconciles the change-set, refreshes the row to UP_TO_DATE, and audits success', async () => {
+  test('a clean merge that lands a local commit ahead of the remote refreshes the row to AHEAD, and audits nothing', async () => {
     const harness = await buildHarness();
     harness.commandRunner.seedFetch(PROJECT_ID, { remoteHead: REMOTE_HEAD });
+    // The merge left the local branch tip (MERGE_HEAD) past the fetched remote head — e.g. a live-edit
+    // flush commit that is not yet pushed — so the project is AHEAD, not UP_TO_DATE.
     harness.commandRunner.seedMerge(PROJECT_ID, MERGED_OUTCOME);
 
     const before = new Date();
@@ -188,15 +193,16 @@ describe('PullChangesUseCase', () => {
 
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.value).toEqual({ status: 'merged', headCommit: MERGE_HEAD, changedPaths: CHANGED_PATHS });
+    expect(result.value).toEqual({ status: 'merged', headCommit: MERGE_HEAD, changedPaths: CHANGED_PATHS, anomalies: [] });
 
     // The reconciler received the merge's own change-set.
     expect(harness.reconciler.apply).toHaveBeenCalledTimes(1);
     expect(harness.reconciler.apply).toHaveBeenCalledWith(PROJECT_ID, MERGE_CHANGES);
 
-    // The row is refreshed: UP_TO_DATE, remote head from the FETCH, lastSyncAt stamped.
+    // The row is refreshed: AHEAD (a just-flushed local commit still needs pushing — not hidden as
+    // UP_TO_DATE), remote head from the FETCH, lastSyncAt stamped.
     const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
-    expect(saved?.syncStatus).toBe('UP_TO_DATE');
+    expect(saved?.syncStatus).toBe('AHEAD');
     expect(saved?.lastKnownRemoteHead).toBe(REMOTE_HEAD);
     expect(saved?.lastSyncAt).not.toBeNull();
     expect((saved?.lastSyncAt as Date).getTime()).toBeGreaterThanOrEqual(before.getTime());
@@ -208,6 +214,48 @@ describe('PullChangesUseCase', () => {
     // requireGitRole); the git-worker run loop records the terminal SUCCEEDED audit for an async op.
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
     expect(audits).toHaveLength(0);
+  });
+
+  test('records a git.pull_partially_applied audit and returns the anomalies when the reconciler hit drift', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedFetch(PROJECT_ID, { remoteHead: REMOTE_HEAD });
+    harness.commandRunner.seedMerge(PROJECT_ID, MERGED_OUTCOME);
+    const anomalies = [
+      { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false, message: 'dropped: a folder occupies that path' },
+      { path: 'ghost.adoc', kind: 'modified_missing_node', applied: true, message: 'created as a new file' },
+    ];
+    harness.reconciler.apply.mockResolvedValue({ success: true, value: { changedPaths: CHANGED_PATHS, anomalies } });
+
+    const result = await harness.useCase.execute(pullInput());
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.value).toEqual({ status: 'merged', headCommit: MERGE_HEAD, changedPaths: CHANGED_PATHS, anomalies });
+
+    // A durable, user-readable record of the drift — the user has no log access.
+    const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.action).toBe('git.pull_partially_applied');
+    expect(audits[0]!.metadata).toMatchObject({ total: 2, droppedCount: 1 });
+    expect(audits[0]!.metadata.anomalies).toEqual(anomalies);
+  });
+
+  test('a clean fast-forward merge that leaves local level with the remote refreshes the row to UP_TO_DATE', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedFetch(PROJECT_ID, { remoteHead: REMOTE_HEAD });
+    // The merge fast-forwarded the local branch exactly onto the fetched remote head: no local commit
+    // the remote lacks, so the project is genuinely UP_TO_DATE.
+    harness.commandRunner.seedMerge(PROJECT_ID, FAST_FORWARD_OUTCOME);
+
+    const result = await harness.useCase.execute(pullInput());
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.value).toEqual({ status: 'merged', headCommit: REMOTE_HEAD, changedPaths: CHANGED_PATHS, anomalies: [] });
+
+    const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    expect(saved?.syncStatus).toBe('UP_TO_DATE');
+    expect(saved?.lastKnownRemoteHead).toBe(REMOTE_HEAD);
   });
 
   test('the fetch is authenticated with the token and the remote URL and branch of the row', async () => {

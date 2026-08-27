@@ -8,8 +8,10 @@ import { sendGitErrorResponse, sendGitWorkerUnavailableResponse } from '../../..
 
 /** Body accepted by `POST /projects/:projectId/git/commit`. */
 interface GitCommitBody {
-  /** The commit message. Deliberately unvalidated by schema (see route doc) — an empty/whitespace
-   * message is left to reach the worker, which reports `EmptyCommitMessageError` (422). */
+  /**
+   * The commit message. Deliberately unvalidated by schema (see route doc) — an empty/whitespace
+   * message is left to reach the worker, which reports `EmptyCommitMessageError` (422).
+   */
   message: string;
 }
 

@@ -57,7 +57,7 @@ describe('bucketStatus (pure helper)', () => {
 
   test('drops no field beyond path/changeType per bucketed change', () => {
     const dto = bucketStatus(statusData({ changes: [{ path: 'a.adoc', changeType: 'modified', state: 'staged' }] }));
-    expect(Object.keys(dto.staged[0]).sort()).toEqual(['changeType', 'path']);
+    expect(Object.keys(dto.staged[0]).toSorted()).toEqual(['changeType', 'path']);
   });
 });
 
@@ -66,38 +66,35 @@ function mockGetStatus(result: GitWorkerResult<GitWorkerStatusData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): FastifyInstance {
+  const { role = 'viewer', client = {} } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      getStatus: mockGetStatus({ ok: true, data: statusData() }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(gitStatusRoutes);
+  return instance;
+}
+
+function getStatus(app: FastifyInstance, projectId: string) {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/status` });
+}
+
 describe('GET /projects/:projectId/git/status', () => {
-  function buildServer(options: {
-    role?: string | null;
-    client?: Partial<GitWorkerClient>;
-  }): FastifyInstance {
-    const { role = 'viewer', client = {} } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        getStatus: mockGetStatus({ ok: true, data: statusData() }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(gitStatusRoutes);
-    return instance;
-  }
-
-  function getStatus(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/status` });
-  }
-
   test('returns 200 with the bucketed status for a viewer-tier member', async () => {
     const instance = await register(
       buildServer({

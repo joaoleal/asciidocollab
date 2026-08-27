@@ -13,7 +13,7 @@ import {
   RepositoryUnreachableError,
   UserId,
 } from '@asciidocollab/domain';
-import type { DomainError, FileChangeReconciler, GitMergeFileChange, Logger, Result } from '@asciidocollab/domain';
+import type { DomainError, FileChangeReconciler, GitChangeReconcileResult, GitMergeFileChange, GitReconcileAnomaly, Logger, Result } from '@asciidocollab/domain';
 import {
   createPullHandler,
   PULL_CREDENTIAL_NOT_FOUND_ERROR_CODE,
@@ -53,15 +53,20 @@ class SpyLogger implements Logger {
  */
 class StubReconciler implements FileChangeReconciler {
   readonly calls: Array<{ projectId: ProjectId; changes: readonly GitMergeFileChange[] }> = [];
+  /** Anomalies the next apply reports back, so a test can exercise the drift-summary path. */
+  anomaliesToReturn: readonly GitReconcileAnomaly[] = [];
 
   async apply(
     projectId: ProjectId,
     changes: readonly GitMergeFileChange[],
-  ): Promise<Result<{ changedPaths: readonly string[] }, DomainError>> {
+  ): Promise<Result<GitChangeReconcileResult, DomainError>> {
     this.calls.push({ projectId, changes });
     return {
       success: true,
-      value: { changedPaths: changes.map((change) => ('path' in change ? change.path : change.toPath)) },
+      value: {
+        changedPaths: changes.map((change) => ('path' in change ? change.path : change.toPath)),
+        anomalies: this.anomaliesToReturn,
+      },
     };
   }
 }
@@ -158,6 +163,51 @@ describe('createPullHandler', () => {
 
     expect(outcome).toEqual({ kind: 'succeeded' });
     expect(harness.reconciler.calls).toHaveLength(1);
+  });
+
+  test('a clean merge whose reconcile hit drift carries a drift summary on the succeeded outcome', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingPull(harness, projectId);
+    harness.commandRunner.seedFetch(projectId, { remoteHead: REMOTE_HEAD });
+    harness.commandRunner.seedMerge(projectId, {
+      status: 'merged',
+      headCommit: REMOTE_HEAD,
+      changes: [{ type: 'modified', path: 'docs', content: Buffer.from('content'), mimeType: 'text/asciidoc' }],
+    });
+    harness.reconciler.anomaliesToReturn = [
+      { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false, message: 'dropped' },
+      { path: 'ghost.adoc', kind: 'modified_missing_node', applied: true, message: 'created' },
+    ];
+
+    const outcome = await harness.handler(buildPullOperation(projectId));
+
+    expect(outcome).toEqual({
+      kind: 'succeeded',
+      driftSummary: {
+        total: 2,
+        droppedCount: 1,
+        anomalies: [
+          { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false },
+          { path: 'ghost.adoc', kind: 'modified_missing_node', applied: true },
+        ],
+      },
+    });
+  });
+
+  test('fetch is invoked once for a clean merge', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingPull(harness, projectId);
+    harness.commandRunner.seedFetch(projectId, { remoteHead: REMOTE_HEAD });
+    harness.commandRunner.seedMerge(projectId, {
+      status: 'merged',
+      headCommit: REMOTE_HEAD,
+      changes: [{ type: 'added', path: 'docs/new-page.adoc', content: Buffer.from('content'), mimeType: 'text/asciidoc' }],
+    });
+
+    await harness.handler(buildPullOperation(projectId));
+
     expect(harness.commandRunner.fetchCalls).toEqual([
       { projectId, input: { remoteUrl: REMOTE_URL, token: TOKEN, branch: CURRENT_BRANCH } },
     ]);

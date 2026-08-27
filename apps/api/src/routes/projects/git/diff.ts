@@ -59,9 +59,9 @@ export async function gitDiffRoutes(app: FastifyInstance): Promise<void> {
         result = await request.server.stores.gitWorkerClient.getDiff({
           projectId: projectId.value,
           actorId: actorId.value,
-          ...(path !== undefined ? { path } : {}),
-          ...(from !== undefined ? { from } : {}),
-          ...(to !== undefined ? { to } : {}),
+          ...(path === undefined ? {} : { path }),
+          ...(from === undefined ? {} : { from }),
+          ...(to === undefined ? {} : { to }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {

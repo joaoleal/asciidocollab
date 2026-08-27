@@ -2,7 +2,7 @@ import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitRepository } from '../../entities/git-repository';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitMutationPort, GitReadPort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
@@ -14,13 +14,17 @@ import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
 import { NothingToUndoError } from '../../errors/git/nothing-to-undo';
 import { requireGitRole } from './git-role-guard';
+import { deriveSyncStatus } from './derive-sync-status';
 import { FileChangeReconciler } from './pull-changes';
+import { GitReconcileAnomaly, anomalyAuditMetadata } from './git-change-reconciler';
 import { recordAuditSuccess } from '../audit-recording';
 import { AUDIT_GIT_PULL_UNDONE } from '../../audit-actions';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 // Referenced only from this file's own JSDoc @link tags; kept imported so the links resolve.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { InsufficientRoleError } from '../../errors/git/insufficient-role';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
 
 /** Everything `UndoPullUseCase.execute` needs to undo a project's most recent pull. */
@@ -76,7 +80,7 @@ export class UndoPullUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort & GitMutationPort,
     private readonly conflictStageStore: ConflictStageStore,
     private readonly reconciler: FileChangeReconciler,
     private readonly logger?: Logger,
@@ -156,7 +160,7 @@ export class UndoPullUseCase {
     await this.conflictStageStore.clear(operationId);
     await this.gitOperationRepo.transition(operationId, 'ABORTED');
 
-    await this.audit(input, operationId, 'awaiting_conflict');
+    await this.audit(input, operationId, 'awaiting_conflict', reverted.value.anomalies);
 
     return { success: true, value: { operationId, headCommit: restored.value.headCommit } };
   }
@@ -193,12 +197,17 @@ export class UndoPullUseCase {
     await this.refreshRowAfterUndo(gitRepository, input.projectId);
     await this.conflictStageStore.clear(pull.id);
 
-    await this.audit(input, pull.id, 'succeeded_pull');
+    await this.audit(input, pull.id, 'succeeded_pull', reverted.value.anomalies);
 
     return { success: true, value: { operationId: pull.id, headCommit: restored.value.headCommit } };
   }
 
-  private async audit(input: UndoPullInput, operationId: GitOperationId, undoCase: string): Promise<void> {
+  private async audit(
+    input: UndoPullInput,
+    operationId: GitOperationId,
+    undoCase: string,
+    anomalies: readonly GitReconcileAnomaly[],
+  ): Promise<void> {
     await recordAuditSuccess(
       this.auditLogRepo,
       {
@@ -207,7 +216,9 @@ export class UndoPullUseCase {
         action: AUDIT_GIT_PULL_UNDONE,
         resourceType: 'GitOperation',
         resourceId: operationId.value,
-        metadata: { case: undoCase },
+        // Fold any reconciler drift into the undo's audit: reverting content onto a folder-occupied
+        // path drops it too, and the user (no log access) must be able to see which paths.
+        metadata: { case: undoCase, ...anomalyAuditMetadata(anomalies) },
         context: input.context,
       },
       this.logger,
@@ -242,12 +253,4 @@ export class UndoPullUseCase {
     );
     await this.gitRepositoryRepo.save(updated);
   }
-}
-
-/** Maps a behind/ahead count pair to the closest `GitSyncStatus`. */
-function deriveSyncStatus(behind: number, ahead: number): GitSyncStatus {
-  if (behind > 0 && ahead > 0) return 'DIVERGED';
-  if (behind > 0) return 'BEHIND';
-  if (ahead > 0) return 'AHEAD';
-  return 'UP_TO_DATE';
 }

@@ -130,13 +130,13 @@ export async function gitOAuthCallbackRoutes(app: FastifyInstance): Promise<void
           provider: oauthState.provider,
           remoteUrl: oauthState.remoteUrl,
           token: exchangeResult.value.accessToken,
-          ...(oauthState.branch !== undefined ? { branch: oauthState.branch } : {}),
+          ...(oauthState.branch === undefined ? {} : { branch: oauthState.branch }),
         });
-      } catch (thrown) {
-        if (thrown instanceof GitWorkerTransportError) {
+      } catch (error_) {
+        if (error_ instanceof GitWorkerTransportError) {
           return redirectProjectFailure(reply, frontendUrl, oauthState.projectId);
         }
-        throw thrown;
+        throw error_;
       }
 
       if (!connectResult.ok) {

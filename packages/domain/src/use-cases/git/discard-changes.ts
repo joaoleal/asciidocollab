@@ -1,6 +1,6 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitMutationPort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
@@ -10,6 +10,7 @@ import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
 import { requireGitRole } from './git-role-guard';
 import { FileChangeReconciler } from './pull-changes';
+import { anomalyAuditMetadata } from './git-change-reconciler';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 import { recordAuditSuccess } from '../audit-recording';
@@ -63,7 +64,7 @@ export class DiscardChangesUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitMutationPort,
     private readonly reconciler: FileChangeReconciler,
     private readonly logger?: Logger,
   ) {}
@@ -133,7 +134,7 @@ export class DiscardChangesUseCase {
         action: AUDIT_GIT_CHANGES_DISCARDED,
         resourceType: 'Project',
         resourceId: input.projectId.value,
-        metadata: { count: landed.value.changedPaths.length },
+        metadata: { count: landed.value.changedPaths.length, ...anomalyAuditMetadata(landed.value.anomalies) },
         context: input.context,
       },
       this.logger,

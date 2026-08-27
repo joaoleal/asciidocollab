@@ -30,6 +30,7 @@ import {
   resolveConflict,
   rotateGitCredential,
   startPull,
+  startPush,
   undoPull,
 } from '@/lib/api/git';
 
@@ -120,7 +121,7 @@ describe('importRepository', () => {
 
 describe('getGitOperation', () => {
   test('GETs the project-scoped operation-status endpoint', async () => {
-    const status = { id: 'op1', kind: 'IMPORT', state: 'RUNNING', progress: 42, errorCode: null };
+    const status = { id: 'op1', kind: 'IMPORT', state: 'RUNNING', progress: 42, errorCode: null, driftSummary: null };
     okOnce(status);
 
     const result = await getGitOperation('proj1', 'op1');
@@ -271,6 +272,29 @@ describe('startPull', () => {
     await expect(startPull('proj1')).rejects.toMatchObject({
       status: 409,
       code: 'open_files_need_confirm',
+    });
+  });
+});
+
+describe('startPush', () => {
+  test('POSTs to the project-scoped push endpoint with an empty body', async () => {
+    okOnce({ operationId: 'op1', projectId: 'proj1' });
+
+    const result = await startPush('proj1');
+
+    expect(requestUrl()).toBe(`${API_BASE_URL}/api/projects/proj1/git/push`);
+    expect(requestInit().method).toBe('POST');
+    expect(requestInit().credentials).toBe('include');
+    expect(requestBody()).toEqual({});
+    expect(result).toEqual({ operationId: 'op1', projectId: 'proj1' });
+  });
+
+  test('surfaces a refusal', async () => {
+    failOnce(403, { error: { code: 'insufficient_role', message: 'You need editor access to push.' } });
+
+    await expect(startPush('proj1')).rejects.toMatchObject({
+      status: 403,
+      code: 'insufficient_role',
     });
   });
 });

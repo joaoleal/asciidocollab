@@ -25,7 +25,7 @@ const UNIFIED = [
 // `Dialog.Portal` renders into `document.body`, outside RTL's own `container` div, so the diff
 // view's CodeMirror content is looked up against the whole document rather than the container.
 function diffLines(): HTMLElement[] {
-  return Array.from(document.querySelectorAll('.cm-line'));
+  return [...document.querySelectorAll<HTMLElement>('.cm-line')];
 }
 
 beforeEach(() => {

@@ -55,7 +55,11 @@ export interface BlameViewProperties {
   projectId: string;
   /** Whether the view is currently shown. */
   open: boolean;
-  /** Called whenever the view asks to open or close. */
+  /**
+   * Called whenever the view asks to open or close.
+   *
+   * @param open - True to show the view, false to hide it.
+   */
   onOpenChange: (open: boolean) => void;
   /** The blamed file's project-relative path. */
   path: string;
@@ -87,9 +91,9 @@ export function BlameView({ projectId, open, onOpenChange, path, ref }: BlameVie
         if (!active) return;
         setBlame(result);
       })
-      .catch((caught: unknown) => {
+      .catch((error_: unknown) => {
         if (!active) return;
-        setError(describeBlameFailure(caught));
+        setError(describeBlameFailure(error_));
       })
       .finally(() => {
         if (active) setLoading(false);

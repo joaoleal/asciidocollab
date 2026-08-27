@@ -81,6 +81,13 @@ Domain ← Application ← Infrastructure ← Delivery
 - Database access via Prisma ORM only. The Prisma schema lives in `packages/db`.
 - All queries use the generated Prisma client — raw SQL or untyped queries are not
   permitted without documented justification.
+- **Documented justification (atomic background-job claim):** a background worker MAY use a single
+  raw `SELECT … FOR UPDATE SKIP LOCKED` query to atomically claim the next queued row from a
+  Prisma-modeled work-list table (e.g. `GitOperation`), because Prisma has no first-class SKIP LOCKED
+  primitive and this is the canonical safe-claim pattern. Application/domain data still MUST use the
+  Prisma client; this exemption covers only that one claim query, and it MUST be confined behind a
+  domain port (e.g. `GitOperationRepository.claimNextQueued`) so the raw-SQL surface does not leak
+  past infrastructure.
 - Port interfaces (repositories and storage contracts) are defined in
   `packages/domain/src/ports/` grouped by domain area (user/, project/, file-tree/,
   storage/, auth-tokens/, admin/).
@@ -92,8 +99,12 @@ Domain ← Application ← Infrastructure ← Delivery
 
 ## Async & Integration Rules
 
-- Docker sandbox containers MUST be used for all git operations (FR-011). No git
-  commands execute on the host machine.
+- Git operations MUST run only inside sandboxed git-worker containers (delivery app
+  `apps/git-worker`) — never on the API host or in any application host process. They are served
+  by a bounded, warm worker pool sized to load (not one container per operation, not one per
+  project), each job single-project-scoped in a freshly cleaned workspace. Per-job isolation,
+  egress allowlisting, and credential handling are governed by `security_constitution.md` ›
+  Git Sandbox Security.
 - Real-time collaborative editing via Yjs `Y.Text` with Hocuspocus server.
 - PDF generation via the real Asciidoctor-PDF Ruby gem. Two mandated modes: (a) server sidecar
   (spawned per-render) for non-confidential/server-driven builds; (b) **client-side ruby.wasm** (the
@@ -223,4 +234,22 @@ Architecture rules may evolve over time. When repeated drift is detected:
 | Domain testing         | In-memory fakes                           | Every domain repository has an in-memory fake in the test suite        |
 | Infrastructure testing | testcontainers                            | Integration tests spin up real PostgreSQL/Docker containers            |
 
-**Version**: 2.5.0 | **Ratified**: 2026-05-27 | **Last Amended**: 2026-07-11
+**Version**: 2.6.0 | **Ratified**: 2026-05-27 | **Last Amended**: 2026-08-24
+
+<!--
+AMENDMENT 2.5.0 → 2.6.0 (2026-08-24, MINOR) — driven by feature 048 (git repository synchronization).
+Two backward-compatible mandate evolutions; nothing removed:
+- Async & Integration Rules: the "Docker sandbox container per git operation" wording is replaced by
+  "git runs only inside sandboxed git-worker containers (apps/git-worker), never on a host process,
+  served by a bounded warm worker pool with single-project-scoped, freshly-cleaned jobs". Isolation
+  intent preserved; detailed per-job/egress/credential rules delegated to security_constitution.md
+  1.3.0 (aligned same cycle). This also records apps/git-worker as a sanctioned 4th delivery app.
+- Data Access Rules: added an explicit documented-justification exemption permitting a single raw
+  `SELECT … FOR UPDATE SKIP LOCKED` query for atomic background-job claiming from a Prisma-modeled
+  work-list table, confined behind a domain port. Application/domain data still MUST use Prisma.
+  (No external queue library or advisory locks are introduced.)
+No layer-boundary, contract, or blocking-violation rule changed.
+-->
+
+<!-- Prior version line retained for context:
+**Version**: 2.5.0 | **Ratified**: 2026-05-27 | **Last Amended**: 2026-07-11 -->

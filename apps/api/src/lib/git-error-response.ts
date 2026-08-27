@@ -6,12 +6,15 @@ import type { FastifyReply } from 'fastify';
  * `error.details.path` naming the file a `LiveContentFlushFailedError` could not read.
  */
 export interface GitErrorResponseBody {
+  /** The wire error envelope: a stable machine-readable `code`, a user-facing `message`, and an optional `details.path`. */
   error: { code: string; message: string; details?: { path?: string } };
 }
 
 /** The HTTP status and response body a git route should send for a mapped domain refusal. */
 export interface GitErrorResponse {
+  /** The HTTP status code to reply with. */
   status: number;
+  /** The response body to send. */
   body: GitErrorResponseBody;
 }
 

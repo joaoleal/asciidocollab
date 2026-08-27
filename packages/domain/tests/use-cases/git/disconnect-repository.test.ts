@@ -4,9 +4,7 @@ import { RepositoryNotConnectedError } from '../../../src/errors/git/repository-
 import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
 import { ProjectMember } from '../../../src/entities/project-member';
 import { GitRepository } from '../../../src/entities/git-repository';
-import { GitOperation } from '../../../src/entities/git-operation';
 import { GitRepositoryId } from '../../../src/value-objects/ids/git-repository-id';
-import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
 import { GitProvider } from '../../../src/value-objects/project/git-provider';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { UserId } from '../../../src/value-objects/ids/user-id';

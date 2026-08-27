@@ -35,7 +35,7 @@ const REVERT_CHANGES: readonly GitMergeFileChange[] = [
 
 function makeReconciler(): FileChangeReconciler & { apply: jest.Mock } {
   return {
-    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: ['chapters/intro.adoc'] } }),
+    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: ['chapters/intro.adoc'], anomalies: [] } }),
   };
 }
 

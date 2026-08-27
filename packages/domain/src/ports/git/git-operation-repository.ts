@@ -6,6 +6,7 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { UserId } from '../../value-objects/ids/user-id';
 import { GitOperationKind } from '../../types/git-operation-kind';
 import { GitOperationState } from '../../types/git-operation-state';
+import { GitDriftSummary } from '../../types/git-drift-summary';
 import { ConflictResolution } from '../../types/conflict-resolution';
 import { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
 import { IllegalGitOperationTransitionError } from '../../errors/git/illegal-git-operation-transition';
@@ -24,6 +25,11 @@ export type GitOperationTransitionTarget = Exclude<GitOperationState, 'QUEUED'>;
 export interface GitOperationTransitionInput {
   /** Typed, safe error code to record. Required (and only meaningful) when `toState` is `FAILED`. */
   errorCode?: string;
+  /**
+   * Reconcile-drift summary to record. Meaningful only on a terminal `SUCCEEDED` move for a pull
+   * whose reconcile hit drift; ignored otherwise. Surfaced to the triggering user.
+   */
+  driftSummary?: GitDriftSummary;
 }
 
 /**

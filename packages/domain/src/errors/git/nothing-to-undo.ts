@@ -8,6 +8,7 @@ import { DomainError } from '../domain-error';
 export class NothingToUndoError extends DomainError {
   readonly name = 'NothingToUndoError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('There is nothing to undo for this project');
   }

@@ -1,6 +1,6 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitReadPort } from '../../ports/git/git-command-runner';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
@@ -37,7 +37,7 @@ export class GetBranchesUseCase {
    */
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort,
     private readonly logger?: Logger,
   ) {}
 

@@ -326,9 +326,11 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
     return { success: true, value: result };
   }
 
-  /** Configures `amendCommit` to fail for a project, taking priority over its default success — seed with a
+  /**
+   * Configures `amendCommit` to fail for a project, taking priority over its default success — seed with a
    *  `CommitAlreadyPushedError` or a generic `GitCommandFailedError` to exercise each of `amendCommit`'s typed
-   *  refusals. */
+   *  refusals.
+   */
   seedAmendCommitFailure(projectId: ProjectId, error: GitAmendError): void {
     this.amendCommitFailures.set(projectId.value, error);
   }

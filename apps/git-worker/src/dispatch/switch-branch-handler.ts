@@ -13,7 +13,7 @@ import type {
   Logger,
   ProjectMemberRepository,
 } from '@asciidocollab/domain';
-import { SwitchBranchUseCase } from '@asciidocollab/domain';
+import { SwitchBranchUseCase, buildGitDriftSummary } from '@asciidocollab/domain';
 import type { GitOperationOutcome } from './git-operation-dispatcher.js';
 
 /** Safe, typed error code recorded when a claimed BRANCH_SWITCH operation carries no target branch — a route/enqueue bug, not a user-facing refusal. */
@@ -116,6 +116,10 @@ export function createSwitchBranchHandler(
       return { kind: 'awaitingConflict' };
     }
 
-    return { kind: 'succeeded' };
+    // Carry any reconcile drift onto the terminal outcome so the run loop persists it on the row and
+    // the triggering user is warned — the switch result is otherwise discarded here, exactly as PULL
+    // surfaces its own drift.
+    const driftSummary = buildGitDriftSummary(result.value.anomalies);
+    return driftSummary ? { kind: 'succeeded', driftSummary } : { kind: 'succeeded' };
   };
 }

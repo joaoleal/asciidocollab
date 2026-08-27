@@ -12,7 +12,7 @@ export function toBlameDto(data: GitWorkerBlameData): BlameDto {
     lines: data.lines.map((line) => ({
       lineNumber: line.lineNumber,
       hash: line.hash,
-      ...(line.authorUserId !== undefined ? { authorUserId: line.authorUserId } : {}),
+      ...(line.authorUserId === undefined ? {} : { authorUserId: line.authorUserId }),
       authoredAt: line.authoredAt,
       content: line.content,
     })),
@@ -68,7 +68,7 @@ export async function gitBlameRoutes(app: FastifyInstance): Promise<void> {
           projectId: projectId.value,
           actorId: actorId.value,
           path,
-          ...(ref !== undefined ? { ref } : {}),
+          ...(ref === undefined ? {} : { ref }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {

@@ -11,12 +11,20 @@ import { Decoration, EditorView, type DecorationSet } from '@codemirror/view';
 /** The role one line of a unified diff plays, for coloring. */
 export type DiffLineRole = 'file-header' | 'hunk' | 'added' | 'removed' | 'context';
 
-/** Line prefixes that mark the file-level header preceding a diff's hunks. */
+/**
+ * Line prefixes that mark the file-level header preceding a diff's hunks. The `---`/`+++` from/to
+ * lines are matched by their exact git forms — a prefixed path (`a/…`, `b/…`) or `/dev/null` — not
+ * the bare `--- `/`+++ ` prefix: a removed body line whose content itself begins with `-- ` reads as
+ * `--- …` in the diff, and the loose prefix would mis-color it as a (muted) header instead of a
+ * (destructive) removal. The from-file is always `a/`/`/dev/null` and the to-file `b/`/`/dev/null`.
+ */
 const FILE_HEADER_PREFIXES: readonly string[] = [
   'diff --git',
   'index ',
-  '--- ',
-  '+++ ',
+  '--- a/',
+  '--- /dev/null',
+  '+++ b/',
+  '+++ /dev/null',
   'new file mode',
   'deleted file mode',
   'old mode',

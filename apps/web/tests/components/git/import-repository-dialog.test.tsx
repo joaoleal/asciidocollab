@@ -37,7 +37,7 @@ function fillValidForm() {
   fireEvent.change(tokenField(), { target: { value: 'ghp_super_secret_token' } });
 }
 
-const QUEUED_STATUS = { id: 'op1', kind: 'IMPORT', state: 'QUEUED', progress: 0, errorCode: null };
+const QUEUED_STATUS = { id: 'op1', kind: 'IMPORT', state: 'QUEUED', progress: 0, errorCode: null, driftSummary: null };
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -141,7 +141,7 @@ describe('ImportRepositoryDialog polling', () => {
   });
 
   test('shows progress from the polled status', async () => {
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'IMPORT', state: 'RUNNING', progress: 42, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'IMPORT', state: 'RUNNING', progress: 42, errorCode: null, driftSummary: null });
     renderDialog();
     fillValidForm();
     fireEvent.click(submitButton());
@@ -166,7 +166,7 @@ describe('ImportRepositoryDialog polling', () => {
     fireEvent.click(submitButton());
     await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'IMPORT', state: 'SUCCEEDED', progress: 100, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'IMPORT', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
     await act(async () => {
       jest.advanceTimersByTime(5000);
     });
@@ -210,7 +210,7 @@ describe('ImportRepositoryDialog polling', () => {
     fireEvent.click(submitButton());
     await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'IMPORT', state: 'ABORTED', progress: 10, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'IMPORT', state: 'ABORTED', progress: 10, errorCode: null, driftSummary: null });
     await act(async () => {
       jest.advanceTimersByTime(5000);
     });

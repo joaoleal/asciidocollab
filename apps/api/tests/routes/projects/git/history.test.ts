@@ -26,38 +26,35 @@ function mockGetHistory(result: GitWorkerResult<GitWorkerHistoryData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): FastifyInstance {
+  const { role = 'viewer', client = {} } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      getHistory: mockGetHistory({ ok: true, data: historyData() }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(gitHistoryRoutes);
+  return instance;
+}
+
+function getHistory(app: FastifyInstance, projectId: string, query = '') {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/history${query}` });
+}
+
 describe('GET /projects/:projectId/git/history', () => {
-  function buildServer(options: {
-    role?: string | null;
-    client?: Partial<GitWorkerClient>;
-  }): FastifyInstance {
-    const { role = 'viewer', client = {} } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        getHistory: mockGetHistory({ ok: true, data: historyData() }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(gitHistoryRoutes);
-    return instance;
-  }
-
-  function getHistory(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/history${query}` });
-  }
-
   test('returns 200 with the mapped commits for a viewer-tier member', async () => {
     const instance = await register(buildServer({ role: 'viewer' }));
 
@@ -140,6 +137,45 @@ describe('GET /projects/:projectId/git/history', () => {
     const response = await getHistory(instance, PROJECT_ID, '?limit=-1');
 
     expect(response.statusCode).toBe(400);
+    expect(getHistoryMock).not.toHaveBeenCalled();
+
+    await instance.close();
+  });
+
+  test('rejects a zero limit with 400, without calling the worker', async () => {
+    const getHistoryMock = mockGetHistory({ ok: true, data: historyData() });
+    const instance = await register(buildServer({ role: 'viewer', client: { getHistory: getHistoryMock } }));
+
+    const response = await getHistory(instance, PROJECT_ID, '?limit=0');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('invalid_limit');
+    expect(getHistoryMock).not.toHaveBeenCalled();
+
+    await instance.close();
+  });
+
+  test('rejects an empty-string limit with 400, without calling the worker', async () => {
+    const getHistoryMock = mockGetHistory({ ok: true, data: historyData() });
+    const instance = await register(buildServer({ role: 'viewer', client: { getHistory: getHistoryMock } }));
+
+    const response = await getHistory(instance, PROJECT_ID, '?limit=');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('invalid_limit');
+    expect(getHistoryMock).not.toHaveBeenCalled();
+
+    await instance.close();
+  });
+
+  test('rejects a fractional limit with 400, without calling the worker', async () => {
+    const getHistoryMock = mockGetHistory({ ok: true, data: historyData() });
+    const instance = await register(buildServer({ role: 'viewer', client: { getHistory: getHistoryMock } }));
+
+    const response = await getHistory(instance, PROJECT_ID, '?limit=2.5');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('invalid_limit');
     expect(getHistoryMock).not.toHaveBeenCalled();
 
     await instance.close();

@@ -576,7 +576,7 @@ describe('RealGitCommandRunner.merge', () => {
     expect(await conflictStageStore.readStages(OPERATION_ID, 'base.adoc')).toEqual({ success: true, value: null });
   });
 
-  it('returns GitCommandFailedError and leaves no MERGE_HEAD when a stage read fails on a present stage', async () => {
+  it('hard-fails when a present "ours" (:2:) stage cannot be read, rather than misrecording it as a deletion', async () => {
     const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440088');
     const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
       await writeFile(path.join(tree, 'doc.adoc'), 'base line\n');
@@ -589,8 +589,13 @@ describe('RealGitCommandRunner.merge', () => {
     const conflictStageStore = await createTemporaryConflictStageStore();
     const runner = new RealGitCommandRunner(path.dirname(cwd), [], undefined, conflictStageStore);
 
-    // A shim that forces `git show :2:doc.adoc` (the "ours" stage) to fail, delegating every other
-    // invocation to the real `git` — simulating an unexpected failure reading a PRESENT stage.
+    // A shim that forces `git show :2:doc.adoc` (the "ours" stage) to exit non-zero, delegating every
+    // other invocation to the real `git`. This is a real modify/modify conflict — `git ls-files -u`
+    // (not shimmed) still reports that stage 2 EXISTS — so the failed read is a genuine error, NOT a
+    // deletion. Capture must surface it as a failure, never silently record "ours" as deleted (which
+    // a later resolution would honor by dropping the file the user meant to keep). Absence of a stage
+    // is decided by ls-files, never by a swallowed read failure. (A true modify/delete, where the
+    // stage really is absent, is covered in merge-conflict-stage.test.ts.)
     const { stdout: realGitPath } = await execFile('sh', ['-c', 'command -v git']);
     const shimDirectory = await mkdtemp(path.join(tmpdir(), 'git-worker-test-show-failure-shim-'));
     const shimPath = path.join(shimDirectory, 'git');
@@ -618,16 +623,15 @@ describe('RealGitCommandRunner.merge', () => {
       await rm(shimDirectory, { recursive: true, force: true });
     }
 
+    // The failed read of a stage that genuinely exists is a HARD failure, not a silent deletion.
     expect(result.success).toBe(false);
-    if (result.success) throw new Error('expected failure');
-    expect(result.error).toBeInstanceOf(GitCommandFailedError);
 
-    // The finally-abort ran despite the capture failure: no MERGE_HEAD, clean tree.
+    // The finally-abort still ran: no MERGE_HEAD, clean tree.
     await expect(stat(path.join(cwd, '.git', 'MERGE_HEAD'))).rejects.toThrow();
     const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
     expect(status.trim()).toBe('');
 
-    // Nothing was left half-written for the file whose "ours" read failed.
+    // Nothing was mis-captured: the failed read never recorded "ours" as a deletion.
     expect(await conflictStageStore.readStages(OPERATION_ID, 'doc.adoc')).toEqual({ success: true, value: null });
   });
 
@@ -702,7 +706,7 @@ describe('RealGitCommandRunner.resolveMerge', () => {
     expect(conflicted.success).toBe(true);
     if (!conflicted.success) throw new Error('expected success');
     if (conflicted.value.status !== 'conflicted') throw new Error('expected conflicted');
-    expect(conflicted.value.conflicts.map((c) => c.path).sort()).toEqual(['doc.adoc', 'keep.adoc', 'mix.adoc']);
+    expect(conflicted.value.conflicts.map((c) => c.path).toSorted()).toEqual(['doc.adoc', 'keep.adoc', 'mix.adoc']);
 
     const flushCommit = await readReference(cwd, 'HEAD');
     const remoteTip = await readReference(cwd, 'refs/remotes/origin/main');
@@ -727,7 +731,7 @@ describe('RealGitCommandRunner.resolveMerge', () => {
     // A genuine merge commit: two parents — the local flush tip and the remote-tracking ref.
     const { stdout: parents } = await execFile('git', ['rev-list', '--parents', '-n', '1', 'HEAD'], { cwd });
     const parentHashes = parents.trim().split(/\s+/).slice(1);
-    expect(parentHashes.sort()).toEqual([flushCommit, remoteTip].sort());
+    expect(parentHashes.toSorted()).toEqual([flushCommit, remoteTip].toSorted());
     expect(resolved.value.headCommit).toBe(await readReference(cwd, 'HEAD'));
 
     // The resolutions landed on disk...
@@ -1333,7 +1337,8 @@ describe('RealGitCommandRunner.clone', () => {
 
     const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
     try {
-      const scratchDirsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith('git-worker-clone-'));
+      const scratchEntriesBefore = await readdir(tmpdir());
+      const scratchDirectoriesBefore = scratchEntriesBefore.filter((name) => name.startsWith('git-worker-clone-'));
 
       // A tiny fractional MB ceiling — well below the ~200 KB fixture above — so the clone is
       // rejected regardless of any other content this fixture happens to carry.
@@ -1344,8 +1349,9 @@ describe('RealGitCommandRunner.clone', () => {
       if (result.success) throw new Error('expected failure');
       expect(result.error).toBeInstanceOf(RepositoryTooLargeError);
 
-      const scratchDirsAfter = (await readdir(tmpdir())).filter((name) => name.startsWith('git-worker-clone-'));
-      expect(scratchDirsAfter).toEqual(scratchDirsBefore);
+      const scratchEntriesAfter = await readdir(tmpdir());
+      const scratchDirectoriesAfter = scratchEntriesAfter.filter((name) => name.startsWith('git-worker-clone-'));
+      expect(scratchDirectoriesAfter).toEqual(scratchDirectoriesBefore);
     } finally {
       await server.close();
     }
@@ -1973,7 +1979,6 @@ describe('RealGitCommandRunner.initializeAndPublish', () => {
       await writeFile(path.join(tree, '.collab', 'session.bin'), 'internal state');
       // Deliberately no `.gitignore` written here — this proves the adapter provisions one itself.
     });
-    const cwd = path.join(storageRoot, projectId.value);
 
     const remotePath = await createTemporaryBareRemote();
     const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });

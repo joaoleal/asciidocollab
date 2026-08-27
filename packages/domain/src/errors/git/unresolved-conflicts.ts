@@ -9,6 +9,7 @@ import { DomainError } from '../domain-error';
 export class UnresolvedConflictsError extends DomainError {
   readonly name = 'UnresolvedConflictsError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('This operation still has unresolved conflicts');
   }

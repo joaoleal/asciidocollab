@@ -11,7 +11,7 @@ export function toHistoryCommits(data: GitWorkerHistoryData): CommitDto[] {
   return data.commits.map((commit) => ({
     hash: commit.hash,
     message: commit.message,
-    ...(commit.authorUserId !== undefined ? { authorUserId: commit.authorUserId } : {}),
+    ...(commit.authorUserId === undefined ? {} : { authorUserId: commit.authorUserId }),
     authoredAt: commit.authoredAt,
   }));
 }
@@ -58,10 +58,10 @@ export async function gitHistoryRoutes(app: FastifyInstance): Promise<void> {
       let limit: number | undefined;
       if (rawLimit !== undefined) {
         limit = Number(rawLimit);
-        if (!Number.isFinite(limit) || limit < 0) {
+        if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 1) {
           return reply
             .status(400)
-            .send({ error: { code: 'invalid_limit', message: 'limit must be a non-negative number' } });
+            .send({ error: { code: 'invalid_limit', message: 'limit must be a positive integer' } });
         }
       }
 
@@ -70,8 +70,8 @@ export async function gitHistoryRoutes(app: FastifyInstance): Promise<void> {
         result = await request.server.stores.gitWorkerClient.getHistory({
           projectId: projectId.value,
           actorId: actorId.value,
-          ...(path !== undefined ? { path } : {}),
-          ...(limit !== undefined ? { limit } : {}),
+          ...(path === undefined ? {} : { path }),
+          ...(limit === undefined ? {} : { limit }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {

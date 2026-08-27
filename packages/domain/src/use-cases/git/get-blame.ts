@@ -2,7 +2,7 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { UserId } from '../../value-objects/ids/user-id';
 import { Email } from '../../value-objects/identity/email';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitReadPort } from '../../ports/git/git-command-runner';
 import { UserRepository } from '../../ports/user/user.repository';
 import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
@@ -60,7 +60,7 @@ export class GetBlameUseCase {
    */
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort,
     private readonly userRepo: UserRepository,
     private readonly logger?: Logger,
   ) {}

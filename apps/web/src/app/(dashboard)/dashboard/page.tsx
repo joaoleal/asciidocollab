@@ -3,13 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Plus, Archive } from "lucide-react";
+import { Plus, Archive, GitBranch } from "lucide-react";
 import { projectsApi, Project } from "@/lib/api";
 import { CLONE_IN_PROGRESS_CODE } from "@/lib/api/projects";
 import { ProjectCard } from "@/components/project-card";
 import type { CloneFailure } from "@/components/clone-project-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
+import { ImportRepositoryDialog } from "@/components/git/import-repository-dialog";
 
 /** Renders the main dashboard page listing all projects for the current user. */
 export default function DashboardPage() {
@@ -19,6 +20,7 @@ export default function DashboardPage() {
   const [deletedNotice, setDeletedNotice] = useState(false);
   const [clonedProject, setClonedProject] = useState<Project | null>(null);
   const [cloneFailure, setCloneFailure] = useState<CloneFailure | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const searchParameters = useSearchParams();
 
   /**
@@ -167,6 +169,10 @@ export default function DashboardPage() {
               Archived projects
             </Link>
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+            <GitBranch className="mr-2 h-4 w-4" aria-hidden="true" />
+            Import from Git
+          </Button>
           <Button asChild size="sm">
             <Link href="/dashboard/projects/new">
               <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
@@ -196,6 +202,8 @@ export default function DashboardPage() {
           ))}
         </div>
       )}
+
+      <ImportRepositoryDialog open={importOpen} onOpenChange={setImportOpen} />
     </div>
   );
 }

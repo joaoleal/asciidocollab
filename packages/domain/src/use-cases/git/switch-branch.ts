@@ -3,8 +3,8 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitRepository } from '../../entities/git-repository';
 import {
-  GitCommandRunner,
   GitCommitFlushEntry,
+  GitMutationPort,
 } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
@@ -21,10 +21,15 @@ import { LiveContentFlushFailedError } from '../../errors/git/live-content-flush
 import { requireGitRole } from './git-role-guard';
 import { resolveDownloadContentSource } from '../project/download-content-source';
 import { FileChangeReconciler } from './pull-changes';
+import { anomalyAuditMetadata, GitReconcileAnomaly } from './git-change-reconciler';
+import { recordAuditSuccess } from '../audit-recording';
+import { AUDIT_GIT_BRANCH_SWITCH_PARTIALLY_APPLIED } from '../../audit-actions';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 // Referenced only from this file's own JSDoc @link tags; kept imported so the links resolve.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { InsufficientRoleError } from '../../errors/git/insufficient-role';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { GitCommandFailedError } from '../../errors/git/git-command-failed';
 
 /**
@@ -59,7 +64,19 @@ export interface SwitchBranchInput {
  * operation awaiting resolution — a conflict is an expected outcome of a switch, never an error.
  */
 export type SwitchBranchResult =
-  | { readonly status: 'switched'; readonly branch: string; readonly changedPaths: readonly string[] }
+  | {
+      readonly status: 'switched';
+      readonly branch: string;
+      readonly changedPaths: readonly string[];
+      /**
+       * Drift anomalies the reconciler surfaced while landing the switched-in change-set (empty on a
+       * clean apply). Carried out — exactly as `PullChanges` does — so the worker handler can surface a
+       * drift summary on the operation row, most importantly the `content_dropped_folder_occupies_path`
+       * case, where a switched-in change was discarded and the triggering user (no log access) would
+       * otherwise have no way to know.
+       */
+      readonly anomalies: readonly GitReconcileAnomaly[];
+    }
   | { readonly status: 'awaiting_conflict'; readonly conflictPaths: readonly string[] };
 
 /**
@@ -100,7 +117,7 @@ export class SwitchBranchUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitMutationPort,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly documentRepo: DocumentRepository,
     private readonly collaborativeContentReader: CollaborativeContentReader,
@@ -141,9 +158,9 @@ export class SwitchBranchUseCase {
       return { success: false, error: new RepositoryNotConnectedError() };
     }
 
-    // Already on the target branch: nothing to switch, and nothing to land.
+    // Already on the target branch: nothing to switch, nothing to land, and no drift to report.
     if (input.targetBranch === gitRepository.currentBranch) {
-      return { success: true, value: { status: 'switched', branch: input.targetBranch, changedPaths: [] } };
+      return { success: true, value: { status: 'switched', branch: input.targetBranch, changedPaths: [], anomalies: [] } };
     }
 
     const flush = await this.buildFlush(input.projectId);
@@ -183,11 +200,34 @@ export class SwitchBranchUseCase {
 
     await this.refreshRow(gitRepository, input.targetBranch, 'UP_TO_DATE');
 
-    // No terminal success audit here: the git-worker run loop records the SUCCEEDED transition for
-    // an async op. This use case's auditLogRepo is used only for the authorization-denial path.
+    // The terminal SUCCEEDED transition is still audited by the git-worker run loop, not here. But like
+    // a pull, if the reconciler hit drift the worker discards that detail with the payload, so it is
+    // recorded here — otherwise the user (no log access) has no way to learn a switched-in change was
+    // auto-repaired or (folder-occupied) dropped.
+    if (landed.value.anomalies.length > 0) {
+      await recordAuditSuccess(
+        this.auditLogRepo,
+        {
+          actorId: input.actorId,
+          projectId: input.projectId,
+          action: AUDIT_GIT_BRANCH_SWITCH_PARTIALLY_APPLIED,
+          resourceType: 'GitRepository',
+          resourceId: gitRepository.id.value,
+          metadata: { branch: input.targetBranch, ...anomalyAuditMetadata(landed.value.anomalies) },
+          context: input.context,
+        },
+        this.logger,
+      );
+    }
+
     return {
       success: true,
-      value: { status: 'switched', branch: input.targetBranch, changedPaths: landed.value.changedPaths },
+      value: {
+        status: 'switched',
+        branch: input.targetBranch,
+        changedPaths: landed.value.changedPaths,
+        anomalies: landed.value.anomalies,
+      },
     };
   }
 

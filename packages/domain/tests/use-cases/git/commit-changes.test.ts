@@ -396,7 +396,7 @@ describe('CommitChangesUseCase', () => {
     expect(result.success).toBe(true);
 
     const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    const entry = entries.find((e) => e.action === AUDIT_GIT_CHANGES_COMMITTED);
+    const entry = entries.find((entry) => entry.action === AUDIT_GIT_CHANGES_COMMITTED);
     expect(entry).toBeDefined();
     expect(entry?.metadata).toMatchObject({ hash: COMMIT_HASH, messageLength: MESSAGE.length });
   });

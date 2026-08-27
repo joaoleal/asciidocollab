@@ -211,6 +211,35 @@ describe('POST /projects/:projectId/git/connect', () => {
     await app.close();
   });
 
+  it('propagates a non-transport error from the worker client rather than swallowing it', async () => {
+    const { build } = buildHarness({ clientError: new Error('unexpected worker failure') });
+    const app = await build();
+
+    const response = await connectRepository(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+
+    await app.close();
+  });
+
+  it('throws when the worker resolves with an unrecognized provider on the connected repository', async () => {
+    const { build } = buildHarness({
+      clientResult: {
+        ok: true,
+        data: { repository: { ...CONNECTED_REPOSITORY, provider: 'not-a-real-provider' } },
+      },
+    });
+    const app = await build();
+
+    const response = await connectRepository(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+
+    await app.close();
+  });
+
   it('answers 401 when the caller is not authenticated', async () => {
     const { requireAuth: realRequireAuth } = jest.requireActual<typeof import('../../../../src/plugins/require-auth')>(
       '../../../../src/plugins/require-auth',

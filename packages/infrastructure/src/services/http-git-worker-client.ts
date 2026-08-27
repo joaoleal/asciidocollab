@@ -1,4 +1,84 @@
 import { createMtlsFetch } from './mtls-fetch';
+import { GitWorkerTransportError, parseEnvelope, type GitWorkerResult } from './git-worker-envelope';
+import type {
+  GitWorkerRequestInput,
+  GitWorkerStageInput,
+  GitWorkerCommitInput,
+  GitWorkerConnectInput,
+  GitWorkerCreateBranchInput,
+  GitWorkerConflictPathInput,
+  GitWorkerResolveConflictInput,
+  GitWorkerHistoryInput,
+  GitWorkerDiffInput,
+  GitWorkerBlameInput,
+  GitWorkerDiscardInput,
+  GitWorkerAmendInput,
+  GitWorkerPreviewInput,
+  GitWorkerStatusData,
+  GitWorkerBehindAheadData,
+  GitWorkerStageData,
+  GitWorkerCommitData,
+  GitWorkerConnectData,
+  GitWorkerBranchListData,
+  GitWorkerCreatedBranchData,
+  GitWorkerConflictListData,
+  GitWorkerConflictStagesData,
+  GitWorkerResolveConflictData,
+  GitWorkerCompleteMergeData,
+  GitWorkerUndoPullData,
+  GitWorkerHistoryData,
+  GitWorkerDiffData,
+  GitWorkerBlameData,
+  GitWorkerDiscardData,
+  GitWorkerPreviewPullData,
+  GitWorkerPreviewPushData,
+} from './git-worker-wire-types';
+
+// Re-export the transport envelope and the wire-DTO vocabulary this client posts and reads, so
+// importers that reference them from this module keep resolving after the split.
+export { GitWorkerTransportError, type GitWorkerResult } from './git-worker-envelope';
+export type {
+  GitWorkerChangeType,
+  GitWorkerChangeState,
+  GitWorkerSyncStatus,
+  GitWorkerPendingChange,
+  GitWorkerStatusData,
+  GitWorkerBehindAheadData,
+  GitWorkerStageData,
+  GitWorkerCommitData,
+  GitWorkerRepositoryData,
+  GitWorkerConnectData,
+  GitWorkerBranchListData,
+  GitWorkerCreatedBranchData,
+  GitWorkerConflictSummaryData,
+  GitWorkerConflictListData,
+  GitWorkerConflictStagesData,
+  GitWorkerResolveConflictData,
+  GitWorkerCompleteMergeData,
+  GitWorkerUndoPullData,
+  GitWorkerHistoryCommit,
+  GitWorkerHistoryData,
+  GitWorkerDiffData,
+  GitWorkerBlameLine,
+  GitWorkerBlameData,
+  GitWorkerDiscardData,
+  GitWorkerPreviewCommit,
+  GitWorkerPreviewPullData,
+  GitWorkerPreviewPushData,
+  GitWorkerRequestInput,
+  GitWorkerStageInput,
+  GitWorkerCommitInput,
+  GitWorkerConnectInput,
+  GitWorkerCreateBranchInput,
+  GitWorkerConflictPathInput,
+  GitWorkerResolveConflictInput,
+  GitWorkerHistoryInput,
+  GitWorkerDiffInput,
+  GitWorkerBlameInput,
+  GitWorkerDiscardInput,
+  GitWorkerAmendInput,
+  GitWorkerPreviewInput,
+} from './git-worker-wire-types';
 
 /** Path of the internal endpoint that reads a project's working-tree git status. */
 export const GIT_WORKER_STATUS_PATH = '/internal/git/status';
@@ -111,460 +191,161 @@ export interface HttpGitWorkerClientConfig {
 }
 
 /**
- * A NON-domain failure of the transport itself: a non-200 HTTP response (401 bad/missing secret,
- * 400 malformed body, 413 oversize, 500 unexpected worker error), a network/timeout error, or a
- * response body that does not parse as the expected `{ok, ...}` envelope. Distinct from a domain
- * refusal — which the worker reports as a 200 response with `{ok:false, error}` and which this
- * client instead RETURNS (never throws) as a `GitWorkerResult`. A caller can therefore tell the two
- * apart by whether the call threw at all: catch this type for a transport problem, otherwise read
- * `.ok` on the resolved `GitWorkerResult` for the worker's own (or absence of) a domain refusal.
- *
- * The message never includes the configured secret.
- */
-export class GitWorkerTransportError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = 'GitWorkerTransportError';
-  }
-}
-
-/** The kind of working-tree change a pending change represents, as reported over the wire. */
-export type GitWorkerChangeType = 'added' | 'modified' | 'removed' | 'renamed' | 'copied';
-
-/** Where a pending change currently stands in the working tree/index, as reported over the wire. */
-export type GitWorkerChangeState = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
-
-/** A repository's synchronisation standing relative to its remote, as reported over the wire. */
-export type GitWorkerSyncStatus = 'UP_TO_DATE' | 'AHEAD' | 'BEHIND' | 'DIVERGED' | 'CONFLICTED' | 'DISCONNECTED';
-
-/** A single pending working-tree change, as reported over the wire. */
-export interface GitWorkerPendingChange {
-  /** Project-relative path of the changed file. */
-  readonly path: string;
-  /** The kind of change. */
-  readonly changeType: GitWorkerChangeType;
-  /** Where this change currently stands in the working tree/index. */
-  readonly state: GitWorkerChangeState;
-}
-
-/** Wire shape of the status endpoint's `data` field. Timestamps stay ISO-8601 strings, as received. */
-export interface GitWorkerStatusData {
-  /** The currently checked-out branch. */
-  readonly currentBranch: string;
-  /** Every pending (uncommitted) change. */
-  readonly changes: readonly GitWorkerPendingChange[];
-  /** The repository's synchronisation standing relative to its remote. */
-  readonly syncStatus: GitWorkerSyncStatus;
-  /** The remote's default branch, or null if not yet known. */
-  readonly defaultBranch: string | null;
-  /** The last remote commit hash observed for the repository's current branch, or null if not yet known. */
-  readonly lastKnownRemoteHead: string | null;
-  /** ISO-8601 timestamp of the last successful synchronisation, or null if never synced. */
-  readonly lastSyncAt: string | null;
-}
-
-/** Wire shape of the behind-ahead endpoint's `data` field. */
-export interface GitWorkerBehindAheadData {
-  /** Commits the remote has that the local branch does not. */
-  readonly behind: number;
-  /** Commits the local branch has that the remote does not. */
-  readonly ahead: number;
-}
-
-/** Wire shape of the stage/unstage endpoints' `data` field. */
-export interface GitWorkerStageData {
-  /** Every path currently staged for the next commit. */
-  readonly staged: readonly string[];
-}
-
-/** Wire shape of the commit endpoint's `data` field. `authoredAt` stays an ISO-8601 string, as received. */
-export interface GitWorkerCommitData {
-  /** The commit that was recorded. */
-  readonly commit: {
-    /** The new commit's hash. */
-    readonly hash: string;
-    /** The commit message, as recorded. */
-    readonly message: string;
-    /** ISO-8601 timestamp of when the commit was authored. */
-    readonly authoredAt: string;
-  };
-}
-
-/** Wire shape of a connected repository link, as reported over the wire. */
-export interface GitWorkerRepositoryData {
-  /** Unique identifier of the repository link. */
-  readonly id: string;
-  /** ID of the project this repository is connected to. */
-  readonly projectId: string;
-  /** The git hosting provider. */
-  readonly provider: string;
-  /** The full remote URL of the git repository. */
-  readonly remoteUrl: string;
-  /** The currently checked-out branch. */
-  readonly currentBranch: string;
-  /** The remote's default branch, or null if not yet determined. */
-  readonly defaultBranch: string | null;
-  /** How the current branch compares to its remote counterpart. */
-  readonly syncStatus: GitWorkerSyncStatus;
-  /** ISO-8601 timestamp of the last successful sync, or null if never synced. */
-  readonly lastSyncAt: string | null;
-  /** ID of the user who connected this repository, or null if unknown. */
-  readonly connectedByUserId: string | null;
-  /** ISO-8601 timestamp of when the repository link was created. */
-  readonly createdAt: string;
-}
-
-/** Wire shape of the connect endpoint's `data` field. */
-export interface GitWorkerConnectData {
-  /** The newly connected repository link. */
-  readonly repository: GitWorkerRepositoryData;
-}
-
-/** Wire shape of the branches endpoint's `data` field. */
-export interface GitWorkerBranchListData {
-  /** The currently checked-out branch. */
-  readonly current: string;
-  /** Every local branch name. */
-  readonly branches: readonly string[];
-}
-
-/** Wire shape of the branch-create endpoint's `data` field. */
-export interface GitWorkerCreatedBranchData {
-  /** The branch that was created. */
-  readonly branch: {
-    /** The new branch's name, as created. */
-    readonly name: string;
-  };
-}
-
-/** One conflicting file in the conflict-list endpoint's `data` field — no content, just enough to drive the panel. */
-export interface GitWorkerConflictSummaryData {
-  /** Project-relative path of the conflicting file. */
-  readonly path: string;
-  /** Whether the file is binary. */
-  readonly isBinary: boolean;
-  /** Whether this file's conflict already has a recorded resolution. */
-  readonly resolved: boolean;
-}
-
-/** Wire shape of the conflict-list endpoint's `data` field. */
-export interface GitWorkerConflictListData {
-  /** The awaiting operation these conflicts belong to. */
-  readonly operationId: string;
-  /** Every conflicting file, in recorded order. */
-  readonly files: readonly GitWorkerConflictSummaryData[];
-}
-
-/** Wire shape of the conflict-stages endpoint's `data` field. */
-export interface GitWorkerConflictStagesData {
-  /** The merge-base content, or null when the file had no merge base (an add/add conflict). */
-  readonly base: string | null;
-  /** This branch's ("ours") content. Empty for a binary conflict. */
-  readonly ours: string;
-  /** The incoming branch's ("theirs") content. Empty for a binary conflict. */
-  readonly theirs: string;
-  /** Whether the file is binary (no textual three-way view). */
-  readonly isBinary: boolean;
-}
-
-/** Wire shape of the conflict-resolve endpoint's `data` field. */
-export interface GitWorkerResolveConflictData {
-  /** Always `true` on success. */
-  readonly resolved: true;
-}
-
-/** Wire shape of the pull-complete endpoint's `data` field. */
-export interface GitWorkerCompleteMergeData {
-  /** Always `'resolved'` on success. */
-  readonly status: 'resolved';
-  /** The completed operation. */
-  readonly operationId: string;
-  /** The resolving merge commit's hash for a completed `PULL`; empty string for a `BRANCH_SWITCH`. */
-  readonly headCommit: string;
-}
-
-/** Wire shape of the undo-pull endpoint's `data` field. */
-export interface GitWorkerUndoPullData {
-  /** The pull operation that was undone. */
-  readonly operationId: string;
-  /** The commit the working tree was restored to. */
-  readonly headCommit: string;
-}
-
-/** One commit in the history endpoint's `data` field. `authoredAt` stays an ISO-8601 string, as received. */
-export interface GitWorkerHistoryCommit {
-  /** The commit hash. */
-  readonly hash: string;
-  /** The commit message. */
-  readonly message: string;
-  /** ID of the authoring user, when the commit's author maps to one; absent for unmapped authors. */
-  readonly authorUserId?: string;
-  /** ISO-8601 timestamp of when the commit was authored. */
-  readonly authoredAt: string;
-}
-
-/** Wire shape of the history endpoint's `data` field. */
-export interface GitWorkerHistoryData {
-  /** The matching commits, newest first. */
-  readonly commits: readonly GitWorkerHistoryCommit[];
-}
-
-/** Wire shape of the diff endpoint's `data` field. */
-export interface GitWorkerDiffData {
-  /** The raw unified-diff text. */
-  readonly unified: string;
-}
-
-/** One line in the blame endpoint's `data` field. `authoredAt` stays an ISO-8601 string, as received. */
-export interface GitWorkerBlameLine {
-  /** 1-based line number in the blamed file. */
-  readonly lineNumber: number;
-  /** The full hash of the commit that last modified this line. */
-  readonly hash: string;
-  /** ID of the authoring user, when the line's commit author maps to one; absent for unmapped authors. */
-  readonly authorUserId?: string;
-  /** ISO-8601 timestamp of when the line's commit was authored. */
-  readonly authoredAt: string;
-  /** The line's text content. */
-  readonly content: string;
-}
-
-/** Wire shape of the blame endpoint's `data` field. */
-export interface GitWorkerBlameData {
-  /** Every line's authorship, in file order. */
-  readonly lines: readonly GitWorkerBlameLine[];
-}
-
-/** Wire shape of the discard endpoint's `data` field. */
-export interface GitWorkerDiscardData {
-  /** Every path this run restored. */
-  readonly restoredPaths: readonly string[];
-}
-
-/**
- * One commit in a pull/push preview's `data` field. `authoredAt` stays an ISO-8601 string, as
- * received. Structurally identical to `GitWorkerHistoryCommit`, kept as its own named type so this
- * module owns its own wire vocabulary for the preview endpoints rather than reusing another
- * endpoint's type by coincidence.
- */
-export interface GitWorkerPreviewCommit {
-  /** The commit hash. */
-  readonly hash: string;
-  /** The commit message. */
-  readonly message: string;
-  /** ID of the authoring user, when the commit's author maps to one; absent for unmapped authors. */
-  readonly authorUserId?: string;
-  /** ISO-8601 timestamp of when the commit was authored. */
-  readonly authoredAt: string;
-}
-
-/** Wire shape of the pull-preview endpoint's `data` field. */
-export interface GitWorkerPreviewPullData {
-  /** Commits that would land locally, newest first, if the pull actually ran. */
-  readonly incomingCommits: readonly GitWorkerPreviewCommit[];
-  /** Every path those commits touch. */
-  readonly changedPaths: readonly string[];
-}
-
-/** Wire shape of the push-preview endpoint's `data` field. */
-export interface GitWorkerPreviewPushData {
-  /** Commits that would land on the remote, newest first, if the push actually ran. */
-  readonly outgoingCommits: readonly GitWorkerPreviewCommit[];
-  /** Every path those commits touch. */
-  readonly changedPaths: readonly string[];
-}
-
-/** Input shared by every git-worker request: the project and the acting principal. */
-export interface GitWorkerRequestInput {
-  /** The project the operation acts on, as a raw UUID v4 string. */
-  readonly projectId: string;
-  /** The API's authenticated principal, as a raw UUID v4 string. */
-  readonly actorId: string;
-}
-
-/** Input for {@link GitWorkerClient.stageChanges}/{@link GitWorkerClient.unstageChanges}. */
-export interface GitWorkerStageInput extends GitWorkerRequestInput {
-  /** Workspace-relative POSIX paths of the files to stage/unstage. */
-  readonly paths: readonly string[];
-}
-
-/** Input for {@link GitWorkerClient.commitChanges}. */
-export interface GitWorkerCommitInput extends GitWorkerRequestInput {
-  /** The commit message. */
-  readonly message: string;
-}
-
-/** Input for {@link GitWorkerClient.connect}. */
-export interface GitWorkerConnectInput extends GitWorkerRequestInput {
-  /** The git hosting provider, e.g. `'github'`, `'gitlab'`, or `'bitbucket'`. */
-  readonly provider: string;
-  /** The remote repository's URL. */
-  readonly remoteUrl: string;
-  /** The plaintext access token to authenticate with. Never logged, echoed, or persisted as-is. */
-  readonly token: string;
-  /** The branch to check out initially. Defaults to `'main'` when omitted. */
-  readonly branch?: string;
-}
-
-/** Input for {@link GitWorkerClient.createBranch}. */
-export interface GitWorkerCreateBranchInput extends GitWorkerRequestInput {
-  /** The new branch's name. */
-  readonly name: string;
-}
-
-/** Input for {@link GitWorkerClient.getConflictStages}. */
-export interface GitWorkerConflictPathInput extends GitWorkerRequestInput {
-  /** Project-relative path of the conflicting file. */
-  readonly path: string;
-}
-
-/** Input for {@link GitWorkerClient.resolveConflict}. */
-export interface GitWorkerResolveConflictInput extends GitWorkerConflictPathInput {
-  /** The chosen resolution for the whole file. */
-  readonly resolution: 'ours' | 'theirs' | 'merged';
-  /** The user-edited merged content; required when {@link resolution} is `'merged'`. */
-  readonly mergedContent?: string;
-}
-
-/** Input for {@link GitWorkerClient.getHistory}. */
-export interface GitWorkerHistoryInput extends GitWorkerRequestInput {
-  /** When given, restricts the history to the commits that touched this single project-relative file. */
-  readonly path?: string;
-  /** When given, caps the number of commits returned. */
-  readonly limit?: number;
-}
-
-/** Input for {@link GitWorkerClient.getDiff}. */
-export interface GitWorkerDiffInput extends GitWorkerRequestInput {
-  /** When given, scopes the diff to this single project-relative file (whole tree when absent). */
-  readonly path?: string;
-  /** The earlier commit hash. Given together with `to` to diff between two commits. */
-  readonly from?: string;
-  /** The later commit hash. Given together with `from` to diff between two commits. */
-  readonly to?: string;
-}
-
-/** Input for {@link GitWorkerClient.getBlame}. */
-export interface GitWorkerBlameInput extends GitWorkerRequestInput {
-  /** The project-relative path of the file to blame. */
-  readonly path: string;
-  /** When given, blames the file as of this commit; without it, the current working-tree file. */
-  readonly ref?: string;
-}
-
-/** Input for {@link GitWorkerClient.discardChanges}. */
-export interface GitWorkerDiscardInput extends GitWorkerRequestInput {
-  /** Project-relative paths of the files to restore. */
-  readonly paths: readonly string[];
-  /** When given, restores each path to its content at this commit instead of dropping back to HEAD. */
-  readonly fromCommit?: string;
-}
-
-/** Input for {@link GitWorkerClient.amendCommit}. */
-export interface GitWorkerAmendInput extends GitWorkerRequestInput {
-  /** The replacement commit message. When absent, the amended commit keeps its existing message. */
-  readonly message?: string;
-}
-
-/** Input for {@link GitWorkerClient.previewPull}/{@link GitWorkerClient.previewPush}. */
-export interface GitWorkerPreviewInput extends GitWorkerRequestInput {
-  /** The branch to preview. Defaults to the project's current branch when omitted. */
-  readonly branch?: string;
-}
-
-/**
- * The worker's own response envelope, reflected as-is: a domain success carries `data`; a domain
- * refusal carries the domain error's stable `name` (plus `path` for a `LiveContentFlushFailedError`).
- * This is NOT thrown — a domain refusal is a normal outcome the caller inspects via `.ok`. Contrast
- * with {@link GitWorkerTransportError}, which IS thrown, for a transport-level failure.
- */
-export type GitWorkerResult<T> = { ok: true; data: T } | { ok: false; error: string; path?: string };
-
-/**
  * Transport-only client interface for the git-worker's synchronous internal RPC endpoints (status,
  * behind-ahead, stage, unstage, commit). Defined so routes can be exercised against a fake in
  * tests without an HTTP dependency.
  */
 export interface GitWorkerClient {
-  /** Reads a project's working-tree git status. */
+  /**
+   * Reads a project's working-tree git status.
+   *
+   * @param input - The project/actor to read status for.
+   * @returns The worker's result envelope, carrying the git status on success.
+   */
   getStatus(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerStatusData>>;
-  /** Compares the current branch to its already-fetched remote-tracking ref. */
+  /**
+   * Compares the current branch to its already-fetched remote-tracking ref.
+   *
+   * @param input - The project/actor to compare.
+   * @returns The worker's result envelope, carrying the behind/ahead counts on success.
+   */
   getBehindAhead(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBehindAheadData>>;
-  /** Stages the given files for the next commit. */
+  /**
+   * Stages the given files for the next commit.
+   *
+   * @param input - The project/actor and the paths to stage.
+   * @returns The worker's result envelope, carrying the updated stage data on success.
+   */
   stageChanges(input: GitWorkerStageInput): Promise<GitWorkerResult<GitWorkerStageData>>;
-  /** Unstages the given files. */
+  /**
+   * Unstages the given files.
+   *
+   * @param input - The project/actor and the paths to unstage.
+   * @returns The worker's result envelope, carrying the updated stage data on success.
+   */
   unstageChanges(input: GitWorkerStageInput): Promise<GitWorkerResult<GitWorkerStageData>>;
-  /** Commits the currently staged changes. */
+  /**
+   * Commits the currently staged changes.
+   *
+   * @param input - The project/actor and the commit message.
+   * @returns The worker's result envelope, carrying the new commit on success.
+   */
   commitChanges(input: GitWorkerCommitInput): Promise<GitWorkerResult<GitWorkerCommitData>>;
   /**
    * Attaches an existing project to an already-existing remote: a connectivity/authentication
    * preflight against the remote, then the encrypted credential and the project's `GitRepository`
    * link are saved. Synchronous — no clone, no push.
+   *
+   * @param input - The project/actor, the remote to attach, and its credential.
+   * @returns The worker's result envelope, carrying the connected repository on success.
    */
   connect(input: GitWorkerConnectInput): Promise<GitWorkerResult<GitWorkerConnectData>>;
-  /** Lists a project's local branches and the one currently checked out. */
+  /**
+   * Lists a project's local branches and the one currently checked out.
+   *
+   * @param input - The project/actor to list branches for.
+   * @returns The worker's result envelope, carrying the branch list on success.
+   */
   getBranches(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerBranchListData>>;
-  /** Creates a new branch from the working tree's current branch tip. */
+  /**
+   * Creates a new branch from the working tree's current branch tip.
+   *
+   * @param input - The project/actor and the new branch's name.
+   * @returns The worker's result envelope, carrying the created branch on success.
+   */
   createBranch(input: GitWorkerCreateBranchInput): Promise<GitWorkerResult<GitWorkerCreatedBranchData>>;
-  /** Lists a project's currently conflicting files. */
+  /**
+   * Lists a project's currently conflicting files.
+   *
+   * @param input - The project/actor to list conflicts for.
+   * @returns The worker's result envelope, carrying the conflict list on success.
+   */
   listConflicts(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerConflictListData>>;
-  /** Reads one conflicting file's three-way (base/ours/theirs) stages. */
+  /**
+   * Reads one conflicting file's three-way (base/ours/theirs) stages.
+   *
+   * @param input - The project/actor and the conflicting file's path.
+   * @returns The worker's result envelope, carrying the file's three-way stages on success.
+   */
   getConflictStages(input: GitWorkerConflictPathInput): Promise<GitWorkerResult<GitWorkerConflictStagesData>>;
-  /** Records one file's chosen conflict resolution. */
+  /**
+   * Records one file's chosen conflict resolution.
+   *
+   * @param input - The project/actor, the file, and its chosen resolution.
+   * @returns The worker's result envelope, carrying the recorded resolution on success.
+   */
   resolveConflict(input: GitWorkerResolveConflictInput): Promise<GitWorkerResult<GitWorkerResolveConflictData>>;
-  /** Completes a project's currently conflicted operation (a resolving commit for a `PULL`, or a resolved-changes landing with no commit for a `BRANCH_SWITCH`). */
+  /**
+   * Completes a project's currently conflicted operation (a resolving commit for a `PULL`, or a resolved-changes landing with no commit for a `BRANCH_SWITCH`).
+   *
+   * @param input - The project/actor whose conflicted operation to complete.
+   * @returns The worker's result envelope, carrying the completed merge outcome on success.
+   */
   completePull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerCompleteMergeData>>;
-  /** Undoes a project's most recent pull. */
+  /**
+   * Undoes a project's most recent pull.
+   *
+   * @param input - The project/actor to undo the pull for.
+   * @returns The worker's result envelope, carrying the undo outcome on success.
+   */
   undoPull(input: GitWorkerRequestInput): Promise<GitWorkerResult<GitWorkerUndoPullData>>;
-  /** Reads a project's (or a single file's) commit history. */
+  /**
+   * Reads a project's (or a single file's) commit history.
+   *
+   * @param input - The project/actor, and the optional path/limit to scope the history.
+   * @returns The worker's result envelope, carrying the commit history on success.
+   */
   getHistory(input: GitWorkerHistoryInput): Promise<GitWorkerResult<GitWorkerHistoryData>>;
-  /** Produces a unified diff for a project: between two commits, or of the uncommitted working changes against HEAD. */
+  /**
+   * Produces a unified diff for a project: between two commits, or of the uncommitted working changes against HEAD.
+   *
+   * @param input - The project/actor and the commit range (or working-tree diff request).
+   * @returns The worker's result envelope, carrying the unified diff on success.
+   */
   getDiff(input: GitWorkerDiffInput): Promise<GitWorkerResult<GitWorkerDiffData>>;
-  /** Reads a single project-relative file's per-line authorship (a "blame"). */
+  /**
+   * Reads a single project-relative file's per-line authorship (a "blame").
+   *
+   * @param input - The project/actor and the file to blame.
+   * @returns The worker's result envelope, carrying the per-line blame on success.
+   */
   getBlame(input: GitWorkerBlameInput): Promise<GitWorkerResult<GitWorkerBlameData>>;
-  /** Discards a file's uncommitted working-tree changes, or restores it to a chosen commit. */
+  /**
+   * Discards a file's uncommitted working-tree changes, or restores it to a chosen commit.
+   *
+   * @param input - The project/actor, the file, and the optional commit to restore from.
+   * @returns The worker's result envelope, carrying the discard outcome on success.
+   */
   discardChanges(input: GitWorkerDiscardInput): Promise<GitWorkerResult<GitWorkerDiscardData>>;
-  /** Amends the project's most-recent commit. */
+  /**
+   * Amends the project's most-recent commit.
+   *
+   * @param input - The project/actor and the optional replacement commit message.
+   * @returns The worker's result envelope, carrying the amended commit on success.
+   */
   amendCommit(input: GitWorkerAmendInput): Promise<GitWorkerResult<GitWorkerCommitData>>;
-  /** Previews what a pull would bring in, without applying it: a live fetch, then the incoming commits and the paths they touch. */
+  /**
+   * Previews what a pull would bring in, without applying it: a live fetch, then the incoming commits and the paths they touch.
+   *
+   * @param input - The project/actor and the optional branch to preview.
+   * @returns The worker's result envelope, carrying the incoming commits/paths on success.
+   */
   previewPull(input: GitWorkerPreviewInput): Promise<GitWorkerResult<GitWorkerPreviewPullData>>;
-  /** Previews what a push would send out, without applying it: the outgoing commits and the paths they touch, purely local. */
+  /**
+   * Previews what a push would send out, without applying it: the outgoing commits and the paths they touch, purely local.
+   *
+   * @param input - The project/actor and the optional branch to preview.
+   * @returns The worker's result envelope, carrying the outgoing commits/paths on success.
+   */
   previewPush(input: GitWorkerPreviewInput): Promise<GitWorkerResult<GitWorkerPreviewPushData>>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-/**
- * Parses a worker response body as the `{ok, ...}` envelope. Throws {@link GitWorkerTransportError}
- * when the body does not match the expected shape — that is a transport-level problem (the worker
- * is supposed to only ever return this shape on a 200), not a domain refusal.
- *
- * @param body - The parsed JSON response body.
- * @returns The typed envelope.
- */
-function parseEnvelope<T>(body: unknown): GitWorkerResult<T> {
-  if (!isRecord(body) || typeof body.ok !== 'boolean') {
-    throw new GitWorkerTransportError('git-worker response was not a recognised envelope');
-  }
-  if (body.ok) {
-    return { ok: true, data: body.data as T };
-  }
-  if (typeof body.error !== 'string') {
-    throw new GitWorkerTransportError('git-worker response was not a recognised envelope');
-  }
-  const result: GitWorkerResult<T> = { ok: false, error: body.error };
-  if (typeof body.path === 'string') return { ...result, path: body.path };
-  return result;
 }
 
 /**
  * {@link GitWorkerClient} implementation that delegates to the git-worker's internal HTTP server.
  * The worker owns the project's git working tree, so it is the only process that can run these
  * short git operations; this adapter is the api-side client that asks it to. Transport-only — it
- * carries no business logic, and defines its own wire-level `data` types rather than importing
- * domain result types.
+ * carries no business logic, and speaks its own wire-level `data` types (declared in
+ * `./git-worker-wire-types`) rather than importing domain result types.
  */
 export class HttpGitWorkerClient implements GitWorkerClient {
   private readonly fetchImpl: typeof globalThis.fetch;
@@ -664,7 +445,7 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       provider: input.provider,
       remoteUrl: input.remoteUrl,
       token: input.token,
-      ...(input.branch !== undefined ? { branch: input.branch } : {}),
+      ...(input.branch === undefined ? {} : { branch: input.branch }),
     });
   }
 
@@ -704,7 +485,7 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       actorId: input.actorId,
       path: input.path,
       resolution: input.resolution,
-      ...(input.mergedContent !== undefined ? { mergedContent: input.mergedContent } : {}),
+      ...(input.mergedContent === undefined ? {} : { mergedContent: input.mergedContent }),
     });
   }
 
@@ -726,8 +507,8 @@ export class HttpGitWorkerClient implements GitWorkerClient {
     return this.post<GitWorkerHistoryData>(GIT_WORKER_HISTORY_PATH, {
       projectId: input.projectId,
       actorId: input.actorId,
-      ...(input.path !== undefined ? { path: input.path } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
     });
   }
 
@@ -735,9 +516,9 @@ export class HttpGitWorkerClient implements GitWorkerClient {
     return this.post<GitWorkerDiffData>(GIT_WORKER_DIFF_PATH, {
       projectId: input.projectId,
       actorId: input.actorId,
-      ...(input.path !== undefined ? { path: input.path } : {}),
-      ...(input.from !== undefined ? { from: input.from } : {}),
-      ...(input.to !== undefined ? { to: input.to } : {}),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.from === undefined ? {} : { from: input.from }),
+      ...(input.to === undefined ? {} : { to: input.to }),
     });
   }
 
@@ -746,7 +527,7 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       projectId: input.projectId,
       actorId: input.actorId,
       path: input.path,
-      ...(input.ref !== undefined ? { ref: input.ref } : {}),
+      ...(input.ref === undefined ? {} : { ref: input.ref }),
     });
   }
 
@@ -755,7 +536,7 @@ export class HttpGitWorkerClient implements GitWorkerClient {
       projectId: input.projectId,
       actorId: input.actorId,
       paths: input.paths,
-      ...(input.fromCommit !== undefined ? { fromCommit: input.fromCommit } : {}),
+      ...(input.fromCommit === undefined ? {} : { fromCommit: input.fromCommit }),
     });
   }
 
@@ -763,7 +544,7 @@ export class HttpGitWorkerClient implements GitWorkerClient {
     return this.post<GitWorkerCommitData>(GIT_WORKER_AMEND_PATH, {
       projectId: input.projectId,
       actorId: input.actorId,
-      ...(input.message !== undefined ? { message: input.message } : {}),
+      ...(input.message === undefined ? {} : { message: input.message }),
     });
   }
 
@@ -771,7 +552,7 @@ export class HttpGitWorkerClient implements GitWorkerClient {
     return this.post<GitWorkerPreviewPullData>(GIT_WORKER_PREVIEW_PULL_PATH, {
       projectId: input.projectId,
       actorId: input.actorId,
-      ...(input.branch !== undefined ? { branch: input.branch } : {}),
+      ...(input.branch === undefined ? {} : { branch: input.branch }),
     });
   }
 
@@ -779,7 +560,7 @@ export class HttpGitWorkerClient implements GitWorkerClient {
     return this.post<GitWorkerPreviewPushData>(GIT_WORKER_PREVIEW_PUSH_PATH, {
       projectId: input.projectId,
       actorId: input.actorId,
-      ...(input.branch !== undefined ? { branch: input.branch } : {}),
+      ...(input.branch === undefined ? {} : { branch: input.branch }),
     });
   }
 }

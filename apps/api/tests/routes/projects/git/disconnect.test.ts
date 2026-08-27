@@ -32,10 +32,17 @@ interface HarnessOptions {
   existing?: GitRepository | null;
   /** Whether the project has an active git operation (single-flight guard trips). */
   activeOperation?: boolean;
+  /** When true, `services.gitCredentialStore` is left undefined (store not configured). */
+  credentialStoreMissing?: boolean;
 }
 
 function buildHarness(options: HarnessOptions = {}) {
-  const { role = 'owner', existing = existingRepository(), activeOperation = false } = options;
+  const {
+    role = 'owner',
+    existing = existingRepository(),
+    activeOperation = false,
+    credentialStoreMissing = false,
+  } = options;
 
   const deletedGitRepositoryIds: string[] = [];
   const deletedCredentialProjectIds: string[] = [];
@@ -71,7 +78,9 @@ function buildHarness(options: HarnessOptions = {}) {
       },
     } as never);
     app.decorate('services', {
-      gitCredentialStore: { save: jest.fn(), load: jest.fn(async () => null), delete: credentialDelete },
+      gitCredentialStore: credentialStoreMissing
+        ? undefined
+        : { save: jest.fn(), load: jest.fn(async () => null), delete: credentialDelete },
     } as never);
     await app.register(gitDisconnectRoutes);
     await app.ready();
@@ -97,6 +106,20 @@ describe('POST /projects/:projectId/git/disconnect', () => {
     expect(response.json()).toEqual({ ok: true });
     expect(deletedGitRepositoryIds).toEqual([repository.id.value]);
     expect(deletedCredentialProjectIds).toEqual([PROJECT_ID]);
+
+    await app.close();
+  });
+
+  it('answers 500 internal_error when the credential store is not configured', async () => {
+    const { build, gitRepositoryDelete, credentialDelete } = buildHarness({ credentialStoreMissing: true });
+    const app = await build();
+
+    const response = await disconnect(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('internal_error');
+    expect(gitRepositoryDelete).not.toHaveBeenCalled();
+    expect(credentialDelete).not.toHaveBeenCalled();
 
     await app.close();
   });

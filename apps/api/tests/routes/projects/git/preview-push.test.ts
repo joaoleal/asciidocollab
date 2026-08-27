@@ -26,35 +26,35 @@ function mockPreviewPush(result: GitWorkerResult<GitWorkerPreviewPushData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): FastifyInstance {
+  const { role = 'editor', client = {} } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      previewPush: mockPreviewPush({ ok: true, data: previewPushData() }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(gitPreviewPushRoutes);
+  return instance;
+}
+
+function previewPush(app: FastifyInstance, projectId: string, query = '') {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/preview/push${query}` });
+}
+
 describe('GET /projects/:projectId/git/preview/push', () => {
-  function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): FastifyInstance {
-    const { role = 'editor', client = {} } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        previewPush: mockPreviewPush({ ok: true, data: previewPushData() }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(gitPreviewPushRoutes);
-    return instance;
-  }
-
-  function previewPush(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/preview/push${query}` });
-  }
-
   test('returns 200 with the mapped preview (no affectsOpenFiles field)', async () => {
     const instance = await register(buildServer({}));
 

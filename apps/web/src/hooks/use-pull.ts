@@ -16,6 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { describePullFailure } from '@/components/git/pull-dialog';
 import { getGitOperation, isGitOperationTerminal, startPull, type StartPullResult } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
+import { describeDrift } from '@/lib/git/describe-drift';
 
 /** How often the pull operation's status is re-read while it is queued or running. */
 const POLL_INTERVAL_MS = 1500;
@@ -120,6 +121,10 @@ export function usePull(projectId: string, onSucceeded: () => void): UsePull {
           setPending(false);
           if (status.state === 'SUCCEEDED') {
             onSucceeded();
+            // A clean pull can still have dropped or auto-repaired a change under tree drift; this is
+            // the user's only window into that, since the detail lives only in the admin audit log.
+            const driftMessage = describeDrift(status.driftSummary, 'Pull applied', 'pull again');
+            if (driftMessage) setMessage({ tone: 'neutral', text: driftMessage });
           } else {
             setMessage({
               tone: 'error',

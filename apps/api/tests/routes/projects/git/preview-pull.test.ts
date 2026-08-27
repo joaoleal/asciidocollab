@@ -27,43 +27,43 @@ function mockPreviewPull(result: GitWorkerResult<GitWorkerPreviewPullData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: {
+  role?: string | null;
+  client?: Partial<GitWorkerClient>;
+  activeDocumentIds?: unknown[];
+}): FastifyInstance {
+  const { role = 'editor', client = {}, activeDocumentIds = [] } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+    collaborationSession: { findActiveDocumentIds: jest.fn(async () => activeDocumentIds) },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      previewPull: mockPreviewPull({ ok: true, data: previewPullData() }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(rateLimit, { global: false });
+  await instance.register(gitPreviewPullRoutes);
+  await instance.ready();
+  return instance;
+}
+
+function previewPull(app: FastifyInstance, projectId: string, query = '') {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/preview/pull${query}` });
+}
+
 describe('GET /projects/:projectId/git/preview/pull', () => {
-  function buildServer(options: {
-    role?: string | null;
-    client?: Partial<GitWorkerClient>;
-    activeDocumentIds?: unknown[];
-  }): FastifyInstance {
-    const { role = 'editor', client = {}, activeDocumentIds = [] } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-      collaborationSession: { findActiveDocumentIds: jest.fn(async () => activeDocumentIds) },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        previewPull: mockPreviewPull({ ok: true, data: previewPullData() }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(rateLimit, { global: false });
-    await instance.register(gitPreviewPullRoutes);
-    await instance.ready();
-    return instance;
-  }
-
-  function previewPull(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/preview/pull${query}` });
-  }
-
   test('returns 200 with the mapped preview and affectsOpenFiles:false when nothing is open', async () => {
     const instance = await register(buildServer({}));
 

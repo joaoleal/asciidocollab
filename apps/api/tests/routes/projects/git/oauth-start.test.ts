@@ -79,12 +79,12 @@ function buildHarness(options: HarnessOptions = {}) {
   return { build, stateEncryption };
 }
 
-function startOAuth(
-  app: FastifyInstance,
-  provider: string,
-  payload: Record<string, unknown> = { remoteUrl: 'https://github.com/acme/handbook.git' },
-) {
-  return app.inject({ method: 'POST', url: `/api/projects/${PROJECT_ID}/git/oauth/${provider}/start`, payload });
+function startOAuth(app: FastifyInstance, provider: string, payload?: Record<string, unknown>) {
+  return app.inject({
+    method: 'POST',
+    url: `/api/projects/${PROJECT_ID}/git/oauth/${provider}/start`,
+    payload: payload ?? { remoteUrl: 'https://github.com/acme/handbook.git' },
+  });
 }
 
 describe('POST /api/projects/:projectId/git/oauth/:provider/start', () => {

@@ -41,8 +41,6 @@ import {
   type GitMergeInput,
   type GitMergeOutcome,
   type GitOperationId,
-  type GitPendingChange,
-  type GitPendingChangeType,
   type GitPreviewPullInput,
   type GitPreviewPullResult,
   type GitPreviewPushInput,
@@ -62,8 +60,15 @@ import {
 import { assertRemoteHostAllowed, type HostAddressResolver } from './egress-allowlist.js';
 import { guessMimeType } from './guess-mime-type.js';
 import { declaresLfsFilter, shouldTrackWithLfs } from './lfs-pointer.js';
-import { isPathAlreadyLfsTracked, writeManagedGitattributes } from './managed-gitattributes.js';
+import { buildManagedGitattributes, isPathAlreadyLfsTracked, writeManagedGitattributes } from './managed-gitattributes.js';
 import { writeManagedGitignore } from './managed-gitignore.js';
+import {
+  LOG_FORMAT,
+  parseBlameOutput,
+  parseLogOutput,
+  parseNameOnlyOutput,
+  parsePorcelainStatus,
+} from './output-parsers.js';
 import { measureWorkingTreeSizeBytes, repoSizeExceedsLimit } from './repo-size.js';
 import { GitProcessError, runGitCommand, runGitCommandForBytes } from './run-git-command.js';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './working-tree.js';
@@ -193,7 +198,17 @@ function staysInsideWorkingTree(workingDirectory: string, relativePath: string):
   if (path.isAbsolute(relativePath)) return false;
   const resolved = path.resolve(workingDirectory, relativePath);
   const relativeToRoot = path.relative(workingDirectory, resolved);
-  return !relativeToRoot.startsWith('..') && !path.isAbsolute(relativeToRoot);
+  return !escapesWorkingRoot(relativeToRoot);
+}
+
+/**
+ * Whether a path already made relative to the working root walks OUT of it. A leading `..` must be a
+ * whole path SEGMENT (`..` itself, or `../…`): a bare `startsWith('..')` also rejects an innocent
+ * root-level filename that merely begins with two dots (e.g. `..config.adoc`), which resolves safely
+ * inside the tree. An absolute result escapes too.
+ */
+function escapesWorkingRoot(relativeToRoot: string): boolean {
+  return relativeToRoot === '..' || relativeToRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToRoot);
 }
 
 /**
@@ -221,7 +236,9 @@ async function workingTreeUsesLfs(workingDirectory: string): Promise<boolean> {
  * @returns The LFS endpoint URL to pin, always on the same host as `remoteUrl`.
  */
 export function deriveLfsEndpoint(remoteUrl: string): string {
-  const withoutTrailingSlashes = remoteUrl.replace(/\/+$/, '');
+  let trailingSlashesEnd = remoteUrl.length;
+  while (trailingSlashesEnd > 0 && remoteUrl[trailingSlashesEnd - 1] === '/') trailingSlashesEnd -= 1;
+  const withoutTrailingSlashes = remoteUrl.slice(0, trailingSlashesEnd);
   const base = withoutTrailingSlashes.endsWith('.git')
     ? withoutTrailingSlashes
     : `${withoutTrailingSlashes}.git`;
@@ -285,12 +302,19 @@ async function materializeEntries(workingDirectory: string, maxRepoSizeMB: numbe
     if (stats.isSymbolicLink()) {
       const target = await realpath(absolutePath).catch(() => null);
       const relativeToRoot = target ? path.relative(workingDirectory, target) : null;
-      const escapesWorkingTree =
-        relativeToRoot === null || relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot);
+      const escapesWorkingTree = relativeToRoot === null || escapesWorkingRoot(relativeToRoot);
       if (escapesWorkingTree) continue;
     }
 
-    totalBytes += stats.size;
+    // `readFile` follows a symlink, so the bytes it reads are the TARGET's, not the link's. Count the
+    // followed (`stat`) size for a symlink so the running total reflects what is actually read into
+    // memory; `lstat`'s own size (the link path's length) would undercount against the repo-size cap.
+    let readableBytes = stats.size;
+    if (stats.isSymbolicLink()) {
+      const targetStats = await stat(absolutePath);
+      readableBytes = targetStats.size;
+    }
+    totalBytes += readableBytes;
     if (repoSizeExceedsLimit(totalBytes, maxRepoSizeMB)) {
       throw new RepositoryTooLargeError();
     }
@@ -435,10 +459,13 @@ async function readOptionalBaseStage(workingDirectory: string, filePath: string)
 }
 
 /**
- * Reads one conflicting file's "ours" (`:2:`) or "theirs" (`:3:`) index stage — both stages a
- * genuine content conflict always populates, unlike the optional base stage above. A failure here
- * is a real error (I/O, an unexpected git failure) and is left to propagate, never silently turned
- * into `null`. Same positional/option-injection posture as {@link readOptionalBaseStage}.
+ * Reads one conflicting file's "ours" (`:2:`) or "theirs" (`:3:`) index stage that
+ * {@link readUnmergedStages} has already confirmed EXISTS. A read failure here is therefore a real
+ * error (I/O, an unexpected git failure), never "that side deleted the file", so it propagates —
+ * whether a side is genuinely absent (a modify/delete deletion) is decided by the ls-files stage
+ * listing, NOT by swallowing this read's failure, which would misrecord a transient failure on a
+ * real content conflict as a deletion. Same positional/option-injection posture as
+ * {@link readOptionalBaseStage}.
  *
  * @param workingDirectory - The working tree whose in-progress conflict to read from.
  * @param stage - `2` for "ours", `3` for "theirs".
@@ -446,8 +473,39 @@ async function readOptionalBaseStage(workingDirectory: string, filePath: string)
  * @returns The stage's raw bytes.
  * @throws {GitProcessError} If the underlying `git show` fails.
  */
-async function readRequiredStage(workingDirectory: string, stage: 2 | 3, filePath: string): Promise<Buffer> {
+async function readStageBytes(workingDirectory: string, stage: 2 | 3, filePath: string): Promise<Buffer> {
   return runGitCommandForBytes(workingDirectory, { command: 'show', positionals: [`:${stage}:${filePath}`] });
+}
+
+/**
+ * Reads which unmerged index stages (`2` = "ours", `3` = "theirs") currently exist for one
+ * conflicting path, by parsing `git ls-files -u -- <path>`: each output line is
+ * `<mode> <sha> <stage>\t<path>`, so the whitespace-separated field before the tab (index 2) is the
+ * stage number. A modify/delete conflict reports only one of the two, which is how
+ * {@link RealGitCommandRunner.applyResolutionsOrAbort} learns the chosen side was the DELETED side
+ * (its stage absent) and must accept the deletion rather than `git checkout` a stage that is not
+ * there. `filePath` rides as a positional AFTER `--end-of-options` (the option-injection guard).
+ *
+ * @param workingDirectory - The working tree whose in-progress conflict to inspect.
+ * @param filePath - The conflicting file's workspace-relative path.
+ * @returns The set of unmerged stage numbers present for the path (`2` and/or `3`).
+ */
+async function readUnmergedStages(workingDirectory: string, filePath: string): Promise<Set<2 | 3>> {
+  const { stdout } = await runGitCommand(workingDirectory, {
+    command: 'ls-files',
+    flags: ['-u'],
+    positionals: [filePath],
+  });
+  const stages = new Set<2 | 3>();
+  for (const line of stdout.split('\n')) {
+    const tabIndex = line.indexOf('\t');
+    if (tabIndex === -1) continue;
+    const fields = line.slice(0, tabIndex).trim().split(/\s+/);
+    const stage = fields[2];
+    if (stage === '2') stages.add(2);
+    else if (stage === '3') stages.add(3);
+  }
+  return stages;
 }
 
 /**
@@ -495,8 +553,12 @@ async function computeMergeChanges(
 
     const code = status[0];
     switch (code) {
+      // A `T` (type change, e.g. a path switching between a regular file and a symlink) records the
+      // same thing the reconciler needs as an `M`: the path still exists and its content is now
+      // whatever the merge wrote. Landing it as `modified` keeps the file model in step with the tree.
       case 'A':
-      case 'M': {
+      case 'M':
+      case 'T': {
         const changedPath = tokens[index + 1];
         const content = await readFile(path.join(workingDirectory, changedPath));
         changes.push({
@@ -522,8 +584,9 @@ async function computeMergeChanges(
         break;
       }
       default: {
-        // No other status can appear (copy detection is off; `-z` never emits the octal-escape case
-        // core.quotePath would). Advance past status + one path defensively rather than looping.
+        // A/M/D/R/T are the only statuses these flags can emit (copy detection is off; `-z` never
+        // emits the octal-escape case core.quotePath would). Advance past status + one path
+        // defensively rather than looping on anything unforeseen.
         index += 2;
       }
     }
@@ -579,120 +642,6 @@ async function runNoIndexDiff(left: string, right: string): Promise<string> {
     }
     throw error;
   }
-}
-
-/**
- * The `git log` machine-readable format {@link RealGitCommandRunner.log} runs: four `%x00`-NUL
- * SEPARATED fields per commit (hash, author email, strict ISO author date, subject) — no trailing
- * separator of its own. Combined with the `-z` flag, which makes `git log` terminate each whole
- * commit RECORD with a single NUL instead of its usual trailing newline, the stream is
- * unambiguously `<hash>\0<email>\0<date>\0<subject>\0<hash>\0...`: exactly `4 * <commit count>`
- * NUL-separated tokens, plus one trailing empty token from the final record's NUL. A trailing
- * `%x00` added to the format ITSELF would double up with `-z`'s own terminator (two NULs between
- * records), which is why the format ends at `%s`, not `%s%x00`.
- */
-const LOG_FORMAT = '%H%x00%ae%x00%aI%x00%s';
-
-/**
- * Parses {@link LOG_FORMAT}'s `-z`-terminated stream into this port's domain type.
- *
- * @param stdout - The raw `-z`-terminated `git log --format=<LOG_FORMAT>` output.
- * @returns One {@link GitLogEntry} per commit, in the stream's (newest-first) order.
- */
-function parseLogOutput(stdout: string): GitLogEntry[] {
-  const fields = stdout.split('\0');
-  const entries: GitLogEntry[] = [];
-  for (let index = 0; index + 3 < fields.length; index += 4) {
-    const hash = fields[index];
-    if (hash.length === 0) continue;
-    entries.push({
-      hash,
-      authorEmail: fields[index + 1],
-      authoredAt: new Date(fields[index + 2]),
-      message: fields[index + 3],
-    });
-  }
-  return entries;
-}
-
-/**
- * Parses `git diff --name-only -z`'s NUL-separated output into a plain path array, dropping the
- * empty trailing token `-z` leaves after the last entry — the same terminator convention
- * {@link parseLogOutput} handles for `git log -z`.
- *
- * @param stdout - The raw `-z`-terminated `git diff --name-only` output.
- * @returns Every changed path, in the stream's own order.
- */
-function parseNameOnlyOutput(stdout: string): string[] {
-  return stdout.split('\0').filter((entry) => entry.length > 0);
-}
-
-/**
- * Matches one `git blame --line-porcelain` line-group header: `<40-hex-hash> <origLine>
- * <finalLine> [<numLines>]`. Only the hash and the final (not original) line number are captured —
- * the trailing `numLines` field (present only on a group's first line) is not needed.
- */
-const BLAME_HEADER_LINE = /^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$/;
-
-/** Prefix of the `--line-porcelain` header line carrying the commit's author email. */
-const AUTHOR_MAIL_PREFIX = 'author-mail ';
-/** Prefix of the `--line-porcelain` header line carrying the commit's author time (unix seconds). */
-const AUTHOR_TIME_PREFIX = 'author-time ';
-
-/**
- * Parses `git blame --line-porcelain` output into this port's domain type. `--line-porcelain`
- * repeats every header field (including `author-mail`/`author-time`) on EVERY line's group, unlike
- * plain `--porcelain`, which omits repeated headers for a commit already seen — so each group is
- * self-contained and no state needs to persist across a TAB-prefixed content line into the next
- * group.
- *
- * @param stdout - The raw `git blame --line-porcelain` output.
- * @returns One {@link GitBlameLine} per line, in file order (the stream's own order).
- */
-function parseBlameOutput(stdout: string): GitBlameLine[] {
-  const entries: GitBlameLine[] = [];
-
-  let currentHash: string | null = null;
-  let currentFinalLine: number | null = null;
-  let currentAuthorEmail: string | null = null;
-  let currentAuthorTime: number | null = null;
-
-  for (const line of stdout.split('\n')) {
-    const header = BLAME_HEADER_LINE.exec(line);
-    if (header) {
-      currentHash = header[1];
-      currentFinalLine = Number.parseInt(header[2], 10);
-      continue;
-    }
-
-    if (line.startsWith(AUTHOR_MAIL_PREFIX)) {
-      currentAuthorEmail = line.slice(AUTHOR_MAIL_PREFIX.length).replaceAll(/^<|>$/g, '');
-      continue;
-    }
-
-    if (line.startsWith(AUTHOR_TIME_PREFIX)) {
-      currentAuthorTime = Number.parseInt(line.slice(AUTHOR_TIME_PREFIX.length), 10);
-      continue;
-    }
-
-    if (line.startsWith('\t')) {
-      if (currentHash !== null && currentFinalLine !== null && currentAuthorEmail !== null && currentAuthorTime !== null) {
-        entries.push({
-          lineNumber: currentFinalLine,
-          hash: currentHash,
-          authorEmail: currentAuthorEmail,
-          authoredAt: new Date(currentAuthorTime * 1000),
-          content: line.slice(1),
-        });
-      }
-      continue;
-    }
-    // Every other header line (author, committer, committer-mail, committer-time, committer-tz,
-    // author-tz, summary, filename, boundary, previous) carries nothing this port's
-    // `GitBlameLine` needs.
-  }
-
-  return entries;
 }
 
 /**
@@ -765,9 +714,12 @@ export class RealGitCommandRunner implements GitCommandRunner {
    * AFTER the conflict is detected but BEFORE the caller aborts it, while the unmerged index
    * entries `git show :1:/:2:/:3:<path>` reads from still exist.
    *
-   * Never throws: every failure (a required `:2:`/`:3:` stage read, or the store's own write) is
-   * caught and turned into a `GitCommandFailedError` result, so the caller can always run its
-   * abort in a `finally` around this call and still learn whether the capture succeeded.
+   * Each side's `:2:`/`:3:` stage is read optionally: a modify/delete (or rename/delete) conflict
+   * has only ONE of them, and the absent side is captured as `null` (meaning "that side deleted the
+   * file") rather than hard-failing the whole operation. Never throws: every failure (a stage read,
+   * or the store's own write) is caught and turned into a `GitCommandFailedError` result, so the
+   * caller can always run its abort in a `finally` around this call and still learn whether the
+   * capture succeeded.
    *
    * @param workingDirectory - The working tree whose in-progress conflict to capture.
    * @param operationId - The conflicted operation these stages belong to.
@@ -784,9 +736,16 @@ export class RealGitCommandRunner implements GitCommandRunner {
 
     try {
       for (const conflict of conflicts) {
+        // `git ls-files -u` authoritatively lists which stages exist for the path, so a genuinely
+        // absent stage (that side deleted the file) is distinguished from a stage that exists but
+        // fails to read. A present stage is read with a propagating read whose failure surfaces via
+        // the catch below; only a truly absent stage becomes null. Swallowing every read failure as
+        // null would misrecord a transient failure on a real content conflict as a deletion, and the
+        // later resolution would drop the file the user meant to keep.
+        const unmergedStages = await readUnmergedStages(workingDirectory, conflict.path);
         const base = await readOptionalBaseStage(workingDirectory, conflict.path);
-        const ours = await readRequiredStage(workingDirectory, 2, conflict.path);
-        const theirs = await readRequiredStage(workingDirectory, 3, conflict.path);
+        const ours = unmergedStages.has(2) ? await readStageBytes(workingDirectory, 2, conflict.path) : null;
+        const theirs = unmergedStages.has(3) ? await readStageBytes(workingDirectory, 3, conflict.path) : null;
 
         const written = await this.conflictStageStore.writeStages(operationId, conflict.path, {
           base,
@@ -1058,16 +1017,25 @@ export class RealGitCommandRunner implements GitCommandRunner {
     let gitattributesTouched = false;
     let lfsInstalled = false;
 
+    // `.gitattributes` changes only when this loop writes it (via `writeManagedGitattributes`)
+    // below, so read it from disk exactly once here and keep the current contents in memory. Every
+    // later iteration consults `gitattributesContent` instead of re-reading the file this loop just
+    // wrote, removing an O(N) redundant read on the hot stage path.
+    let gitattributesContent = await readFile(path.join(cwd, '.gitattributes'), 'utf8').catch(() => '');
+
     for (const relativePath of paths) {
       const stats = await stat(path.join(cwd, relativePath)).catch(() => null);
       if (!stats || !stats.isFile()) continue;
 
-      const gitattributesContent = await readFile(path.join(cwd, '.gitattributes'), 'utf8').catch(() => '');
       const alreadyTracked = isPathAlreadyLfsTracked(gitattributesContent, relativePath);
 
       if (!shouldTrackWithLfs(stats.size, this.lfsThresholdBytes, alreadyTracked)) continue;
 
       await writeManagedGitattributes(cwd, [relativePath]);
+      // Mirror in memory exactly what `writeManagedGitattributes` just persisted — it derives the
+      // written bytes from the same contents tracked here — so the next iteration's
+      // `isPathAlreadyLfsTracked` observes this pattern without a fresh disk read.
+      gitattributesContent = buildManagedGitattributes(gitattributesContent, [relativePath]);
       gitattributesTouched = true;
 
       if (!lfsInstalled) {
@@ -1592,20 +1560,20 @@ export class RealGitCommandRunner implements GitCommandRunner {
     input: GitPreviewPushInput,
   ): Promise<Result<GitPreviewPushResult, GitCommandFailedError>> {
     const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-    const remoteRef = `refs/remotes/origin/${input.branch}`;
+    const remoteReference = `refs/remotes/origin/${input.branch}`;
 
-    const hasRemoteTrackingRef = await runGitCommand(cwd, {
+    const hasRemoteTrackingReference = await runGitCommand(cwd, {
       command: 'rev-parse',
       flags: ['--verify', '-q'],
-      positionals: [remoteRef],
+      positionals: [remoteReference],
     })
       .then(() => true)
       .catch(() => false);
-    if (!hasRemoteTrackingRef) {
+    if (!hasRemoteTrackingReference) {
       return { success: true, value: { outgoing: [], changedPaths: [] } };
     }
 
-    const range = `${remoteRef}..HEAD`;
+    const range = `${remoteReference}..HEAD`;
     try {
       const { stdout: logStdout } = await runGitCommand(cwd, {
         command: 'log',
@@ -1940,8 +1908,9 @@ export class RealGitCommandRunner implements GitCommandRunner {
    * `AWAITING_CONFLICT`'s own invariant) → capture `preHead` → re-run the merge (a non-zero exit
    * with no unmerged paths is a genuine failure, e.g. The tracking ref no longer exists; a CLEAN
    * merge here — the remote resolved itself since detection — is also fine, nothing to apply) → for
-   * each resolution, `ours`/`theirs` via `git checkout --ours/--theirs -- <path>` + `git add`, or
-   * `merged` via the bytes {@link ConflictStageStore.readMerged} recorded, written then `git add`-ed
+   * each resolution, `ours`/`theirs` via `git checkout --ours/--theirs` + `git add` (or, when the
+   * chosen side DELETED the file in a modify/delete conflict — its stage absent — `git rm` to accept
+   * that deletion), or `merged` via the bytes {@link ConflictStageStore.readMerged} recorded, written then `git add`-ed
    * → verify no unmerged path remains (`git diff --name-only --diff-filter=U`); if one does, abort
    * and return `stillConflicted` with the still-unmerged paths (classified exactly as
    * {@link merge} classifies its own) → `git commit --no-edit` (reusing the merge's own prepared
@@ -2022,6 +1991,13 @@ export class RealGitCommandRunner implements GitCommandRunner {
   ): Promise<GitResolveMergeOutcome | null> {
     try {
       for (const resolution of input.resolutions) {
+        // Guard the caller-supplied path before any write, exactly as the sibling write methods
+        // (commit/amend/merge/checkout/discardChanges) do: the `merged` branch writes bytes to
+        // `cwd/<path>` directly, so a `..` segment must never reach the filesystem. A throw here runs
+        // the method's `git merge --abort` and surfaces as resolveMerge's generic failure.
+        if (!staysInsideWorkingTree(cwd, resolution.path)) {
+          throw new Error('A resolution path escapes the project working tree.');
+        }
         if (resolution.resolution === 'merged') {
           if (!this.conflictStageStore) {
             throw new Error('No conflict stage store is configured to read the merged content from.');
@@ -2033,12 +2009,23 @@ export class RealGitCommandRunner implements GitCommandRunner {
           await writeFile(path.join(cwd, resolution.path), merged.value);
           await runGitCommand(cwd, { command: 'add', positionals: [resolution.path] });
         } else {
-          await runGitCommand(cwd, {
-            command: 'checkout',
-            flags: [`--${resolution.resolution}`],
-            positionals: [resolution.path],
-          });
-          await runGitCommand(cwd, { command: 'add', positionals: [resolution.path] });
+          // The chosen side may be the one that DELETED the file (a modify/delete conflict), whose
+          // stage is absent from the reproduced index — `git checkout --ours/--theirs` would fail
+          // outright. Read which unmerged stages exist for the path and, when the chosen side's is
+          // absent, honor the resolution as "accept the deletion" via `git rm` instead of a
+          // checkout+add of a stage that is not there.
+          const unmergedStages = await readUnmergedStages(cwd, resolution.path);
+          const chosenStage = resolution.resolution === 'ours' ? 2 : 3;
+          if (unmergedStages.has(chosenStage)) {
+            await runGitCommand(cwd, {
+              command: 'checkout',
+              flags: [`--${resolution.resolution}`],
+              positionals: [resolution.path],
+            });
+            await runGitCommand(cwd, { command: 'add', positionals: [resolution.path] });
+          } else {
+            await runGitCommand(cwd, { command: 'rm', positionals: [resolution.path] });
+          }
         }
       }
 
@@ -2352,116 +2339,4 @@ export class RealGitCommandRunner implements GitCommandRunner {
       return { success: false, error: new GitCommandFailedError('The changes could not be discarded.') };
     }
   }
-}
-
-/**
- * Maps a porcelain v2 change-code character to this port's change type.
- *
- * `git status` (unlike `git diff`/`git log`) has no copy-detection option at all, so the `C`
- * (copied) code can never appear in its output — this mapping intentionally has no case for it;
- * an unrecognized code falls through to null exactly like `C` would.
- *
- * @param code - A single porcelain v2 XY status character.
- * @returns The mapped change type, or null when the character means "no change" on that side (`.`).
- */
-function mapChangeCode(code: string): GitPendingChangeType | null {
-  switch (code) {
-    case 'M':
-    case 'T': {
-      return 'modified';
-    }
-    case 'A': {
-      return 'added';
-    }
-    case 'D': {
-      return 'removed';
-    }
-    case 'R': {
-      return 'renamed';
-    }
-    default: {
-      return null;
-    }
-  }
-}
-
-/** Appends up to two `GitPendingChange` entries — one staged, one unstaged — for one path's XY code pair. */
-function pushChanges(changes: GitPendingChange[], path: string, indexCode: string, worktreeCode: string): void {
-  const staged = mapChangeCode(indexCode);
-  if (staged) changes.push({ path, changeType: staged, state: 'staged' });
-
-  const unstaged = mapChangeCode(worktreeCode);
-  if (unstaged) changes.push({ path, changeType: unstaged, state: 'unstaged' });
-}
-
-const ORDINARY_ENTRY = /^1 (.)(.) \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/;
-const RENAME_ENTRY = /^2 (.)(.) \S+ \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/;
-/**
- * Matches a porcelain v2 unmerged (conflict) record: `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2>
- * <h3> <path>` — the `sub`, four mode, and three object-hash fields between the XY code and the
- * path are captured only to be skipped; only the path is used.
- */
-const UNMERGED_ENTRY = /^u (.)(.) \S+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/;
-const BRANCH_HEAD_PREFIX = '# branch.head ';
-
-/**
- * Parses `git status --porcelain=v2 --branch --find-renames` output into this port's domain type.
- *
- * Exported (despite being an implementation detail of {@link RealGitCommandRunner.getStatus}) so
- * its edge cases — a missing `# branch.head` header, an ignored (`!`) or unmerged (`u`) line, an
- * unrecognized status code — can be unit-tested directly against synthetic porcelain text, since
- * real `git status` output can never exercise them (see this file's tests).
- *
- * @param stdout - The raw porcelain v2 output.
- * @returns The parsed status, or null when the mandatory `# branch.head` header is missing —
- *   should not happen for a valid working tree, and is treated by the caller as an unreadable
- *   status.
- */
-export function parsePorcelainStatus(stdout: string): GitWorkingTreeStatus | null {
-  let currentBranch: string | null = null;
-  const changes: GitPendingChange[] = [];
-
-  for (const line of stdout.split('\n')) {
-    if (line.length === 0) continue;
-
-    if (line.startsWith(BRANCH_HEAD_PREFIX)) {
-      currentBranch = line.slice(BRANCH_HEAD_PREFIX.length);
-      continue;
-    }
-    if (line.startsWith('# ')) continue; // other branch.* headers (oid, upstream, ab) — unused here
-
-    if (line.startsWith('? ')) {
-      changes.push({ path: line.slice(2), changeType: 'added', state: 'untracked' });
-      continue;
-    }
-    if (line.startsWith('! ')) continue; // ignored files — never requested (no --ignored flag)
-
-    const ordinary = ORDINARY_ENTRY.exec(line);
-    if (ordinary) {
-      const [, indexCode, worktreeCode, path] = ordinary;
-      pushChanges(changes, path, indexCode, worktreeCode);
-      continue;
-    }
-
-    const rename = RENAME_ENTRY.exec(line);
-    if (rename) {
-      const [, indexCode, worktreeCode, pair] = rename;
-      const [path] = pair.split('\t');
-      pushChanges(changes, path, indexCode, worktreeCode);
-      continue;
-    }
-
-    const unmerged = UNMERGED_ENTRY.exec(line);
-    if (unmerged) {
-      const [, , , path] = unmerged;
-      // The domain type has no dedicated "conflict" changeType; 'modified' is the closest fit and
-      // covers the common case (both sides edited the same file) — `state: 'conflicted'` is what
-      // actually signals the conflict to callers.
-      changes.push({ path, changeType: 'modified', state: 'conflicted' });
-      continue;
-    }
-  }
-
-  if (currentBranch === null) return null;
-  return { currentBranch, changes };
 }

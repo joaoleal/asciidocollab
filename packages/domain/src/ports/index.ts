@@ -13,7 +13,7 @@ export type { ProjectMemberRepository } from './project/project-member.repositor
 export type { ProjectDictionaryRepository } from './grammar/project-dictionary.repository';
 export type { IgnoredLintRepository } from './grammar/ignored-lint.repository';
 export type { TemplateRepository } from './project/template.repository';
-export type { GitRepositoryRepository } from './project/git-repository.repository';
+export type { GitRepositoryRepository, RefreshedSyncStatusFields } from './project/git-repository.repository';
 export type { CollaborationSessionRepository } from './project/collaboration-session.repository';
 export type { ProjectRenderConfigRepository } from './project/project-render-config.repository';
 export type { ActiveCloneRegistry } from './project/active-clone-registry';
@@ -31,6 +31,9 @@ export type {
 export { GIT_OPERATION_LEGAL_TRANSITIONS } from './git/git-operation-repository';
 export type {
   GitCommandRunner,
+  GitReadPort,
+  GitMutationPort,
+  GitRemotePort,
   GitWorkingTreeStatus,
   GitPendingChange,
   GitPendingChangeType,

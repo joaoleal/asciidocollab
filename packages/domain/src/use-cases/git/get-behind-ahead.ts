@@ -1,7 +1,7 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
-import { GitBehindAhead, GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitBehindAhead, GitReadPort } from '../../ports/git/git-command-runner';
 import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
 import { Logger } from '../../ports/observability/logger';
@@ -31,7 +31,7 @@ export class GetBehindAheadUseCase {
    */
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort,
     private readonly logger?: Logger,
   ) {}
 

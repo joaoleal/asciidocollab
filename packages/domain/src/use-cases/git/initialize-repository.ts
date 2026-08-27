@@ -3,7 +3,7 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitProvider } from '../../value-objects/project/git-provider';
 import { GitRepository } from '../../entities/git-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitRemotePort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
@@ -11,17 +11,23 @@ import { Logger } from '../../ports/observability/logger';
 import { DomainError } from '../../errors/domain-error';
 import { ValidationError } from '../../errors/common/validation-error';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
-import { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
-import { InsufficientRoleError } from '../../errors/git/insufficient-role';
 import { requireGitRole } from './git-role-guard';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 import { recordAuditSuccess } from '../audit-recording';
 import { AUDIT_GIT_REPOSITORY_CONNECTED } from '../../audit-actions';
-// Referenced only from this file's own JSDoc @link tags (never thrown directly here) — all three
-// are raised inside GitCommandRunner.initializeAndPublish, kept imported so the links resolve.
+// Referenced only from this file's own JSDoc @link tags (never thrown directly here) — all five
+// are raised inside GitCommandRunner.initializeAndPublish, GitOperationRepository.withGuard, or
+// requireGitRole; kept imported so the links resolve.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
+import type { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
+import type { InsufficientRoleError } from '../../errors/git/insufficient-role';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { RemoteAlreadyInitializedError } from '../../errors/git/remote-already-initialized';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { AuthenticationFailedError } from '../../errors/git/authentication-failed';
 
 /**
@@ -95,7 +101,7 @@ export class InitializeRepositoryUseCase {
    */
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitRemotePort,
     private readonly gitOperationRepo: GitOperationRepository,
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly auditLogRepo: AuditLogRepository,

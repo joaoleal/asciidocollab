@@ -2,7 +2,7 @@ import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { Email } from '../../value-objects/identity/email';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitReadPort } from '../../ports/git/git-command-runner';
 import { UserRepository } from '../../ports/user/user.repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
@@ -15,6 +15,7 @@ import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 // Referenced only from this file's own JSDoc @link tag (never thrown directly here) — raised inside
 // GitCommandRunner.previewPush; kept imported so the link resolves to a real symbol.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { GitCommandFailedError } from '../../errors/git/git-command-failed';
 
 /** Everything `PreviewPushUseCase.execute` needs to preview what pushing a project's current branch would send out. */
@@ -64,7 +65,7 @@ export class PreviewPushUseCase {
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort,
     private readonly userRepo: UserRepository,
     private readonly logger?: Logger,
   ) {}

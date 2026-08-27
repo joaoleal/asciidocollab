@@ -158,9 +158,17 @@ export interface BranchSwitcherProperties {
   loading: boolean;
   /** True while a switch is starting or its operation is being polled — disables switch actions. */
   switchPending: boolean;
-  /** Starts switching to the given branch. */
+  /**
+   * Starts switching to the given branch.
+   *
+   * @param name - The branch name to switch to.
+   */
   onSwitch: (name: string) => void;
-  /** Creates a new branch with the given name; rejects on failure so the dialog can show why. */
+  /**
+   * Creates a new branch with the given name; rejects on failure so the dialog can show why.
+   *
+   * @param name - The new branch's name.
+   */
   onCreate: (name: string) => Promise<void>;
 }
 

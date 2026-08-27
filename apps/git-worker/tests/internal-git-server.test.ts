@@ -791,6 +791,22 @@ describe('createGitOpsRequestHandler', () => {
     expect(doubles.commit).toHaveBeenCalledWith({ projectId: PROJECT_ID, actorId: ACTOR_ID, message: 'msg' });
   });
 
+  it('answers 400 for stage/unstage on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_STAGE_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toBe('{"error":"Invalid body"}');
+    expect(doubles.stage).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 for commit on a malformed/non-UUID body, without calling the op fn', async () => {
+    const doubles = handlerDoubles();
+    const response = await handle(doubles, fakeRequest('POST', GIT_COMMIT_PATH), recordingResponse(), '{bad');
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toBe('{"error":"Invalid body"}');
+    expect(doubles.commit).not.toHaveBeenCalled();
+  });
+
   const connectBody = JSON.stringify({
     projectId: PROJECT_ID,
     actorId: ACTOR_ID,

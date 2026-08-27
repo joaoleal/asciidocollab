@@ -59,8 +59,22 @@ describe('syncStatusStyle', () => {
     expect(style.className).toContain('muted-foreground');
   });
 
+  test('NEEDS_REAUTH maps to the warning attention token with a reconnect label', () => {
+    const style = syncStatusStyle('NEEDS_REAUTH');
+    expect(style.label).toBe('Reconnect needed');
+    expect(style.className).toContain('warning');
+  });
+
   test('never returns a hardcoded hex or rgb color', () => {
-    const statuses: GitSyncStatus[] = ['UP_TO_DATE', 'AHEAD', 'BEHIND', 'DIVERGED', 'CONFLICTED', 'DISCONNECTED'];
+    const statuses: GitSyncStatus[] = [
+      'UP_TO_DATE',
+      'AHEAD',
+      'BEHIND',
+      'DIVERGED',
+      'CONFLICTED',
+      'DISCONNECTED',
+      'NEEDS_REAUTH',
+    ];
     for (const value of statuses) {
       const style = syncStatusStyle(value);
       expect(style.className).not.toMatch(/#[0-9a-fA-F]{3,8}/);
@@ -104,6 +118,7 @@ describe('GitConnectionStatusBar', () => {
     ['DIVERGED', 'Diverged'],
     ['CONFLICTED', 'Conflicted'],
     ['DISCONNECTED', 'Disconnected'],
+    ['NEEDS_REAUTH', 'Reconnect needed'],
   ] as const)('renders the %s sync state label %s', (syncStatus, label) => {
     render(<GitConnectionStatusBar {...barProperties({ status: status({ syncStatus }) })} />);
     expect(screen.getByText(label)).toBeInTheDocument();
@@ -222,5 +237,85 @@ describe('GitConnectionStatusBar push-preview affordance', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /preview push/i }));
     expect(onPreviewPushClick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GitConnectionStatusBar push affordance', () => {
+  test('shows the Push button only when canPush and behindAhead.ahead > 0', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPush: true, behindAhead: { behind: 0, ahead: 3 } })} />);
+    expect(screen.getByRole('button', { name: /push/i })).toBeInTheDocument();
+  });
+
+  test('hides the Push button when behindAhead.ahead is 0', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPush: true, behindAhead: { behind: 1, ahead: 0 } })} />);
+    expect(screen.queryByRole('button', { name: /push/i })).not.toBeInTheDocument();
+  });
+
+  test('hides the Push button on a diverged branch (behind > 0 && ahead > 0) — pull first', () => {
+    // A push against a diverged branch is a guaranteed non-fast-forward failure; steer to Pull.
+    render(<GitConnectionStatusBar {...barProperties({ canPush: true, behindAhead: { behind: 2, ahead: 3 } })} />);
+    expect(screen.queryByRole('button', { name: /push/i })).not.toBeInTheDocument();
+    // The Pull button IS offered instead (behind > 0).
+    expect(screen.getByRole('button', { name: /pull/i })).toBeInTheDocument();
+  });
+
+  test('shows the Push button when purely ahead (behind === 0 && ahead > 0)', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPush: true, behindAhead: { behind: 0, ahead: 3 } })} />);
+    expect(screen.getByRole('button', { name: /push/i })).toBeInTheDocument();
+  });
+
+  test('hides the Push button when behindAhead is null', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPush: true, behindAhead: null })} />);
+    expect(screen.queryByRole('button', { name: /push/i })).not.toBeInTheDocument();
+  });
+
+  test('hides the Push button when canPush is false, even with a positive ahead count', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPush: false, behindAhead: { behind: 0, ahead: 3 } })} />);
+    expect(screen.queryByRole('button', { name: /push/i })).not.toBeInTheDocument();
+  });
+
+  test('calls onPushClick when the Push button is clicked', () => {
+    const onPushClick = jest.fn();
+    render(<GitConnectionStatusBar {...barProperties({ canPush: true, behindAhead: { behind: 0, ahead: 3 }, onPushClick })} />);
+    fireEvent.click(screen.getByRole('button', { name: /push/i }));
+    expect(onPushClick).toHaveBeenCalledTimes(1);
+  });
+
+  test('gives the Push button an accessible label naming the ahead count', () => {
+    render(<GitConnectionStatusBar {...barProperties({ canPush: true, behindAhead: { behind: 0, ahead: 5 } })} />);
+    expect(screen.getByRole('button', { name: 'ahead by 5 — push available' })).toBeInTheDocument();
+  });
+
+  test('disables the Push button and shows a pending label while pushPending is true', () => {
+    render(
+      <GitConnectionStatusBar
+        {...barProperties({ canPush: true, behindAhead: { behind: 0, ahead: 3 }, pushPending: true })}
+      />,
+    );
+    const button = screen.getByRole('button', { name: /push/i });
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent('Pushing…');
+  });
+
+  test('hides the Push button when the credential needs reauth, even with a positive ahead count', () => {
+    // A rejected credential still reports commits ahead from the last known remote head, but a push
+    // would fail auth immediately — steer to reconnect instead of offering a doomed Push.
+    render(
+      <GitConnectionStatusBar
+        {...barProperties({ canPush: true, status: status({ syncStatus: 'NEEDS_REAUTH' }), behindAhead: { behind: 0, ahead: 3 } })}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /push/i })).not.toBeInTheDocument();
+    // The "Reconnect needed" readout is still shown so the owner knows why.
+    expect(screen.getByText('Reconnect needed')).toBeInTheDocument();
+  });
+
+  test('still shows the Push button in the normal connected/ahead state (not reauth)', () => {
+    render(
+      <GitConnectionStatusBar
+        {...barProperties({ canPush: true, status: status({ syncStatus: 'AHEAD' }), behindAhead: { behind: 0, ahead: 3 } })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /push/i })).toBeInTheDocument();
   });
 });

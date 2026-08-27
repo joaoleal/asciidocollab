@@ -1,7 +1,7 @@
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { FilePath } from '../../value-objects/files/file-path';
 import { FileNode } from '../../entities/file-node';
-import { GitCommandRunner, GitDiffResult } from '../../ports/git/git-command-runner';
+import { GitDiffResult, GitReadPort } from '../../ports/git/git-command-runner';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { FileNodeRepository } from '../../ports/file-tree/file-node.repository';
 import { DocumentRepository } from '../../ports/file-tree/document.repository';
@@ -58,7 +58,7 @@ export class GetDiffUseCase {
    */
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly documentRepo: DocumentRepository,
     private readonly collaborationSessionRepo: CollaborationSessionRepository,

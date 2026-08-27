@@ -1,8 +1,8 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { GitOperationId, ProjectId, UserId } from '@asciidocollab/domain';
-import type { GitOperationStatusDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireProjectMembership } from '../../../lib/git-write-lock';
+import { toGitOperationStatusDto } from '../../../lib/git-operation-dto';
 
 /**
  * Registers `GET /projects/:projectId/git/operations/:opId` — the progress-polling endpoint a
@@ -62,14 +62,7 @@ export async function gitOperationStatusRoutes(app: FastifyInstance): Promise<vo
         }
       }
 
-      const dto: GitOperationStatusDto = {
-        id: operation.id.value,
-        kind: operation.kind,
-        state: operation.state,
-        progress: operation.progress,
-        errorCode: operation.errorCode,
-      };
-      return reply.status(200).send(dto);
+      return reply.status(200).send(toGitOperationStatusDto(operation));
     },
   );
 }

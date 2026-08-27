@@ -18,8 +18,19 @@ export function isGitProvider(value: string): value is GitProvider {
   return providers.includes(value);
 }
 
-/** How a connected repository's current branch compares to its remote. */
-export type GitSyncStatus = 'UP_TO_DATE' | 'AHEAD' | 'BEHIND' | 'DIVERGED' | 'CONFLICTED' | 'DISCONNECTED';
+/**
+ * How a connected repository's current branch compares to its remote. `NEEDS_REAUTH` means the
+ * stored credential was rejected by the remote: the repository stays connected but cannot sync
+ * until its credential is rotated.
+ */
+export type GitSyncStatus =
+  | 'UP_TO_DATE'
+  | 'AHEAD'
+  | 'BEHIND'
+  | 'DIVERGED'
+  | 'CONFLICTED'
+  | 'DISCONNECTED'
+  | 'NEEDS_REAUTH';
 
 /** The sync states a connected repository may be in. */
 export const GIT_SYNC_STATUSES: readonly GitSyncStatus[] = [
@@ -29,6 +40,7 @@ export const GIT_SYNC_STATUSES: readonly GitSyncStatus[] = [
   'DIVERGED',
   'CONFLICTED',
   'DISCONNECTED',
+  'NEEDS_REAUTH',
 ];
 
 /** Narrows an arbitrary string to a {@link GitSyncStatus}. */
@@ -256,15 +268,17 @@ export interface ConflictListDto {
 /**
  * One conflicting file's three-way content, for the `GET /git/conflicts/:path` merge view. A
  * binary conflict carries no text — `base`/`ours`/`theirs` are empty and `isBinary` is `true`, so
- * the client offers only whole-file ours/theirs actions, never the inline text editor.
+ * the client offers only whole-file ours/theirs actions, never the inline text editor. A null
+ * `ours`/`theirs` means that side DELETED the file (a modify/delete conflict) — distinct from a
+ * binary conflict's empty-string sides — so the client again offers only whole-file actions.
  */
 export interface ConflictStagesDto {
   /** The merge-base content, or null when the file had no merge base (an add/add conflict). */
   base: string | null;
-  /** This branch's ("ours") content. Empty for a binary conflict. */
-  ours: string;
-  /** The incoming branch's ("theirs") content. Empty for a binary conflict. */
-  theirs: string;
+  /** This branch's ("ours") content; null when "ours" deleted the file (a modify/delete conflict). Empty for a binary conflict. */
+  ours: string | null;
+  /** The incoming branch's ("theirs") content; null when "theirs" deleted the file (a modify/delete conflict). Empty for a binary conflict. */
+  theirs: string | null;
   /** Whether the file is binary (no textual three-way view). */
   isBinary: boolean;
 }
@@ -329,6 +343,29 @@ export function isGitOperationState(value: string): value is GitOperationState {
   return states.includes(value);
 }
 
+/** One drifted change in a {@link GitDriftSummaryDto}. */
+export interface GitDriftAnomalyDto {
+  /** Workspace-relative POSIX path (no leading slash); the destination for a rename. */
+  path: string;
+  /** The reconciler drift kind. */
+  kind: string;
+  /** Whether the pulled content survived (`false` only for a dropped change). */
+  applied: boolean;
+}
+
+/**
+ * A compact record of the reconcile drift a SUCCEEDED pull hit, surfaced to the user who triggered
+ * it (who has no server-log or audit access). Present only on such an operation; null otherwise.
+ */
+export interface GitDriftSummaryDto {
+  /** How many changes hit drift. */
+  total: number;
+  /** How many were dropped (content discarded) — the ones the user must act on. */
+  droppedCount: number;
+  /** The affected paths and how each was handled. */
+  anomalies: GitDriftAnomalyDto[];
+}
+
 /**
  * The polled progress/status of a whole-project `GitOperation` — what a client repeatedly reads
  * back after a `202` to learn how a long-running action (import/pull/push/…) is progressing.
@@ -345,6 +382,11 @@ export interface GitOperationStatusDto {
   progress: number;
   /** Typed, safe error code recorded on failure, or null while not failed. */
   errorCode: string | null;
+  /**
+   * For a SUCCEEDED pull whose reconcile hit drift, the summary of what was auto-repaired or dropped;
+   * null on every other operation. Lets the client warn the user that a pulled change needs attention.
+   */
+  driftSummary: GitDriftSummaryDto | null;
 }
 
 /**

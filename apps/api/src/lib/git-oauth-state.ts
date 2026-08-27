@@ -95,7 +95,7 @@ function parseOAuthState(value: unknown): OAuthState | null {
     actorId,
     provider,
     remoteUrl,
-    ...(branch !== undefined ? { branch } : {}),
+    ...(branch === undefined ? {} : { branch }),
     codeVerifier,
     nonce,
     issuedAt,

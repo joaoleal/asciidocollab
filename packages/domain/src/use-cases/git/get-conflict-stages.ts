@@ -22,10 +22,10 @@ export interface GetConflictStagesInput {
 export interface GetConflictStagesResult {
   /** The merge-base content, or null when the file had no merge base (an add/add conflict). */
   readonly base: string | null;
-  /** This branch's ("ours") content. Empty for a binary conflict. */
-  readonly ours: string;
-  /** The incoming branch's ("theirs") content. Empty for a binary conflict. */
-  readonly theirs: string;
+  /** This branch's ("ours") content, or null when "ours" deleted the file (a modify/delete conflict). Empty for a binary conflict. */
+  readonly ours: string | null;
+  /** The incoming branch's ("theirs") content, or null when "theirs" deleted the file (a modify/delete conflict). Empty for a binary conflict. */
+  readonly theirs: string | null;
   /** Whether the file is binary (no textual three-way view). */
   readonly isBinary: boolean;
 }
@@ -74,9 +74,9 @@ export class GetConflictStagesUseCase {
     return {
       success: true,
       value: {
-        base: stages.base ? stages.base.toString('utf8') : null,
-        ours: stages.ours.toString('utf8'),
-        theirs: stages.theirs.toString('utf8'),
+        base: stages.base === null ? null : stages.base.toString('utf8'),
+        ours: stages.ours === null ? null : stages.ours.toString('utf8'),
+        theirs: stages.theirs === null ? null : stages.theirs.toString('utf8'),
         isBinary: false,
       },
     };

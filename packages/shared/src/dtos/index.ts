@@ -77,6 +77,8 @@ export type {
   GitOperationKind,
   GitOperationState,
   GitOperationStatusDto,
+  GitDriftSummaryDto,
+  GitDriftAnomalyDto,
   ActiveGitOperationDto,
   PullPreviewDto,
   PushPreviewDto,

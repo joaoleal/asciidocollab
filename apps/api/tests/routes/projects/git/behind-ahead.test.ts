@@ -21,38 +21,35 @@ function mockGetBehindAhead(result: GitWorkerResult<GitWorkerBehindAheadData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): FastifyInstance {
+  const { role = 'viewer', client = {} } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      getBehindAhead: mockGetBehindAhead({ ok: true, data: behindAheadData() }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(gitBehindAheadRoutes);
+  return instance;
+}
+
+function getBehindAhead(app: FastifyInstance, projectId: string) {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/behind-ahead` });
+}
+
 describe('GET /projects/:projectId/git/behind-ahead', () => {
-  function buildServer(options: {
-    role?: string | null;
-    client?: Partial<GitWorkerClient>;
-  }): FastifyInstance {
-    const { role = 'viewer', client = {} } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        getBehindAhead: mockGetBehindAhead({ ok: true, data: behindAheadData() }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(gitBehindAheadRoutes);
-    return instance;
-  }
-
-  function getBehindAhead(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/behind-ahead` });
-  }
-
   test('returns 200 with the behind/ahead counts for a viewer-tier member', async () => {
     const instance = await register(
       buildServer({

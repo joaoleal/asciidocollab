@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile, rename, rm, open, stat, link, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import type { Readable } from 'node:stream';
 import path from 'node:path';
@@ -53,10 +54,23 @@ export class FilesystemProjectFileStore implements ProjectFileStore {
   /** Atomically overwrites the file at filePath, creating intermediate directories as needed. */
   async write(projectId: ProjectId, filePath: FilePath, content: Buffer): Promise<void> {
     const absPath = this.resolveSafe(projectId, filePath);
-    const temporaryPath = `${absPath}.tmp`;
+    // A UNIQUE temp name per write: a fixed `${absPath}.tmp` lets two overlapping writes to the same
+    // path clobber each other's temp file — one write lands the other's bytes, and the loser's rename
+    // throws ENOENT because its temp was already consumed. The random suffix isolates each write.
+    const temporaryPath = `${absPath}.${randomUUID()}.tmp`;
     await mkdir(path.dirname(absPath), { recursive: true });
-    await writeFile(temporaryPath, content);
-    await rename(temporaryPath, absPath);
+    try {
+      await writeFile(temporaryPath, content);
+      await rename(temporaryPath, absPath);
+    } catch (error) {
+      // Cleanup covers the whole window from temp-file creation through the rename — not just the
+      // rename. If writeFile itself throws partway (disk full, quota, I/O error) the partial temp
+      // must be removed too, otherwise a fresh-uuid temp orphan accumulates on every failing write.
+      // rm(..., { force: true }) tolerates a temp that was never created, so cleanup after an early
+      // failure is a no-op rather than a throw. The original error is always rethrown.
+      await rm(temporaryPath, { force: true });
+      throw error;
+    }
   }
 
   /** Creates the file only if it does not yet exist, returning FileConflictError if it is already present. */

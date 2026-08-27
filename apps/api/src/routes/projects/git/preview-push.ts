@@ -12,7 +12,7 @@ export function toPushPreviewDto(data: GitWorkerPreviewPushData): PushPreviewDto
     outgoingCommits: data.outgoingCommits.map((commit) => ({
       hash: commit.hash,
       message: commit.message,
-      ...(commit.authorUserId !== undefined ? { authorUserId: commit.authorUserId } : {}),
+      ...(commit.authorUserId === undefined ? {} : { authorUserId: commit.authorUserId }),
       authoredAt: commit.authoredAt,
     })),
     changedPaths: [...data.changedPaths],
@@ -62,7 +62,7 @@ export async function gitPreviewPushRoutes(app: FastifyInstance): Promise<void> 
         result = await request.server.stores.gitWorkerClient.previewPush({
           projectId: projectId.value,
           actorId: actorId.value,
-          ...(branch !== undefined ? { branch } : {}),
+          ...(branch === undefined ? {} : { branch }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {

@@ -116,6 +116,9 @@ export ASCIIDOCOLLAB_API_CORS_ORIGINS="http://localhost:${WEB_PORT}"
 # Test-only secrets — never used outside e2e. Encryption key is base64 of a 32-byte string.
 export ASCIIDOCOLLAB_AUTH_SESSION_SECRET="e2e-local-session-secret-not-for-production"
 export ASCIIDOCOLLAB_AUTH_SESSION_ENCRYPTION_KEY="Y2ktdGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVzISE="
+# Git credential encryption key (AES-256-GCM at rest). Unconditionally required at API boot, so the
+# e2e stack must supply it or the server fatals before it can serve any spec. base64 of a 32-byte string.
+export ASCIIDOCOLLAB_GIT_CREDENTIAL_ENCRYPTION_KEY="Y2ktdGVzdC1naXQtY3JlZGVudGlhbC1rZXktMzJieXQ="
 export ASCIIDOCOLLAB_AUTH_COOKIE_SECURE="false"
 export ASCIIDOCOLLAB_AUTH_EMAIL_PROVIDER="smtp"
 export ASCIIDOCOLLAB_AUTH_EMAIL_ENABLED="true"

@@ -26,38 +26,35 @@ function mockGetBlame(result: GitWorkerResult<GitWorkerBlameData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): FastifyInstance {
+  const { role = 'viewer', client = {} } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      getBlame: mockGetBlame({ ok: true, data: blameData() }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(gitBlameRoutes);
+  return instance;
+}
+
+function getBlame(app: FastifyInstance, projectId: string, query = '') {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/blame${query}` });
+}
+
 describe('GET /projects/:projectId/git/blame', () => {
-  function buildServer(options: {
-    role?: string | null;
-    client?: Partial<GitWorkerClient>;
-  }): FastifyInstance {
-    const { role = 'viewer', client = {} } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        getBlame: mockGetBlame({ ok: true, data: blameData() }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(gitBlameRoutes);
-    return instance;
-  }
-
-  function getBlame(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/blame${query}` });
-  }
-
   test('returns 200 with the mapped BlameDto for a viewer-tier member', async () => {
     const instance = await register(buildServer({ role: 'viewer' }));
 

@@ -69,7 +69,7 @@ describe('GET /projects/:projectId/git/active-operation', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      operation: { id: OPERATION_ID, kind: 'PULL', state: 'RUNNING', progress: 55, errorCode: null },
+      operation: { id: OPERATION_ID, kind: 'PULL', state: 'RUNNING', progress: 55, errorCode: null, driftSummary: null },
     });
 
     await instance.close();
@@ -97,7 +97,7 @@ describe('GET /projects/:projectId/git/active-operation', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      operation: { id: OPERATION_ID, kind: 'PULL', state: 'AWAITING_CONFLICT', progress: 70, errorCode: null },
+      operation: { id: OPERATION_ID, kind: 'PULL', state: 'AWAITING_CONFLICT', progress: 70, errorCode: null, driftSummary: null },
     });
 
     await instance.close();

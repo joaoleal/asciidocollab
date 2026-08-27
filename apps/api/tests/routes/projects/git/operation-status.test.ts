@@ -89,6 +89,7 @@ describe('GET /projects/:projectId/git/operations/:opId', () => {
       state: 'RUNNING',
       progress: 65,
       errorCode: null,
+      driftSummary: null,
     });
 
     await instance.close();

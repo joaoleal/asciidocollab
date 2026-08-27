@@ -8,6 +8,7 @@ import { DomainError } from '../domain-error';
 export class NoConflictInProgressError extends DomainError {
   readonly name = 'NoConflictInProgressError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('This project has no conflict awaiting resolution');
   }

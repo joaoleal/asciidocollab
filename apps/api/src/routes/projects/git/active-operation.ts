@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { ProjectId, UserId } from '@asciidocollab/domain';
-import type { ActiveGitOperationDto, GitOperationStatusDto } from '@asciidocollab/shared';
+import type { ActiveGitOperationDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireProjectMembership } from '../../../lib/git-write-lock';
 import { sendGitErrorResponse } from '../../../lib/git-error-response';
+import { toGitOperationStatusDto } from '../../../lib/git-operation-dto';
 
 /**
  * Registers `GET /projects/:projectId/git/active-operation` — a project member's read of whether
@@ -43,15 +44,7 @@ export async function gitActiveOperationRoutes(app: FastifyInstance): Promise<vo
       const operation = await request.server.repos.gitOperation.findActiveOperation(projectId);
 
       const dto: ActiveGitOperationDto = {
-        operation: operation
-          ? ({
-              id: operation.id.value,
-              kind: operation.kind,
-              state: operation.state,
-              progress: operation.progress,
-              errorCode: operation.errorCode,
-            } satisfies GitOperationStatusDto)
-          : null,
+        operation: operation ? toGitOperationStatusDto(operation) : null,
       };
       return reply.status(200).send(dto);
     },

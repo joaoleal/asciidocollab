@@ -21,38 +21,35 @@ function mockGetDiff(result: GitWorkerResult<GitWorkerDiffData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): FastifyInstance {
+  const { role = 'viewer', client = {} } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      getDiff: mockGetDiff({ ok: true, data: diffData() }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(gitDiffRoutes);
+  return instance;
+}
+
+function getDiff(app: FastifyInstance, projectId: string, query = '') {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/diff${query}` });
+}
+
 describe('GET /projects/:projectId/git/diff', () => {
-  function buildServer(options: {
-    role?: string | null;
-    client?: Partial<GitWorkerClient>;
-  }): FastifyInstance {
-    const { role = 'viewer', client = {} } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        getDiff: mockGetDiff({ ok: true, data: diffData() }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(gitDiffRoutes);
-    return instance;
-  }
-
-  function getDiff(app: FastifyInstance, projectId: string, query = '') {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/diff${query}` });
-  }
-
   test('returns 200 with the mapped DiffDto for a viewer-tier member', async () => {
     const instance = await register(buildServer({ role: 'viewer' }));
 

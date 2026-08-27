@@ -178,7 +178,7 @@ function CommitForm({ projectId, open, onOpenChange, onCommitted }: CommitFormPr
         </div>
 
         <div className="flex justify-end gap-3 pt-2">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
             Cancel
           </Button>
           <Button type="submit" disabled={!canSubmit}>

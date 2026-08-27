@@ -101,6 +101,22 @@ describe('ConflictMergeEditor loading', () => {
     await waitFor(() => expect(screen.getByText(/binary file/i)).toBeInTheDocument());
     expect(screen.queryByTestId('merge-ours')).not.toBeInTheDocument();
   });
+
+  it('shows modify/delete guidance with no editor when "ours" deleted the file', async () => {
+    mockGetConflictStages.mockResolvedValue({ base: 'base text', ours: null, theirs: 'theirs text', isBinary: false });
+    render(<ConflictMergeEditor projectId="proj1" path="gone.adoc" onSave={jest.fn()} onCancel={jest.fn()} />);
+
+    await waitFor(() => expect(screen.getByText(/modified on one side and deleted on the other/i)).toBeInTheDocument());
+    expect(screen.queryByTestId('merge-ours')).not.toBeInTheDocument();
+  });
+
+  it('shows modify/delete guidance with no editor when "theirs" deleted the file', async () => {
+    mockGetConflictStages.mockResolvedValue({ base: 'base text', ours: 'ours text', theirs: null, isBinary: false });
+    render(<ConflictMergeEditor projectId="proj1" path="gone.adoc" onSave={jest.fn()} onCancel={jest.fn()} />);
+
+    await waitFor(() => expect(screen.getByText(/modified on one side and deleted on the other/i)).toBeInTheDocument());
+    expect(screen.queryByTestId('merge-ours')).not.toBeInTheDocument();
+  });
 });
 
 describe('ConflictMergeEditor save', () => {
@@ -114,6 +130,56 @@ describe('ConflictMergeEditor save', () => {
     fireEvent.click(screen.getByRole('button', { name: /save merge/i }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('the final merged text'));
+  });
+
+  it('keeps the Save button disabled while the resolve promise is pending, re-enabling once it settles', async () => {
+    mockGetConflictStages.mockResolvedValue(STAGES);
+    let settleResolve: (() => void) | undefined;
+    const onSave = jest.fn(
+      () =>
+        new Promise<void>((resolveSave) => {
+          settleResolve = resolveSave;
+        }),
+    );
+    render(<ConflictMergeEditor projectId="proj1" path="a.adoc" onSave={onSave} onCancel={jest.fn()} />);
+
+    await waitFor(() => expect(oursField()).toHaveValue('ours text'));
+    const saveButton = screen.getByRole('button', { name: /save merge/i });
+    expect(saveButton).toBeEnabled();
+
+    fireEvent.click(saveButton);
+
+    // While the resolve promise is still in flight the button must stay disabled, so a second click
+    // cannot start a duplicate concurrent resolve.
+    await waitFor(() => expect(screen.getByRole('button', { name: /saving/i })).toBeDisabled());
+    expect(onSave).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /saving/i }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+
+    // Only once the resolve settles may the button re-enable.
+    settleResolve?.();
+    await waitFor(() => expect(screen.getByRole('button', { name: /save merge/i })).toBeEnabled());
+  });
+
+  it('re-enables the Save button after a rejected resolve so the author can retry', async () => {
+    mockGetConflictStages.mockResolvedValue(STAGES);
+    let rejectResolve: ((reason: unknown) => void) | undefined;
+    const onSave = jest.fn(
+      () =>
+        new Promise<void>((_resolveSave, reject) => {
+          rejectResolve = reject;
+        }),
+    );
+    render(<ConflictMergeEditor projectId="proj1" path="a.adoc" onSave={onSave} onCancel={jest.fn()} />);
+
+    await waitFor(() => expect(oursField()).toHaveValue('ours text'));
+    fireEvent.click(screen.getByRole('button', { name: /save merge/i }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /saving/i })).toBeDisabled());
+
+    rejectResolve?.(new Error('resolve failed'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /save merge/i })).toBeEnabled());
   });
 
   it('calls onCancel without saving', async () => {

@@ -108,6 +108,16 @@ describe('CommitDialog submission', () => {
     expect(button).toBeDisabled();
   });
 
+  test('disables Cancel while the request is in flight so an in-flight commit is not abandoned', async () => {
+    mockCommitChanges.mockReturnValueOnce(new Promise(() => undefined));
+    renderDialog();
+    await screen.findByText('chapter-1.adoc');
+    fireEvent.change(messageField(), { target: { value: 'Fix typo' } });
+    fireEvent.click(submitButton());
+    await screen.findByRole('button', { name: 'Committing…' });
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+  });
+
   test.each([
     ['empty_commit_message', 'A commit message is required.'],
     ['nothing_staged', 'There are no staged changes to commit.'],

@@ -10,6 +10,7 @@ import { DomainError } from '../domain-error';
 export class RemoteAlreadyInitializedError extends DomainError {
   readonly name = 'RemoteAlreadyInitializedError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('The remote repository already has commits; import it instead of initializing');
   }

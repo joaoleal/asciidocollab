@@ -1,7 +1,7 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitRepository } from '../../entities/git-repository';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitRemotePort } from '../../ports/git/git-command-runner';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
@@ -13,9 +13,13 @@ import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 // Referenced only from this file's own JSDoc @link tags (never thrown directly here) — each is
 // raised inside GitCommandRunner.push; kept imported so the links resolve to real symbols.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { NonFastForwardError } from '../../errors/git/non-fast-forward';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { AuthenticationFailedError } from '../../errors/git/authentication-failed';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { GitCommandFailedError } from '../../errors/git/git-command-failed';
 
 /**
@@ -71,7 +75,7 @@ export class PushChangesUseCase {
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitRemotePort,
     private readonly logger?: Logger,
   ) {}
 

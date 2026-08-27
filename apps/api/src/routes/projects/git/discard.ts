@@ -39,21 +39,22 @@ export function normalizeDiscardBody(body: GitDiscardBody): NormalizedDiscard | 
   const hasPathCommit = typeof body.path === 'string' && typeof body.commit === 'string';
   if (hasPaths === hasPathCommit) return null;
 
-  if (hasPaths) {
-    const rawPaths = body.paths as unknown[];
-    if (rawPaths.length === 0) return null;
+  if (hasPaths && Array.isArray(body.paths)) {
+    if (body.paths.length === 0) return null;
     const paths: string[] = [];
-    for (const entry of rawPaths) {
+    for (const entry of body.paths) {
       if (typeof entry !== 'string') return null;
       paths.push(entry);
     }
     return { paths, fromCommit: undefined };
   }
 
-  const path = body.path as string;
-  const commit = body.commit as string;
-  if (path.length === 0 || commit.length === 0) return null;
-  return { paths: [path], fromCommit: commit };
+  if (typeof body.path === 'string' && typeof body.commit === 'string') {
+    if (body.path.length === 0 || body.commit.length === 0) return null;
+    return { paths: [body.path], fromCommit: body.commit };
+  }
+
+  return null;
 }
 
 /**
@@ -62,8 +63,8 @@ export function normalizeDiscardBody(body: GitDiscardBody): NormalizedDiscard | 
  * RPC, which owns the project's single-flight guard the same way commit does.
  *
  * The body is dual-shaped: `{paths}` for a plain discard to HEAD, or `{path, commit}` to restore one
- * file from a specific commit. {@link normalizeDiscardBody} validates and normalizes it; a body
- * matching neither shape answers `400` before the worker is ever called.
+ * file from a specific commit. Both shapes are validated and normalized by
+ * {@link normalizeDiscardBody}; a body matching neither answers `400` before the worker is ever called.
  *
  * Requires EDITOR tier or above; the gate runs BEFORE the worker call, as defense-in-depth alongside
  * the worker's own editor self-gate.

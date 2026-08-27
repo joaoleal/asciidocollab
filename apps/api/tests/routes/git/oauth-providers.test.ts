@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
 import { gitOAuthProvidersRoutes } from '../../../src/routes/git/oauth-providers';
 
 const CONFIGURED = {

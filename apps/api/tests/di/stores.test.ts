@@ -17,6 +17,7 @@ function fakeConfig(): ReturnType<typeof getConfig> {
     git: {
       workerUrl: 'http://127.0.0.1:4010',
       workerSecret: '',
+      workerTimeoutMs: 30_000,
       workerTls: { cert: '', key: '', ca: '' },
     },
     // The extension source reads its folder and its bounds from configuration — nothing is hardcoded

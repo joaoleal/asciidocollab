@@ -9,6 +9,7 @@ import { DomainError } from '../domain-error';
 export class RepositoryUnreachableError extends DomainError {
   readonly name = 'RepositoryUnreachableError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('The remote repository could not be reached');
   }

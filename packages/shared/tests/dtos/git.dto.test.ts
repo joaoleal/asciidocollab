@@ -51,6 +51,7 @@ describe('git sync status', () => {
       'DIVERGED',
       'CONFLICTED',
       'DISCONNECTED',
+      'NEEDS_REAUTH',
     ]);
   });
 
@@ -127,7 +128,7 @@ describe('PendingChangeDto', () => {
     const type: PendingChangeType = 'modified';
     const dto: PendingChangeDto = { path: 'docs/intro.adoc', changeType: type };
     expect(dto.changeType).toBe('modified');
-    expect(Object.keys(dto).sort()).toEqual(['changeType', 'path']);
+    expect(Object.keys(dto).toSorted()).toEqual(['changeType', 'path']);
   });
 });
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ProjectId, UserId } from '@asciidocollab/domain';
 import { GitWorkerTransportError } from '@asciidocollab/infrastructure';
-import type { GitProvider, GitRepositoryDto } from '@asciidocollab/shared';
+import { isGitProvider, type GitRepositoryDto } from '@asciidocollab/shared';
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireOwnerRole } from '../../../lib/git-write-lock';
 import { sendGitErrorResponse, sendGitWorkerUnavailableResponse } from '../../../lib/git-error-response';
@@ -81,7 +81,7 @@ export async function gitConnectRoutes(app: FastifyInstance): Promise<void> {
           provider,
           remoteUrl,
           token,
-          ...(branch !== undefined ? { branch } : {}),
+          ...(branch === undefined ? {} : { branch }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {
@@ -95,12 +95,15 @@ export async function gitConnectRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const { repository } = result.data;
+      if (!isGitProvider(repository.provider)) {
+        // The worker already validated this against GitProvider.create before ever saving the
+        // row, so it is one of the DTO's own provider literals by construction.
+        throw new Error(`Unexpected git provider "${repository.provider}" persisted by the worker`);
+      }
       const dto: GitRepositoryDto = {
         id: repository.id,
         projectId: repository.projectId,
-        // The worker already validated this against GitProvider.create before ever saving the row,
-        // so it is one of the DTO's own provider literals by construction.
-        provider: repository.provider as GitProvider,
+        provider: repository.provider,
         remoteUrl: repository.remoteUrl,
         currentBranch: repository.currentBranch,
         defaultBranch: repository.defaultBranch,

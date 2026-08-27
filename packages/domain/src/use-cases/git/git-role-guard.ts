@@ -17,6 +17,11 @@ export type GitRoleTier = 'viewer' | 'editor' | 'owner';
 /** Ordinal ranking of the three tiers, low to high, so a role can be compared against a minimum. */
 const ROLE_RANK: Record<GitRoleTier, number> = { viewer: 0, editor: 1, owner: 2 };
 
+/** Narrows a `Role`'s raw string value to a {@link GitRoleTier}, without an unchecked type assertion. */
+function isGitRoleTier(value: string): value is GitRoleTier {
+  return value === 'viewer' || value === 'editor' || value === 'owner';
+}
+
 /** Details needed to check a caller's role against a git action's minimum and audit a denial. */
 export interface GitRoleAuthzContext {
   /** The acting user. */
@@ -60,7 +65,8 @@ export async function requireGitRole(
   logger?: Logger,
 ): Promise<Result<void, InsufficientRoleError>> {
   const membership = await projectMemberRepo.findByCompositeKey(authz.projectId, authz.actorId);
-  const actualRank = membership ? ROLE_RANK[membership.role.value as GitRoleTier] : -1;
+  const actualRank =
+    membership && isGitRoleTier(membership.role.value) ? ROLE_RANK[membership.role.value] : -1;
   const requiredRank = ROLE_RANK[authz.requiredRole];
 
   if (actualRank >= requiredRank) {

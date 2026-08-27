@@ -100,12 +100,26 @@ describe('isPrivateOrLinkLocalAddress', () => {
     ['93.184.216.34', false],
     ['172.32.0.1', false], // just outside the 172.16.0.0/12 private range
     ['::1', true],
+    ['0:0:0:0:0:0:0:1', true], // loopback fully written out (uncompressed)
+    ['0000:0000:0000:0000:0000:0000:0000:0001', true], // loopback, zero-padded
+    ['::', true], // unspecified, compressed
+    ['0:0:0:0:0:0:0:0', true], // unspecified fully written out
     ['fe80::1', true],
+    ['FE80:0:0:0:0:0:0:1', true], // link-local, uppercase and uncompressed
     ['fc00::1', true],
     ['fd12:3456::1', true],
     ['::ffff:127.0.0.1', true],
     ['::ffff:8.8.8.8', false],
+    ['::ffff:a9fe:a9fe', true], // IPv4-mapped metadata address written as hex hextets (169.254.169.254)
+    ['64:ff9b::7f00:1', true], // NAT64 well-known prefix embedding 127.0.0.1 as hextets
+    ['64:ff9b::127.0.0.1', true], // NAT64 well-known prefix embedding loopback, dotted
+    ['64:ff9b::8.8.8.8', false], // NAT64 of a public IPv4 stays public
+    ['::7f00:1', true], // deprecated IPv4-compatible form embedding 127.0.0.1
+    ['::127.0.0.1', true], // deprecated IPv4-compatible form embedding loopback, dotted
+    ['::2:3:4:5', false], // `::`-leading but the tail is not an embedded IPv4 — not classified private
+    ['::ffff:7f00:1', true], // IPv4-mapped loopback written as hex hextets (127.0.0.1)
     ['2001:4860:4860::8888', false],
+    ['2606:4700:4700::1111', false], // public IPv6 stays public regardless of literal form
   ])('classifies %s as private/link-local: %s', (address, expected) => {
     expect(isPrivateOrLinkLocalAddress(address)).toBe(expected);
   });
@@ -132,6 +146,42 @@ describe('assertRemoteHostAllowed', () => {
 
   it('rejects an allowlisted host that resolves to a private address (DNS-rebinding guard)', async () => {
     const resolveHost = jest.fn().mockResolvedValue([{ address: '10.0.0.5' }]);
+
+    await expect(
+      assertRemoteHostAllowed('https://git.example.com/org/repo.git', ['git.example.com'], resolveHost),
+    ).rejects.toBeInstanceOf(RemoteHostNotAllowedError);
+  });
+
+  it('permits an allowlisted host that resolves to a public IPv6 address', async () => {
+    const resolveHost = jest.fn().mockResolvedValue([{ address: '2606:4700:4700::1111' }]);
+
+    await expect(
+      assertRemoteHostAllowed('https://git.example.com/org/repo.git', ['git.example.com'], resolveHost),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects when the resolver returns no addresses (cannot validate, deny by default)', async () => {
+    const resolveHost = jest.fn().mockResolvedValue([]);
+
+    await expect(
+      assertRemoteHostAllowed('https://git.example.com/org/repo.git', ['git.example.com'], resolveHost),
+    ).rejects.toBeInstanceOf(RemoteHostNotAllowedError);
+    expect(resolveHost).toHaveBeenCalledWith('git.example.com');
+  });
+
+  it.each([['not-an-ip'], ['999.999.999.999'], ['::gggg']])(
+    'rejects an allowlisted host that resolves to an unparseable address literal (%s)',
+    async (address) => {
+      const resolveHost = jest.fn().mockResolvedValue([{ address }]);
+
+      await expect(
+        assertRemoteHostAllowed('https://git.example.com/org/repo.git', ['git.example.com'], resolveHost),
+      ).rejects.toBeInstanceOf(RemoteHostNotAllowedError);
+    },
+  );
+
+  it('rejects when only some resolved addresses are unparseable (all must be recognizable public IPs)', async () => {
+    const resolveHost = jest.fn().mockResolvedValue([{ address: '93.184.216.34' }, { address: 'not-an-ip' }]);
 
     await expect(
       assertRemoteHostAllowed('https://git.example.com/org/repo.git', ['git.example.com'], resolveHost),

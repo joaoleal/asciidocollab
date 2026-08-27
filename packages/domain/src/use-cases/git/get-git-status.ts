@@ -1,6 +1,6 @@
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
-import { GitCommandRunner, GitPendingChange } from '../../ports/git/git-command-runner';
+import { GitPendingChange, GitReadPort } from '../../ports/git/git-command-runner';
 import { GitSyncStatus } from '../../types/git-sync-status';
 import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
@@ -53,7 +53,7 @@ export class GetGitStatusUseCase {
    */
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort,
     private readonly logger?: Logger,
   ) {}
 

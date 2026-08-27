@@ -14,7 +14,7 @@ import type {
   ProjectId,
   ProjectMemberRepository,
 } from '@asciidocollab/domain';
-import { AuthenticationFailedError, PullChangesUseCase, RepositoryUnreachableError } from '@asciidocollab/domain';
+import { AuthenticationFailedError, PullChangesUseCase, RepositoryUnreachableError, buildGitDriftSummary } from '@asciidocollab/domain';
 import type { GitErrorCode } from '@asciidocollab/shared';
 import type { GitOperationOutcome } from './git-operation-dispatcher.js';
 
@@ -149,6 +149,9 @@ export function createPullHandler(deps: PullHandlerDeps): (operation: GitOperati
       return { kind: 'awaitingConflict' };
     }
 
-    return { kind: 'succeeded' };
+    // Carry any reconcile drift onto the terminal outcome so the run loop persists it on the row and
+    // the triggering user is warned — the pull result is otherwise discarded here.
+    const driftSummary = buildGitDriftSummary(result.value.anomalies);
+    return driftSummary ? { kind: 'succeeded', driftSummary } : { kind: 'succeeded' };
   };
 }

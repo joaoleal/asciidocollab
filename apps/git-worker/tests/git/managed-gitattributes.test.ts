@@ -44,6 +44,19 @@ describe('buildManagedGitattributes', () => {
 
     expect(regenerated).toContain('tracked.bin filter=lfs diff=lfs merge=lfs -text');
   });
+
+  it('escapes a space in a path so the pattern stays one token and survives regeneration intact', () => {
+    const firstGeneration = buildManagedGitattributes(null, ['my assets/big.psd']);
+
+    // Emitted with the space escaped as the POSIX class, so git reads the whole path as one pattern.
+    expect(firstGeneration).toContain('my[[:space:]]assets/big.psd filter=lfs diff=lfs merge=lfs -text');
+    expect(firstGeneration).not.toContain('my assets/big.psd filter=lfs');
+
+    // Regenerating recovers the same pattern (never truncated to 'my') and does not duplicate it.
+    const secondGeneration = buildManagedGitattributes(firstGeneration, ['my assets/big.psd']);
+    const occurrences = secondGeneration.split('my[[:space:]]assets/big.psd filter=lfs').length - 1;
+    expect(occurrences).toBe(1);
+  });
 });
 
 describe('writeManagedGitattributes', () => {
@@ -81,6 +94,11 @@ describe('isPathAlreadyLfsTracked', () => {
 
   it('returns false for empty content', () => {
     expect(isPathAlreadyLfsTracked('', 'big.bin')).toBe(false);
+  });
+
+  it('matches a space-containing path against its escaped managed line', () => {
+    const content = buildManagedGitattributes(null, ['my assets/big.psd']);
+    expect(isPathAlreadyLfsTracked(content, 'my assets/big.psd')).toBe(true);
   });
 
   it('does not match a path that is merely a prefix of a longer declared pattern', () => {

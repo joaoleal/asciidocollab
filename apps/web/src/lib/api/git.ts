@@ -145,6 +145,28 @@ export async function startPull(
   });
 }
 
+/** What starting a push hands back: the operation to poll. */
+export interface StartPushResult {
+  /** Identifier of the newly queued push operation. */
+  operationId: string;
+  /** Identifier of the project the push applies to. */
+  projectId: string;
+}
+
+/**
+ * Starts pushing the connected repository's committed history to its remote. Resolves as soon as
+ * the server has queued the push (`202`) — the returned identifier is for polling
+ * {@link getGitOperation}, not a sign the push itself has finished. Unlike {@link startPull}, this
+ * never refuses with a synchronous confirm-needed status: a non-fast-forward or credential failure
+ * surfaces only later, through the polled operation's `FAILED` state and `errorCode`.
+ */
+export async function startPush(projectId: string): Promise<StartPushResult> {
+  return apiRequest(`/api/projects/${projectId}/git/push`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 /**
  * Reads the project's current whole-project git operation, if any — the collaboration-facing "git
  * activity" signal: any member's or the system's `QUEUED`/`RUNNING`/`AWAITING_CONFLICT` operation,
@@ -328,8 +350,10 @@ export interface RepositoryConnectionInput {
    * never stores, logs, or otherwise retains it.
    */
   token: string;
-  /** The branch to check out (connect) or initialize on (initialize). Omitted when not given, so the
-   * server falls back to its own default. */
+  /**
+   * The branch to check out (connect) or initialize on (initialize). Omitted when not given, so the
+   * server falls back to its own default.
+   */
   branch?: string;
 }
 

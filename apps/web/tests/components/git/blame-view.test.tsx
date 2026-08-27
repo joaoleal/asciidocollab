@@ -38,11 +38,11 @@ const BLAME: BlameDto = {
 // `Dialog.Portal` renders into `document.body`, outside RTL's own `container` div, so the blame
 // view's CodeMirror content is looked up against the whole document rather than the container.
 function blameLines(): HTMLElement[] {
-  return Array.from(document.querySelectorAll('.cm-line'));
+  return [...document.querySelectorAll<HTMLElement>('.cm-line')];
 }
 
 function gutterMarkers(): HTMLElement[] {
-  return Array.from(document.querySelectorAll('.cm-blame-gutter .cm-gutterElement'));
+  return [...document.querySelectorAll<HTMLElement>('.cm-blame-gutter .cm-gutterElement')];
 }
 
 beforeEach(() => {

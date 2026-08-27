@@ -1,6 +1,6 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
-import { GitCommandRunner, GitCreatedBranch } from '../../ports/git/git-command-runner';
+import { GitCreatedBranch, GitMutationPort } from '../../ports/git/git-command-runner';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
@@ -51,7 +51,7 @@ export class CreateBranchUseCase {
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitMutationPort,
     private readonly logger?: Logger,
   ) {}
 

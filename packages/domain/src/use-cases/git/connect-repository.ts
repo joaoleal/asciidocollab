@@ -6,18 +6,25 @@ import { GitProvider } from '../../value-objects/project/git-provider';
 import { GitRepository } from '../../entities/git-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { GitCredentialStore } from '../../ports/git/git-credential-store';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitReadPort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { ProjectMemberRepository } from '../../ports/project/project-member.repository';
 import { AuditLogRepository } from '../../ports/admin/audit-log.repository';
 import { Logger } from '../../ports/observability/logger';
 import { DomainError } from '../../errors/domain-error';
 import { ValidationError } from '../../errors/common/validation-error';
-import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
-import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
 import { RepositoryAlreadyConnectedError } from '../../errors/git/repository-already-connected';
-import { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
-import { InsufficientRoleError } from '../../errors/git/insufficient-role';
+// Referenced only from this file's own JSDoc @link tags (never thrown directly here) — each is
+// raised inside GitCommandRunner.checkRemoteAccess, GitOperationRepository.withGuard, or
+// requireGitRole; kept imported so the links resolve to real symbols.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
+import type { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
+import type { AuthenticationFailedError } from '../../errors/git/authentication-failed';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
+import type { GitOperationInProgressError } from '../../errors/git/git-operation-in-progress';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
+import type { InsufficientRoleError } from '../../errors/git/insufficient-role';
 import { requireGitRole } from './git-role-guard';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
@@ -81,7 +88,7 @@ export class ConnectRepositoryUseCase {
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly credentialStore: GitCredentialStore,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitReadPort,
     private readonly gitOperationRepo: GitOperationRepository,
     private readonly projectMemberRepo: ProjectMemberRepository,
     private readonly auditLogRepo: AuditLogRepository,
@@ -188,7 +195,16 @@ export class ConnectRepositoryUseCase {
       new Date(),
       input.actorId,
     );
-    await this.gitRepositoryRepo.save(repository);
+    // The credential is already persisted; if the link save now fails (DB error / constraint),
+    // a naive return would leave the project with stored credential material and no repository
+    // row — connected in secret storage, unconnected everywhere else. Roll the credential back
+    // best-effort so a failed connect leaves nothing behind, then rethrow the ORIGINAL failure.
+    try {
+      await this.gitRepositoryRepo.save(repository);
+    } catch (saveError) {
+      await this.rollbackCredential(input.projectId);
+      throw saveError;
+    }
 
     await recordAuditSuccess(
       this.auditLogRepo,
@@ -205,5 +221,22 @@ export class ConnectRepositoryUseCase {
     );
 
     return { success: true, value: { repository } };
+  }
+
+  /**
+   * Best-effort removal of a just-saved credential after the repository link failed to persist,
+   * so a failed connect never orphans credential material. A failure here is itself swallowed and
+   * logged — it must never mask the original link-save error the caller is about to rethrow. The
+   * log carries no credential material: only the fact that the compensating delete failed.
+   */
+  private async rollbackCredential(projectId: ProjectId): Promise<void> {
+    try {
+      await this.credentialStore.delete(projectId);
+    } catch (rollbackError) {
+      this.logger?.warn('Failed to roll back stored Git credential after a failed connect', {
+        error: rollbackError,
+        projectId: projectId.value,
+      });
+    }
   }
 }

@@ -5,7 +5,7 @@
  * read-only display: a project with no connected git repository must resolve to an empty,
  * not-connected result, with no error surfaced.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getHistory } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
 import type { CommitDto } from '@asciidocollab/shared';
@@ -55,22 +55,25 @@ export function useGitHistory(projectId: string, options?: UseGitHistoryOptions)
   const path = options?.path;
   const limit = options?.limit;
   const enabled = options?.enabled ?? true;
+  const requestSeq = useRef(0);
 
   const load = useCallback(async (active: () => boolean) => {
+    const seq = ++requestSeq.current;
+    const isCurrent = () => active() && seq === requestSeq.current;
     if (!enabled) {
-      if (active()) setLoading(false);
+      if (isCurrent()) setLoading(false);
       return;
     }
     setLoading(true);
     setError(null);
     try {
       const result = await getHistory(projectId, { path, limit });
-      if (active()) {
+      if (isCurrent()) {
         setCommits(result.commits);
         setConnected(true);
       }
     } catch (error_) {
-      if (!active()) return;
+      if (!isCurrent()) return;
       setCommits([]);
       setConnected(false);
       if (error_ instanceof ApiError && NOT_CONNECTED_STATUSES.has(error_.status)) {
@@ -79,7 +82,7 @@ export function useGitHistory(projectId: string, options?: UseGitHistoryOptions)
         setError('Failed to load git history.');
       }
     } finally {
-      if (active()) {
+      if (isCurrent()) {
         setLoading(false);
       }
     }

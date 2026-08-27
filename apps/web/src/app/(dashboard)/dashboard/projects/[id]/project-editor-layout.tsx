@@ -17,6 +17,7 @@ import { useGitStatus } from '@/hooks/use-git-status';
 import { useBehindAhead } from '@/hooks/use-behind-ahead';
 import { useGitActivity } from '@/hooks/use-git-activity';
 import { usePull } from '@/hooks/use-pull';
+import { usePush } from '@/hooks/use-push';
 import { useBranches } from '@/hooks/use-branches';
 import { useConflicts } from '@/hooks/use-conflicts';
 import { CommitDialog } from '@/components/git/commit-dialog';
@@ -516,14 +517,22 @@ export function ProjectEditorLayout({
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
 
   // Real ahead/behind commit counts for the status bar's "Pull available" affordance — distinct from
-  // `gitStatus.ahead`/`.behind`, which are a fixed-`0` placeholder never rendered for this.
-  const { behindAhead, refetch: refetchBehindAhead } = useBehindAhead(projectId);
+  // `gitStatus.ahead`/`.behind`, which are a fixed-`0` placeholder never rendered for this. Gated on
+  // `gitConnected` so a project with no connected repository never polls (and never 404s every 4s).
+  const { behindAhead, refetch: refetchBehindAhead } = useBehindAhead(projectId, gitConnected);
+  // Tracks the latest `push.clear` so `handlePullSucceeded` (defined below, before `push` exists)
+  // can dismiss a lingering push error whenever a pull/commit/branch-switch/discard lands, without
+  // a circular dependency between the two hooks (`push` itself is constructed with
+  // `handlePullSucceeded` as its own success callback — see below).
+  const pushClearReference = useRef<() => void>(() => {});
   // A pull refetches the same three git read models a commit does, so its badges/counts/status all
-  // move together once it lands.
+  // move together once it lands. It also dismisses a lingering push error (e.g. a stale
+  // `non_fast_forward` "pull first" alert) now that the condition it warned about may be gone.
   const handlePullSucceeded = useCallback(() => {
     refetchGitTreeStatus();
     refetchGitStatus();
     void refetchBehindAhead();
+    pushClearReference.current();
   }, [refetchGitTreeStatus, refetchGitStatus, refetchBehindAhead]);
   const pull = usePull(projectId, handlePullSucceeded);
   // Pulling requires the same editor capability as committing (see the route's requirement).
@@ -532,6 +541,18 @@ export function ProjectEditorLayout({
   // Push preview: read-only, so it needs no permission gate of its own beyond the status bar only
   // showing the trigger once there is something ahead to preview.
   const [pushPreviewOpen, setPushPreviewOpen] = useState(false);
+
+  // A push refetches the same three git read models a pull does, so the ahead count (and the
+  // Push button it gates) drops away once it lands.
+  const push = usePush(projectId, handlePullSucceeded);
+  // Keep the ref pointing at the latest `push.clear` as a committed effect rather than mutating it
+  // during render (a render-time side effect). `handlePullSucceeded` reads it through the ref, so it
+  // still sees the current `push.clear` without a circular dependency between the two hooks.
+  useEffect(() => {
+    pushClearReference.current = push.clear;
+  }, [push.clear]);
+  // Pushing requires the same editor capability as committing/pulling (see the route's requirement).
+  const canPush = canEdit;
 
   // Branch switching changes the working tree exactly like a pull does, so it refetches the same
   // three git read models on success — reusing the pull handler rather than duplicating it.
@@ -571,7 +592,7 @@ export function ProjectEditorLayout({
   // Collaboration-facing "git activity" signal: lets a member notice that ANOTHER member's (or the
   // system's) whole-project git operation is running, purely from polling the same `GitOperation`
   // row the progress read uses — no separate awareness channel.
-  const { activeOperation: activeGitOperation } = useGitActivity(projectId);
+  const { activeOperation: activeGitOperation } = useGitActivity(projectId, gitConnected);
 
   // ── Review comments & tasks (feature 038) ──────────────────────────────────────────────────
   // Comments are available only for a collaborative .adoc (a live Y.Doc + document id). The review
@@ -1398,6 +1419,9 @@ export function ProjectEditorLayout({
             onPullClick={pull.openPreview}
             pullPending={pull.pending}
             onPreviewPushClick={() => setPushPreviewOpen(true)}
+            canPush={canPush}
+            onPushClick={push.start}
+            pushPending={push.pending}
           />
           {gitStatus?.syncStatus === 'CONFLICTED' && (
             <Button variant="destructive" size="sm" onClick={() => setConflictPanelOpen(true)}>
@@ -1480,6 +1504,14 @@ export function ProjectEditorLayout({
       {pull.message && pull.message.tone === 'neutral' && (
         <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
           {pull.message.text}
+        </div>
+      )}
+
+      {/* Push outcome: a synchronous start failure, or the polled operation settling into something
+          other than success (including a non-fast-forward refusal) — a push has no neutral outcome. */}
+      {push.message && (
+        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {push.message.text}
         </div>
       )}
 
@@ -1839,6 +1871,8 @@ export function ProjectEditorLayout({
         onCommitted={() => {
           refetchGitTreeStatus();
           refetchGitStatus();
+          void refetchBehindAhead();
+          push.clear();
         }}
       />
       <PullDialog

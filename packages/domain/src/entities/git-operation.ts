@@ -3,6 +3,7 @@ import { ProjectId } from '../value-objects/ids/project-id';
 import { UserId } from '../value-objects/ids/user-id';
 import { GitOperationKind } from '../types/git-operation-kind';
 import { GitOperationState, ACTIVE_GIT_OPERATION_STATES } from '../types/git-operation-state';
+import { GitDriftSummary } from '../types/git-drift-summary';
 
 /**
  * A durable record of a whole-project git action: the cross-instance work-list
@@ -39,6 +40,11 @@ export class GitOperation {
     public readonly finishedAt: Date | null = null,
     /** When this operation was enqueued. */
     public readonly createdAt: Date = new Date(),
+    /**
+     * For a SUCCEEDED pull whose reconcile hit drift, a compact summary of what was auto-repaired or
+     * dropped — surfaced to the triggering user (who has no log access). Null on every other operation.
+     */
+    public readonly driftSummary: GitDriftSummary | null = null,
   ) {}
 
   /**

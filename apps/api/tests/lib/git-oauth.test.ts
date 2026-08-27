@@ -87,18 +87,18 @@ describe('exchangeCodeForToken', () => {
   let baseUrl: string;
   let lastRequestBody: string | undefined;
   let lastAcceptHeader: string | undefined;
-  let respond: (req: import('http').IncomingMessage, res: import('http').ServerResponse) => void;
+  let respond: (request: import('http').IncomingMessage, response: import('http').ServerResponse) => void;
 
   beforeAll(async () => {
-    server = createServer((req, res) => {
+    server = createServer((request, response) => {
       let raw = '';
-      req.on('data', (chunk) => {
+      request.on('data', (chunk) => {
         raw += chunk;
       });
-      req.on('end', () => {
+      request.on('end', () => {
         lastRequestBody = raw;
-        lastAcceptHeader = req.headers.accept;
-        respond(req, res);
+        lastAcceptHeader = request.headers.accept;
+        respond(request, response);
       });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -120,9 +120,9 @@ describe('exchangeCodeForToken', () => {
   };
 
   it('returns the access token on a successful JSON response', async () => {
-    respond = (_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ access_token: 'gho_the-access-token', token_type: 'bearer', scope: 'repo' }));
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ access_token: 'gho_the-access-token', token_type: 'bearer', scope: 'repo' }));
     };
 
     const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
@@ -131,9 +131,9 @@ describe('exchangeCodeForToken', () => {
   });
 
   it('sends the code, verifier, client credentials, redirect_uri, and grant_type in the request body', async () => {
-    respond = (_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ access_token: 'tok' }));
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ access_token: 'tok' }));
     };
 
     await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
@@ -148,9 +148,9 @@ describe('exchangeCodeForToken', () => {
   });
 
   it('sends Accept: application/json so a GitHub-style default form-encoded response is avoided', async () => {
-    respond = (_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ access_token: 'tok' }));
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ access_token: 'tok' }));
     };
 
     await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
@@ -159,9 +159,9 @@ describe('exchangeCodeForToken', () => {
   });
 
   it('returns a typed OAuthExchangeError, with no secret leaked, on a non-2xx provider response', async () => {
-    respond = (_req, res) => {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'The code has expired' }));
+    respond = (_request, response) => {
+      response.writeHead(400, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'invalid_grant', error_description: 'The code has expired' }));
     };
 
     const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
@@ -175,9 +175,9 @@ describe('exchangeCodeForToken', () => {
   });
 
   it('returns a typed OAuthExchangeError when the 2xx body carries an error field instead of a token', async () => {
-    respond = (_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'bad_verification_code' }));
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'bad_verification_code' }));
     };
 
     const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
@@ -185,10 +185,43 @@ describe('exchangeCodeForToken', () => {
     expect(result).toEqual({ success: false, error: { name: 'OAuthExchangeError', reason: 'provider_rejected' } });
   });
 
+  it('returns invalid_response when the 2xx body carries no access_token field', async () => {
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ token_type: 'bearer', scope: 'repo' }));
+    };
+
+    const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
+
+    expect(result).toEqual({ success: false, error: { name: 'OAuthExchangeError', reason: 'invalid_response' } });
+  });
+
+  it('returns invalid_response when the 2xx body carries an empty access_token', async () => {
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ access_token: '', token_type: 'bearer' }));
+    };
+
+    const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
+
+    expect(result).toEqual({ success: false, error: { name: 'OAuthExchangeError', reason: 'invalid_response' } });
+  });
+
   it('returns a typed OAuthExchangeError when the response is not valid JSON', async () => {
-    respond = (_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end('<html>not json</html>');
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/html' });
+      response.end('<html>not json</html>');
+    };
+
+    const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
+
+    expect(result).toEqual({ success: false, error: { name: 'OAuthExchangeError', reason: 'invalid_response' } });
+  });
+
+  it('returns a typed OAuthExchangeError when the 2xx JSON body parses to a non-object value', async () => {
+    respond = (_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(null));
     };
 
     const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
@@ -200,5 +233,18 @@ describe('exchangeCodeForToken', () => {
     const result = await exchangeCodeForToken({ tokenUrl: 'http://127.0.0.1:1', ...INPUT });
 
     expect(result).toEqual({ success: false, error: { name: 'OAuthExchangeError', reason: 'network_error' } });
+  });
+
+  it('returns a typed OAuthExchangeError (not a throw) when the request times out and aborts', async () => {
+    const originalFetch = globalThis.fetch;
+    // A request whose bounding AbortSignal.timeout trips rejects with a TimeoutError DOMException.
+    globalThis.fetch = () => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'));
+    try {
+      const result = await exchangeCodeForToken({ tokenUrl: `${baseUrl}/token`, ...INPUT });
+
+      expect(result).toEqual({ success: false, error: { name: 'OAuthExchangeError', reason: 'network_error' } });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

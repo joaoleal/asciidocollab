@@ -84,7 +84,7 @@ function makeReader(
 
 function makeReconciler(): FileChangeReconciler & { apply: jest.Mock } {
   return {
-    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: CHANGED_PATHS } }),
+    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: CHANGED_PATHS, anomalies: [] } }),
   };
 }
 
@@ -192,7 +192,7 @@ describe('SwitchBranchUseCase', () => {
 
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.value).toEqual({ status: 'switched', branch: TARGET_BRANCH, changedPaths: CHANGED_PATHS });
+    expect(result.value).toEqual({ status: 'switched', branch: TARGET_BRANCH, changedPaths: CHANGED_PATHS, anomalies: [] });
 
     // checkout received the target branch, the live flush, and the stash flag.
     expect(harness.commandRunner.checkoutCalls).toHaveLength(1);
@@ -220,6 +220,44 @@ describe('SwitchBranchUseCase', () => {
     // No success audit is emitted here — the git-worker run loop records the terminal SUCCEEDED audit.
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
     expect(audits).toHaveLength(0);
+  });
+
+  test('records a git.branch_switch_partially_applied audit when the reconciler hit drift', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedCheckout(PROJECT_ID, SWITCHED_OUTCOME);
+    const anomalies = [
+      { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false, message: 'dropped' },
+    ];
+    harness.reconciler.apply.mockResolvedValue({ success: true, value: { changedPaths: CHANGED_PATHS, anomalies } });
+
+    await harness.useCase.execute(switchInput());
+
+    const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.action).toBe('git.branch_switch_partially_applied');
+    expect(audits[0]!.metadata).toMatchObject({ branch: TARGET_BRANCH, total: 1, droppedCount: 1 });
+  });
+
+  test('carries the reconciler anomalies out on a switched result so the handler can surface drift', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedCheckout(PROJECT_ID, SWITCHED_OUTCOME);
+    const anomalies = [
+      { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false, message: 'dropped' },
+    ];
+    harness.reconciler.apply.mockResolvedValue({ success: true, value: { changedPaths: CHANGED_PATHS, anomalies } });
+
+    const result = await harness.useCase.execute(switchInput());
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    // The admin audit is not the only surfacing: the drift also rides out on the result — otherwise the
+    // handler could never populate the operation row and the triggering user would see nothing.
+    expect(result.value).toEqual({
+      status: 'switched',
+      branch: TARGET_BRANCH,
+      changedPaths: CHANGED_PATHS,
+      anomalies,
+    });
   });
 
   test('an active-session document is flushed into the checkout as a git-relative entry (no leading slash)', async () => {
@@ -293,7 +331,7 @@ describe('SwitchBranchUseCase', () => {
 
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.value).toEqual({ status: 'switched', branch: TARGET_BRANCH, changedPaths: [] });
+    expect(result.value).toEqual({ status: 'switched', branch: TARGET_BRANCH, changedPaths: [], anomalies: [] });
     expect(harness.commandRunner.checkoutCalls).toHaveLength(0);
     expect(harness.reconciler.apply).not.toHaveBeenCalled();
   });

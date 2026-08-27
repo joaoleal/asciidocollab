@@ -207,14 +207,27 @@ describe('runGitCommand', () => {
     it('deletes the ephemeral askpass helper after the call completes', async () => {
       await execFile('git', ['remote', 'set-url', 'origin', `${server.url}/repo.git`], { cwd: workingTree });
 
-      const before = await readdir(tmpdir());
-      await runGitCommand(workingTree, { command: 'fetch', positionals: ['origin'], credential: { username, token } });
-      const after = await readdir(tmpdir());
+      // Point the process at a private temp base for the duration of this call so the leak scan sees
+      // ONLY this call's askpass directory. runGitCommand creates its askpass dir under os.tmpdir(),
+      // which reads TMPDIR at call time; without this isolation a parallel jest worker creating its
+      // own `git-worker-askpass-*` dir in the shared system tmpdir between the two readdir snapshots
+      // would be misread as a leak from this call.
+      const privateTemporaryBase = await mkdtemp(path.join(tmpdir(), 'git-worker-askpass-leak-'));
+      const previousTmpdir = process.env.TMPDIR;
+      process.env.TMPDIR = privateTemporaryBase;
+      try {
+        const before = await readdir(privateTemporaryBase);
+        await runGitCommand(workingTree, { command: 'fetch', positionals: ['origin'], credential: { username, token } });
+        const after = await readdir(privateTemporaryBase);
 
-      const leftoverAskpassDirectories = after.filter(
-        (name) => name.startsWith('git-worker-askpass-') && !before.includes(name),
-      );
-      expect(leftoverAskpassDirectories).toEqual([]);
+        const leftoverAskpassDirectories = after.filter(
+          (name) => name.startsWith('git-worker-askpass-') && !before.includes(name),
+        );
+        expect(leftoverAskpassDirectories).toEqual([]);
+      } finally {
+        if (previousTmpdir === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previousTmpdir;
+      }
     });
 
     it('fails safely (GitProcessError) when the credential is wrong, and still leaks nothing', async () => {

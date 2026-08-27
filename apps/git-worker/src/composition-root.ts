@@ -26,8 +26,6 @@ import {
   RepositoryNotConnectedError,
   ProjectId,
   UserId,
-  type GitOperationId,
-  type GitRepository,
   type GitRepositoryRepository,
   type GitCredentialStore,
   type GitCommandRunner,
@@ -48,7 +46,6 @@ import {
   type ConflictResolution,
   type DiscardChangesResult,
   type AmendCommitResult,
-  type HistoryCommit,
   type DomainError,
   type Result,
 } from '@asciidocollab/domain';
@@ -74,11 +71,9 @@ import type {
   UndoPullWireResult,
   ListConflictsWireResult,
   ConnectRepositoryWireResult,
-  GitRepositoryWireData,
   ConnectRequest,
   GetHistoryWireResult,
   GetBlameWireResult,
-  HistoryWireCommit,
   PreviewRequest,
   PreviewPullWireResult,
   PreviewPushWireResult,
@@ -88,80 +83,21 @@ import { RealGitCommandRunner } from './git/git-command-runner.js';
 import { FilesystemConflictStageStore } from './git/filesystem-conflict-stage-store.js';
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './git/working-tree.js';
 import { createGitWorkerLoop, type GitWorkerLoop } from './worker-loop.js';
+import { createRemoteRefreshScheduler, type RemoteRefreshScheduler } from './remote-refresh-scheduler.js';
 import { createImportHandler } from './dispatch/import-handler.js';
 import { createInitializeHandler } from './dispatch/initialize-handler.js';
 import { createPushHandler } from './dispatch/push-handler.js';
 import { createPullHandler } from './dispatch/pull-handler.js';
 import { createSwitchBranchHandler } from './dispatch/switch-branch-handler.js';
+import { createFetchHandler } from './dispatch/fetch-handler.js';
 import type { GitOperationHandlerRegistry } from './dispatch/git-operation-dispatcher.js';
+import { mapGitRepositoryToWire, mapHistoryCommitsToWire, mapOperationId } from './git-wire-mappers.js';
 
 /**
  * The wired git-worker application. `src/index.ts` drives its lifecycle: construct via
- * {@link compositionRoot}, `start()` it, then `shutdown()` it on SIGTERM/SIGINT.
+ * {@link compositionRoot}, `start()` it, then `shutdown()` it on SIGTERM/SIGINT. The pure
+ * domain-to-wire mappers this root's op fns serialize with live in `git-wire-mappers.ts`.
  */
-/**
- * Maps a use-case result whose `operationId` field is a `GitOperationId` value object to the
- * wire-shaped result the internal RPC server serializes onto the HTTP response: `.value` (a plain
- * string) in place of the value object itself, with every other field passed through unchanged.
- * `GitOperationId` (a `Uuid` subclass) defines no `toJSON`, so a bare `JSON.stringify` of the
- * domain result would otherwise serialize `operationId` as `{"_value": "<uuid>"}` — malformed for
- * the API route/client, which expect a plain string. Exported so it can be exercised directly
- * (over a real `GitOperationId`, not a pre-stringified test fixture) without needing a database.
- *
- * @param result - A use-case success value carrying a real `operationId` field.
- * @returns The same value with `operationId` replaced by its plain-string `.value`.
- */
-export function mapOperationId<T extends { operationId: GitOperationId }>(
-  result: T,
-): Omit<T, 'operationId'> & { operationId: string } {
-  const { operationId, ...rest } = result;
-  return { ...rest, operationId: operationId.value };
-}
-
-/**
- * Maps a real `GitRepository` entity to the wire-shaped mirror the internal RPC server serializes
- * onto the HTTP response: every value object (`GitRepositoryId`/`ProjectId`/`GitProvider`/`UserId`)
- * replaced by its plain `.value`, and every `Date` by an ISO-8601 string. None of those value
- * objects define `toJSON`, so a bare `JSON.stringify` of the entity would otherwise serialize each
- * as `{"_value": "..."}` — the same class of bug {@link mapOperationId} exists to close. Exported so
- * it can be exercised directly over a REAL `GitRepository` (not a pre-stringified test fixture).
- *
- * @param repository - The connected repository entity.
- * @returns Its wire-shaped mirror.
- */
-export function mapGitRepositoryToWire(repository: GitRepository): GitRepositoryWireData {
-  return {
-    id: repository.id.value,
-    projectId: repository.projectId.value,
-    provider: repository.provider.value,
-    remoteUrl: repository.remoteUrl,
-    currentBranch: repository.currentBranch,
-    defaultBranch: repository.defaultBranch,
-    syncStatus: repository.syncStatus,
-    lastSyncAt: repository.lastSyncAt ? repository.lastSyncAt.toISOString() : null,
-    connectedByUserId: repository.connectedByUserId ? repository.connectedByUserId.value : null,
-    createdAt: repository.createdAt.toISOString(),
-  };
-}
-
-/**
- * Maps a use case's `HistoryCommit[]`-shaped result to the wire shape the internal RPC server
- * serializes: `authorUserId` to its plain `.value` (present only when the author mapped to a
- * platform user) and `authoredAt` to an ISO-8601 string. Shared by `getHistory` and the two preview
- * op fns below — `PreviewPullResult.incomingCommits`/`PreviewPushResult.outgoingCommits` reuse
- * `HistoryCommit`'s exact shape, so the same mapping applies unchanged.
- *
- * @param commits - The commits to map, in the order they should appear on the wire.
- * @returns The wire-shaped mirror of each commit.
- */
-function mapHistoryCommitsToWire(commits: readonly HistoryCommit[]): HistoryWireCommit[] {
-  return commits.map((commit) => ({
-    hash: commit.hash,
-    message: commit.message,
-    ...(commit.authorUserId !== undefined ? { authorUserId: commit.authorUserId.value } : {}),
-    authoredAt: commit.authoredAt.toISOString(),
-  }));
-}
 
 /** Every dependency the connect op fn needs to construct and run `ConnectRepositoryUseCase`. */
 export interface ConnectOpDeps {
@@ -191,7 +127,7 @@ export interface ConnectOpDeps {
  * @param deps - The adapters (real, in the composition root; fakes, in tests) to run the connect with.
  * @returns The op fn ready to bind onto `GitOpsHandlerDeps.connect`.
  */
-export function createConnectOpFn(
+export function createConnectOpFunction(
   deps: ConnectOpDeps,
 ): (request: ConnectRequest) => Promise<Result<ConnectRepositoryWireResult, DomainError>> {
   const connectRepository = new ConnectRepositoryUseCase(
@@ -211,7 +147,7 @@ export function createConnectOpFn(
       provider: request.provider,
       remoteUrl: request.remoteUrl,
       token: request.token,
-      ...(request.branch !== undefined ? { branch: request.branch } : {}),
+      ...(request.branch === undefined ? {} : { branch: request.branch }),
     });
     if (!result.success) return result;
     return { success: true, value: { repository: mapGitRepositoryToWire(result.value.repository) } };
@@ -267,7 +203,7 @@ export interface PreviewPullOpDeps {
  * @param deps - The adapters (real, in the composition root; fakes, in tests) to run the preview with.
  * @returns The op fn ready to bind onto `GitOpsHandlerDeps.previewPull`.
  */
-export function createPreviewPullOpFn(
+export function createPreviewPullOpFunction(
   deps: PreviewPullOpDeps,
 ): (request: PreviewRequest) => Promise<Result<PreviewPullWireResult, DomainError>> {
   const previewPull = new PreviewPullUseCase(
@@ -291,7 +227,7 @@ export function createPreviewPullOpFn(
       actorId: UserId.create(request.actorId),
       projectId,
       token: credential.token,
-      ...(request.branch !== undefined ? { branch: request.branch } : {}),
+      ...(request.branch === undefined ? {} : { branch: request.branch }),
     });
     if (!result.success) return result;
 
@@ -329,7 +265,7 @@ export interface PreviewPushOpDeps {
  * @param deps - The adapters (real, in the composition root; fakes, in tests) to run the preview with.
  * @returns The op fn ready to bind onto `GitOpsHandlerDeps.previewPush`.
  */
-export function createPreviewPushOpFn(
+export function createPreviewPushOpFunction(
   deps: PreviewPushOpDeps,
 ): (request: PreviewRequest) => Promise<Result<PreviewPushWireResult, DomainError>> {
   const previewPush = new PreviewPushUseCase(
@@ -345,7 +281,7 @@ export function createPreviewPushOpFn(
     const result = await previewPush.execute({
       actorId: UserId.create(request.actorId),
       projectId: ProjectId.create(request.projectId),
-      ...(request.branch !== undefined ? { branch: request.branch } : {}),
+      ...(request.branch === undefined ? {} : { branch: request.branch }),
     });
     if (!result.success) return result;
 
@@ -359,6 +295,7 @@ export function createPreviewPushOpFn(
   };
 }
 
+/** The running git-worker process: its start/stop lifecycle. */
 export interface GitWorkerApp {
   /**
    * Starts the git-worker application: begins the poll/claim/dispatch run loop.
@@ -388,8 +325,8 @@ export interface GitWorkerApp {
  * registered use-case handler needs) from config, and the run loop that polls/claims
  * `GitOperation` work, dispatches it, and records its outcome.
  *
- * `IMPORT`, `INITIALIZE`, `PUSH`, `PULL`, and `BRANCH_SWITCH` are the `GitOperationKind`s with a
- * registered handler so far — every
+ * `IMPORT`, `INITIALIZE`, `PUSH`, `PULL`, `BRANCH_SWITCH`, and `FETCH` (the background remote
+ * refresh) are the `GitOperationKind`s with a registered handler so far — every
  * other kind is still a future story task's job (YAGNI). Until a story task registers one, a claimed operation
  * of an unregistered kind dispatches to the `UNHANDLED_GIT_OPERATION_KIND` failure path (see
  * `dispatch/git-operation-dispatcher.ts`), so it always reaches a terminal state — and releases
@@ -549,6 +486,15 @@ export async function compositionRoot() {
       reconciler: gitChangeReconciler,
       logger: useCaseLogger,
     }),
+    // The background remote-refresh scheduler (below) enqueues a FETCH per connected repo; this
+    // handler runs the refs-only refresh when the run loop claims it, so the fetch is serialized
+    // against user pull/push/switch through the same single-flight queue rather than racing them.
+    FETCH: createFetchHandler({
+      gitRepositoryRepository,
+      commandRunner: gitCommandRunner,
+      credentialSource: gitCredentialStore,
+      logger: useCaseLogger,
+    }),
   };
 
   // The short git ops (status/behind-ahead/stage/unstage/commit) run synchronously, worker-side, through the
@@ -587,7 +533,7 @@ export async function compositionRoot() {
   // SYNC over this same internal RPC seam: it must run here rather than being enqueued because it
   // calls `checkRemoteAccess` (`git ls-remote`) against the real `GitCommandRunner`, exactly like
   // status/commit above.
-  const connect = createConnectOpFn({
+  const connect = createConnectOpFunction({
     gitRepositoryRepository,
     gitCredentialStore,
     gitCommandRunner,
@@ -660,7 +606,7 @@ export async function compositionRoot() {
   // not a plain read-only check every project member may run. previewPull additionally decrypts the
   // stored credential here (mirroring the PULL/PUSH dispatch handlers' own `credentialSource`), since
   // a sync RPC op fn has no separate dispatch-handler layer to do that ahead of time.
-  const previewPull = createPreviewPullOpFn({
+  const previewPull = createPreviewPullOpFunction({
     projectMemberRepository,
     auditLogRepository,
     gitRepositoryRepository,
@@ -669,7 +615,7 @@ export async function compositionRoot() {
     gitCredentialStore,
     logger: useCaseLogger,
   });
-  const previewPush = createPreviewPushOpFn({
+  const previewPush = createPreviewPushOpFunction({
     projectMemberRepository,
     auditLogRepository,
     gitRepositoryRepository,
@@ -784,15 +730,15 @@ export async function compositionRoot() {
       actorId: UserId.create(input.actorId),
       path: input.path,
       resolution: input.resolution,
-      ...(input.mergedContent !== undefined ? { mergedContent: input.mergedContent } : {}),
+      ...(input.mergedContent === undefined ? {} : { mergedContent: input.mergedContent }),
     });
   const getHistory = async (
     input: { projectId: string; actorId: string; path?: string; limit?: number },
   ): Promise<Result<GetHistoryWireResult, DomainError>> => {
     const result = await getHistoryUseCase.execute({
       projectId: ProjectId.create(input.projectId),
-      ...(input.path !== undefined ? { path: input.path } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
     });
     if (!result.success) return result;
     return {
@@ -805,9 +751,9 @@ export async function compositionRoot() {
   ): Promise<Result<GitDiffResult, DomainError>> =>
     getDiffUseCase.execute({
       projectId: ProjectId.create(input.projectId),
-      ...(input.path !== undefined ? { path: input.path } : {}),
-      ...(input.from !== undefined ? { from: input.from } : {}),
-      ...(input.to !== undefined ? { to: input.to } : {}),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.from === undefined ? {} : { from: input.from }),
+      ...(input.to === undefined ? {} : { to: input.to }),
     });
   const getBlame = async (
     input: { projectId: string; actorId: string; path: string; ref?: string },
@@ -815,7 +761,7 @@ export async function compositionRoot() {
     const result = await getBlameUseCase.execute({
       projectId: ProjectId.create(input.projectId),
       path: input.path,
-      ...(input.ref !== undefined ? { ref: input.ref } : {}),
+      ...(input.ref === undefined ? {} : { ref: input.ref }),
     });
     if (!result.success) return result;
     return {
@@ -824,7 +770,7 @@ export async function compositionRoot() {
         lines: result.value.lines.map((line) => ({
           lineNumber: line.lineNumber,
           hash: line.hash,
-          ...(line.authorUserId !== undefined ? { authorUserId: line.authorUserId.value } : {}),
+          ...(line.authorUserId === undefined ? {} : { authorUserId: line.authorUserId.value }),
           authoredAt: line.authoredAt.toISOString(),
           content: line.content,
         })),
@@ -838,7 +784,7 @@ export async function compositionRoot() {
       projectId: ProjectId.create(input.projectId),
       actorId: UserId.create(input.actorId),
       paths: input.paths,
-      ...(input.fromCommit !== undefined ? { fromCommit: input.fromCommit } : {}),
+      ...(input.fromCommit === undefined ? {} : { fromCommit: input.fromCommit }),
     });
   const amend = (
     input: { projectId: string; actorId: string; message?: string },
@@ -846,7 +792,7 @@ export async function compositionRoot() {
     amendCommitUseCase.execute({
       projectId: ProjectId.create(input.projectId),
       actorId: UserId.create(input.actorId),
-      ...(input.message !== undefined ? { message: input.message } : {}),
+      ...(input.message === undefined ? {} : { message: input.message }),
     });
 
   const loop: GitWorkerLoop = createGitWorkerLoop({
@@ -861,17 +807,33 @@ export async function compositionRoot() {
     staleHeartbeatAfterMs: config.get('staleHeartbeatAfterMs'),
   });
 
+  // Periodically enqueues a FETCH GitOperation for every connected repository so a "behind by N —
+  // pull available" prompt surfaces on its own. The scheduler only enqueues; the FETCH dispatch
+  // handler above runs the actual refs-only refresh when the run loop claims the operation, which is
+  // what serializes the background fetch against user pull/push/switch through the same single-flight
+  // queue (no separate lock). Egress stays enforced by the use case's own fetch path.
+  const remoteRefreshScheduler: RemoteRefreshScheduler = createRemoteRefreshScheduler({
+    gitRepositoryRepository,
+    gitOperationRepository,
+    logger,
+    intervalMs: config.get('backgroundRefreshIntervalMs'),
+    enabled: config.get('backgroundRefreshEnabled'),
+    maxConcurrency: config.get('backgroundRefreshMaxConcurrency'),
+  });
+
   let running = false;
 
   return {
     async start() {
       logger.info('git-worker starting');
       loop.start();
+      remoteRefreshScheduler.start();
       running = true;
     },
     async shutdown() {
       logger.info('git-worker shutting down');
       await loop.stop();
+      await remoteRefreshScheduler.stop();
       await prisma.$disconnect();
       running = false;
     },

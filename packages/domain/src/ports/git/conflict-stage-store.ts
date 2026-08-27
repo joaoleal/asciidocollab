@@ -9,10 +9,10 @@ import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 export interface ConflictStages {
   /** `git show :1:<path>` bytes, or null when the file had no merge base (an add/add conflict). */
   readonly base: Buffer | null;
-  /** `git show :2:<path>` bytes — this branch's ("ours") side. */
-  readonly ours: Buffer;
-  /** `git show :3:<path>` bytes — the incoming ("theirs") side. */
-  readonly theirs: Buffer;
+  /** `git show :2:<path>` bytes — this branch's ("ours") side, or null when "ours" deleted the file (a modify/delete conflict). */
+  readonly ours: Buffer | null;
+  /** `git show :3:<path>` bytes — the incoming ("theirs") side, or null when "theirs" deleted the file (a modify/delete conflict). */
+  readonly theirs: Buffer | null;
   /** Whether the file is binary (no 3-way text view, and no `merged` resolution, for this file). */
   readonly isBinary: boolean;
 }

@@ -36,6 +36,7 @@ export function createStores(
   const useWorkerMtls = Boolean(workerTls.cert && workerTls.key && workerTls.ca);
   const gitWorkerClient = new HttpGitWorkerClient({
     baseUrl: appConfig.git.workerUrl,
+    timeoutMs: appConfig.git.workerTimeoutMs,
     ...(appConfig.git.workerSecret ? { secret: appConfig.git.workerSecret } : {}),
     ...(useWorkerMtls
       ? { tls: { cert: readFileSync(workerTls.cert), key: readFileSync(workerTls.key), ca: readFileSync(workerTls.ca) } }

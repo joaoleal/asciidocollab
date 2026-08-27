@@ -95,11 +95,11 @@ function buildHarness(options: HarnessOptions = {}) {
 
   if (captureWarnCalls) {
     app.addHook('onRequest', (request, _reply, done) => {
-      const log = request.log as unknown as { warn: (...args: unknown[]) => void };
+      const log = request.log as unknown as { warn: (...arguments_: unknown[]) => void };
       const originalWarn = log.warn.bind(log);
-      log.warn = (...args: unknown[]) => {
-        captureWarnCalls.push(args);
-        originalWarn(...args);
+      log.warn = (...arguments_: unknown[]) => {
+        captureWarnCalls.push(arguments_);
+        originalWarn(...arguments_);
       };
       done();
     });

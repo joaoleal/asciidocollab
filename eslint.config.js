@@ -123,7 +123,12 @@ module.exports = tseslint.config(
       }],
       'jsdoc/tag-lines': ['error', 'any', { startLines: 1 }],
       'jsdoc/require-description': 'error',
-      'jsdoc/require-description-complete-sentence': 'error',
+      // `abbreviations` keeps the rule from treating the period inside a Latin abbreviation as a
+      // sentence terminator — without it, the auto-fixer capitalizes the word after "e.g."/"i.e."
+      // ("e.g. Via a header"), corrupting mid-sentence prose.
+      'jsdoc/require-description-complete-sentence': ['error', {
+        abbreviations: ['e.g.', 'i.e.', 'etc.'],
+      }],
       'jsdoc/no-blank-blocks': 'error',
       'jsdoc/informative-docs': ['error', {
         uselessWords: [

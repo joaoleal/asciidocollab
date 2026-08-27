@@ -21,6 +21,7 @@ type OperationRow = {
   progress: number;
   heartbeatAt: Date | null;
   errorCode: string | null;
+  driftSummary: Prisma.JsonValue | null;
   startedAt: Date | null;
   finishedAt: Date | null;
   createdAt: Date;
@@ -86,6 +87,7 @@ function fakePrismaClient() {
             progress: 0,
             heartbeatAt: null,
             errorCode: null,
+            driftSummary: null,
             startedAt: null,
             finishedAt: null,
             createdAt: new Date(),
@@ -124,6 +126,9 @@ function fakePrismaClient() {
           if (!row) return { count: 0 };
           if (where.state && !where.state.in.includes(row.state)) return { count: 0 };
           Object.assign(row, data);
+          // Prisma writes SQL NULL for a `Json?` column via the `Prisma.DbNull` sentinel, not JS null;
+          // normalize it here so the stored row mirrors what a real read would return.
+          if ((data as { driftSummary?: unknown }).driftSummary === Prisma.DbNull) row.driftSummary = null;
           return { count: 1 };
         },
       ),
@@ -253,6 +258,7 @@ describe('PrismaGitOperationRepository', () => {
         progress: 0,
         heartbeatAt: new Date('2026-01-01T00:00:05.000Z'),
         errorCode: null,
+        driftSummary: null,
         startedAt: new Date('2026-01-01T00:00:00.000Z'),
         finishedAt: null,
         createdAt: new Date('2025-12-31T00:00:00.000Z'),
@@ -339,6 +345,87 @@ describe('PrismaGitOperationRepository', () => {
       expect(result.success && result.value.progress).toBe(100);
       expect(result.success && result.value.finishedAt).toBeInstanceOf(Date);
       expect(result.success && result.value.errorCode).toBeNull();
+    });
+
+    it('persists and reads back a driftSummary on a SUCCEEDED transition, versioned in the column', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+      operations.get(enqueued.id.value)!.state = 'RUNNING';
+      const driftSummary = {
+        total: 2,
+        droppedCount: 1,
+        anomalies: [
+          { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false },
+          { path: 'ghost.adoc', kind: 'modified_missing_node', applied: true },
+        ],
+      };
+
+      const result = await repo.transition(enqueued.id, 'SUCCEEDED', { driftSummary });
+
+      expect(result.success && result.value.driftSummary).toEqual(driftSummary);
+      // Stored envelope carries the version discriminator the tolerant reader keys on.
+      expect(operations.get(enqueued.id.value)!.driftSummary).toMatchObject({ version: 1, total: 2, droppedCount: 1 });
+      // Re-reading the row yields the same parsed summary.
+      const read = await repo.findById(enqueued.id);
+      expect(read?.driftSummary).toEqual(driftSummary);
+    });
+
+    it('clears any driftSummary on a non-SUCCEEDED transition', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+      operations.get(enqueued.id.value)!.state = 'RUNNING';
+
+      const result = await repo.transition(enqueued.id, 'FAILED', { errorCode: 'X' });
+
+      expect(result.success && result.value.driftSummary).toBeNull();
+      expect(operations.get(enqueued.id.value)!.driftSummary).toBeNull();
+    });
+
+    it('tolerantly reads a driftSummary blob of an unknown version as null (no throw)', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+      // Simulate a row written under a future/foreign shape.
+      operations.get(enqueued.id.value)!.driftSummary = { version: 99, whatever: true };
+
+      const read = await repo.findById(enqueued.id);
+
+      expect(read).not.toBeNull();
+      expect(read?.driftSummary).toBeNull();
+    });
+
+    it('refreshes heartbeatAt when resuming into RUNNING, so a stale row is not immediately reclaimable', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+      const row = operations.get(enqueued.id.value)!;
+      row.state = 'AWAITING_CONFLICT';
+      // A long-stale heartbeat from when the op was first claimed, well past any sweep threshold.
+      row.heartbeatAt = new Date('2000-01-01T00:00:00.000Z');
+
+      const before = Date.now();
+      const result = await repo.transition(enqueued.id, 'RUNNING');
+
+      expect(result.success && result.value.state).toBe('RUNNING');
+      const refreshed = operations.get(enqueued.id.value)!.heartbeatAt;
+      expect(refreshed).not.toBeNull();
+      expect(refreshed!.getTime()).toBeGreaterThanOrEqual(before);
+    });
+
+    it('does not touch heartbeatAt on a non-RUNNING transition', async () => {
+      const { client, operations } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'PULL', triggeredByUserId: user });
+      const row = operations.get(enqueued.id.value)!;
+      row.state = 'RUNNING';
+      const stamped = new Date('2020-05-05T00:00:00.000Z');
+      row.heartbeatAt = stamped;
+
+      await repo.transition(enqueued.id, 'AWAITING_CONFLICT');
+
+      expect(operations.get(enqueued.id.value)!.heartbeatAt).toEqual(stamped);
     });
 
     it('moves a RUNNING operation to FAILED, recording the given errorCode', async () => {
@@ -554,6 +641,7 @@ describe('PrismaGitOperationRepository', () => {
         progress: 0,
         heartbeatAt: new Date(),
         errorCode: null,
+        driftSummary: null,
         startedAt: new Date(),
         finishedAt: null,
         createdAt: new Date(),
@@ -579,6 +667,7 @@ describe('PrismaGitOperationRepository', () => {
         progress: 100,
         heartbeatAt: null,
         errorCode: null,
+        driftSummary: null,
         startedAt: new Date(),
         finishedAt: new Date(),
         createdAt: new Date(),
@@ -621,6 +710,7 @@ describe('PrismaGitOperationRepository', () => {
         progress: 40,
         heartbeatAt: new Date(),
         errorCode: null,
+        driftSummary: null,
         startedAt: new Date(),
         finishedAt: null,
         createdAt: new Date(),

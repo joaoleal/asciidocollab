@@ -62,6 +62,14 @@ export const AUDIT_GIT_CONFLICT_RESOLVED = 'git.conflict_resolved';
 export const AUDIT_GIT_CONFLICTS_RESOLVED = 'git.conflicts_resolved';
 export const AUDIT_GIT_PULL_UNDONE = 'git.pull_undone';
 
+// A clean pull landed, but the reconciler hit drift it had to auto-repair or (folder-occupied path)
+// drop — recorded so the user, who has no log access, can see which paths were affected and recover.
+export const AUDIT_GIT_PULL_PARTIALLY_APPLIED = 'git.pull_partially_applied';
+
+// The same drift surfaced while landing a clean branch switch's change-set (the switch counterpart to
+// `git.pull_partially_applied`), recorded only when the reconciler reported at least one anomaly.
+export const AUDIT_GIT_BRANCH_SWITCH_PARTIALLY_APPLIED = 'git.branch_switch_partially_applied';
+
 // Project-level maintainer-editable git-ignore patterns
 export const AUDIT_PROJECT_GIT_IGNORE_PATTERNS_UPDATED = 'project.git_ignore_patterns_updated';
 

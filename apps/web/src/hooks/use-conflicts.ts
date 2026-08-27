@@ -7,7 +7,7 @@
  * mirroring `usePull`'s own-operation polling exactly, since `completePull`/`undoPull` return an
  * `{operationId}` for correlation even though the underlying work runs synchronously server-side.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { describeCompleteFailure } from '@/components/git/conflict-panel';
 import {
   completePull,
@@ -18,6 +18,7 @@ import {
   undoPull,
 } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
+import { describeDrift } from '@/lib/git/describe-drift';
 import type { ConflictResolution, ConflictSummaryDto } from '@asciidocollab/shared';
 
 /** How often a queued complete/undo operation's status is re-read while it is queued or running. */
@@ -85,20 +86,26 @@ export function useConflicts(projectId: string, onResolvedAndCleared: () => void
   const [message, setMessage] = useState<ConflictsMessage | null>(null);
   const [pollOperationId, setPollOperationId] = useState<string | null>(null);
 
+  // Guards the conflict-list loader against an older `load`/`refetch` call's response resolving
+  // after a newer one's — only the latest-started call is allowed to write state.
+  const loadSeq = useRef(0);
+
   const load = useCallback(
     async (active: () => boolean) => {
+      const seq = ++loadSeq.current;
+      const isCurrent = () => active() && seq === loadSeq.current;
       setLoading(true);
       setError(null);
       try {
         const result = await getConflicts(projectId);
-        if (!active()) return;
+        if (!isCurrent()) return;
         // Defensive against a malformed/mismatched response body (e.g. in a test harness whose fetch
         // stub answers every endpoint the same way): an unexpected shape resolves to "nothing loaded"
         // rather than crashing the panel's render — same convention as `useBranches`.
         setOperationId(typeof result.operationId === 'string' ? result.operationId : null);
         setFiles(Array.isArray(result.files) ? result.files : []);
       } catch (error_) {
-        if (!active()) return;
+        if (!isCurrent()) return;
         setOperationId(null);
         setFiles([]);
         if (error_ instanceof ApiError && NOT_CONNECTED_STATUSES.has(error_.status)) {
@@ -107,7 +114,7 @@ export function useConflicts(projectId: string, onResolvedAndCleared: () => void
           setError('Failed to load conflicts.');
         }
       } finally {
-        if (active()) setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     },
     [projectId],
@@ -159,6 +166,10 @@ export function useConflicts(projectId: string, onResolvedAndCleared: () => void
       });
   }, [projectId]);
 
+  // Guards the complete/undo operation poll against an older tick's response resolving after a
+  // newer tick's, which can happen when a poll takes longer than `POLL_INTERVAL_MS` to settle.
+  const pollSeq = useRef(0);
+
   // Polls the queued complete/undo operation, exactly like `usePull`, until it reaches a terminal
   // state OR `AWAITING_CONFLICT` — checked first here, same reason as the pull hook:
   // `isGitOperationTerminal` deliberately does not count it as terminal.
@@ -168,9 +179,11 @@ export function useConflicts(projectId: string, onResolvedAndCleared: () => void
     let active = true;
 
     async function tick() {
+      const seq = ++pollSeq.current;
+      const isCurrent = () => active && seq === pollSeq.current;
       try {
         const status = await getGitOperation(projectId, currentOperationId);
-        if (!active) return;
+        if (!isCurrent()) return;
         if (status.state === 'AWAITING_CONFLICT') {
           setPollOperationId(null);
           setCompleting(false);
@@ -183,6 +196,10 @@ export function useConflicts(projectId: string, onResolvedAndCleared: () => void
           if (status.state === 'SUCCEEDED') {
             void refetch();
             onResolvedAndCleared();
+            // A clean completion can still have dropped a change under tree drift; this is the
+            // user's only window into that, since the detail lives only in the admin audit log.
+            const driftMessage = describeDrift(status.driftSummary, 'Conflicts resolved', 'try the operation again');
+            if (driftMessage) setMessage({ tone: 'neutral', text: driftMessage });
           } else {
             setMessage({
               tone: 'error',

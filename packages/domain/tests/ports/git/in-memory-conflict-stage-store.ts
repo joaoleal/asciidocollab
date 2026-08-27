@@ -114,10 +114,10 @@ export class InMemoryConflictStageStore implements ConflictStageStore {
     this.clearedOperationIds.push(operationId);
     this.snapshots.delete(operationId.value);
     const prefix = `${operationId.value}:`;
-    for (const key of [...this.stages.keys()]) {
+    for (const key of this.stages.keys()) {
       if (key.startsWith(prefix)) this.stages.delete(key);
     }
-    for (const key of [...this.merged.keys()]) {
+    for (const key of this.merged.keys()) {
       if (key.startsWith(prefix)) this.merged.delete(key);
     }
     return { success: true, value: undefined };

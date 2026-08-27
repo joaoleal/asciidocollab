@@ -9,6 +9,20 @@ const MANAGED_END = '# --- asciidocollab: end managed lfs patterns ---';
 const LFS_ATTRIBUTES = 'filter=lfs diff=lfs merge=lfs -text';
 
 /**
+ * Git reads a `.gitattributes` line as `<pattern> <attrs...>` split on whitespace, so a space inside
+ * a path would truncate the pattern to its first word. Git-lfs's own convention is to escape each
+ * space as the POSIX class `[[:space:]]` (which git's fnmatch-style matcher matches literally against
+ * a space), keeping the pattern a single whitespace-free token. These round-trip the escaping.
+ */
+const SPACE_ESCAPE = '[[:space:]]';
+function escapePattern(pattern: string): string {
+  return pattern.replaceAll(' ', SPACE_ESCAPE);
+}
+function unescapePattern(token: string): string {
+  return token.replaceAll(SPACE_ESCAPE, ' ');
+}
+
+/**
  * Removes one delimited section (both marker lines and everything between them) from `content`, if
  * present — mirrors `managed-gitignore.ts`'s own `stripSection`.
  */
@@ -37,7 +51,7 @@ function extractManagedPatterns(content: string): string[] {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .map((line) => line.split(' ')[0])
+    .map((line) => unescapePattern(line.split(' ')[0]))
     .filter((pattern) => pattern.length > 0);
 }
 
@@ -73,7 +87,7 @@ export function buildManagedGitattributes(existingContent: string | null, patter
 
   const managedBlock = [
     MANAGED_BEGIN,
-    ...mergedPatterns.map((pattern) => `${pattern} ${LFS_ATTRIBUTES}`),
+    ...mergedPatterns.map((pattern) => `${escapePattern(pattern)} ${LFS_ATTRIBUTES}`),
     MANAGED_END,
   ].join('\n');
 
@@ -120,7 +134,7 @@ export async function writeManagedGitattributes(cwd: string, patterns: readonly 
 export function isPathAlreadyLfsTracked(gitattributesContent: string, relativePath: string): boolean {
   return gitattributesContent
     .split('\n')
-    .some((line) => line.trim().startsWith(`${relativePath} `) && declaresLfsFilter(line));
+    .some((line) => line.trim().startsWith(`${escapePattern(relativePath)} `) && declaresLfsFilter(line));
 }
 
 function isEnoent(error: unknown): boolean {

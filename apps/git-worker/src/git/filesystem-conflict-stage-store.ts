@@ -23,9 +23,43 @@ interface StoredFileMeta {
   readonly isBinary: boolean;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** Narrows a parsed `meta.json` payload to {@link StoredFileMeta}, without an unchecked cast. */
+function isStoredFileMeta(value: unknown): value is StoredFileMeta {
+  return isRecord(value) && typeof value.path === 'string' && typeof value.isBinary === 'boolean';
+}
+
+/** Narrows a parsed `snapshot.json` payload to {@link ConflictUndoSnapshot}, without an unchecked cast. */
+function isConflictUndoSnapshot(value: unknown): value is ConflictUndoSnapshot {
+  return isRecord(value) && typeof value.preOpHead === 'string' && typeof value.branch === 'string';
+}
+
 /** A safe, generic failure — carries no path, operation id, or filesystem detail. */
 function storeFailure(): GitCommandFailedError {
   return new GitCommandFailedError('The conflict stage store could not complete the requested operation.');
+}
+
+/** Narrows a caught value to a filesystem "no such file" error. */
+function isFileNotFound(error: unknown): boolean {
+  return isRecord(error) && error.code === 'ENOENT';
+}
+
+/**
+ * Reads a stage file, returning null ONLY when it is genuinely absent (a null base = add/add; a null
+ * ours/theirs = that side deleted the file). Any other read error propagates, so a real I/O failure
+ * is never silently reinterpreted as a deletion — which would let a later resolution drop a file
+ * whose content was actually present on disk.
+ */
+async function readStageFileIfPresent(filePath: string): Promise<Buffer | null> {
+  try {
+    return await readFile(filePath);
+  } catch (error) {
+    if (isFileNotFound(error)) return null;
+    throw error;
+  }
 }
 
 /**
@@ -59,7 +93,7 @@ function staysInside(root: string, relativePath: string): boolean {
 /**
  * Filesystem-backed `ConflictStageStore`: one directory per operation under a configured root,
  * one subdirectory per conflicting file keyed by a reversible, slash-free encoding of its path.
- * Layout:
+ * The on-disk layout is diagrammed below.
  *
  * ```
  * <root>/<operationId>/
@@ -67,8 +101,8 @@ function staysInside(root: string, relativePath: string): boolean {
  *   files/<base64url(path)>/
  *     meta.json                         # { path, isBinary } — path is authoritative for reads
  *     base                              # absent when the file had no merge base (add/add)
- *     ours
- *     theirs
+ *     ours                              # absent when "ours" deleted the file (modify/delete)
+ *     theirs                            # absent when "theirs" deleted the file (modify/delete)
  *     merged                            # present only after a 'merged' resolution is recorded
  * ```
  *
@@ -96,6 +130,7 @@ export class FilesystemConflictStageStore implements ConflictStageStore {
     return path.join(this.operationDirectory(operationId), FILES_DIRECTORY_NAME, key);
   }
 
+  /** Records the pre-operation head/branch as `<root>/<operationId>/snapshot.json`. */
   async writeSnapshot(
     operationId: GitOperationId,
     snapshot: ConflictUndoSnapshot,
@@ -110,6 +145,7 @@ export class FilesystemConflictStageStore implements ConflictStageStore {
     }
   }
 
+  /** Writes one conflicting file's captured base/ours/theirs bytes and `meta.json` classification. */
   async writeStages(
     operationId: GitOperationId,
     filePath: string,
@@ -122,17 +158,25 @@ export class FilesystemConflictStageStore implements ConflictStageStore {
       await mkdir(directory, { recursive: true });
       const meta: StoredFileMeta = { path: filePath, isBinary: stages.isBinary };
       await writeFile(path.join(directory, META_FILE_NAME), JSON.stringify(meta), 'utf8');
+      // A null side (base absent = add/add; ours/theirs absent = that side deleted the file in a
+      // modify/delete conflict) is persisted by writing NO file for it, exactly as a null base is —
+      // so absence (null) round-trips back distinctly from a real empty-ish payload (`''`).
       if (stages.base !== null) {
         await writeFile(path.join(directory, BASE_FILE_NAME), stages.base);
       }
-      await writeFile(path.join(directory, OURS_FILE_NAME), stages.ours);
-      await writeFile(path.join(directory, THEIRS_FILE_NAME), stages.theirs);
+      if (stages.ours !== null) {
+        await writeFile(path.join(directory, OURS_FILE_NAME), stages.ours);
+      }
+      if (stages.theirs !== null) {
+        await writeFile(path.join(directory, THEIRS_FILE_NAME), stages.theirs);
+      }
       return { success: true, value: undefined };
     } catch {
       return { success: false, error: storeFailure() };
     }
   }
 
+  /** Writes the user-edited merged bytes recorded for a `merged` resolution of one file. */
   async writeMerged(
     operationId: GitOperationId,
     filePath: string,
@@ -150,6 +194,7 @@ export class FilesystemConflictStageStore implements ConflictStageStore {
     }
   }
 
+  /** Reads back one file's captured stages, validating the parsed `meta.json` shape. */
   async readStages(
     operationId: GitOperationId,
     filePath: string,
@@ -160,11 +205,13 @@ export class FilesystemConflictStageStore implements ConflictStageStore {
     try {
       const metaRaw = await readFile(path.join(directory, META_FILE_NAME), 'utf8').catch(() => null);
       if (metaRaw === null) return { success: true, value: null };
-      const meta = JSON.parse(metaRaw) as StoredFileMeta;
+      const parsedMeta: unknown = JSON.parse(metaRaw);
+      if (!isStoredFileMeta(parsedMeta)) return { success: false, error: storeFailure() };
+      const meta = parsedMeta;
 
-      const base = await readFile(path.join(directory, BASE_FILE_NAME)).catch(() => null);
-      const ours = await readFile(path.join(directory, OURS_FILE_NAME));
-      const theirs = await readFile(path.join(directory, THEIRS_FILE_NAME));
+      const base = await readStageFileIfPresent(path.join(directory, BASE_FILE_NAME));
+      const ours = await readStageFileIfPresent(path.join(directory, OURS_FILE_NAME));
+      const theirs = await readStageFileIfPresent(path.join(directory, THEIRS_FILE_NAME));
 
       return { success: true, value: { base, ours, theirs, isBinary: meta.isBinary } };
     } catch {
@@ -172,6 +219,7 @@ export class FilesystemConflictStageStore implements ConflictStageStore {
     }
   }
 
+  /** Reads the merged bytes recorded for a `merged` resolution of one file, if any were written. */
   async readMerged(operationId: GitOperationId, filePath: string): Promise<Result<Buffer | null, GitCommandFailedError>> {
     const directory = this.fileDirectory(operationId, filePath);
     if (!directory) return { success: false, error: storeFailure() };
@@ -184,18 +232,22 @@ export class FilesystemConflictStageStore implements ConflictStageStore {
     }
   }
 
+  /** Reads the undo snapshot recorded for an operation, validating the parsed shape. */
   async readSnapshot(operationId: GitOperationId): Promise<Result<ConflictUndoSnapshot | null, GitCommandFailedError>> {
     try {
       const raw = await readFile(path.join(this.operationDirectory(operationId), SNAPSHOT_FILE_NAME), 'utf8').catch(
         () => null,
       );
       if (raw === null) return { success: true, value: null };
-      return { success: true, value: JSON.parse(raw) as ConflictUndoSnapshot };
+      const parsed: unknown = JSON.parse(raw);
+      if (!isConflictUndoSnapshot(parsed)) return { success: false, error: storeFailure() };
+      return { success: true, value: parsed };
     } catch {
       return { success: false, error: storeFailure() };
     }
   }
 
+  /** Removes everything recorded for an operation — its snapshot and every captured/merged file. */
   async clear(operationId: GitOperationId): Promise<Result<void, GitCommandFailedError>> {
     try {
       await rm(this.operationDirectory(operationId), { recursive: true, force: true });

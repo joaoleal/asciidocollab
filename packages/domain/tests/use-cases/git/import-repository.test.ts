@@ -33,7 +33,7 @@ const CLONED_REPOSITORY: ClonedRepository = {
   entries: [
     { path: 'index.adoc', content: Buffer.from('= Handbook\n', 'utf8'), mimeType: 'text/asciidoc' },
     { path: 'chapters/intro.adoc', content: Buffer.from('== Intro\n', 'utf8'), mimeType: 'text/asciidoc' },
-    { path: 'images/logo.png', content: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mimeType: 'image/png' },
+    { path: 'images/logo.png', content: Buffer.from([0x89, 0x50, 0x4E, 0x47]), mimeType: 'image/png' },
     // Internal/platform paths a (misbehaving) clone response might list — must never be imported.
     { path: '.git/config', content: Buffer.from('[core]\n', 'utf8'), mimeType: 'text/plain' },
     { path: '.collab/session.json', content: Buffer.from('{}', 'utf8'), mimeType: 'application/json' },
@@ -213,20 +213,20 @@ describe('ImportRepositoryUseCase', () => {
     const intro = nodes.find((node) => node.path.value === '/chapters/intro.adoc')!;
     const logo = nodes.find((node) => node.path.value === '/images/logo.png')!;
 
-    const indexDoc = await harness.documentRepo.findByFileNodeId(index.id);
-    const introDoc = await harness.documentRepo.findByFileNodeId(intro.id);
-    expect(indexDoc).not.toBeNull();
-    expect(introDoc).not.toBeNull();
+    const indexDocument = await harness.documentRepo.findByFileNodeId(index.id);
+    const introDocument = await harness.documentRepo.findByFileNodeId(intro.id);
+    expect(indexDocument).not.toBeNull();
+    expect(introDocument).not.toBeNull();
     // Fresh, distinct ids — nothing here is copied from the remote or from one another.
-    expect(indexDoc!.contentId.value).not.toBe(indexDoc!.yjsStateId.value);
-    expect(indexDoc!.id.value).not.toBe(introDoc!.id.value);
-    expect(indexDoc!.contentId.value).not.toBe(introDoc!.contentId.value);
-    expect(indexDoc!.yjsStateId.value).not.toBe(introDoc!.yjsStateId.value);
+    expect(indexDocument!.contentId.value).not.toBe(indexDocument!.yjsStateId.value);
+    expect(indexDocument!.id.value).not.toBe(introDocument!.id.value);
+    expect(indexDocument!.contentId.value).not.toBe(introDocument!.contentId.value);
+    expect(indexDocument!.yjsStateId.value).not.toBe(introDocument!.yjsStateId.value);
 
     const logoAsset = await harness.assetRepo.findById(logo.id);
     expect(logoAsset).not.toBeNull();
     expect(logoAsset!.mimeType.value).toBe('image/png');
-    expect(logoAsset!.sizeBytes).toBe(BigInt(4));
+    expect(logoAsset!.sizeBytes).toBe(4n);
 
     expect(await harness.fileStore.read(projectId, FilePath.create('/index.adoc'))).toEqual(
       CLONED_REPOSITORY.entries[0].content,

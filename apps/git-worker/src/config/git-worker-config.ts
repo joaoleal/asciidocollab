@@ -88,6 +88,29 @@ export interface GitWorkerConfig {
   staleHeartbeatAfterMs: number;
 
   /**
+   * How long the background remote-refresh scheduler sleeps between full sweeps of the connected
+   * repositories. Each sweep fetches every connected repo's remote-tracking ref so a "behind by N —
+   * pull available" prompt surfaces without a member having to act.
+   */
+  backgroundRefreshIntervalMs: number;
+
+  /**
+   * Whether the background remote-refresh scheduler runs at all. Defaults to on; set false to
+   * disable periodic remote fetching entirely (the scheduler still starts and stops cleanly, it
+   * simply performs no sweeps).
+   */
+  backgroundRefreshEnabled: boolean;
+
+  /**
+   * Maximum number of connected repositories the background remote-refresh scheduler ENQUEUES
+   * concurrently within a single sweep. Each slot performs a database enqueue of a FETCH operation,
+   * not an outbound `git fetch` — the run loop then claims and serializes those operations one at a
+   * time. Bounds the per-sweep enqueue work so a large repository table cannot make one sweep run
+   * continuously.
+   */
+  backgroundRefreshMaxConcurrency: number;
+
+  /**
    * Hostnames this worker's git network operations are permitted to reach (`git.egress.allowedHosts`,
    * shared with `apps/api`) — deny-by-default; a remote whose host is not here is rejected before
    * any network attempt. Defaults cover the supported providers (GitHub, GitLab, Bitbucket).
@@ -202,6 +225,24 @@ export function createGitWorkerConfig() {
       format: positiveInt,
       default: 60_000,
       env: 'ASCIIDOCOLLAB_GIT_WORKER_STALE_HEARTBEAT_AFTER_MS',
+    },
+    backgroundRefreshIntervalMs: {
+      doc: 'Milliseconds the background remote-refresh scheduler sleeps between full sweeps of the connected repositories.',
+      format: positiveInt,
+      default: 60_000,
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_INTERVAL_MS',
+    },
+    backgroundRefreshEnabled: {
+      doc: 'Whether the background remote-refresh scheduler runs. Defaults to true; false disables periodic remote fetching.',
+      format: Boolean,
+      default: true,
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_ENABLED',
+    },
+    backgroundRefreshMaxConcurrency: {
+      doc: 'Maximum number of connected repositories the background remote-refresh scheduler enqueues concurrently within a single sweep. Each slot performs a database enqueue of a FETCH operation, not an outbound git fetch — the run loop then claims and serializes those operations one at a time. Bounds per-sweep enqueue work so a large repository table cannot make a sweep run continuously.',
+      format: positiveInt,
+      default: 4,
+      env: 'ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_MAX_CONCURRENCY',
     },
     egressAllowedHosts: {
       doc: "Comma-separated hostnames this worker's git network operations may reach. Must match apps/api's git.egress.allowedHosts; defaults cover the supported providers (GitHub, GitLab, Bitbucket).",

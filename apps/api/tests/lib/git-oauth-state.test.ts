@@ -82,6 +82,97 @@ describe('OAuth state crypto', () => {
     expect(result).toEqual({ success: false, error: 'invalid' });
   });
 
+  it('rejects a payload that decrypts fine but is not valid JSON', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const notJson = encryption.encrypt('this is not json {');
+
+    const result = readOAuthState(encryption, notJson);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload that is valid JSON but does not have the OAuthState shape', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const wrongShape = encryption.encrypt(JSON.stringify({ foo: 1 }));
+
+    const result = readOAuthState(encryption, wrongShape);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload that is valid JSON but not an object at all (a bare JSON number)', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const notAnObject = encryption.encrypt(JSON.stringify(42));
+
+    const result = readOAuthState(encryption, notAnObject);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload with a missing/empty actorId', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const payload = encryption.encrypt(
+      JSON.stringify({ ...BASE_INPUT, actorId: '', nonce: 'n', issuedAt: Date.now() }),
+    );
+
+    const result = readOAuthState(encryption, payload);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload with an unrecognized provider', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const payload = encryption.encrypt(
+      JSON.stringify({ ...BASE_INPUT, provider: 'not-a-real-provider', nonce: 'n', issuedAt: Date.now() }),
+    );
+
+    const result = readOAuthState(encryption, payload);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload with a missing/empty remoteUrl', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const payload = encryption.encrypt(
+      JSON.stringify({ ...BASE_INPUT, remoteUrl: '', nonce: 'n', issuedAt: Date.now() }),
+    );
+
+    const result = readOAuthState(encryption, payload);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload where branch is present but not a string', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const payload = encryption.encrypt(
+      JSON.stringify({ ...BASE_INPUT, branch: 123, nonce: 'n', issuedAt: Date.now() }),
+    );
+
+    const result = readOAuthState(encryption, payload);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload with a missing/empty codeVerifier', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const payload = encryption.encrypt(
+      JSON.stringify({ ...BASE_INPUT, codeVerifier: '', nonce: 'n', issuedAt: Date.now() }),
+    );
+
+    const result = readOAuthState(encryption, payload);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
+  it('rejects a payload with a missing/empty nonce', () => {
+    const encryption = new SessionEncryption({ encryptionKey: KEY });
+    const payload = encryption.encrypt(JSON.stringify({ ...BASE_INPUT, nonce: '', issuedAt: Date.now() }));
+
+    const result = readOAuthState(encryption, payload);
+
+    expect(result).toEqual({ success: false, error: 'invalid' });
+  });
+
   it('rejects a state whose issuedAt is exactly at the TTL boundary plus one millisecond', () => {
     const encryption = new SessionEncryption({ encryptionKey: KEY });
     const issuedAt = 1_000_000;

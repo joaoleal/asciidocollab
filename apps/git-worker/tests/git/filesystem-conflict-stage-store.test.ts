@@ -68,6 +68,46 @@ describe('FilesystemConflictStageStore', () => {
     });
   });
 
+  it('round-trips a null "ours"/"theirs" (a modify/delete conflict) back as null, distinct from an empty string', async () => {
+    const { store } = await createStore();
+
+    // "ours" deleted the file, "theirs" modified it: a null ours must NOT be conflated with a real
+    // empty-ish payload ('' — how a binary conflict's sides are stored).
+    await store.writeStages(OPERATION_A, 'deleted-by-ours.adoc', {
+      base: Buffer.from('base\n'),
+      ours: null,
+      theirs: Buffer.from('theirs modified\n'),
+      isBinary: false,
+    });
+    // "theirs" deleted the file, "ours" modified it.
+    await store.writeStages(OPERATION_A, 'deleted-by-theirs.adoc', {
+      base: Buffer.from('base\n'),
+      ours: Buffer.from('ours modified\n'),
+      theirs: null,
+      isBinary: false,
+    });
+    // An empty-string side (as a binary conflict records) round-trips as '' — never as null.
+    await store.writeStages(OPERATION_A, 'binary-empty-sides.png', {
+      base: null,
+      ours: Buffer.alloc(0),
+      theirs: Buffer.alloc(0),
+      isBinary: true,
+    });
+
+    expect(await store.readStages(OPERATION_A, 'deleted-by-ours.adoc')).toEqual({
+      success: true,
+      value: { base: Buffer.from('base\n'), ours: null, theirs: Buffer.from('theirs modified\n'), isBinary: false },
+    });
+    expect(await store.readStages(OPERATION_A, 'deleted-by-theirs.adoc')).toEqual({
+      success: true,
+      value: { base: Buffer.from('base\n'), ours: Buffer.from('ours modified\n'), theirs: null, isBinary: false },
+    });
+    expect(await store.readStages(OPERATION_A, 'binary-empty-sides.png')).toEqual({
+      success: true,
+      value: { base: null, ours: Buffer.alloc(0), theirs: Buffer.alloc(0), isBinary: true },
+    });
+  });
+
   it('returns null reading stages for a path that was never captured', async () => {
     const { store } = await createStore();
 

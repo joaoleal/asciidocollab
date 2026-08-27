@@ -19,6 +19,7 @@ describe('git config', () => {
     'ASCIIDOCOLLAB_GIT_LFS_THRESHOLD_BYTES',
     'ASCIIDOCOLLAB_GIT_WORKER_URL',
     'ASCIIDOCOLLAB_GIT_WORKER_SECRET',
+    'ASCIIDOCOLLAB_GIT_WORKER_TIMEOUT_MS',
     'ASCIIDOCOLLAB_GIT_WORKER_TLS_CERT',
     'ASCIIDOCOLLAB_GIT_WORKER_TLS_KEY',
     'ASCIIDOCOLLAB_GIT_WORKER_TLS_CA',
@@ -53,6 +54,7 @@ describe('git config', () => {
       lfsThresholdBytes: 10_485_760,
       workerUrl: 'http://127.0.0.1:4010',
       workerSecret: '',
+      workerTimeoutMs: 30_000,
       workerTls: { cert: '', key: '', ca: '' },
       oauth: {
         stateEncryptionKey: '',
@@ -119,6 +121,7 @@ describe('git config', () => {
   it('binds the git-worker RPC client fields to their env vars', () => {
     process.env.ASCIIDOCOLLAB_GIT_WORKER_URL = 'https://git-worker.internal:4010';
     process.env.ASCIIDOCOLLAB_GIT_WORKER_SECRET = 'w0rker-secret';
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_TIMEOUT_MS = '45000';
     process.env.ASCIIDOCOLLAB_GIT_WORKER_TLS_CERT = '/certs/git-worker-client.pem';
     process.env.ASCIIDOCOLLAB_GIT_WORKER_TLS_KEY = '/certs/git-worker-client-key.pem';
     process.env.ASCIIDOCOLLAB_GIT_WORKER_TLS_CA = '/certs/git-worker-ca.pem';
@@ -126,6 +129,7 @@ describe('git config', () => {
     expect(createConfig().get('git')).toMatchObject({
       workerUrl: 'https://git-worker.internal:4010',
       workerSecret: 'w0rker-secret',
+      workerTimeoutMs: 45_000,
       workerTls: {
         cert: '/certs/git-worker-client.pem',
         key: '/certs/git-worker-client-key.pem',

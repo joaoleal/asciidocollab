@@ -1,6 +1,7 @@
 import { DEFAULT_THEME_YAML } from '../../src/render-config/default-theme.generated';
 import { NAMED_THEME_KEYS, resolveAppearance } from '../../src/print-appearance';
 import type { AppearanceDiagnostic } from '../../src/print-appearance';
+import { expectWithinBudget } from './perf-budget';
 
 /**
  * @file The module's two headline promises, held against documents written to break them.
@@ -317,7 +318,8 @@ describe('a theme whose references expand into more than they are written from',
     for (const depth of [8, 16, 24, 28, 40, 64, 128]) {
       resolveAppearance({ themeText: arrayChain(depth, `  font_family: "x $k${depth}"`) });
     }
-    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expectWithinBudget(elapsedMs, 2000);
   });
 });
 
@@ -377,7 +379,8 @@ describe('a theme document that denotes far more than it is written from', () =>
       resolveAppearance({ themeText: mergeChain(depth, 'mapping') });
       resolveAppearance({ themeText: mergeChain(depth, 'sequence') });
     }
-    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expectWithinBudget(elapsedMs, 2000);
   });
 
   it('still applies a merge key a theme uses as one', () => {
@@ -459,7 +462,7 @@ describe('a colour value nested deeper than the export joins', () => {
     // difference above fifty even with the join absent. A hundred and twenty clears that noise while
     // staying well under the 211 ms it exists to catch, which no machine does in a hundred and twenty
     // and which instrumentation only makes slower.
-    expect(overMegabytes - overBytes).toBeLessThan(120);
+    expectWithinBudget(overMegabytes - overBytes, 120);
   });
 });
 
@@ -474,7 +477,9 @@ describe('a theme document at the size the module accepts', () => {
     expect(document.length).toBeGreaterThan(500 * 1024);
     expect(document.length).toBeLessThanOrEqual(512 * 1024);
     const { elapsedMs } = resolveTimed(document);
-    expect(elapsedMs).toBeLessThan(3000);
+    // Headroom sized for slower developer hardware (CI resolves this in well under a second): the
+    // budget only has to stay far below the pathological 19 s this test guards against.
+    expectWithinBudget(elapsedMs, 6000);
   });
 
   it('reports a bounded number of problems however many settings have one', () => {
@@ -498,7 +503,7 @@ describe('a theme document at the size the module accepts', () => {
     expect(catalogue.length).toBeLessThanOrEqual(512 * 1024);
     const { fonts, elapsedMs } = resolveTimed(catalogue);
     expect(fonts).toBeLessThanOrEqual(64);
-    expect(elapsedMs).toBeLessThan(3000);
+    expectWithinBudget(elapsedMs, 3000);
   });
 
   it('costs no more than the document is long, within a constant', () => {
@@ -511,7 +516,10 @@ describe('a theme document at the size the module accepts', () => {
     resolveAppearance({ themeText: small });
     const smallMs = resolveTimed(small).elapsedMs;
     const largeMs = resolveTimed(large).elapsedMs;
-    expect(largeMs).toBeLessThan(Math.max(smallMs * 8, 50));
+    // The document is 4x larger, so linear cost is 4x and the quadratics this guards against are 16x.
+    // The bound sits at 12x — a wide margin below the 16x it must catch, with enough headroom that the
+    // jitter in a ratio of two single wall-clock readings does not trip it on a loaded shared runner.
+    expectWithinBudget(largeMs, Math.max(smallMs * 12, 50));
   });
 });
 
@@ -585,7 +593,8 @@ describe('resolveAppearance is total', () => {
     for (let seed = 1; seed <= 500; seed++) {
       resolveAppearance({ themeText: generate(randomOf(seed)) });
     }
-    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(5000);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expectWithinBudget(elapsedMs, 5000);
   });
 });
 

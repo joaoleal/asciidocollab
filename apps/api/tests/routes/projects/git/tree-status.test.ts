@@ -104,40 +104,40 @@ function mockGetStatus(result: GitWorkerResult<GitWorkerStatusData>) {
   return jest.fn(async () => result);
 }
 
+function buildServer(options: {
+  role?: string | null;
+  client?: Partial<GitWorkerClient>;
+  nodes?: FileNode[];
+}): FastifyInstance {
+  const { role = 'viewer', client = {}, nodes = [] } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+    fileNode: { findByProjectId: jest.fn(async () => nodes) },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      getStatus: mockGetStatus({ ok: true, data: statusData([]) }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instance: FastifyInstance) {
+  await instance.register(gitTreeStatusRoutes);
+  return instance;
+}
+
+function getTreeStatus(app: FastifyInstance, projectId: string) {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/tree-status` });
+}
+
 describe('GET /projects/:projectId/git/tree-status', () => {
-  function buildServer(options: {
-    role?: string | null;
-    client?: Partial<GitWorkerClient>;
-    nodes?: FileNode[];
-  }): FastifyInstance {
-    const { role = 'viewer', client = {}, nodes = [] } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-      fileNode: { findByProjectId: jest.fn(async () => nodes) },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        getStatus: mockGetStatus({ ok: true, data: statusData([]) }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instance: FastifyInstance) {
-    await instance.register(gitTreeStatusRoutes);
-    return instance;
-  }
-
-  function getTreeStatus(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/tree-status` });
-  }
-
   test('returns 200 with the FileNodeId -> FileGitStatus map', async () => {
     const nodes = [buildFileNode('/docs/intro.adoc', FILE_NODE_ID)];
     const instance = await register(

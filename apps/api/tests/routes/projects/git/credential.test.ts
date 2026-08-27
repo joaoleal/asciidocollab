@@ -14,7 +14,7 @@ const ACTOR_ID = '550e8400-e29b-41d4-a716-446655440001';
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 const NEW_TOKEN = 'ghp_brandnewtoken';
 
-function existingRepository(): GitRepository {
+function existingRepository(syncStatus: string = 'UP_TO_DATE'): GitRepository {
   return new GitRepository(
     GitRepositoryId.create(randomUUID()),
     ProjectId.create(PROJECT_ID),
@@ -22,7 +22,7 @@ function existingRepository(): GitRepository {
     'https://github.com/acme/existing.git',
     PROJECT_ID,
     'main',
-    'UP_TO_DATE' as never,
+    syncStatus as never,
   );
 }
 
@@ -31,10 +31,12 @@ interface HarnessOptions {
   role?: string | null;
   /** A pre-existing `GitRepository` row `findByProjectId` should resolve, or null for none. */
   existing?: GitRepository | null;
+  /** When true, `services.gitCredentialStore` is left undefined (store not configured). */
+  credentialStoreMissing?: boolean;
 }
 
 function buildHarness(options: HarnessOptions = {}) {
-  const { role = 'owner', existing = existingRepository() } = options;
+  const { role = 'owner', existing = existingRepository(), credentialStoreMissing = false } = options;
 
   const savedCredentials: { projectId: string; token: string; provider: string; createdByUserId: string }[] = [];
   const auditSave = jest.fn();
@@ -49,8 +51,14 @@ function buildHarness(options: HarnessOptions = {}) {
       });
     },
   );
-  const load = jest.fn(async () => ({ encryptedToken: 'iv:tag:cipher', tokenHint: '...oken' }));
+  const load = jest.fn(
+    async (): Promise<{ encryptedToken: string; tokenHint: string } | null> => ({
+      encryptedToken: 'iv:tag:cipher',
+      tokenHint: '...oken',
+    }),
+  );
   const findByProjectId = jest.fn(async () => existing);
+  const gitRepositorySave = jest.fn(async (_repository: GitRepository) => {});
 
   const build = async (): Promise<FastifyInstance> => {
     const app = Fastify();
@@ -62,17 +70,17 @@ function buildHarness(options: HarnessOptions = {}) {
         findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
       },
       auditLog: { save: auditSave },
-      gitRepository: { findByProjectId },
+      gitRepository: { findByProjectId, save: gitRepositorySave },
     } as never);
     app.decorate('services', {
-      gitCredentialStore: { save, load, delete: jest.fn() },
+      gitCredentialStore: credentialStoreMissing ? undefined : { save, load, delete: jest.fn() },
     } as never);
     await app.register(gitCredentialRoutes);
     await app.ready();
     return app;
   };
 
-  return { build, save, load, findByProjectId, savedCredentials };
+  return { build, save, load, findByProjectId, gitRepositorySave, savedCredentials };
 }
 
 function rotateCredential(app: FastifyInstance, projectId: string, token = NEW_TOKEN) {
@@ -93,6 +101,32 @@ describe('PUT /projects/:projectId/git/credential', () => {
     expect(savedCredentials[0].token).toBe(NEW_TOKEN);
     expect(savedCredentials[0].provider).toBe('github');
     expect(savedCredentials[0].createdByUserId).toBe(ACTOR_ID);
+
+    await app.close();
+  });
+
+  it('re-admits a NEEDS_REAUTH repo by resetting its sync status to UP_TO_DATE after a rotation', async () => {
+    const { build, gitRepositorySave } = buildHarness({ existing: existingRepository('NEEDS_REAUTH') });
+    const app = await build();
+
+    const response = await rotateCredential(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(200);
+    expect(gitRepositorySave).toHaveBeenCalledTimes(1);
+    const saved = gitRepositorySave.mock.calls[0][0];
+    expect(saved.syncStatus).toBe('UP_TO_DATE');
+
+    await app.close();
+  });
+
+  it('leaves a normally-connected repo untouched — no sync-status write on rotation', async () => {
+    const { build, gitRepositorySave } = buildHarness();
+    const app = await build();
+
+    const response = await rotateCredential(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(200);
+    expect(gitRepositorySave).not.toHaveBeenCalled();
 
     await app.close();
   });
@@ -149,11 +183,11 @@ describe('PUT /projects/:projectId/git/credential', () => {
       },
     } as never);
     app.addHook('onRequest', (request, _reply, done) => {
-      const log = request.log as unknown as { warn: (...args: unknown[]) => void };
+      const log = request.log as unknown as { warn: (...arguments_: unknown[]) => void };
       const originalWarn = log.warn.bind(log);
-      log.warn = (...args: unknown[]) => {
-        warnCalls.push(args);
-        originalWarn(...args);
+      log.warn = (...arguments_: unknown[]) => {
+        warnCalls.push(arguments_);
+        originalWarn(...arguments_);
       };
       done();
     });
@@ -168,6 +202,32 @@ describe('PUT /projects/:projectId/git/credential', () => {
     for (const call of warnCalls) {
       expect(JSON.stringify(call)).not.toContain(NEW_TOKEN);
     }
+
+    await app.close();
+  });
+
+  it('answers 200 {tokenHint: null} when the store has nothing to read back after saving', async () => {
+    const { build, load } = buildHarness();
+    load.mockResolvedValueOnce(null);
+    const app = await build();
+
+    const response = await rotateCredential(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ tokenHint: null });
+
+    await app.close();
+  });
+
+  it('answers 500 internal_error when the credential store is not configured', async () => {
+    const { build, save } = buildHarness({ credentialStoreMissing: true });
+    const app = await build();
+
+    const response = await rotateCredential(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('internal_error');
+    expect(save).not.toHaveBeenCalled();
 
     await app.close();
   });

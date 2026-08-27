@@ -242,8 +242,8 @@ describe('StageChangesUseCase', () => {
     expect(stageResult.success).toBe(true);
 
     const stageEntries = await staging.auditRepo.findByProjectId(PROJECT_ID);
-    expect(stageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_STAGED)).toBe(true);
-    expect(stageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_UNSTAGED)).toBe(false);
+    expect(stageEntries.some((entry) => entry.action === AUDIT_GIT_CHANGES_STAGED)).toBe(true);
+    expect(stageEntries.some((entry) => entry.action === AUDIT_GIT_CHANGES_UNSTAGED)).toBe(false);
 
     const unstaging = await buildHarness();
     unstaging.commandRunner.seedStatus(PROJECT_ID, {
@@ -259,7 +259,7 @@ describe('StageChangesUseCase', () => {
     expect(unstageResult.success).toBe(true);
 
     const unstageEntries = await unstaging.auditRepo.findByProjectId(PROJECT_ID);
-    expect(unstageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_UNSTAGED)).toBe(true);
-    expect(unstageEntries.some((e) => e.action === AUDIT_GIT_CHANGES_STAGED)).toBe(false);
+    expect(unstageEntries.some((entry) => entry.action === AUDIT_GIT_CHANGES_UNSTAGED)).toBe(true);
+    expect(unstageEntries.some((entry) => entry.action === AUDIT_GIT_CHANGES_STAGED)).toBe(false);
   });
 });

@@ -1,481 +1,105 @@
 import { ProjectId } from '../../value-objects/ids/project-id';
-import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
 import { AuthenticationFailedError } from '../../errors/git/authentication-failed';
-import { RemoteAlreadyInitializedError } from '../../errors/git/remote-already-initialized';
-import { NonFastForwardError } from '../../errors/git/non-fast-forward';
-import { CommitAlreadyPushedError } from '../../errors/git/commit-already-pushed';
 import { RepositoryTooLargeError } from '../../errors/git/repository-too-large';
-import { ConflictResolution } from '../../types/conflict-resolution';
 import { Result } from '../../types/result';
+import type {
+  GitWorkingTreeStatus,
+  GitRemoteAccessCheck,
+  GitCloneInput,
+  ClonedRepository,
+  GitCommitInput,
+  GitCommitResult,
+  GitAmendInput,
+  GitAmendError,
+  GitPushInput,
+  GitPushResult,
+  GitPushError,
+  GitInitializeInput,
+  GitInitializeOutcome,
+  GitInitializeError,
+  GitFetchInput,
+  GitFetchResult,
+  GitBehindAhead,
+  GitLogEntry,
+  GitDiffInput,
+  GitDiffResult,
+  GitPreviewPullInput,
+  GitPreviewPullResult,
+  GitPreviewPushInput,
+  GitPreviewPushResult,
+  GitBlameLine,
+  GitMergeInput,
+  GitMergeOutcome,
+  GitMergeFileChange,
+  GitCreateBranchInput,
+  GitCreatedBranch,
+  GitBranchList,
+  GitCheckoutInput,
+  GitCheckoutOutcome,
+  GitResolveMergeInput,
+  GitResolveMergeOutcome,
+  GitRestoreToSnapshotInput,
+  GitRestoreOutcome,
+  GitDiscardInput,
+} from './git-command-types';
+
+export type {
+  GitWorkingTreeStatus,
+  GitPendingChange,
+  GitPendingChangeType,
+  GitPendingChangeState,
+  GitRemoteAccessCheck,
+  GitCloneInput,
+  ClonedFileEntry,
+  ClonedRepository,
+  GitCommitAuthor,
+  GitCommitFlushEntry,
+  GitCommitInput,
+  GitCommitResult,
+  GitPushInput,
+  GitPushResult,
+  GitPushError,
+  GitInitializeInput,
+  GitInitializeOutcome,
+  GitInitializeError,
+  GitFetchInput,
+  GitFetchResult,
+  GitBehindAhead,
+  GitMergeInput,
+  GitMergeFileChange,
+  GitMergeConflictPath,
+  GitMergeOutcome,
+  GitCheckoutInput,
+  GitCheckoutOutcome,
+  GitBranchList,
+  GitCreateBranchInput,
+  GitCreatedBranch,
+  GitConflictResolutionChoice,
+  GitResolveMergeInput,
+  GitResolveMergeOutcome,
+  GitRestoreToSnapshotInput,
+  GitRestoreOutcome,
+  GitLogEntry,
+  GitDiffInput,
+  GitDiffResult,
+  GitPreviewPullInput,
+  GitPreviewPullResult,
+  GitPreviewPushInput,
+  GitPreviewPushResult,
+  GitBlameLine,
+  GitDiscardInput,
+  GitAmendInput,
+  GitAmendError,
+} from './git-command-types';
 
 /**
- * The kind of working-tree change a pending change represents. `renamed` is the
- * canonical label for a move as well as a rename — there is no separate `moved` value.
+ * Read-only slice of the git port: status, history, diffs, previews, blame, branch
+ * listing, and the remote reachability/auth check — every operation that inspects a
+ * project's working tree or a remote without mutating either.
  */
-export type GitPendingChangeType = 'added' | 'modified' | 'removed' | 'renamed' | 'copied';
-
-/**
- * Where a pending change currently stands in the working tree/index. `conflicted` names a
- * change left unresolved by a merge or rebase; no use case in this package produces it yet — it
- * exists now so a later merge/pull story can populate it without another type change.
- */
-export type GitPendingChangeState = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
-
-/**
- * A single working-tree change, awaiting commit, and where it currently stands
- * (`state`) — staged for the next commit, an unstaged edit to a tracked file, a brand-new
- * file never `git add`-ed, or left conflicted by an unresolved merge.
- */
-export interface GitPendingChange {
-  /** Project-relative path of the changed file. */
-  readonly path: string;
-  /** The kind of change. */
-  readonly changeType: GitPendingChangeType;
-  /** Where this change currently stands in the working tree/index. */
-  readonly state: GitPendingChangeState;
-}
-
-/** A project's working tree: its current branch and its uncommitted changes. */
-export interface GitWorkingTreeStatus {
-  /** The currently checked-out branch. */
-  readonly currentBranch: string;
-  /** Every pending (uncommitted) change, staged or not. */
-  readonly changes: readonly GitPendingChange[];
-}
-
-/** Input for {@link GitCommandRunner.checkRemoteAccess}. */
-export interface GitRemoteAccessCheck {
-  /** The remote's URL, exactly as the caller supplied it. */
-  readonly remoteUrl: string;
-  /** The plaintext access token to authenticate with. Used only for this check, never persisted. */
-  readonly token: string;
-}
-
-/** Input for {@link GitCommandRunner.clone}. */
-export interface GitCloneInput {
-  /** The remote's URL, exactly as the caller supplied it. */
-  readonly remoteUrl: string;
-  /** The plaintext access token to authenticate with. Used only for this call, never persisted. */
-  readonly token: string;
-  /** The branch to check out, or the remote's default branch when omitted. */
-  readonly branch?: string;
-}
-
-/**
- * One file a clone produced: its path (workspace-relative, POSIX separators, no leading slash —
- * e.g. `chapters/intro.adoc`) and its bytes, exactly as the remote's default (or requested) branch
- * has them. `.git/` and LFS plumbing (`.gitattributes`) are resolved by the runner — an LFS pointer
- * is smudged to the real object's bytes before this entry is produced, so a caller never has to
- * recognize or special-case a pointer file — but nothing here excludes internal platform paths
- * (e.g. `.collab/`); doing that is the caller's responsibility, the same way it decides everything
- * else about how the bytes become a project.
- */
-export interface ClonedFileEntry {
-  /** Workspace-relative path, POSIX separators, no leading slash. */
-  readonly path: string;
-  /** The file's bytes, already resolved past any LFS pointer. */
-  readonly content: Buffer;
-  /** Best-effort MIME type for the file, as the runner determined it. */
-  readonly mimeType: string;
-}
-
-/** What a completed clone produced: every tracked file, and the remote state it was cloned at. */
-export interface ClonedRepository {
-  /** The remote's default branch (what its `HEAD` points to). */
-  readonly defaultBranch: string;
-  /** The commit hash of the branch that was cloned, as observed at clone time. */
-  readonly headCommit: string;
-  /** Every tracked file the clone produced. Directories are implicit in each entry's path. */
-  readonly entries: readonly ClonedFileEntry[];
-}
-
-/** The identity a commit is attributed to. */
-export interface GitCommitAuthor {
-  /** The author's display name, written into the commit's author/committer field. */
-  readonly name: string;
-  /** The author's email address, written into the commit's author/committer field. */
-  readonly email: string;
-}
-
-/**
- * A single file whose live collaborative content must overwrite its working-tree copy before the
- * commit is taken. `path` is the workspace-relative POSIX path with NO leading slash (e.g.
- * `chapters/intro.adoc`); `content` is the current live UTF-8 text captured from the file's
- * collaborative room.
- */
-export interface GitCommitFlushEntry {
-  /** Workspace-relative POSIX path, no leading slash, of the file to overwrite then re-stage. */
-  readonly path: string;
-  /** The live UTF-8 text to write to that file before committing. */
-  readonly content: string;
-}
-
-/** Everything {@link GitCommandRunner.commit} needs to record one commit. */
-export interface GitCommitInput {
-  /** The commit message. The caller guarantees it is non-empty. */
-  readonly message: string;
-  /** The identity to attribute the commit to (the triggering user). */
-  readonly author: GitCommitAuthor;
-  /**
-   * The staged files whose live collaborative text must replace their working-tree copy before the
-   * commit, so the commit captures what collaborators currently see rather than the older bytes the
-   * index already holds. Only staged files with live content appear here; a staged file with no
-   * live session, and every unstaged file, is absent — the adapter must not touch those.
-   */
-  readonly flush: readonly GitCommitFlushEntry[];
-}
-
-/** What a completed commit produced. */
-export interface GitCommitResult {
-  /** The new commit's hash. */
-  readonly hash: string;
-  /** The commit message, as recorded. */
-  readonly message: string;
-  /** When the commit was authored. */
-  readonly authoredAt: Date;
-}
-
-/** What an amend records. Like a commit, but `message` is optional — absent means keep the amended
- *  commit's existing message. `flush` carries the live text of any staged open documents, same as commit. */
-export interface GitAmendInput {
-  readonly message?: string;
-  readonly author: GitCommitAuthor;
-  readonly flush: readonly GitCommitFlushEntry[];
-}
-
-/** Amend can be refused because the target commit is already published (peer of GitCommandFailedError). */
-export type GitAmendError = GitCommandFailedError | CommitAlreadyPushedError;
-
-/** Everything {@link GitCommandRunner.push} needs to push a branch to its remote. */
-export interface GitPushInput {
-  /** The remote's URL, exactly as stored on the project's `GitRepository` link. */
-  readonly remoteUrl: string;
-  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
-  readonly token: string;
-  /** The local branch to push (and the remote branch it pushes to, by the same name). */
-  readonly branch: string;
-}
-
-/** What a completed push produced. */
-export interface GitPushResult {
-  /** The commit now at the tip of the remote branch, after the push landed. */
-  readonly headCommit: string;
-}
-
-/** Every typed way {@link GitCommandRunner.push} can fail. */
-export type GitPushError =
-  | GitCommandFailedError
-  | NonFastForwardError
-  | RepositoryUnreachableError
-  | AuthenticationFailedError;
-
-/** Everything {@link GitCommandRunner.initializeAndPublish} needs to publish an existing project onto a fresh, empty remote. */
-export interface GitInitializeInput {
-  /** The remote's URL to publish onto. */
-  readonly remoteUrl: string;
-  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
-  readonly token: string;
-  /** The branch to publish under. Defaults to the project's current branch (or `'main'`) when omitted. */
-  readonly branch?: string;
-}
-
-/** What a completed {@link GitCommandRunner.initializeAndPublish} call produced. */
-export interface GitInitializeOutcome {
-  /** The hash of the initial commit now at the tip of the pushed branch. */
-  readonly headCommit: string;
-  /** The branch the project was published under. */
-  readonly defaultBranch: string;
-}
-
-/** Every typed way {@link GitCommandRunner.initializeAndPublish} can fail. */
-export type GitInitializeError =
-  | RemoteAlreadyInitializedError
-  | RepositoryUnreachableError
-  | AuthenticationFailedError
-  | GitCommandFailedError;
-
-/** Everything {@link GitCommandRunner.fetch} needs to update a project's remote-tracking ref. */
-export interface GitFetchInput {
-  /** The remote's URL, exactly as stored on the project's `GitRepository` link. */
-  readonly remoteUrl: string;
-  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
-  readonly token: string;
-  /** The remote branch whose tracking ref to update. */
-  readonly branch: string;
-}
-
-/** What a completed fetch produced. */
-export interface GitFetchResult {
-  /** The tip of `origin/<branch>` after the fetch, i.e. the remote-tracking ref's new commit. */
-  readonly remoteHead: string;
-}
-
-/** How far a local branch stands from its already-fetched remote-tracking ref. */
-export interface GitBehindAhead {
-  /** The number of commits the remote-tracking ref has that the local branch does not. */
-  readonly behind: number;
-  /** The number of commits the local branch has that the remote-tracking ref does not. */
-  readonly ahead: number;
-}
-
-/** One commit as read from a project's git history: the raw author identity is an email — mapping it
- *  to a platform user is a domain concern, not the runner's. Newest-first ordering is the adapter's contract. */
-export interface GitLogEntry {
-  /** The full commit hash. */
-  readonly hash: string;
-  /** The commit's subject/message. */
-  readonly message: string;
-  /** The commit author's email, exactly as recorded in git (may map to no platform user). */
-  readonly authorEmail: string;
-  /** When the commit was authored. */
-  readonly authoredAt: Date;
-}
-
-/** One line of a file's blame: which commit last touched it, by whom (a raw git author email — mapping it to a
- *  platform user is a domain concern, not the runner's), when, and the line's text. */
-export interface GitBlameLine {
-  /** 1-based line number in the blamed file. */
-  readonly lineNumber: number;
-  /** The full hash of the commit that last modified this line. */
-  readonly hash: string;
-  /** The author email recorded on that commit (may map to no platform user). */
-  readonly authorEmail: string;
-  /** When that commit was authored. */
-  readonly authoredAt: Date;
-  /** The line's text content. */
-  readonly content: string;
-}
-
-/** Input for {@link GitCommandRunner.previewPull}. */
-export interface GitPreviewPullInput {
-  /** The remote's URL, exactly as stored on the project's `GitRepository` link. */
-  readonly remoteUrl: string;
-  /** The plaintext access token to authenticate with. Used only for this call, never persisted or logged. */
-  readonly token: string;
-  /** The branch to preview incoming changes for. */
-  readonly branch: string;
-}
-
-/** What a completed {@link GitCommandRunner.previewPull} call produced: what a pull would bring in, without applying it. */
-export interface GitPreviewPullResult {
-  /** Commits that would land locally, newest first, if the pull actually ran. */
-  readonly incoming: readonly GitLogEntry[];
-  /** Every path those commits touch. */
-  readonly changedPaths: readonly string[];
-}
-
-/** Input for {@link GitCommandRunner.previewPush}. */
-export interface GitPreviewPushInput {
-  /** The branch to preview outgoing changes for. */
-  readonly branch: string;
-}
-
-/** What a completed {@link GitCommandRunner.previewPush} call produced: what a push would send out, without applying it. */
-export interface GitPreviewPushResult {
-  /** Commits that would land on the remote, newest first, if the push actually ran. */
-  readonly outgoing: readonly GitLogEntry[];
-  /** Every path those commits touch. */
-  readonly changedPaths: readonly string[];
-}
-
-/** What to diff. `from`+`to` → between two commits; neither → uncommitted working changes vs HEAD.
- *  `path` scopes to one project-relative file (whole tree when absent). `currentContent`, only meaningful
- *  in the uncommitted mode, overrides that single file's working-tree content with the live editor content
- *  so an open file diffs its live text rather than its stale on-disk copy. */
-export interface GitDiffInput {
-  readonly path?: string;
-  readonly from?: string;
-  readonly to?: string;
-  readonly currentContent?: { readonly path: string; readonly content: string };
-}
-
-/** A rendered diff. Rendering is a client concern: the runner supplies only the raw unified-diff text. */
-export interface GitDiffResult {
-  readonly unified: string;
-}
-
-/** Everything {@link GitCommandRunner.merge} needs to merge a fetched remote-tracking ref into a branch. */
-export interface GitMergeInput {
-  /** The local branch to merge the remote-tracking ref into. */
-  readonly branch: string;
-  /**
-   * Live collaborative text written to the working tree and `git add`-ed BEFORE the merge runs,
-   * forming the local side of the three-way merge. Same contract and adapter ordering as
-   * {@link GitCommitInput.flush}.
-   */
-  readonly flush: readonly GitCommitFlushEntry[];
-  /**
-   * The queued operation this merge is running. Keys the pre-operation undo snapshot the adapter
-   * records (on both a clean and a conflicted outcome), and the three-way conflict stages it
-   * captures before aborting a conflicted merge.
-   */
-  readonly operationId: GitOperationId;
-}
-
-/**
- * One file a clean merge changed. Carries the merged bytes (mirroring {@link ClonedFileEntry})
- * because the git worktree root differs from the domain's `ProjectFileStore` root — the domain
- * cannot read the merged bytes off disk itself.
- */
-export type GitMergeFileChange =
-  | { readonly type: 'added'; readonly path: string; readonly content: Buffer; readonly mimeType: string }
-  | { readonly type: 'modified'; readonly path: string; readonly content: Buffer; readonly mimeType: string }
-  | { readonly type: 'removed'; readonly path: string }
-  | {
-      readonly type: 'renamed';
-      readonly fromPath: string;
-      readonly toPath: string;
-      readonly content: Buffer;
-      readonly mimeType: string;
-    };
-
-/** One file left conflicted by a merge. */
-export interface GitMergeConflictPath {
-  /** Workspace-relative POSIX path, no leading slash, of the conflicted file. */
-  readonly path: string;
-  /** Whether the conflicted file is binary (and so cannot be shown as a textual diff/conflict marker). */
-  readonly isBinary: boolean;
-}
-
-/**
- * The outcome of a {@link GitCommandRunner.merge} call. A conflict is an EXPECTED outcome of a
- * merge, not a failure — it is represented here as the `conflicted` variant, never as a
- * `Result` error. "Already up to date" is represented as `{ status: 'merged', changes: [] }`;
- * there is no separate variant for it.
- */
-export type GitMergeOutcome =
-  | { readonly status: 'merged'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
-  | { readonly status: 'conflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
-
-/** Everything {@link GitCommandRunner.checkout} needs to switch a project's working tree to another local branch. */
-export interface GitCheckoutInput {
-  /** The local branch to switch the working tree to. */
-  readonly branch: string;
-  /**
-   * Live collaborative text written to the working tree and `git add`-ed BEFORE the switch,
-   * materializing current live edits as uncommitted working-tree state. Same contract and adapter
-   * ordering as {@link GitMergeInput.flush}.
-   */
-  readonly flush: readonly GitCommitFlushEntry[];
-  /**
-   * When true, the flushed live edits are shelved before the switch and re-applied after, carrying
-   * them onto the target branch. A no-op on a clean tree (nothing to shelve).
-   */
-  readonly stashLocal: boolean;
-  /**
-   * The queued operation this switch is running. Keys the pre-operation undo snapshot the adapter
-   * records (on both a clean and a conflicted outcome), and the three-way conflict stages it
-   * captures before discarding a stash-pop conflict.
-   */
-  readonly operationId: GitOperationId;
-}
-
-/**
- * The outcome of a {@link GitCommandRunner.checkout} call. A conflict (the re-applied live edits did
- * not merge cleanly onto the target branch) is an EXPECTED outcome, never a `Result` error — it is
- * represented here as the `conflicted` variant, mirroring {@link GitMergeOutcome}. A switch that
- * leaves the tree unchanged is `{status: 'switched', changes: []}`; there is no separate variant for
- * it. The `switched` variant reuses {@link GitMergeFileChange}/{@link GitMergeConflictPath} so a
- * switch's landed change-set is indistinguishable from a merge's.
- */
-export type GitCheckoutOutcome =
-  | { readonly status: 'switched'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
-  | { readonly status: 'conflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
-
-/** A project's branches: the checked-out branch plus every local branch name. */
-export interface GitBranchList {
-  /** The currently checked-out branch. */
-  readonly current: string;
-  /** Every local branch name. */
-  readonly branches: readonly string[];
-}
-
-/** Input for {@link GitCommandRunner.createBranch}. */
-export interface GitCreateBranchInput {
-  /** The new branch's name. */
-  readonly name: string;
-}
-
-/** The branch a {@link GitCommandRunner.createBranch} call produced. */
-export interface GitCreatedBranch {
-  /** The new branch's name, as created. */
-  readonly name: string;
-}
-
-/**
- * One conflicted file's chosen resolution, as a completion use case hands it to
- * {@link GitCommandRunner.resolveMerge}. The `merged` bytes themselves are NOT carried here — the
- * runner reads them from the `ConflictStageStore` by `(operationId, path)`, so large/binary content
- * never crosses this port.
- */
-export interface GitConflictResolutionChoice {
-  /** Workspace-relative POSIX path, no leading slash, of the conflicted file. */
-  readonly path: string;
-  /** The chosen resolution for this file. */
-  readonly resolution: ConflictResolution;
-}
-
-/** Everything {@link GitCommandRunner.resolveMerge} needs to complete a previously-aborted conflicted pull. */
-export interface GitResolveMergeInput {
-  /** The local branch the original merge ran against. */
-  readonly branch: string;
-  /** The conflicted `PULL` operation being completed. Keys the `ConflictStageStore` reads. */
-  readonly operationId: GitOperationId;
-  /** Every conflicting file's chosen resolution. The caller guarantees this covers every conflict. */
-  readonly resolutions: readonly GitConflictResolutionChoice[];
-}
-
-/**
- * The outcome of a {@link GitCommandRunner.resolveMerge} call. Mirrors {@link GitMergeOutcome}'s
- * shape: `resolved` on a completed merge (with the resolving commit and the full landed
- * change-set); `stillConflicted` when some path was left unresolved by the given choices — a
- * caller/validation bug, since the caller guarantees a full set, but represented as a normal
- * outcome rather than a thrown error. A genuine git failure is the `Result` error instead.
- */
-export type GitResolveMergeOutcome =
-  | { readonly status: 'resolved'; readonly headCommit: string; readonly changes: readonly GitMergeFileChange[] }
-  | { readonly status: 'stillConflicted'; readonly conflicts: readonly GitMergeConflictPath[] };
-
-/** What to discard/restore. `paths` are project-relative (no leading slash). Without `fromCommit`, each path's
- *  working-tree changes are dropped back to HEAD (a plain discard); with `fromCommit`, each path is restored to
- *  its content at that commit. */
-export interface GitDiscardInput {
-  readonly paths: readonly string[];
-  readonly fromCommit?: string;
-}
-
-/** Input for {@link GitCommandRunner.restoreToSnapshot}. */
-export interface GitRestoreToSnapshotInput {
-  /** The operation whose pre-operation undo snapshot to restore. The snapshot is read from the `ConflictStageStore`. */
-  readonly operationId: GitOperationId;
-}
-
-/** What a completed {@link GitCommandRunner.restoreToSnapshot} call produced. */
-export interface GitRestoreOutcome {
-  /** The commit the working tree was restored to (the snapshot's `preOpHead`). */
-  readonly headCommit: string;
-  /** The reversal change-set: the tree after the reset compared against the tree before it, so the caller can revert docs/live editors. */
-  readonly changes: readonly GitMergeFileChange[];
-}
-
-/**
- * Port for running scoped git actions against a project's sandboxed working tree.
- *
- * The real adapter (`apps/git-worker`) runs the actual `git` CLI via `execFile` inside a
- * sandboxed container; this interface is the hard boundary that keeps every git-library
- * type (e.g. `simple-git`) out of the domain. Every method returns either a domain-owned
- * type shaped to match its `packages/shared` DTO counterpart, or a `Result`-wrapped typed
- * error — never a raw git-library value.
- *
- * This is a foundational, deliberately minimal port: only the read-only status query
- * needed to unblock the earliest git use cases is defined here. Story tasks extend this
- * interface with the mutating and history/diff operations it will eventually cover
- * (clone, stage, commit, push, fetch, merge, branch, checkout, stash, log, diff, ...) as
- * each is built — add new methods here alongside a corresponding in-memory fake method.
- */
-export interface GitCommandRunner {
+export interface GitReadPort {
   /**
    * Reads the working tree's current branch and its pending (uncommitted) changes.
    *
@@ -501,28 +125,145 @@ export interface GitCommandRunner {
   ): Promise<Result<void, RepositoryUnreachableError | AuthenticationFailedError>>;
 
   /**
-   * Clones a remote's branch (its default branch when none is given) into a scratch working tree
-   * and returns every tracked file it contains. Used by `ImportRepository` to materialize a
-   * brand-new project's file tree from an external remote — this call does not touch any
-   * project's own working tree or storage; translating the returned entries into that project's
-   * `FileNode`/`Document`/`Asset` rows and stored bytes is the caller's job.
+   * Compares a local branch against its already-fetched remote-tracking ref — a pure local
+   * comparison that touches no network. Callers run {@link fetch} first when the remote-tracking
+   * ref needs to be current.
    *
-   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
-   *   clone (defaults to the remote's default branch).
-   * @returns The cloned repository's files and the branch/commit they were cloned at; a
-   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
-   *   {@link checkRemoteAccess}, a `RepositoryTooLargeError` when the cloned working tree exceeds
-   *   the configured size ceiling, or a `GitCommandFailedError` for any other failure.
+   * @param projectId - The project whose working tree to compare.
+   * @param branch - The local branch to compare against its remote-tracking ref.
+   * @returns How many commits each side has that the other lacks; a `GitCommandFailedError` when
+   *   the underlying git command fails (for example, the branch has no remote-tracking ref yet).
    */
-  clone(
-    input: GitCloneInput,
+  getBehindAhead(projectId: ProjectId, branch: string): Promise<Result<GitBehindAhead, GitCommandFailedError>>;
+
+  /**
+   * Reads a project's commit history, newest first. With `path`, restricts to the commits that touched
+   * that single project-relative file (its per-file history); without it, the whole project's history.
+   * `limit`, when given, caps the number of commits returned. A purely local read — no network.
+   *
+   * Adapter contract (implemented later in the worker): run `git log` with a machine-readable format that
+   * emits hash, author email, author date, and subject; when `path` is set, pass it as a positional after
+   * `--end-of-options` (`git log … -- <path>`); apply `--max-count=<limit>` when `limit` is set. Returns the
+   * entries newest-first; an empty history is an empty array, not an error.
+   *
+   * @param projectId - The project whose history to read.
+   * @param options - `path` restricts to a single project-relative file's history; `limit` caps the
+   *   number of commits returned.
+   * @param options.path - Restricts the history to commits touching this single project-relative file.
+   * @param options.limit - Caps the number of commits returned.
+   * @returns Every matching commit, newest first; a `GitCommandFailedError` when the underlying git
+   *   command fails.
+   */
+  log(
+    projectId: ProjectId,
+    options: { readonly path?: string; readonly limit?: number },
+  ): Promise<Result<GitLogEntry[], GitCommandFailedError>>;
+
+  /**
+   * Produces a unified diff. With `from` and `to`, diffs between those two commits; with neither, diffs the
+   * uncommitted working changes against HEAD. `path`, when set, scopes the diff to that single project-relative
+   * file (passed as a positional after `--end-of-options`). `currentContent` (uncommitted mode only) replaces
+   * that one file's working-tree content with the given live text before diffing. A purely local read — no network.
+   *
+   * Adapter contract (implemented later in the worker): commit-vs-commit → `git diff <from> <to> [-- <path>]`;
+   * uncommitted → `git diff HEAD [-- <path>]`; when `currentContent` is present, diff HEAD's blob of that path
+   * against the supplied live text (e.g. via a temp file / `git diff --no-index`, worker's choice) so no stale
+   * working-tree copy is read. An empty diff is an empty string, not an error..
+   *
+   * @param projectId - The project whose working tree (and/or history) to diff.
+   * @param input - What to diff — two commits, or the uncommitted working changes, optionally scoped to one
+   *   file, optionally overriding that file's content with live text.
+   * @returns The unified diff text; a `GitCommandFailedError` when the underlying git command fails.
+   */
+  diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>>;
+
+  /**
+   * Previews what a {@link fetch}-then-merge pull would bring in, without changing anything beyond
+   * the remote-tracking ref {@link fetch} itself already updates: fetches `input.branch` from the
+   * remote (the same fetch {@link fetch} performs, authenticating out-of-band with `input.token`),
+   * then reads the commits and touched paths between the local branch and that freshly-fetched ref.
+   * A LIVE network read — the fetch is real, so the preview reflects the remote's current state —
+   * but never merges, commits, or flushes anything.
+   *
+   * Adapter contract (implemented later in the worker): fetch exactly as {@link fetch} does, then
+   * `git log`/`git diff --name-only` over `HEAD..<the freshly-fetched remote-tracking ref>`, in the
+   * same `-z`/`%H%x00%ae%x00%aI%x00%s` format {@link log} uses.
+   *
+   * @param projectId - The project whose incoming changes to preview.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to preview.
+   * @returns The incoming commits (newest first) and the paths they touch; a
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as {@link fetch}, or
+   *   a `GitCommandFailedError` for any other failure.
+   */
+  previewPull(
+    projectId: ProjectId,
+    input: GitPreviewPullInput,
   ): Promise<
-    Result<
-      ClonedRepository,
-      RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError
-    >
+    Result<GitPreviewPullResult, GitCommandFailedError | RepositoryUnreachableError | AuthenticationFailedError>
   >;
 
+  /**
+   * Previews what a push would send out, without changing anything: reads the commits and touched
+   * paths between the already-fetched remote-tracking ref and the local branch. Purely local — no
+   * network, no credential; a caller wanting a fresh comparison against the remote should
+   * {@link fetch} first.
+   *
+   * Adapter contract (implemented later in the worker): `git log`/`git diff --name-only` over
+   * `<remote-tracking ref>..HEAD`. When the branch has no remote-tracking ref yet (never fetched or
+   * pushed), degrades gracefully to an empty result (`{incoming: [], changedPaths: []}`-shaped, here
+   * `{outgoing: [], changedPaths: []}`) rather than failing — there is nothing yet to compare
+   * against, which is not itself an error.
+   *
+   * @param projectId - The project whose outgoing changes to preview.
+   * @param input - The branch to preview.
+   * @returns The outgoing commits (newest first) and the paths they touch; a `GitCommandFailedError`
+   *   when the underlying git command fails for a reason other than a missing remote-tracking ref.
+   */
+  previewPush(
+    projectId: ProjectId,
+    input: GitPreviewPushInput,
+  ): Promise<Result<GitPreviewPushResult, GitCommandFailedError>>;
+
+  /**
+   * Reads per-line authorship for a single project-relative file: for each line, the commit that last modified it,
+   * its author email and date, and the line text. With `ref`, blames the file as of that commit; without it, the
+   * current working-tree file. A purely local read — no network.
+   *
+   * Adapter contract (implemented later in the worker): run `git blame` in a machine-readable form (e.g.
+   * `--porcelain`) for the file, passing the file path (and `ref` when set) as positionals after
+   * `--end-of-options`; parse each line's commit hash, author email, author time, and text. Returns the lines in
+   * file order (line 1 first).
+   *
+   * @param projectId - The project whose file to blame.
+   * @param input - The project-relative file path, and the optional commit to blame it as of.
+   * @param input.path - The project-relative file path to blame.
+   * @param input.ref - The commit to blame the file as of; the current working-tree file when omitted.
+   * @returns Every line's authorship, in file order; a `GitCommandFailedError` when the underlying git command
+   *   fails (for example, the path does not exist at the given ref).
+   */
+  blame(
+    projectId: ProjectId,
+    input: { readonly path: string; readonly ref?: string },
+  ): Promise<Result<GitBlameLine[], GitCommandFailedError>>;
+
+  /**
+   * Lists every local branch in the project's working tree, along with which one is currently
+   * checked out (the real adapter runs something like `git branch --list` inside the project's
+   * sandboxed working tree).
+   *
+   * @param projectId - The project whose working tree to list branches for.
+   * @returns The current branch and every local branch name; a `GitCommandFailedError` when the
+   *   underlying git command fails.
+   */
+  listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>>;
+}
+
+/**
+ * Local-mutation slice of the git port: staging, committing, merging, branching,
+ * checkout, conflict resolution, and working-tree restore/discard — every operation
+ * that changes a project's own working tree or index without touching the network.
+ */
+export interface GitMutationPort {
   /**
    * Stages the given files for the next commit (the real adapter runs `git add -- <paths>` inside
    * the project's sandboxed working tree).
@@ -591,198 +332,6 @@ export interface GitCommandRunner {
   amendCommit(projectId: ProjectId, input: GitAmendInput): Promise<Result<GitCommitResult, GitAmendError>>;
 
   /**
-   * Pushes the project's current branch to its remote (the real adapter runs `git push` inside the
-   * project's sandboxed working tree, authenticating out-of-band with `input.token` — never via
-   * argv, the same convention {@link clone} and {@link checkRemoteAccess} follow).
-   *
-   * Adapter contract: a push git rejects as non-fast-forward (`! [rejected] ... (non-fast-forward)`
-   * / `(fetch first)` — the remote has commits this branch does not) is classified into
-   * {@link NonFastForwardError}, distinct from the remote being unreachable at all
-   * ({@link RepositoryUnreachableError}) or rejecting the credential ({@link AuthenticationFailedError}).
-   *
-   * @param projectId - The project whose working tree to push from.
-   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to push.
-   * @returns The remote branch's new tip commit on success; a {@link NonFastForwardError} when the
-   *   remote has commits this branch does not, a {@link RepositoryUnreachableError}/
-   *   {@link AuthenticationFailedError} on the same terms as {@link checkRemoteAccess}, or a
-   *   {@link GitCommandFailedError} for any other failure.
-   */
-  push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>>;
-
-  /**
-   * Initializes git on an existing (previously non-git) project's real working tree and publishes
-   * it to a fresh, empty remote, atomically: the whole init → remote-add → initial-commit → push
-   * sequence is one adapter call so the all-or-nothing boundary between "not published" and
-   * "published" stays in a single place, rather than being split across several port calls a
-   * use case would otherwise have to sequence and unwind itself.
-   *
-   * Adapter contract (the real adapter must implement exactly this ordering):
-   *
-   * 1. FIRST verify the remote has no commits at all (e.g. `git ls-remote <remoteUrl>`, authenticated
-   *    out-of-band with `input.token`). If it reports ANY ref/commit, do NOTHING else — no local
-   *    `git init`, no working-tree mutation — and return {@link RemoteAlreadyInitializedError}. A
-   *    non-empty remote must never be overwritten; the caller is expected to guide the user to
-   *    import/pull that remote's existing history instead.
-   * 2. Otherwise: `git init` the project's own working tree (not a scratch directory — this project
-   *    was never git-managed before this call).
-   * 3. `git remote add origin <input.remoteUrl>` (no credential in this step — the URL alone).
-   * 4. Stage and commit every file currently in the working tree as the project's initial commit.
-   * 5. `git push` that commit to `input.branch` (defaulting to the project's current branch, or
-   *    `'main'` when that too is unset), authenticating out-of-band with `input.token` — never via
-   *    argv, config, or logs, the same convention {@link clone} and {@link push} follow.
-   *
-   * On ANY failure at step 2 or later, the adapter leaves nothing half-published (no lingering
-   * `origin` remote pointed at a repository this call did not finish publishing to); this is the
-   * adapter's own responsibility, not something the caller can undo from the outside.
-   *
-   * @param projectId - The project whose working tree to initialize and publish.
-   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
-   *   publish under.
-   * @returns The initial commit's hash and the branch it was published under; a
-   *   {@link RemoteAlreadyInitializedError} when the remote already has commits, a
-   *   {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} on the same terms as
-   *   {@link checkRemoteAccess}, or a {@link GitCommandFailedError} for any other failure.
-   */
-  initializeAndPublish(
-    projectId: ProjectId,
-    input: GitInitializeInput,
-  ): Promise<Result<GitInitializeOutcome, GitInitializeError>>;
-
-  /**
-   * Fetches a remote branch, updating only the local remote-tracking ref (`origin/<branch>`) — the
-   * working tree and the local branch are never touched. Authenticates out-of-band with
-   * `input.token`, the same convention {@link clone} and {@link push} follow.
-   *
-   * @param projectId - The project whose working tree's remote-tracking ref to update.
-   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to fetch.
-   * @returns The remote-tracking ref's new tip commit on success; a
-   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
-   *   {@link checkRemoteAccess}, or a `GitCommandFailedError` for any other failure.
-   */
-  fetch(
-    projectId: ProjectId,
-    input: GitFetchInput,
-  ): Promise<Result<GitFetchResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>>;
-
-  /**
-   * Compares a local branch against its already-fetched remote-tracking ref — a pure local
-   * comparison that touches no network. Callers run {@link fetch} first when the remote-tracking
-   * ref needs to be current.
-   *
-   * @param projectId - The project whose working tree to compare.
-   * @param branch - The local branch to compare against its remote-tracking ref.
-   * @returns How many commits each side has that the other lacks; a `GitCommandFailedError` when
-   *   the underlying git command fails (for example, the branch has no remote-tracking ref yet).
-   */
-  getBehindAhead(projectId: ProjectId, branch: string): Promise<Result<GitBehindAhead, GitCommandFailedError>>;
-
-  /**
-   * Reads a project's commit history, newest first. With `path`, restricts to the commits that touched
-   * that single project-relative file (its per-file history); without it, the whole project's history.
-   * `limit`, when given, caps the number of commits returned. A purely local read — no network.
-   *
-   * Adapter contract (implemented later in the worker): run `git log` with a machine-readable format that
-   * emits hash, author email, author date, and subject; when `path` is set, pass it as a positional after
-   * `--end-of-options` (`git log … -- <path>`); apply `--max-count=<limit>` when `limit` is set. Returns the
-   * entries newest-first; an empty history is an empty array, not an error.
-   *
-   * @param projectId - The project whose history to read.
-   * @param options - `path` restricts to a single project-relative file's history; `limit` caps the
-   *   number of commits returned.
-   * @returns Every matching commit, newest first; a `GitCommandFailedError` when the underlying git
-   *   command fails.
-   */
-  log(
-    projectId: ProjectId,
-    options: { readonly path?: string; readonly limit?: number },
-  ): Promise<Result<GitLogEntry[], GitCommandFailedError>>;
-
-  /**
-   * Produces a unified diff. With `from` and `to`, diffs between those two commits; with neither, diffs the
-   * uncommitted working changes against HEAD. `path`, when set, scopes the diff to that single project-relative
-   * file (passed as a positional after `--end-of-options`). `currentContent` (uncommitted mode only) replaces
-   * that one file's working-tree content with the given live text before diffing. A purely local read — no network.
-   *
-   * Adapter contract (implemented later in the worker): commit-vs-commit → `git diff <from> <to> [-- <path>]`;
-   * uncommitted → `git diff HEAD [-- <path>]`; when `currentContent` is present, diff HEAD's blob of that path
-   * against the supplied live text (e.g. via a temp file / `git diff --no-index`, worker's choice) so no stale
-   * working-tree copy is read. An empty diff is an empty string, not an error.
-   *
-   * @param projectId - The project whose working tree (and/or history) to diff.
-   * @param input - What to diff — two commits, or the uncommitted working changes, optionally scoped to one
-   *   file, optionally overriding that file's content with live text.
-   * @returns The unified diff text; a `GitCommandFailedError` when the underlying git command fails.
-   */
-  diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>>;
-
-  /**
-   * Previews what a {@link fetch}-then-merge pull would bring in, without changing anything beyond
-   * the remote-tracking ref {@link fetch} itself already updates: fetches `input.branch` from the
-   * remote (the same fetch {@link fetch} performs, authenticating out-of-band with `input.token`),
-   * then reads the commits and touched paths between the local branch and that freshly-fetched ref.
-   * A LIVE network read — the fetch is real, so the preview reflects the remote's current state —
-   * but never merges, commits, or flushes anything.
-   *
-   * Adapter contract (implemented later in the worker): fetch exactly as {@link fetch} does, then
-   * `git log`/`git diff --name-only` over `HEAD..<the freshly-fetched remote-tracking ref>`, in the
-   * same `-z`/`%H%x00%ae%x00%aI%x00%s` format {@link log} uses.
-   *
-   * @param projectId - The project whose incoming changes to preview.
-   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to preview.
-   * @returns The incoming commits (newest first) and the paths they touch; a
-   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as {@link fetch}, or
-   *   a `GitCommandFailedError` for any other failure.
-   */
-  previewPull(
-    projectId: ProjectId,
-    input: GitPreviewPullInput,
-  ): Promise<
-    Result<GitPreviewPullResult, GitCommandFailedError | RepositoryUnreachableError | AuthenticationFailedError>
-  >;
-
-  /**
-   * Previews what a push would send out, without changing anything: reads the commits and touched
-   * paths between the already-fetched remote-tracking ref and the local branch. Purely local — no
-   * network, no credential; a caller wanting a fresh comparison against the remote should
-   * {@link fetch} first.
-   *
-   * Adapter contract (implemented later in the worker): `git log`/`git diff --name-only` over
-   * `<remote-tracking ref>..HEAD`. When the branch has no remote-tracking ref yet (never fetched or
-   * pushed), degrades gracefully to an empty result (`{incoming: [], changedPaths: []}`-shaped, here
-   * `{outgoing: [], changedPaths: []}`) rather than failing — there is nothing yet to compare
-   * against, which is not itself an error.
-   *
-   * @param projectId - The project whose outgoing changes to preview.
-   * @param input - The branch to preview.
-   * @returns The outgoing commits (newest first) and the paths they touch; a `GitCommandFailedError`
-   *   when the underlying git command fails for a reason other than a missing remote-tracking ref.
-   */
-  previewPush(
-    projectId: ProjectId,
-    input: GitPreviewPushInput,
-  ): Promise<Result<GitPreviewPushResult, GitCommandFailedError>>;
-
-  /**
-   * Reads per-line authorship for a single project-relative file: for each line, the commit that last modified it,
-   * its author email and date, and the line text. With `ref`, blames the file as of that commit; without it, the
-   * current working-tree file. A purely local read — no network.
-   *
-   * Adapter contract (implemented later in the worker): run `git blame` in a machine-readable form (e.g.
-   * `--porcelain`) for the file, passing the file path (and `ref` when set) as positionals after
-   * `--end-of-options`; parse each line's commit hash, author email, author time, and text. Returns the lines in
-   * file order (line 1 first).
-   *
-   * @param projectId - The project whose file to blame.
-   * @param input - The project-relative file path, and the optional commit to blame it as of.
-   * @returns Every line's authorship, in file order; a `GitCommandFailedError` when the underlying git command
-   *   fails (for example, the path does not exist at the given ref).
-   */
-  blame(
-    projectId: ProjectId,
-    input: { readonly path: string; readonly ref?: string },
-  ): Promise<Result<GitBlameLine[], GitCommandFailedError>>;
-
-  /**
    * Runs a local three-way merge of the already-fetched remote-tracking ref into `input.branch`.
    * Touches no network — callers run {@link fetch} first so the remote-tracking ref is current.
    *
@@ -811,17 +360,6 @@ export interface GitCommandRunner {
    *   valid git ref name).
    */
   createBranch(projectId: ProjectId, input: GitCreateBranchInput): Promise<Result<GitCreatedBranch, GitCommandFailedError>>;
-
-  /**
-   * Lists every local branch in the project's working tree, along with which one is currently
-   * checked out (the real adapter runs something like `git branch --list` inside the project's
-   * sandboxed working tree).
-   *
-   * @param projectId - The project whose working tree to list branches for.
-   * @returns The current branch and every local branch name; a `GitCommandFailedError` when the
-   *   underlying git command fails.
-   */
-  listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>>;
 
   /**
    * Switches the project's working tree to another local branch, landing that branch's content and
@@ -928,3 +466,123 @@ export interface GitCommandRunner {
     input: GitDiscardInput,
   ): Promise<Result<GitMergeFileChange[], GitCommandFailedError>>;
 }
+
+/**
+ * Network slice of the git port: clone, push, initialize-and-publish, and fetch — every
+ * operation that reaches a remote, authenticating out-of-band with a plaintext token.
+ */
+export interface GitRemotePort {
+  /**
+   * Clones a remote's branch (its default branch when none is given) into a scratch working tree
+   * and returns every tracked file it contains. Used by `ImportRepository` to materialize a
+   * brand-new project's file tree from an external remote — this call does not touch any
+   * project's own working tree or storage; translating the returned entries into that project's
+   * `FileNode`/`Document`/`Asset` rows and stored bytes is the caller's job.
+   *
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
+   *   clone (defaults to the remote's default branch).
+   * @returns The cloned repository's files and the branch/commit they were cloned at; a
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
+   *   {@link checkRemoteAccess}, a `RepositoryTooLargeError` when the cloned working tree exceeds
+   *   the configured size ceiling, or a `GitCommandFailedError` for any other failure.
+   */
+  clone(
+    input: GitCloneInput,
+  ): Promise<
+    Result<
+      ClonedRepository,
+      RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError
+    >
+  >;
+
+  /**
+   * Pushes the project's current branch to its remote (the real adapter runs `git push` inside the
+   * project's sandboxed working tree, authenticating out-of-band with `input.token` — never via
+   * argv, the same convention {@link clone} and {@link checkRemoteAccess} follow).
+   *
+   * Adapter contract: a push git rejects as non-fast-forward (`! [rejected] ... (non-fast-forward)`
+   * / `(fetch first)` — the remote has commits this branch does not) is classified into
+   * {@link NonFastForwardError}, distinct from the remote being unreachable at all
+   * ({@link RepositoryUnreachableError}) or rejecting the credential ({@link AuthenticationFailedError}).
+   *
+   * @param projectId - The project whose working tree to push from.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to push.
+   * @returns The remote branch's new tip commit on success; a {@link NonFastForwardError} when the
+   *   remote has commits this branch does not, a {@link RepositoryUnreachableError}/
+   *   {@link AuthenticationFailedError} on the same terms as {@link checkRemoteAccess}, or a
+   *   {@link GitCommandFailedError} for any other failure.
+   */
+  push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>>;
+
+  /**
+   * Initializes git on an existing (previously non-git) project's real working tree and publishes
+   * it to a fresh, empty remote, atomically: the whole init → remote-add → initial-commit → push
+   * sequence is one adapter call so the all-or-nothing boundary between "not published" and
+   * "published" stays in a single place, rather than being split across several port calls a
+   * use case would otherwise have to sequence and unwind itself.
+   *
+   * Adapter contract (the real adapter must implement exactly this ordering):
+   *
+   * 1. FIRST verify the remote has no commits at all (e.g. `git ls-remote <remoteUrl>`, authenticated
+   *    out-of-band with `input.token`). If it reports ANY ref/commit, do NOTHING else — no local
+   *    `git init`, no working-tree mutation — and return {@link RemoteAlreadyInitializedError}. A
+   *    non-empty remote must never be overwritten; the caller is expected to guide the user to
+   *    import/pull that remote's existing history instead.
+   * 2. Otherwise: `git init` the project's own working tree (not a scratch directory — this project
+   *    was never git-managed before this call).
+   * 3. `git remote add origin <input.remoteUrl>` (no credential in this step — the URL alone).
+   * 4. Stage and commit every file currently in the working tree as the project's initial commit.
+   * 5. `git push` that commit to `input.branch` (defaulting to the project's current branch, or
+   *    `'main'` when that too is unset), authenticating out-of-band with `input.token` — never via
+   *    argv, config, or logs, the same convention {@link clone} and {@link push} follow.
+   *
+   * On ANY failure at step 2 or later, the adapter leaves nothing half-published (no lingering
+   * `origin` remote pointed at a repository this call did not finish publishing to); this is the
+   * adapter's own responsibility, not something the caller can undo from the outside.
+   *
+   * @param projectId - The project whose working tree to initialize and publish.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
+   *   publish under.
+   * @returns The initial commit's hash and the branch it was published under; a
+   *   {@link RemoteAlreadyInitializedError} when the remote already has commits, a
+   *   {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} on the same terms as
+   *   {@link checkRemoteAccess}, or a {@link GitCommandFailedError} for any other failure.
+   */
+  initializeAndPublish(
+    projectId: ProjectId,
+    input: GitInitializeInput,
+  ): Promise<Result<GitInitializeOutcome, GitInitializeError>>;
+
+  /**
+   * Fetches a remote branch, updating only the local remote-tracking ref (`origin/<branch>`) — the
+   * working tree and the local branch are never touched. Authenticates out-of-band with
+   * `input.token`, the same convention {@link clone} and {@link push} follow.
+   *
+   * @param projectId - The project whose working tree's remote-tracking ref to update.
+   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to fetch.
+   * @returns The remote-tracking ref's new tip commit on success; a
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
+   *   {@link checkRemoteAccess}, or a `GitCommandFailedError` for any other failure.
+   */
+  fetch(
+    projectId: ProjectId,
+    input: GitFetchInput,
+  ): Promise<Result<GitFetchResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>>;
+}
+
+/**
+ * Port for running scoped git actions against a project's sandboxed working tree.
+ *
+ * The real adapter (`apps/git-worker`) runs the actual `git` CLI via `execFile` inside a
+ * sandboxed container; this interface is the hard boundary that keeps every git-library
+ * type (e.g. `simple-git`) out of the domain. Every method returns either a domain-owned
+ * type shaped to match its `packages/shared` DTO counterpart, or a `Result`-wrapped typed
+ * error — never a raw git-library value.
+ *
+ * This is a foundational, deliberately minimal port: only the read-only status query
+ * needed to unblock the earliest git use cases is defined here. Story tasks extend this
+ * interface with the mutating and history/diff operations it will eventually cover
+ * (clone, stage, commit, push, fetch, merge, branch, checkout, stash, log, diff, ...) as
+ * each is built — add new methods here alongside a corresponding in-memory fake method.
+ */
+export interface GitCommandRunner extends GitReadPort, GitMutationPort, GitRemotePort {}

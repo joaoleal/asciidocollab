@@ -3,6 +3,11 @@ import { assertGitOAuthConfigConsistent, isGitOAuthProviderConfigured } from '..
 import type { GitConfig } from '../../src/config/schema-git';
 import { setupTestEnvironment } from '../helpers/test-environment';
 
+/** A freshly built config's `git` fragment, reflecting whatever env vars are currently set. */
+function baseGit() {
+  return createConfig().get('git');
+}
+
 /**
  * The guided OAuth authorization-code + PKCE connect flow's config surface: a dedicated state
  * encryption key plus one config fragment per provider (github/gitlab/bitbucket), every field
@@ -151,8 +156,6 @@ describe('git oauth config', () => {
   });
 
   describe('assertGitOAuthConfigConsistent', () => {
-    const baseGit = () => createConfig().get('git');
-
     it('does not throw when no provider is configured, even with an empty stateEncryptionKey', () => {
       expect(() => assertGitOAuthConfigConsistent(baseGit())).not.toThrow();
     });

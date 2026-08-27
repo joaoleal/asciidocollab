@@ -18,7 +18,11 @@ export interface HistoryPanelWithDiffProperties {
   projectId: string;
   /** Whether the history panel is currently shown. */
   open: boolean;
-  /** Called whenever the history panel asks to open or close. */
+  /**
+   * Called whenever the history panel asks to open or close.
+   *
+   * @param open - True to show the panel, false to hide it.
+   */
   onOpenChange: (open: boolean) => void;
   /** Project-relative path to scope the history to a single file. Omitted for the whole repository. */
   path?: string;

@@ -32,7 +32,7 @@ const RESTORED_PATHS = [DISCARD_PATH];
 
 function makeReconciler(): FileChangeReconciler & { apply: jest.Mock } {
   return {
-    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: RESTORED_PATHS } }),
+    apply: jest.fn().mockResolvedValue({ success: true, value: { changedPaths: RESTORED_PATHS, anomalies: [] } }),
   };
 }
 
@@ -209,7 +209,7 @@ describe('DiscardChangesUseCase', () => {
     expect(result.success).toBe(true);
 
     const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    const entry = entries.find((e) => e.action === AUDIT_GIT_CHANGES_DISCARDED);
+    const entry = entries.find((entry) => entry.action === AUDIT_GIT_CHANGES_DISCARDED);
     expect(entry).toBeDefined();
     expect(entry?.metadata).toMatchObject({ count: RESTORED_PATHS.length });
   });

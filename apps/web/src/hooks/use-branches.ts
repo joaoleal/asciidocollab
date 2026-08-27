@@ -9,7 +9,7 @@
  * the two fired and the confirm dialog itself performs the flagged retry (see
  * `BranchSwitchDialog`), exactly like `PullConfirmForm` retries the pull.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { describeCheckoutFailure } from '@/components/git/branch-switch-dialog';
 import {
   checkoutBranch,
@@ -21,6 +21,7 @@ import {
   type CheckoutBranchResult,
 } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
+import { describeDrift } from '@/lib/git/describe-drift';
 import type { BranchDto } from '@asciidocollab/shared';
 
 /** How often a queued branch-switch operation's status is re-read while it is queued or running. */
@@ -49,9 +50,17 @@ export interface UseBranches {
   error: string | null;
   /** Reloads the branch list — for use after a switch or a creation changes it. */
   refetch: () => Promise<void>;
-  /** Creates a new branch from the current branch's tip, then refetches the list. */
+  /**
+   * Creates a new branch from the current branch's tip, then refetches the list.
+   *
+   * @param name - The new branch's name.
+   */
   createBranch: (name: string) => Promise<void>;
-  /** Starts switching to the given branch; opens the confirm dialog instead of erroring on either 409. */
+  /**
+   * Starts switching to the given branch; opens the confirm dialog instead of erroring on either 409.
+   *
+   * @param name - The branch name to switch to.
+   */
   switchBranch: (name: string) => void;
   /** True while a switch is starting or its operation is being polled. */
   switchPending: boolean;
@@ -65,12 +74,21 @@ export interface UseBranches {
   confirmCode: BranchSwitchConfirmCode | null;
   /** Closes the confirm dialog without switching. */
   closeConfirm: () => void;
-  /** Called by the confirm dialog once its flagged retry has successfully queued a switch. */
+  /**
+   * Called by the confirm dialog once its flagged retry has successfully queued a switch.
+   *
+   * @param result - The queued switch operation's checkout result.
+   */
   handleConfirmed: (result: CheckoutBranchResult) => void;
 }
 
 /** The two `ApiError.code`s that open the confirm dialog rather than surfacing as an error. */
 const CONFIRMABLE_CODES: ReadonlySet<string> = new Set(['uncommitted_changes', 'open_files_need_confirm']);
+
+/** Narrows an `ApiError.code` string to one of the two confirmable checkout-refusal codes. */
+function isConfirmableCode(code: string): code is BranchSwitchConfirmCode {
+  return CONFIRMABLE_CODES.has(code);
+}
 
 /** ApiError status codes that mean "this project has no connected git repository" — not a failure. */
 const NOT_CONNECTED_STATUSES: ReadonlySet<number> = new Set([404]);
@@ -95,19 +113,25 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
   const [confirmBranchName, setConfirmBranchName] = useState<string | null>(null);
   const [confirmCode, setConfirmCode] = useState<BranchSwitchConfirmCode | null>(null);
 
+  // Guards the branch-list loader against an older `load`/`refetch` call's response resolving
+  // after a newer one's — only the latest-started call is allowed to write state.
+  const loadSeq = useRef(0);
+
   const load = useCallback(
     async (active: () => boolean) => {
+      const seq = ++loadSeq.current;
+      const isCurrent = () => active() && seq === loadSeq.current;
       setLoading(true);
       setError(null);
       try {
         const result = await getBranches(projectId);
-        if (!active()) return;
+        if (!isCurrent()) return;
         // Defensive against a malformed/mismatched response body: an unexpected shape resolves to
         // "nothing loaded" rather than crashing the switcher's render.
         setCurrent(typeof result.current === 'string' ? result.current : null);
         setBranches(Array.isArray(result.branches) ? result.branches : []);
       } catch (error_) {
-        if (!active()) return;
+        if (!isCurrent()) return;
         setCurrent(null);
         setBranches([]);
         if (error_ instanceof ApiError && NOT_CONNECTED_STATUSES.has(error_.status)) {
@@ -117,7 +141,7 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
           setError('Failed to load branches.');
         }
       } finally {
-        if (active()) setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     },
     [projectId],
@@ -150,9 +174,9 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
           setOperationId(result.operationId);
         })
         .catch((caughtError: unknown) => {
-          if (caughtError instanceof ApiError && CONFIRMABLE_CODES.has(caughtError.code)) {
+          if (caughtError instanceof ApiError && isConfirmableCode(caughtError.code)) {
             setConfirmBranchName(name);
-            setConfirmCode(caughtError.code as BranchSwitchConfirmCode);
+            setConfirmCode(caughtError.code);
             setConfirmOpen(true);
             setSwitchPending(false);
             return;
@@ -179,6 +203,10 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
     setConfirmCode(null);
   }, []);
 
+  // Guards the switch-operation poll against an older tick's response resolving after a newer
+  // tick's, which can happen when a poll takes longer than `POLL_INTERVAL_MS` to settle.
+  const pollSeq = useRef(0);
+
   // Polls the queued switch operation, exactly like `usePull`, until it reaches a terminal state OR
   // `AWAITING_CONFLICT` — checked first here, same reason as the pull hook: `isGitOperationTerminal`
   // deliberately does not count it as terminal.
@@ -188,9 +216,11 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
     let active = true;
 
     async function tick() {
+      const seq = ++pollSeq.current;
+      const isCurrent = () => active && seq === pollSeq.current;
       try {
         const status = await getGitOperation(projectId, currentOperationId);
-        if (!active) return;
+        if (!isCurrent()) return;
         if (status.state === 'AWAITING_CONFLICT') {
           setOperationId(null);
           setSwitchPending(false);
@@ -203,6 +233,14 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
           if (status.state === 'SUCCEEDED') {
             void refetch();
             onSucceeded();
+            // A clean switch can still have dropped a change under tree drift; this is the user's
+            // only window into that, since the detail lives only in the admin audit log.
+            const driftMessage = describeDrift(
+              status.driftSummary,
+              'Branch switch applied',
+              'switch to that branch again',
+            );
+            if (driftMessage) setSwitchMessage({ tone: 'neutral', text: driftMessage });
           } else {
             setSwitchMessage({
               tone: 'error',

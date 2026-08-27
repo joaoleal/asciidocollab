@@ -19,7 +19,7 @@ import { requestLogger } from './request-logger';
  *
  * @param gitOperationRepo - The repository to query for the project's active operation.
  * @param projectId - The project to check.
- * @returns true when a content-changing operation is currently active for the project.
+ * @returns True when a content-changing operation is currently active for the project.
  */
 export async function isGitWriteLocked(
   gitOperationRepo: GitOperationRepository,

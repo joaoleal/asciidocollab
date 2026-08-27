@@ -13,7 +13,7 @@ jest.mock('@/lib/api/git', () => ({
 
 jest.useFakeTimers();
 
-const RUNNING_STATUS = { id: 'op1', kind: 'PULL', state: 'RUNNING', progress: 10, errorCode: null };
+const RUNNING_STATUS = { id: 'op1', kind: 'PULL', state: 'RUNNING', progress: 10, errorCode: null, driftSummary: null };
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -126,7 +126,7 @@ describe('usePull confirmation retry', () => {
 describe('usePull polling outcomes', () => {
   test('stops polling and shows a neutral paused message on AWAITING_CONFLICT (does not loop past it)', async () => {
     const onSucceeded = jest.fn();
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'AWAITING_CONFLICT', progress: 50, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'AWAITING_CONFLICT', progress: 50, errorCode: null, driftSummary: null });
     const { result } = renderHook(() => usePull('proj1', onSucceeded));
 
     await act(async () => {
@@ -160,7 +160,7 @@ describe('usePull polling outcomes', () => {
     });
     await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'SUCCEEDED', progress: 100, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
     await act(async () => {
       jest.advanceTimersByTime(1500);
     });
@@ -176,6 +176,184 @@ describe('usePull polling outcomes', () => {
     expect(mockGetGitOperation.mock.calls.length).toBe(callsAtSuccess);
   });
 
+  test('SUCCEEDED with a dropped-change drift summary shows a neutral recovery message and still calls onSucceeded', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => usePull('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'PULL',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 1,
+        anomalies: [{ path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false }],
+      },
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(onSucceeded).toHaveBeenCalledTimes(1));
+    expect(result.current.message?.tone).toBe('neutral');
+    expect(result.current.message?.text).toContain('docs');
+    expect(result.current.message?.text).toContain('folder');
+    expect(result.current.message?.text).toContain('pull again');
+  });
+
+  test('SUCCEEDED with a file-occupies-ancestor drop says a file (not a folder) is in the way', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => usePull('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'PULL',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 1,
+        anomalies: [{ path: 'notes', kind: 'content_dropped_file_occupies_ancestor_path', applied: false }],
+      },
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(onSucceeded).toHaveBeenCalledTimes(1));
+    expect(result.current.message?.tone).toBe('neutral');
+    expect(result.current.message?.text).toContain('notes');
+    expect(result.current.message?.text).toContain('file');
+    expect(result.current.message?.text).not.toContain('folder');
+    expect(result.current.message?.text).toContain('pull again');
+  });
+
+  test('SUCCEEDED with a dropped binary-into-open-document change tells the user to close the document', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => usePull('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'PULL',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 1,
+        anomalies: [{ path: 'diagram.png', kind: 'content_dropped_binary_open_document', applied: false }],
+      },
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(onSucceeded).toHaveBeenCalledTimes(1));
+    expect(result.current.message?.tone).toBe('neutral');
+    expect(result.current.message?.text).toContain('diagram.png');
+    expect(result.current.message?.text).toContain('document is open in the editor');
+    expect(result.current.message?.text).toContain('Close the document');
+    expect(result.current.message?.text).toContain('pull again');
+    expect(result.current.message?.text).not.toContain('No action is needed');
+    expect(result.current.message?.text).not.toContain('nothing was lost');
+    expect(result.current.message?.text).not.toContain('auto-reconcile');
+  });
+
+  test('SUCCEEDED with mixed drop kinds (folder-occupied + binary-open-document) uses a generic combined message', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => usePull('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'PULL',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 2,
+        droppedCount: 2,
+        anomalies: [
+          { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false },
+          { path: 'diagram.png', kind: 'content_dropped_binary_open_document', applied: false },
+        ],
+      },
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(onSucceeded).toHaveBeenCalledTimes(1));
+    expect(result.current.message?.tone).toBe('neutral');
+    expect(result.current.message?.text).toContain('docs');
+    expect(result.current.message?.text).toContain('diagram.png');
+    expect(result.current.message?.text).toContain('document is open in the editor');
+    expect(result.current.message?.text).toContain('pull again');
+    expect(result.current.message?.text).not.toContain('No action is needed');
+    expect(result.current.message?.text).not.toContain('nothing was lost');
+  });
+
+  test('SUCCEEDED with a benign-only (all auto-repaired) drift summary shows no message', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => usePull('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'PULL',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 0,
+        anomalies: [{ path: 'ghost.adoc', kind: 'modified_missing_node', applied: true }],
+      },
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(onSucceeded).toHaveBeenCalledTimes(1));
+    expect(result.current.message).toBeNull();
+  });
+
   test('FAILED stops polling and shows an error message', async () => {
     const { result } = renderHook(() => usePull('proj1', jest.fn()));
 
@@ -186,7 +364,7 @@ describe('usePull polling outcomes', () => {
     });
     await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'FAILED', progress: 40, errorCode: 'merge_conflict' });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'FAILED', progress: 40, errorCode: 'merge_conflict', driftSummary: null });
     await act(async () => {
       jest.advanceTimersByTime(1500);
     });

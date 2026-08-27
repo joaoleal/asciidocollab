@@ -72,7 +72,7 @@ describe('validateConflictPath (pure helper)', () => {
   });
 
   it('rejects a path with a leading backslash', () => {
-    expect(validateConflictPath('\\etc\\passwd')).toBeNull();
+    expect(validateConflictPath(String.raw`\etc\passwd`)).toBeNull();
   });
 
   it('rejects a path containing a forward-slash traversal segment', () => {
@@ -81,8 +81,8 @@ describe('validateConflictPath (pure helper)', () => {
   });
 
   it('rejects a path containing an interior backslash traversal segment', () => {
-    expect(validateConflictPath('foo\\..\\bar')).toBeNull();
-    expect(validateConflictPath('..\\..\\x')).toBeNull();
+    expect(validateConflictPath(String.raw`foo\..\bar`)).toBeNull();
+    expect(validateConflictPath(String.raw`..\..\x`)).toBeNull();
   });
 });
 

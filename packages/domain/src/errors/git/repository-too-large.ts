@@ -10,6 +10,7 @@ import { DomainError } from '../domain-error';
 export class RepositoryTooLargeError extends DomainError {
   readonly name = 'RepositoryTooLargeError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('The repository exceeds the maximum allowed size.');
   }

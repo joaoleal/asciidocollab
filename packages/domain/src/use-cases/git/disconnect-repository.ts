@@ -27,6 +27,7 @@ export interface DisconnectRepositoryInput {
 
 /** What a successful disconnection hands back to its caller. */
 export interface DisconnectRepositoryResult {
+  /** Always `true` on success — there is no other success outcome. */
   readonly ok: true;
 }
 

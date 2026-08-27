@@ -25,7 +25,7 @@ const BRANCH_LIST = {
   ],
 };
 
-const RUNNING_STATUS = { id: 'op1', kind: 'BRANCH_SWITCH', state: 'RUNNING', progress: 10, errorCode: null };
+const RUNNING_STATUS = { id: 'op1', kind: 'BRANCH_SWITCH', state: 'RUNNING', progress: 10, errorCode: null, driftSummary: null };
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -37,6 +37,15 @@ beforeEach(() => {
 afterEach(() => {
   jest.clearAllTimers();
 });
+
+async function startSwitch(result: ReturnType<typeof renderHook<ReturnType<typeof useBranches>, unknown>>['result']) {
+  await act(async () => {
+    result.current.switchBranch('dev');
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+}
 
 describe('useBranches list load', () => {
   test('loads the branch list on mount', async () => {
@@ -84,6 +93,47 @@ describe('useBranches list load', () => {
     });
 
     expect(result.current.current).toBe('dev');
+  });
+
+  test('an older list load resolving after a newer one does not overwrite fresher state', async () => {
+    let resolveFirst!: (value: typeof BRANCH_LIST) => void;
+    let resolveSecond!: (value: typeof BRANCH_LIST) => void;
+    mockGetBranches
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+
+    const { result } = renderHook(() => useBranches('proj1', jest.fn()));
+    expect(result.current.loading).toBe(true);
+
+    // Start a second (newer) load before the mount's (older) load has resolved.
+    let refetchPromise!: Promise<void>;
+    act(() => {
+      refetchPromise = result.current.refetch();
+    });
+
+    const NEWER = {
+      current: 'dev',
+      branches: [{ name: 'main', isCurrent: false }, { name: 'dev', isCurrent: true }],
+    };
+
+    // The newer load resolves first.
+    await act(async () => {
+      resolveSecond(NEWER);
+      await refetchPromise;
+    });
+    expect(result.current.current).toBe('dev');
+    expect(result.current.branches).toEqual(NEWER.branches);
+
+    // The older (mount) load resolves last, with stale data — it must not overwrite the newer state.
+    await act(async () => {
+      resolveFirst(BRANCH_LIST);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.current).toBe('dev');
+    expect(result.current.branches).toEqual(NEWER.branches);
+    expect(result.current.loading).toBe(false);
   });
 });
 
@@ -228,18 +278,9 @@ describe('useBranches switchBranch', () => {
 });
 
 describe('useBranches polling outcomes', () => {
-  async function startSwitch(result: ReturnType<typeof renderHook<ReturnType<typeof useBranches>, unknown>>['result']) {
-    await act(async () => {
-      result.current.switchBranch('dev');
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
-  }
-
   test('stops polling and shows a neutral paused message on AWAITING_CONFLICT', async () => {
     const onSucceeded = jest.fn();
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'AWAITING_CONFLICT', progress: 50, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'AWAITING_CONFLICT', progress: 50, errorCode: null, driftSummary: null });
     const { result } = renderHook(() => useBranches('proj1', onSucceeded));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -268,7 +309,7 @@ describe('useBranches polling outcomes', () => {
 
     await startSwitch(result);
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'SUCCEEDED', progress: 100, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
     mockGetBranches.mockResolvedValueOnce({
       current: 'dev',
       branches: [{ name: 'main', isCurrent: false }, { name: 'dev', isCurrent: true }],
@@ -283,19 +324,112 @@ describe('useBranches polling outcomes', () => {
     expect(result.current.switchMessage).toBeNull();
   });
 
+  test('SUCCEEDED with a dropped-change drift summary shows a neutral recovery message', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => useBranches('proj1', onSucceeded));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await startSwitch(result);
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'BRANCH_SWITCH',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 1,
+        anomalies: [{ path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false }],
+      },
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(onSucceeded).toHaveBeenCalledTimes(1));
+    expect(result.current.switchMessage?.tone).toBe('neutral');
+    expect(result.current.switchMessage?.text).toContain('Branch switch applied');
+    expect(result.current.switchMessage?.text).toContain('docs');
+    expect(result.current.switchMessage?.text).toContain('Remove or rename the folder');
+    expect(result.current.switchMessage?.text).toContain('switch to that branch again');
+    expect(result.current.switchMessage?.text).not.toContain('pull again');
+  });
+
+  test('SUCCEEDED with no drift summary sets no switch message', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => useBranches('proj1', onSucceeded));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await startSwitch(result);
+
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(onSucceeded).toHaveBeenCalledTimes(1));
+    expect(result.current.switchMessage).toBeNull();
+  });
+
   test('FAILED stops polling and shows an error message', async () => {
     const { result } = renderHook(() => useBranches('proj1', jest.fn()));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     await startSwitch(result);
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'FAILED', progress: 40, errorCode: 'git_command_failed' });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'FAILED', progress: 40, errorCode: 'git_command_failed', driftSummary: null });
     await act(async () => {
       jest.advanceTimersByTime(1500);
     });
 
     await waitFor(() => expect(result.current.switchMessage).toEqual({ tone: 'error', text: 'The branch switch failed.' }));
     expect(result.current.switchPending).toBe(false);
+  });
+
+  test('an older poll tick resolving after a newer tick does not incorrectly settle the switch', async () => {
+    const onSucceeded = jest.fn();
+    let resolveTick1!: (value: typeof RUNNING_STATUS) => void;
+    let resolveTick2!: (value: typeof RUNNING_STATUS) => void;
+    mockGetGitOperation
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveTick1 = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveTick2 = resolve; }));
+
+    const { result } = renderHook(() => useBranches('proj1', onSucceeded));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      result.current.switchBranch('dev');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    // A second (newer) tick starts before the first (older) tick has resolved.
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(2));
+
+    // The newer tick resolves first, with a still-running status.
+    await act(async () => {
+      resolveTick2(RUNNING_STATUS);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.switchPending).toBe(true);
+
+    // The older tick resolves last, with a stale SUCCEEDED status — since a newer tick has already
+    // been observed as still running, this must be ignored rather than incorrectly settling the switch.
+    await act(async () => {
+      resolveTick1({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.switchPending).toBe(true);
+    expect(result.current.switchMessage).toBeNull();
+    expect(onSucceeded).not.toHaveBeenCalled();
   });
 
   test('no state update after unmount', async () => {
@@ -306,7 +440,7 @@ describe('useBranches polling outcomes', () => {
 
     unmount();
 
-    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'SUCCEEDED', progress: 100, errorCode: null });
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
     await act(async () => {
       jest.advanceTimersByTime(5000);
     });

@@ -58,6 +58,26 @@ describe('GetConflictStagesUseCase', () => {
     expect(result.success && result.value.base).toBeNull();
   });
 
+  test('maps a deleted "ours" side (modify/delete conflict) to null, distinct from a binary empty string', async () => {
+    const gitOperationRepo = new InMemoryGitOperationRepository();
+    const conflictStageStore = new InMemoryConflictStageStore();
+    const operationId = await buildAwaitingOperation(gitOperationRepo);
+    conflictStageStore.seedStages(operationId, TEXT_PATH, {
+      base: Buffer.from('base text', 'utf8'),
+      ours: null,
+      theirs: Buffer.from('their text', 'utf8'),
+      isBinary: false,
+    });
+    const useCase = new GetConflictStagesUseCase(gitOperationRepo, conflictStageStore);
+
+    const result = await useCase.execute({ projectId: PROJECT_ID, path: TEXT_PATH });
+
+    expect(result).toEqual({
+      success: true,
+      value: { base: 'base text', ours: null, theirs: 'their text', isBinary: false },
+    });
+  });
+
   test('a binary conflict maps to empty content and isBinary:true', async () => {
     const gitOperationRepo = new InMemoryGitOperationRepository();
     const conflictStageStore = new InMemoryConflictStageStore();

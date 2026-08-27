@@ -13,6 +13,7 @@ function operation(overrides: Partial<GitOperationStatusDto> = {}): GitOperation
     state: 'RUNNING',
     progress: 40,
     errorCode: null,
+    driftSummary: null,
     ...overrides,
   };
 }

@@ -22,6 +22,8 @@ import type {
   GitOperationRepository,
   GitOperationTransitionInput,
   GitOperationTransitionTarget,
+  GitDriftSummary,
+  GitDriftAnomaly,
   Result,
 } from '@asciidocollab/domain';
 
@@ -49,6 +51,7 @@ type GitOperationRow = {
   progress: number;
   heartbeatAt: Date | null;
   errorCode: string | null;
+  driftSummary: Prisma.JsonValue | null;
   startedAt: Date | null;
   finishedAt: Date | null;
   createdAt: Date;
@@ -184,7 +187,7 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
       WHERE g."id" = candidate."id"
       RETURNING
         g."id", g."projectId", g."kind", g."state", g."branch", g."triggeredByUserId",
-        g."progress", g."heartbeatAt", g."errorCode", g."startedAt", g."finishedAt", g."createdAt";
+        g."progress", g."heartbeatAt", g."errorCode", g."driftSummary", g."startedAt", g."finishedAt", g."createdAt";
     `;
 
     const [row] = rows;
@@ -218,7 +221,18 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
       where: { id: operationId.value, state: { in: legalFromStates } },
       data: {
         state: toState,
+        // Resuming into RUNNING (e.g. AWAITING_CONFLICT → RUNNING when a conflict is resolved) must
+        // refresh liveness: the operation was last beaten while first claimed and, after minutes in
+        // AWAITING_CONFLICT, that heartbeat is stale — `claimNextQueued` reclaims stale RUNNING rows,
+        // so without this a second worker could re-claim and double-execute the operation.
+        ...(toState === 'RUNNING' ? { heartbeatAt: now } : {}),
         errorCode: toState === 'FAILED' ? (input.errorCode ?? null) : null,
+        // Recorded only on a terminal SUCCEEDED move carrying a summary (a pull whose reconcile hit
+        // drift); every other move clears it back to null so a row's summary reflects its final run.
+        driftSummary:
+          toState === 'SUCCEEDED' && input.driftSummary
+            ? serializeDriftSummary(input.driftSummary)
+            : Prisma.DbNull,
         // Only set on a terminal move; a non-terminal move (e.g. into AWAITING_CONFLICT, or back
         // to RUNNING on resolve) never touches progress/finishedAt.
         ...(isTerminal ? { progress: 100, finishedAt: now } : {}),
@@ -365,16 +379,70 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
   }
 }
 
+/** Every `GitOperationState`, active and terminal — the full domain of `GIT_OPERATION_LEGAL_TRANSITIONS`'s keys. */
+const ALL_GIT_OPERATION_STATES: readonly GitOperationState[] = [
+  ...ACTIVE_GIT_OPERATION_STATES,
+  ...TERMINAL_GIT_OPERATION_STATES,
+];
+
 /** Every `GitOperationState` from which `GIT_OPERATION_LEGAL_TRANSITIONS` allows a legal move to `toState`. */
 function legalSourceStatesFor(toState: GitOperationTransitionTarget): GitOperationState[] {
-  return (Object.entries(GIT_OPERATION_LEGAL_TRANSITIONS) as [GitOperationState, GitOperationTransitionTarget[]][])
-    .filter(([, targets]) => targets.includes(toState))
-    .map(([fromState]) => fromState);
+  return ALL_GIT_OPERATION_STATES.filter((fromState) => GIT_OPERATION_LEGAL_TRANSITIONS[fromState].includes(toState));
 }
 
 /** True when `error` is Postgres's "could not serialize access due to concurrent update" surfaced by Prisma as P2034. */
 function isSerializationFailure(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
+}
+
+/**
+ * The on-disk envelope for a persisted drift summary. The `version` discriminator is the single
+ * lever for evolving this JSON shape: {@link parseDriftSummary} accepts only versions it understands
+ * and falls back to `null` for anything else, so an old row written under a prior shape degrades to
+ * "no summary" rather than crashing a read. Bump the version and teach the parser a new branch to
+ * change the shape; no data migration of the `Json?` column is required.
+ */
+const DRIFT_SUMMARY_VERSION = 1;
+
+/** Stamps a domain {@link GitDriftSummary} into the versioned JSON envelope stored on the row. */
+function serializeDriftSummary(summary: GitDriftSummary): Prisma.InputJsonValue {
+  return {
+    version: DRIFT_SUMMARY_VERSION,
+    total: summary.total,
+    droppedCount: summary.droppedCount,
+    anomalies: summary.anomalies.map((anomaly) => ({
+      path: anomaly.path,
+      kind: anomaly.kind,
+      applied: anomaly.applied,
+    })),
+  };
+}
+
+/**
+ * Tolerantly parses the stored JSON back into a {@link GitDriftSummary}. Returns `null` for a null
+ * column, an unrecognized `version`, or any structural mismatch — never throws — so a shape change
+ * (or a hand-edited row) can only ever hide the summary, not break the operation read.
+ */
+function parseDriftSummary(value: Prisma.JsonValue | null): GitDriftSummary | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const total = value.total;
+  const droppedCount = value.droppedCount;
+  if (value.version !== DRIFT_SUMMARY_VERSION) return null;
+  if (typeof total !== 'number' || typeof droppedCount !== 'number') return null;
+  const rawAnomalies = value.anomalies;
+  if (!Array.isArray(rawAnomalies)) return null;
+
+  const anomalies: GitDriftAnomaly[] = [];
+  for (const entry of rawAnomalies) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const path = entry.path;
+    const kind = entry.kind;
+    const applied = entry.applied;
+    if (typeof path !== 'string' || typeof kind !== 'string' || typeof applied !== 'boolean') return null;
+    anomalies.push({ path, kind, applied });
+  }
+
+  return { total, droppedCount, anomalies };
 }
 
 function toDomainGitOperation(record: GitOperationRow): GitOperation {
@@ -391,6 +459,7 @@ function toDomainGitOperation(record: GitOperationRow): GitOperation {
     record.startedAt,
     record.finishedAt,
     record.createdAt,
+    parseDriftSummary(record.driftSummary),
   );
 }
 

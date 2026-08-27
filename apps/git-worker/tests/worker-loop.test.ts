@@ -172,6 +172,31 @@ describe('git-worker run loop', () => {
     expect(result.success).toBe(false);
   });
 
+  it('persists the driftSummary carried by a succeeded outcome onto the operation', async () => {
+    const driftSummary = {
+      total: 1,
+      droppedCount: 1,
+      anomalies: [{ path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false }],
+    };
+    const handlers: GitOperationHandlerRegistry = { PULL: async () => ({ kind: 'succeeded', driftSummary }) };
+    const { loop, gitOperationRepository, auditLogRepository } = buildLoop({ handlers });
+    const enqueued = await gitOperationRepository.enqueue({ projectId, kind: 'PULL', triggeredByUserId: user });
+
+    loop.start();
+    try {
+      await waitUntil(async () => {
+        const logs = await auditLogRepository.findAll();
+        return logs.length === 1;
+      });
+    } finally {
+      await loop.stop();
+    }
+
+    const stored = await gitOperationRepository.findById(enqueued.id);
+    expect(stored?.state).toBe('SUCCEEDED');
+    expect(stored?.driftSummary).toEqual(driftSummary);
+  });
+
   it('sets FAILED and records an AuditLog entry with the errorCode when the handler fails', async () => {
     const handlers: GitOperationHandlerRegistry = {
       PULL: async () => ({ kind: 'failed', errorCode: 'REPOSITORY_UNREACHABLE' }),

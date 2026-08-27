@@ -72,7 +72,7 @@ export async function gitAmendRoutes(app: FastifyInstance): Promise<void> {
         result = await request.server.stores.gitWorkerClient.amendCommit({
           projectId: projectId.value,
           actorId: actorId.value,
-          ...(message !== undefined ? { message } : {}),
+          ...(message === undefined ? {} : { message }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {

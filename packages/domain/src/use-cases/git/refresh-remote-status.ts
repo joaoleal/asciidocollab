@@ -1,12 +1,12 @@
 import { ProjectId } from '../../value-objects/ids/project-id';
-import { GitRepository } from '../../entities/git-repository';
-import { GitCommandRunner } from '../../ports/git/git-command-runner';
+import { GitReadPort, GitRemotePort } from '../../ports/git/git-command-runner';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
 import { GitSyncStatus } from '../../types/git-sync-status';
 import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
 import { Logger } from '../../ports/observability/logger';
 import { Result } from '../../types/result';
+import { deriveSyncStatus } from './derive-sync-status';
 
 /**
  * Everything `RefreshRemoteStatusUseCase.execute` needs to fetch a project's remote-tracking ref
@@ -27,8 +27,10 @@ export interface RefreshRemoteStatusInput {
 
 /** What a successful refresh hands back. */
 export interface RefreshRemoteStatusResult {
-  /** The repository's sync status after this refresh — the derived status, or the row's
-   *  preserved `CONFLICTED` status when the row was already conflicted. */
+  /**
+   * The repository's sync status after this refresh — the derived status, or the row's
+   *  preserved `CONFLICTED` status when the row was already conflicted.
+   */
   readonly syncStatus: GitSyncStatus;
   /** The number of commits the remote-tracking ref has that the local branch does not. */
   readonly behind: number;
@@ -57,7 +59,7 @@ export class RefreshRemoteStatusUseCase {
    */
   constructor(
     private readonly gitRepositoryRepo: GitRepositoryRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitRemotePort & GitReadPort,
     private readonly logger?: Logger,
   ) {}
 
@@ -94,35 +96,50 @@ export class RefreshRemoteStatusUseCase {
     const syncStatus: GitSyncStatus =
       gitRepository.syncStatus === 'CONFLICTED' ? 'CONFLICTED' : derivedSyncStatus;
 
-    // Reuses the loaded row's own id, provider, remote URL, credential reference, branch, default
-    // branch, and creation metadata — this write only completes the fields the refresh observed.
-    const updatedRepository = new GitRepository(
-      gitRepository.id,
-      gitRepository.projectId,
-      gitRepository.provider,
-      gitRepository.remoteUrl,
-      gitRepository.credentialReference,
-      gitRepository.currentBranch,
+    // A conditional persist scoped to ONLY the fields this refresh observed (status, remote head,
+    // last-sync time) — it never rewrites `currentBranch`/`remoteUrl`/`credentialReference`/etc.
+    // from the loaded (now possibly stale) snapshot, so a user action that changed one of those
+    // during the multi-second fetch is not reverted. It also never clears a `CONFLICTED` status a
+    // concurrent pull may have set between this use case's load and this write: when the loaded row
+    // was itself CONFLICTED, `syncStatus` above is CONFLICTED and the write proceeds (updating
+    // head/last-sync while keeping the conflict); only a derived non-conflicted status is blocked
+    // against a concurrently stored conflict.
+    const persisted = await this.gitRepositoryRepo.saveRefreshedStatus({
+      projectId: gitRepository.projectId,
       syncStatus,
-      gitRepository.defaultBranch,
-      fetchResult.value.remoteHead,
-      new Date(),
-      gitRepository.createdAt,
-      gitRepository.connectedByUserId,
-    );
-    await this.gitRepositoryRepo.save(updatedRepository);
+      // The status this use case observed when it loaded the row, before the fetch. It guards the
+      // CONFLICTED-preserving write: re-asserting CONFLICTED must land only while the row still holds
+      // this observed status, so a concurrent resolve (a complete-merge that cleared the conflict
+      // during the fetch) leaves it unmatched instead of being stomped back to CONFLICTED. A false
+      // return then flows into the re-read/derive path below.
+      expectedCurrentStatus: gitRepository.syncStatus,
+      lastKnownRemoteHead: fetchResult.value.remoteHead,
+      lastSyncAt: new Date(),
+    });
+
+    // A `false` return from the conditional write means the row was NOT written, but conflates two
+    // distinct races: (a) a concurrent pull set the row `CONFLICTED` between this use case's load
+    // and its write, so the guard blocked the derived (non-conflicted) status; or (b) the row is
+    // gone — the repository was disconnected/deleted during the multi-second fetch, so there was
+    // nothing to update. The boolean alone cannot tell these apart, so re-read the row (best-effort)
+    // to disambiguate: only a still-present `CONFLICTED` row is a genuine conflict to report; a
+    // missing (or since-resolved) row means there is no conflict to preserve, so report the derived
+    // status. This keeps a caller from ever seeing "up to date" over a kept conflict (case a) while
+    // no longer misreporting a disconnected repository as `CONFLICTED` (case b).
+    let effectiveSyncStatus: GitSyncStatus = syncStatus;
+    if (!persisted) {
+      const latest = await this.gitRepositoryRepo.findByProjectId(input.projectId);
+      effectiveSyncStatus = latest?.syncStatus === 'CONFLICTED' ? 'CONFLICTED' : derivedSyncStatus;
+    }
 
     return {
       success: true,
-      value: { syncStatus, behind, ahead, lastKnownRemoteHead: fetchResult.value.remoteHead },
+      value: {
+        syncStatus: effectiveSyncStatus,
+        behind,
+        ahead,
+        lastKnownRemoteHead: fetchResult.value.remoteHead,
+      },
     };
   }
-}
-
-/** Derives a sync status purely from behind/ahead counts — never itself preserves CONFLICTED. */
-function deriveSyncStatus(behind: number, ahead: number): GitSyncStatus {
-  if (behind === 0 && ahead === 0) return 'UP_TO_DATE';
-  if (behind > 0 && ahead === 0) return 'BEHIND';
-  if (behind === 0 && ahead > 0) return 'AHEAD';
-  return 'DIVERGED';
 }

@@ -7,6 +7,7 @@ import { DomainError } from '../domain-error';
 export class EmptyCommitMessageError extends DomainError {
   readonly name = 'EmptyCommitMessageError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('A commit message is required');
   }

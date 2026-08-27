@@ -3,9 +3,10 @@ import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitRepository } from '../../entities/git-repository';
 import {
-  GitCommandRunner,
   GitCommitFlushEntry,
   GitMergeFileChange,
+  GitMutationPort,
+  GitRemotePort,
 } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
@@ -20,14 +21,21 @@ import { DomainError } from '../../errors/domain-error';
 import { RepositoryNotConnectedError } from '../../errors/git/repository-not-connected';
 import { LiveContentFlushFailedError } from '../../errors/git/live-content-flush-failed';
 import { requireGitRole } from './git-role-guard';
+import { deriveSyncStatus } from './derive-sync-status';
 import { resolveDownloadContentSource } from '../project/download-content-source';
-import { GitChangeReconcileResult } from './git-change-reconciler';
+import { recordAuditSuccess } from '../audit-recording';
+import { AUDIT_GIT_PULL_PARTIALLY_APPLIED } from '../../audit-actions';
+import { GitChangeReconcileResult, GitReconcileAnomaly, anomalyAuditMetadata } from './git-change-reconciler';
+import { GitSyncStatus } from '../../types/git-sync-status';
 import { Result } from '../../types/result';
 import { RequestContext } from '../../types/request-context';
 // Referenced only from this file's own JSDoc @link tags — raised inside GitCommandRunner.fetch;
 // kept imported so the links resolve to real symbols.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { AuthenticationFailedError } from '../../errors/git/authentication-failed';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- doc-only reference, see comment above.
 import type { GitCommandFailedError } from '../../errors/git/git-command-failed';
 
 /**
@@ -38,6 +46,13 @@ import type { GitCommandFailedError } from '../../errors/git/git-command-failed'
  * landed.
  */
 export interface FileChangeReconciler {
+  /**
+   * Applies a clean merge's landed file changes to the project's docs/live editors.
+   *
+   * @param projectId - The project the changes land into.
+   * @param changes - The merge's landed file changes, in the order they should be applied.
+   * @returns The reconciliation outcome on success; a `DomainError` when landing a change fails.
+   */
   apply(
     projectId: ProjectId,
     changes: readonly GitMergeFileChange[],
@@ -75,7 +90,18 @@ export interface PullChangesInput {
  * a conflict is an expected outcome of a pull, never an error.
  */
 export type PullChangesResult =
-  | { readonly status: 'merged'; readonly headCommit: string; readonly changedPaths: readonly string[] }
+  | {
+      readonly status: 'merged';
+      readonly headCommit: string;
+      readonly changedPaths: readonly string[];
+      /**
+       * Drift anomalies the reconciler surfaced while landing the change-set (empty on a clean apply).
+       * Carried out so the worker run loop can record them to the audit log and surface a count to the
+       * user — most importantly the `content_dropped_folder_occupies_path` case, where a pulled change
+       * was discarded and the user would otherwise have no way to know.
+       */
+      readonly anomalies: readonly GitReconcileAnomaly[];
+    }
   | { readonly status: 'awaiting_conflict'; readonly conflictPaths: readonly string[] };
 
 /**
@@ -99,8 +125,10 @@ export type PullChangesResult =
 export class PullChangesUseCase {
   /**
    * @param projectMemberRepo - Resolves the actor's role for the authorization check.
-   * @param auditLogRepo - Records the authorization denial (via `requireGitRole`). Not used on the
-   *   success path: the git-worker run loop records the terminal SUCCEEDED audit for an async op.
+   * @param auditLogRepo - Records the authorization denial (via `requireGitRole`) and, on the success
+   *   path, a `git.pull_partially_applied` entry when the reconciler hit drift. The terminal SUCCEEDED
+   *   audit is still the git-worker run loop's job; this records only the reconciler anomalies, which
+   *   the worker discards with the rest of the pull payload.
    * @param gitRepositoryRepo - Loads the project's repository link and writes it back after the merge.
    * @param gitOperationRepo - Records a `GitConflict` per conflicting file on a conflicted merge.
    * @param commandRunner - Runs the fetch and the merge.
@@ -116,7 +144,7 @@ export class PullChangesUseCase {
     private readonly auditLogRepo: AuditLogRepository,
     private readonly gitRepositoryRepo: GitRepositoryRepository,
     private readonly gitOperationRepo: GitOperationRepository,
-    private readonly commandRunner: GitCommandRunner,
+    private readonly commandRunner: GitRemotePort & GitMutationPort,
     private readonly fileNodeRepo: FileNodeRepository,
     private readonly documentRepo: DocumentRepository,
     private readonly collaborativeContentReader: CollaborativeContentReader,
@@ -198,15 +226,60 @@ export class PullChangesUseCase {
     const landed = await this.reconciler.apply(input.projectId, merge.value.changes);
     if (!landed.success) return landed;
 
-    await this.refreshRow(gitRepository, 'UP_TO_DATE', fetchResult.value.remoteHead);
+    // A clean merge folds the fetched remote-tracking ref into the local branch, so afterwards the
+    // project is never BEHIND/DIVERGED — the remote is already incorporated. It is either level with
+    // the remote (the merge fast-forwarded to `remoteHead`) or AHEAD of it, when the merge left local
+    // commits the remote lacks: most importantly a live-edit FLUSH commit, which is a local commit not
+    // yet pushed. Deriving the status from the two head positions — rather than hardcoding UP_TO_DATE —
+    // keeps a just-flushed commit visible as "ahead, needs pushing" instead of hiding it until a later
+    // remote-status refresh recomputes AHEAD.
+    const ahead = merge.value.headCommit === fetchResult.value.remoteHead ? 0 : 1;
+    await this.refreshRow(gitRepository, deriveSyncStatus(0, ahead), fetchResult.value.remoteHead);
 
-    // No terminal success audit here: the git-worker run loop records the SUCCEEDED transition for
-    // an async op. This use case's auditLogRepo is used only for the authorization-denial path
-    // (inside requireGitRole), matching PushChanges.
+    // The terminal SUCCEEDED transition is still audited by the git-worker run loop, not here. But a
+    // reconciler that hit drift is the ONE success-path exception: the worker discards the pull payload,
+    // so the anomalies would otherwise reach only the server log — invisible to the user, who has no log
+    // access and no other way to learn a pulled change was auto-repaired or (folder-occupied) dropped.
+    // Recording them here gives that user a durable, readable trail with the paths and how to recover.
+    if (landed.value.anomalies.length > 0) {
+      await this.recordAnomalyAudit(input, gitRepository, landed.value.anomalies);
+    }
+
     return {
       success: true,
-      value: { status: 'merged', headCommit: merge.value.headCommit, changedPaths: landed.value.changedPaths },
+      value: {
+        status: 'merged',
+        headCommit: merge.value.headCommit,
+        changedPaths: landed.value.changedPaths,
+        anomalies: landed.value.anomalies,
+      },
     };
+  }
+
+  /**
+   * Records a `git.pull_partially_applied` audit entry naming every drift anomaly the reconciler
+   * surfaced — its path, kind, whether the pulled content survived, and the user-readable message
+   * (which, for a dropped change, carries the recovery instruction). Best-effort: an audit-write
+   * failure never turns an already-landed pull into a failure.
+   */
+  private async recordAnomalyAudit(
+    input: PullChangesInput,
+    gitRepository: GitRepository,
+    anomalies: readonly GitReconcileAnomaly[],
+  ): Promise<void> {
+    await recordAuditSuccess(
+      this.auditLogRepo,
+      {
+        actorId: input.actorId,
+        projectId: input.projectId,
+        action: AUDIT_GIT_PULL_PARTIALLY_APPLIED,
+        resourceType: 'GitRepository',
+        resourceId: gitRepository.id.value,
+        metadata: anomalyAuditMetadata(anomalies),
+        context: input.context,
+      },
+      this.logger,
+    );
   }
 
   /**
@@ -259,7 +332,7 @@ export class PullChangesUseCase {
    */
   private async refreshRow(
     loaded: GitRepository,
-    syncStatus: 'UP_TO_DATE' | 'CONFLICTED',
+    syncStatus: GitSyncStatus,
     remoteHead: string,
   ): Promise<void> {
     const updated = new GitRepository(

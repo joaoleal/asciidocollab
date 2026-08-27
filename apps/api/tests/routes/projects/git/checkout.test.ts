@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import { GitOperation, GitOperationId, DocumentId } from '@asciidocollab/domain';
 import type { EnqueueGitOperationInput } from '@asciidocollab/domain';
 import type { GitWorkerResult, GitWorkerStatusData } from '@asciidocollab/infrastructure';
+import { GitWorkerTransportError } from '@asciidocollab/infrastructure';
 import { gitCheckoutRoutes } from '../../../../src/routes/projects/git/checkout';
 import { errorHandler } from '../../../../src/plugins/error-handler';
 
@@ -40,6 +41,8 @@ interface HarnessOptions {
   activeDocumentIds?: DocumentId[];
   /** What `getStatus` resolves to; defaults to a clean tree. */
   statusResult?: GitWorkerResult<GitWorkerStatusData>;
+  /** When set, `getStatus` throws this instead of resolving. */
+  statusError?: Error;
 }
 
 function buildHarness(options: HarnessOptions = {}) {
@@ -47,11 +50,15 @@ function buildHarness(options: HarnessOptions = {}) {
     role = 'editor',
     activeDocumentIds = [],
     statusResult = { ok: true, data: cleanStatus() },
+    statusError,
   } = options;
   const enqueuedOperations: EnqueueGitOperationInput[] = [];
   const auditSave = jest.fn();
   const findActiveDocumentIds = jest.fn(async () => activeDocumentIds);
-  const getStatus = jest.fn(async () => statusResult);
+  const getStatus = jest.fn(async () => {
+    if (statusError) throw statusError;
+    return statusResult;
+  });
 
   const enqueue = jest.fn(async (input: EnqueueGitOperationInput) => {
     enqueuedOperations.push(input);
@@ -141,8 +148,8 @@ describe('POST /projects/:projectId/git/checkout', () => {
     // stashLocal:true skips the status gate entirely, so getStatus is never consulted.
     expect(getStatus).not.toHaveBeenCalled();
     expect(enqueuedOperations[0]).not.toHaveProperty('stashLocal');
-    expect(Object.keys(enqueuedOperations[0]).sort()).toEqual(
-      ['branch', 'kind', 'projectId', 'triggeredByUserId'].sort(),
+    expect(Object.keys(enqueuedOperations[0]).toSorted()).toEqual(
+      ['branch', 'kind', 'projectId', 'triggeredByUserId'].toSorted(),
     );
 
     await app.close();
@@ -193,6 +200,47 @@ describe('POST /projects/:projectId/git/checkout', () => {
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ error: { code: 'uncommitted_changes' } });
     expect(findActiveDocumentIds).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('answers 502 when the worker is unreachable while checking status', async () => {
+    const { build, enqueue } = buildHarness({ statusError: new GitWorkerTransportError('boom') });
+    const app = await build();
+
+    const response = await checkout(app, PROJECT_ID, { name: 'feature/x' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.code).toBe('git_worker_unavailable');
+    expect(enqueue).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('propagates a non-transport error from getStatus rather than swallowing it', async () => {
+    const { build, enqueue } = buildHarness({ statusError: new Error('unexpected failure') });
+    const app = await build();
+
+    const response = await checkout(app, PROJECT_ID, { name: 'feature/x' });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+    expect(enqueue).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('maps a domain refusal from getStatus via sendGitErrorResponse instead of enqueuing', async () => {
+    const { build, enqueue } = buildHarness({
+      statusResult: { ok: false, error: 'RepositoryNotConnectedError' },
+    });
+    const app = await build();
+
+    const response = await checkout(app, PROJECT_ID, { name: 'feature/x' });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: { code: 'repository_not_connected' } });
     expect(enqueue).not.toHaveBeenCalled();
 
     await app.close();

@@ -15,7 +15,7 @@ export function toPullPreviewDto(data: GitWorkerPreviewPullData, affectsOpenFile
     incomingCommits: data.incomingCommits.map((commit) => ({
       hash: commit.hash,
       message: commit.message,
-      ...(commit.authorUserId !== undefined ? { authorUserId: commit.authorUserId } : {}),
+      ...(commit.authorUserId === undefined ? {} : { authorUserId: commit.authorUserId }),
       authoredAt: commit.authoredAt,
     })),
     changedPaths: [...data.changedPaths],
@@ -79,7 +79,7 @@ export async function gitPreviewPullRoutes(app: FastifyInstance): Promise<void> 
         result = await request.server.stores.gitWorkerClient.previewPull({
           projectId: projectId.value,
           actorId: actorId.value,
-          ...(branch !== undefined ? { branch } : {}),
+          ...(branch === undefined ? {} : { branch }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {

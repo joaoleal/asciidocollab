@@ -8,6 +8,9 @@ describe('createGitWorkerConfig', () => {
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_POLL_INTERVAL_MS;
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_HEARTBEAT_INTERVAL_MS;
     delete process.env.ASCIIDOCOLLAB_GIT_WORKER_STALE_HEARTBEAT_AFTER_MS;
+    delete process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_INTERVAL_MS;
+    delete process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_ENABLED;
+    delete process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_MAX_CONCURRENCY;
     delete process.env.ASCIIDOCOLLAB_GIT_EGRESS_ALLOWED_HOSTS;
     delete process.env.ASCIIDOCOLLAB_GIT_CONFLICT_STORE_ROOT;
     delete process.env.ASCIIDOCOLLAB_GIT_MAX_REPO_SIZE_MB;
@@ -101,6 +104,53 @@ describe('createGitWorkerConfig', () => {
     expect(config.get('pollIntervalMs')).toBe(500);
     expect(config.get('heartbeatIntervalMs')).toBe(5000);
     expect(config.get('staleHeartbeatAfterMs')).toBe(30_000);
+  });
+
+  it('defaults the background remote-refresh interval to a bounded, non-zero value and enables it', () => {
+    const config = createGitWorkerConfig();
+
+    expect(config.get('backgroundRefreshIntervalMs')).toBe(60_000);
+    expect(config.get('backgroundRefreshEnabled')).toBe(true);
+  });
+
+  it('reads the background remote-refresh interval and enabled flag from their env vars', () => {
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_INTERVAL_MS = '3000';
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_ENABLED = 'false';
+
+    const config = createGitWorkerConfig();
+
+    expect(config.get('backgroundRefreshIntervalMs')).toBe(3000);
+    expect(config.get('backgroundRefreshEnabled')).toBe(false);
+  });
+
+  it('rejects a zero or negative background remote-refresh interval', () => {
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_INTERVAL_MS = '0';
+
+    const config = createGitWorkerConfig();
+
+    expect(() => config.validate({ allowed: 'strict' })).toThrow();
+  });
+
+  it('defaults the background remote-refresh max concurrency to a bounded, non-zero value', () => {
+    const config = createGitWorkerConfig();
+
+    expect(config.get('backgroundRefreshMaxConcurrency')).toBe(4);
+  });
+
+  it('reads the background remote-refresh max concurrency from its env var', () => {
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_MAX_CONCURRENCY = '10';
+
+    const config = createGitWorkerConfig();
+
+    expect(config.get('backgroundRefreshMaxConcurrency')).toBe(10);
+  });
+
+  it('rejects a zero or negative background remote-refresh max concurrency', () => {
+    process.env.ASCIIDOCOLLAB_GIT_WORKER_BACKGROUND_REFRESH_MAX_CONCURRENCY = '0';
+
+    const config = createGitWorkerConfig();
+
+    expect(() => config.validate({ allowed: 'strict' })).toThrow();
   });
 
   it('defaults egressAllowedHosts to the supported providers (GitHub, GitLab, Bitbucket)', () => {

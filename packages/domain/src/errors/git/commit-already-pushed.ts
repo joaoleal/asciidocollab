@@ -8,6 +8,7 @@ import { DomainError } from '../domain-error';
 export class CommitAlreadyPushedError extends DomainError {
   readonly name = 'CommitAlreadyPushedError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('The most recent commit has already been pushed and cannot be amended');
   }

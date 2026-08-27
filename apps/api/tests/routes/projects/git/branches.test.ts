@@ -34,41 +34,41 @@ function mockCreateBranch(result: GitWorkerResult<GitWorkerCreatedBranchData>) {
   return jest.fn(async () => result);
 }
 
+async function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): Promise<FastifyInstance> {
+  const { role = 'viewer', client = {} } = options;
+  const instance = Fastify();
+  instance.setErrorHandler(errorHandler);
+  await instance.register(rateLimit, { global: false });
+  // gitBranchesRoutes also registers the POST route in the same call, which reads
+  // `app.config.git...` at registration time, so this GET-only suite still needs it decorated.
+  instance.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
+  instance.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  instance.decorate('stores', {
+    gitWorkerClient: {
+      getBranches: mockGetBranches({ ok: true, data: { current: 'main', branches: ['main'] } }),
+      ...client,
+    },
+  } as never);
+  return instance;
+}
+
+async function register(instancePromise: Promise<FastifyInstance>) {
+  const instance = await instancePromise;
+  await instance.register(gitBranchesRoutes);
+  await instance.ready();
+  return instance;
+}
+
+function getBranches(app: FastifyInstance, projectId: string) {
+  return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/branches` });
+}
+
 describe('GET /projects/:projectId/git/branches', () => {
-  async function buildServer(options: { role?: string | null; client?: Partial<GitWorkerClient> }): Promise<FastifyInstance> {
-    const { role = 'viewer', client = {} } = options;
-    const instance = Fastify();
-    instance.setErrorHandler(errorHandler);
-    await instance.register(rateLimit, { global: false });
-    // gitBranchesRoutes also registers the POST route in the same call, which reads
-    // `app.config.git...` at registration time, so this GET-only suite still needs it decorated.
-    instance.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
-    instance.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    instance.decorate('stores', {
-      gitWorkerClient: {
-        getBranches: mockGetBranches({ ok: true, data: { current: 'main', branches: ['main'] } }),
-        ...client,
-      },
-    } as never);
-    return instance;
-  }
-
-  async function register(instancePromise: Promise<FastifyInstance>) {
-    const instance = await instancePromise;
-    await instance.register(gitBranchesRoutes);
-    await instance.ready();
-    return instance;
-  }
-
-  function getBranches(app: FastifyInstance, projectId: string) {
-    return app.inject({ method: 'GET', url: `/api/projects/${projectId}/git/branches` });
-  }
-
   it('returns 200 with the branch list for a viewer-tier member', async () => {
     const instance = await register(
       buildServer({
@@ -144,34 +144,34 @@ describe('GET /projects/:projectId/git/branches', () => {
   });
 });
 
+async function build(options: { role?: string | null; client?: Partial<GitWorkerClient> } = {}): Promise<FastifyInstance> {
+  const { role = 'editor', client = {} } = options;
+  const app = Fastify();
+  app.setErrorHandler(errorHandler);
+  await app.register(rateLimit, { global: false });
+  app.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
+  app.decorate('repos', {
+    projectMember: {
+      findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
+    },
+    auditLog: { save: jest.fn() },
+  } as never);
+  app.decorate('stores', {
+    gitWorkerClient: {
+      createBranch: mockCreateBranch({ ok: true, data: { branch: { name: 'feature/x' } } }),
+      ...client,
+    },
+  } as never);
+  await app.register(gitBranchesRoutes);
+  await app.ready();
+  return app;
+}
+
+function createBranch(app: FastifyInstance, projectId: string, body: Record<string, unknown>) {
+  return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/branches`, payload: body });
+}
+
 describe('POST /projects/:projectId/git/branches', () => {
-  async function build(options: { role?: string | null; client?: Partial<GitWorkerClient> } = {}): Promise<FastifyInstance> {
-    const { role = 'editor', client = {} } = options;
-    const app = Fastify();
-    app.setErrorHandler(errorHandler);
-    await app.register(rateLimit, { global: false });
-    app.decorate('config', { git: { rateLimitMax: 20, rateLimitWindow: 60_000 } } as never);
-    app.decorate('repos', {
-      projectMember: {
-        findByCompositeKey: jest.fn(async () => (role === null ? null : { role: { value: role } })),
-      },
-      auditLog: { save: jest.fn() },
-    } as never);
-    app.decorate('stores', {
-      gitWorkerClient: {
-        createBranch: mockCreateBranch({ ok: true, data: { branch: { name: 'feature/x' } } }),
-        ...client,
-      },
-    } as never);
-    await app.register(gitBranchesRoutes);
-    await app.ready();
-    return app;
-  }
-
-  function createBranch(app: FastifyInstance, projectId: string, body: Record<string, unknown>) {
-    return app.inject({ method: 'POST', url: `/api/projects/${projectId}/git/branches`, payload: body });
-  }
-
   it('returns 200 with the created branch (isCurrent: false) for an editor', async () => {
     const app = await build({
       client: { createBranch: mockCreateBranch({ ok: true, data: { branch: { name: 'feature/x' } } }) },

@@ -70,6 +70,10 @@ function renderSwitcher(overrides: Partial<React.ComponentProps<typeof BranchSwi
   return { onSwitch, onCreate };
 }
 
+function openCreateDialog() {
+  fireEvent.click(screen.getByText('New branch…'));
+}
+
 describe('BranchSwitcher trigger', () => {
   test('shows the current branch name', () => {
     renderSwitcher({ current: 'main' });
@@ -87,19 +91,19 @@ describe('BranchSwitcher branch list', () => {
     renderSwitcher();
     const items = screen.getAllByRole('menuitem');
     const mainItem = items.find((item) => item.textContent?.includes('main'));
-    const devItem = items.find((item) => item.textContent?.includes('dev'));
+    const developmentItem = items.find((item) => item.textContent?.includes('dev'));
     expect(mainItem).toBeDefined();
-    expect(devItem).toBeDefined();
+    expect(developmentItem).toBeDefined();
     // The current branch's item is disabled (nothing to switch to) and carries a check indicator;
     // the other branch's does not.
     expect(mainItem).toHaveAttribute('aria-disabled', 'true');
-    expect(devItem).toHaveAttribute('aria-disabled', 'false');
+    expect(developmentItem).toHaveAttribute('aria-disabled', 'false');
   });
 
   test('an editor can trigger a switch by choosing a non-current branch', () => {
     const { onSwitch } = renderSwitcher();
-    const devItem = screen.getAllByRole('menuitem').find((item) => item.textContent?.includes('dev'));
-    fireEvent.click(devItem!);
+    const developmentItem = screen.getAllByRole('menuitem').find((item) => item.textContent?.includes('dev'));
+    fireEvent.click(developmentItem!);
     expect(onSwitch).toHaveBeenCalledWith('dev');
   });
 
@@ -112,17 +116,13 @@ describe('BranchSwitcher branch list', () => {
 
   test('disables every switch action while a switch is pending', () => {
     renderSwitcher({ switchPending: true });
-    const devItem = screen.getAllByRole('menuitem').find((item) => item.textContent?.includes('dev'));
-    expect(devItem).toHaveAttribute('aria-disabled', 'true');
+    const developmentItem = screen.getAllByRole('menuitem').find((item) => item.textContent?.includes('dev'));
+    expect(developmentItem).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByRole('button', { name: /switch branch/i })).toBeDisabled();
   });
 });
 
 describe('BranchSwitcher create branch', () => {
-  function openCreateDialog() {
-    fireEvent.click(screen.getByText('New branch…'));
-  }
-
   test('an editor can open the create-branch dialog and submit a name', async () => {
     const { onCreate } = renderSwitcher();
     openCreateDialog();

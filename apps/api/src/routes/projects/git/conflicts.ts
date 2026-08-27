@@ -33,15 +33,15 @@ export function toConflictStagesDto(data: GitWorkerConflictStagesData): Conflict
  * Returns null when the parameter fails any of these checks — the caller replies `400` rather than
  * ever forwarding an unvalidated path to the git-worker.
  *
- * @param decodedParam - The already-decoded `:path` route parameter, exactly as Fastify captured it.
+ * @param decodedParameter - The already-decoded `:path` route parameter, exactly as Fastify captured it.
  * @returns The validated project-relative path (unchanged), or null when invalid.
  */
-export function validateConflictPath(decodedParam: string): string | null {
-  if (decodedParam.length === 0) return null;
-  if (decodedParam.startsWith('/') || decodedParam.startsWith('\\')) return null;
-  const segments = decodedParam.split(/[/\\]/);
+export function validateConflictPath(decodedParameter: string): string | null {
+  if (decodedParameter.length === 0) return null;
+  if (decodedParameter.startsWith('/') || decodedParameter.startsWith('\\')) return null;
+  const segments = decodedParameter.split(/[/\\]/);
   if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null;
-  return decodedParam;
+  return decodedParameter;
 }
 
 /**
@@ -207,7 +207,7 @@ export async function gitConflictsRoutes(app: FastifyInstance): Promise<void> {
           actorId: actorId.value,
           path,
           resolution: request.body.resolution,
-          ...(request.body.mergedContent !== undefined ? { mergedContent: request.body.mergedContent } : {}),
+          ...(request.body.mergedContent === undefined ? {} : { mergedContent: request.body.mergedContent }),
         });
       } catch (error) {
         if (error instanceof GitWorkerTransportError) {

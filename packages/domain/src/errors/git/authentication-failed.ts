@@ -9,6 +9,7 @@ import { DomainError } from '../domain-error';
 export class AuthenticationFailedError extends DomainError {
   readonly name = 'AuthenticationFailedError';
 
+  /** Builds the refusal with the fixed message the caller is shown. */
   constructor() {
     super('Authentication with the remote repository failed');
   }

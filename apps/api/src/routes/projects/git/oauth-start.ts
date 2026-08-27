@@ -98,7 +98,7 @@ export async function gitOAuthStartRoutes(app: FastifyInstance): Promise<void> {
         actorId: actorId.value,
         provider: providerParameter,
         remoteUrl,
-        ...(branch !== undefined ? { branch } : {}),
+        ...(branch === undefined ? {} : { branch }),
         codeVerifier,
       });
 

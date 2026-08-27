@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { useGitActivity } from '@/hooks/use-git-activity';
 import { ApiError } from '@/lib/api/transport';
+import type { GitOperationStatusDto } from '@asciidocollab/shared';
 
 const mockGetActiveGitOperation = jest.fn();
 
@@ -11,7 +12,7 @@ jest.mock('@/lib/api/git', () => ({
 
 jest.useFakeTimers();
 
-const RUNNING_OPERATION = { id: 'op1', kind: 'PULL', state: 'RUNNING', progress: 40, errorCode: null };
+const RUNNING_OPERATION: GitOperationStatusDto = { id: 'op1', kind: 'PULL', state: 'RUNNING', progress: 40, errorCode: null, driftSummary: null };
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -59,6 +60,23 @@ describe('useGitActivity', () => {
     expect(result.current.error).toBeNull();
   });
 
+  test('does not poll (or even fetch once) for a project that is not git-connected', async () => {
+    const { result } = renderHook(() => useGitActivity('proj1', false));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Not connected: null active operation and — crucially — no request at all, not even a first one
+    // that would 404. Advancing well past several poll intervals must not change that.
+    expect(result.current.activeOperation).toBeNull();
+    expect(result.current.error).toBeNull();
+    await act(async () => {
+      jest.advanceTimersByTime(20_000);
+      await Promise.resolve();
+    });
+    expect(mockGetActiveGitOperation).not.toHaveBeenCalled();
+  });
+
   test('a genuine failure surfaces an error', async () => {
     mockGetActiveGitOperation.mockRejectedValue(new ApiError(500, 'internal_error', 'boom'));
     const { result } = renderHook(() => useGitActivity('proj1'));
@@ -78,6 +96,45 @@ describe('useGitActivity', () => {
       jest.advanceTimersByTime(20_000);
     });
     expect(mockGetActiveGitOperation.mock.calls.length).toBe(callsAtUnmount);
+  });
+
+  test('does not let a slower OLDER poll that resolves last overwrite a newer value', async () => {
+    let resolveOlder!: (value: { operation: GitOperationStatusDto | null }) => void;
+    let resolveNewer!: (value: { operation: GitOperationStatusDto | null }) => void;
+
+    // Older poll: the initial on-mount load, which sees the operation still RUNNING. Left in flight.
+    mockGetActiveGitOperation.mockReturnValueOnce(
+      new Promise((resolveFunction) => {
+        resolveOlder = resolveFunction;
+      }),
+    );
+    const { result } = renderHook(() => useGitActivity('proj1'));
+
+    // Newer poll: the next interval poll, started while the first is still in flight. The operation
+    // has since finished, so this one sees no active operation — it is the LATEST-started load.
+    mockGetActiveGitOperation.mockReturnValueOnce(
+      new Promise((resolveFunction) => {
+        resolveNewer = resolveFunction;
+      }),
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(4000);
+    });
+
+    // The newer poll resolves first and its value (operation finished → null) is applied.
+    await act(async () => {
+      resolveNewer({ operation: null });
+      await Promise.resolve();
+    });
+    expect(result.current.activeOperation).toBeNull();
+
+    // The OLDER poll resolves last with its stale "still RUNNING" snapshot. It must be dropped, not
+    // applied — otherwise the indicator would show a running operation after it had finished.
+    await act(async () => {
+      resolveOlder({ operation: RUNNING_OPERATION });
+      await Promise.resolve();
+    });
+    expect(result.current.activeOperation).toBeNull();
   });
 
   test('clears the previous interval and reloads when projectId changes', async () => {
