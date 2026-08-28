@@ -22,6 +22,7 @@ const VIEWER = UserId.create('66666666-6666-4666-8666-666666666666');
 const COMMENT_ID = ReviewCommentId.create('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 const TASK_ID = ReviewCommentId.create('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
 const MISSING_ID = ReviewCommentId.create('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+const OUTSIDER = UserId.create('77777777-7777-4777-8777-777777777777');
 
 function anchor(): ReviewAnchor {
   return new ReviewAnchor(null, { prefix: 'a ', exact: 'passage', suffix: ' b' }, 3, null, 'located');
@@ -33,6 +34,13 @@ function rootComment(): ReviewComment {
 
 function rootTask(status: 'open' | 'in_progress' | 'resolved' | 'wontfix' = 'open'): ReviewComment {
   return new ReviewComment(TASK_ID, PROJECT, DOCUMENT, null, 'task', 'body', EDITOR, status, null, null, null, null, anchor());
+}
+
+/** A task whose status transition fails with an error the use case is not meant to translate. */
+class UnexpectedlyFailingTask extends ReviewComment {
+  override setStatus(): void {
+    throw new TypeError('aggregate blew up');
+  }
 }
 
 describe('SetTaskStatusUseCase', () => {
@@ -90,6 +98,23 @@ describe('SetTaskStatusUseCase', () => {
     if (!result.success) expect(result.error).toBeInstanceOf(PermissionDeniedError);
     const audits = await auditRepo.findByProjectId(PROJECT);
     expect(audits.some((a) => a.action === 'authz.denied')).toBe(true);
+  });
+
+  test('a non-member is denied and the denial names the missing membership', async () => {
+    await reviewRepo.create(rootTask('open'));
+    const result = await useCase.execute(OUTSIDER, PROJECT, TASK_ID, { status: 'resolved' });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(PermissionDeniedError);
+    const audits = await auditRepo.findByProjectId(PROJECT);
+    const denial = audits.find((a) => a.action === 'authz.denied');
+    expect(denial?.metadata.reason).toBe('not_a_project_member');
+  });
+
+  test('an unexpected aggregate failure is not translated into a result error', async () => {
+    await reviewRepo.create(
+      new UnexpectedlyFailingTask(TASK_ID, PROJECT, DOCUMENT, null, 'task', 'body', EDITOR, 'open', null, null, null, null, anchor()),
+    );
+    await expect(useCase.execute(EDITOR, PROJECT, TASK_ID, { status: 'resolved' })).rejects.toThrow('aggregate blew up');
   });
 
   test('a missing item yields a not-found error', async () => {

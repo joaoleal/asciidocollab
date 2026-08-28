@@ -121,4 +121,24 @@ describe('RequestEmailChangeUseCase', () => {
     notifier.sendConfirmationEmail.mockRejectedValue(new Error('SMTP down'));
     await expect(useCase.execute(USER_ID, 'new@example.com')).rejects.toThrow(NotificationDeliveryError);
   });
+
+  test('unknown requester: returns success without issuing a token or sending mail', async () => {
+    (userRepo.findById as jest.Mock).mockResolvedValue(null);
+
+    const result = await useCase.execute(USER_ID, 'new@example.com');
+
+    expect(result.success).toBe(true);
+    const active = await tokenRepo.findActiveByUserId(USER_ID);
+    expect(active).toBeNull();
+    expect(notifier.sendConfirmationEmail).not.toHaveBeenCalled();
+  });
+
+  test('a non-Error delivery rejection still surfaces as NotificationDeliveryError without a cause', async () => {
+    notifier.sendConfirmationEmail.mockRejectedValue('smtp exploded');
+
+    const thrown = await useCase.execute(USER_ID, 'new@example.com').catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(NotificationDeliveryError);
+    expect(thrown instanceof Error ? thrown.cause : 'no error was thrown').toBeUndefined();
+  });
 });

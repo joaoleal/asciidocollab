@@ -31,6 +31,24 @@ describe('review deletion paths', () => {
       });
       await app.close();
     });
+
+    test('200 — an item already gone leaves no document to broadcast for', async () => {
+      // The route captures the document before deleting; a lookup that misses there — but resolves
+      // for the use case — is the concurrent-delete race the change event has to sit out.
+      let firstLookupDone = false;
+      const findById = jest.fn(async () => {
+        if (firstLookupDone) return comment();
+        firstLookupDone = true;
+        return null;
+      });
+      const app = await buildServer({
+        reviewComment: { findById, delete: jest.fn(async () => undefined) },
+      });
+      const response = await app.inject({ method: 'DELETE', url: itemUrl() });
+      expect(response.statusCode).toBe(200);
+      expect(emitMock(app)).not.toHaveBeenCalled();
+      await app.close();
+    });
   });
 
   describe('POST document bulk-delete', () => {

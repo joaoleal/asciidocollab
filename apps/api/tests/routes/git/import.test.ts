@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import {
   GitOperation,
   GitOperationId,
+  GitProvider,
   GitRepository,
   Project,
   ProjectId,
@@ -31,8 +32,8 @@ interface HarnessOptions {
   gitRepositorySaveError?: Error;
   /** When set, `services.gitCredentialStore.save` throws this. */
   credentialSaveError?: Error;
-  /** When set, `repos.gitOperation.enqueue` throws this. */
-  enqueueError?: Error;
+  /** When set, `repos.gitOperation.enqueue` throws this — any value, not necessarily an `Error`. */
+  enqueueError?: unknown;
   /** When false, `services.gitCredentialStore` itself is undefined (unconfigured). */
   credentialStoreConfigured?: boolean;
 }
@@ -379,5 +380,51 @@ describe('POST /api/git/import', () => {
     expect(savedMembers).toHaveLength(0);
 
     await app.close();
+  });
+
+  it('falls back to a fixed project name when the derived candidate is not a valid project name', async () => {
+    const { app, savedProjects } = await buildHarness();
+    const oversizedSegment = 'a'.repeat(150);
+
+    const response = await importRepo(app, {
+      ...VALID_BODY,
+      remoteUrl: `https://github.com/acme/${oversizedSegment}.git`,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(savedProjects[0].name.value).toBe('Imported repository');
+
+    await app.close();
+  });
+
+  it('answers 500 when the operation cannot be enqueued and the rejection is not an Error', async () => {
+    const { app, savedMembers } = await buildHarness({ enqueueError: 'queue unavailable' });
+
+    const response = await importRepo(app, VALID_BODY);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('GIT_IMPORT_FAILED');
+    expect(response.json().error.message).not.toContain('queue unavailable');
+    expect(savedMembers).toHaveLength(0);
+
+    await app.close();
+  });
+
+  it('propagates a provider failure that is not a domain validation error', async () => {
+    const createSpy = jest.spyOn(GitProvider, 'create').mockImplementation(() => {
+      throw new TypeError('provider registry unavailable');
+    });
+    const { app, enqueuedOperations } = await buildHarness();
+
+    try {
+      const response = await importRepo(app, VALID_BODY);
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json().error.code).toBe('INTERNAL_ERROR');
+      expect(enqueuedOperations).toHaveLength(0);
+    } finally {
+      createSpy.mockRestore();
+      await app.close();
+    }
   });
 });

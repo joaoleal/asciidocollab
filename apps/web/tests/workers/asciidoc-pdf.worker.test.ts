@@ -252,4 +252,26 @@ describe('worker diagram/math wiring', () => {
     expect(vfs.readFile(`${GEN_DIR}/${filename}`)).not.toBeNull();
     expect(rewritten).not.toContain('[stem]');
   });
+
+  it('typesets math through an injected converter seam instead of the bundled MathJax', async () => {
+    const svgMarkup = '<svg data-engine="injected-math"></svg>';
+    const seen: string[] = [];
+    const rootDocument = ['= Doc', '', '[stem]', '++++', 'a+b', '++++', ''].join('\n');
+    const { context, vfs } = createContext(rootDocument, {
+      seams: {
+        mathConverter: {
+          toSvg: ({ expression }) => {
+            seen.push(expression);
+            return Promise.resolve(svgMarkup);
+          },
+        },
+      },
+    });
+
+    const rewritten = await runStage(context, vfs);
+
+    expect(seen).toEqual(['a+b']);
+    const filename = genFilenameOf(rewritten);
+    expect(decoder.decode(vfs.readFile(`${GEN_DIR}/${filename}`) ?? new Uint8Array())).toBe(svgMarkup);
+  });
 });

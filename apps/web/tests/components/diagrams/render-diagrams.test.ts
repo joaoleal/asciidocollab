@@ -205,4 +205,216 @@ describe('renderDiagrams', () => {
 
     expect(sanitizeSvg).toHaveBeenCalledWith(okSvg('mermaid'));
   });
+
+  it('renders a vega spec whose data is an inline data: uri — no network reference to block', async () => {
+    const spec = JSON.stringify({ data: { url: 'data:text/csv;base64,YQ==' }, marks: [] });
+    const container = makePlaceholder('vega', spec);
+    const renderVega = jest.fn().mockResolvedValue(okSvg('vega'));
+
+    const result = await renderDiagrams(container, { renderVega });
+
+    expect(result.rendered).toBe(1);
+    expect(result.warnings).toEqual([]);
+    expect(renderVega).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks a protocol-relative data reference the same as a fully qualified one', async () => {
+    const spec = JSON.stringify({ data: { url: '//cdn.example.com/rows.json' }, marks: [] });
+    const container = makePlaceholder('vegalite', spec);
+    const renderVega = jest.fn();
+
+    const result = await renderDiagrams(container, { renderVega });
+
+    expect(renderVega).not.toHaveBeenCalled();
+    expect(result.warnings[0].code).toBe('remote-resource-blocked');
+    expect(result.warnings[0].message).toContain('//cdn.example.com/rows.json');
+  });
+
+  it('finds a remote reference nested inside an array of layers', async () => {
+    const spec = JSON.stringify({
+      layer: [{ mark: 'point' }, { data: { url: 'https://example.com/rows.json' } }],
+    });
+    const container = makePlaceholder('vegalite', spec);
+    const renderVega = jest.fn();
+
+    const result = await renderDiagrams(container, { renderVega });
+
+    expect(renderVega).not.toHaveBeenCalled();
+    expect(result.warnings[0].message).toContain('https://example.com/rows.json');
+  });
+
+  it('leaves a vega spec that is not valid JSON for the engine to reject', async () => {
+    const container = makePlaceholder('vega', '{ this is not json');
+    const renderVega = jest.fn().mockRejectedValue(new Error('spec is not JSON'));
+
+    const result = await renderDiagrams(container, { renderVega });
+
+    expect(renderVega).toHaveBeenCalledTimes(1);
+    expect(result.warnings[0].code).toBe('render-failed');
+    expect(result.warnings[0].message).toBe('spec is not JSON');
+  });
+
+  it('reports a null source line for a placeholder that carries none', async () => {
+    const container = document.createElement('div');
+    const placeholder = document.createElement('div');
+    placeholder.className = 'adc-diagram';
+    placeholder.dataset.diagramEngine = 'mermaid';
+    placeholder.textContent = 'graph TD; A-->B';
+    container.append(placeholder);
+
+    const result = await renderDiagrams(container, {
+      renderMermaid: jest.fn().mockRejectedValue(new Error('nope')),
+    });
+
+    expect(result.warnings[0].sourceLine).toBeNull();
+  });
+
+  it('reports a null source line for a placeholder whose line is not a number', async () => {
+    const container = makePlaceholder('mermaid', 'graph TD; A-->B');
+    const placeholder = container.querySelector('.adc-diagram');
+    placeholder?.setAttribute('data-source-line', 'not-a-line');
+
+    const result = await renderDiagrams(container, {
+      renderMermaid: jest.fn().mockRejectedValue(new Error('nope')),
+    });
+
+    expect(result.warnings[0].sourceLine).toBeNull();
+  });
+
+  it('treats a placeholder with no engine attribute as an unsupported engine', async () => {
+    const container = document.createElement('div');
+    const placeholder = document.createElement('div');
+    placeholder.className = 'adc-diagram';
+    placeholder.textContent = 'graph TD; A-->B';
+    container.append(placeholder);
+
+    const result = await renderDiagrams(container, {});
+
+    expect(result.warnings).toEqual([
+      { engine: '', sourceLine: null, code: 'unsupported-engine', message: 'unsupported diagram engine: ' },
+    ]);
+  });
+
+  it('reports a non-Error render rejection by its string form', async () => {
+    const container = makePlaceholder('mermaid', 'graph TD; A-->B');
+
+    const result = await renderDiagrams(container, {
+      renderMermaid: jest.fn().mockRejectedValue('the engine gave up'),
+    });
+
+    expect(result.warnings[0].message).toBe('the engine gave up');
+  });
+
+  it('redraws a previously failed placeholder from its preserved source, not its visible text', async () => {
+    const container = document.createElement('div');
+    const placeholder = document.createElement('div');
+    placeholder.className = 'adc-diagram';
+    placeholder.dataset.diagramEngine = 'mermaid';
+    placeholder.dataset.sourceLine = '7';
+    placeholder.dataset.diagramFailed = 'render-failed';
+    const preserved = document.createElement('div');
+    preserved.className = 'adc-diagram-source';
+    preserved.hidden = true;
+    preserved.textContent = 'graph TD; A-->B';
+    placeholder.append(preserved);
+    container.append(placeholder);
+    const renderMermaid = jest.fn().mockResolvedValue(okSvg('mermaid'));
+
+    const result = await renderDiagrams(container, { renderMermaid });
+
+    expect(renderMermaid).toHaveBeenCalledWith('graph TD; A-->B');
+    expect(result.rendered).toBe(1);
+    expect(placeholder.dataset.diagramFailed).toBeUndefined();
+  });
+});
+
+/** Install a `@hpcc-js/wasm` whose Graphviz engine returns `svg`, or fails to load. */
+function mockGraphvizWasm(svg: string | Error): void {
+  jest.doMock('@hpcc-js/wasm', () => ({
+    __esModule: true,
+    Graphviz: {
+      load: async () => {
+        if (svg instanceof Error) throw svg;
+        return { dot: () => svg };
+      },
+    },
+  }));
+}
+
+describe('renderDiagrams — bundled engines', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  afterEach(() => {
+    jest.dontMock('mermaid');
+    jest.dontMock('vega');
+    jest.dontMock('vega-lite');
+    jest.dontMock('@hpcc-js/wasm');
+  });
+
+  it('drives the bundled mermaid engine and sanitizes its output with the svg profile', async () => {
+    jest.doMock('mermaid', () => ({
+      __esModule: true,
+      default: {
+        initialize: () => undefined,
+        render: async () => ({
+          svg: '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><g>drawn</g></svg>',
+        }),
+      },
+    }));
+    const { renderDiagrams: render } = await import('@/components/diagrams/render-diagrams');
+    const container = makePlaceholder('mermaid', 'graph TD; A-->B');
+
+    const result = await render(container);
+
+    expect(result.rendered).toBe(1);
+    const placeholder = container.querySelector('.adc-diagram');
+    expect(placeholder?.querySelector('script')).toBeNull();
+    expect(placeholder?.querySelector('svg')).not.toBeNull();
+  });
+
+  it('drives the bundled vega engine through its offline shim', async () => {
+    class FakeView {
+      async toSVG(): Promise<string> {
+        return '<svg xmlns="http://www.w3.org/2000/svg"><g>vega</g></svg>';
+      }
+
+      finalize(): void {
+        // Nothing to release in the fake.
+      }
+    }
+    jest.doMock('vega', () => ({ __esModule: true, parse: () => ({}), View: FakeView }));
+    const { renderDiagrams: render } = await import('@/components/diagrams/render-diagrams');
+    const container = makePlaceholder('vega', JSON.stringify({ marks: [] }));
+
+    const result = await render(container);
+
+    expect(result.rendered).toBe(1);
+    expect(container.querySelector('.adc-diagram svg')).not.toBeNull();
+  });
+
+  it('drives the bundled graphviz engine through its shim', async () => {
+    mockGraphvizWasm('<svg xmlns="http://www.w3.org/2000/svg"><g>dot</g></svg>');
+    const { renderDiagrams: render } = await import('@/components/diagrams/render-diagrams');
+    const container = makePlaceholder('graphviz', 'digraph { a -> b }');
+
+    const result = await render(container);
+
+    expect(result.rendered).toBe(1);
+    expect(container.querySelector('.adc-diagram svg')).not.toBeNull();
+  });
+
+  it('turns a shim diagnostic into a fail-soft render warning', async () => {
+    mockGraphvizWasm(new Error('wasm unavailable'));
+    const { renderDiagrams: render } = await import('@/components/diagrams/render-diagrams');
+    const container = makePlaceholder('graphviz', 'digraph { a -> b }');
+
+    const result = await render(container);
+
+    expect(result.rendered).toBe(0);
+    expect(result.warnings).toEqual([
+      { engine: 'graphviz', sourceLine: 1, code: 'render-failed', message: 'wasm unavailable' },
+    ]);
+  });
 });

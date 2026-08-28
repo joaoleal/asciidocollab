@@ -142,6 +142,26 @@ describe('GET /projects/:projectId/git/branches', () => {
 
     await instance.close();
   });
+
+  it('propagates a non-transport worker failure instead of reporting the worker unavailable', async () => {
+    const instance = await register(
+      buildServer({
+        role: 'viewer',
+        client: {
+          getBranches: jest.fn(async () => {
+            throw new Error('unexpected failure');
+          }),
+        },
+      }),
+    );
+
+    const response = await getBranches(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+
+    await instance.close();
+  });
 });
 
 async function build(options: { role?: string | null; client?: Partial<GitWorkerClient> } = {}): Promise<FastifyInstance> {
@@ -270,6 +290,23 @@ describe('POST /projects/:projectId/git/branches', () => {
 
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(429);
+
+    await app.close();
+  });
+
+  it('propagates a non-transport worker failure instead of reporting the worker unavailable', async () => {
+    const app = await build({
+      client: {
+        createBranch: jest.fn(async () => {
+          throw new Error('unexpected failure');
+        }),
+      },
+    });
+
+    const response = await createBranch(app, PROJECT_ID, { name: 'feature/x' });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
 
     await app.close();
   });

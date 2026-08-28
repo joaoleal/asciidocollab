@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   buildManagedGitattributes,
@@ -78,6 +78,28 @@ describe('writeManagedGitattributes', () => {
     const written = await readFile(path.join(cwd, '.gitattributes'), 'utf8');
     expect(written).toContain('first.bin filter=lfs diff=lfs merge=lfs -text');
     expect(written).toContain('second.bin filter=lfs diff=lfs merge=lfs -text');
+  });
+
+  it('preserves a managed block whose end marker was lost, and re-tracks the requested pattern', async () => {
+    // A hand-edit can delete the closing marker. The orphaned opening marker must not make the
+    // rest of the file disappear, and the patterns it lists are no longer recoverable from it —
+    // only the pattern being requested now is guaranteed.
+    const managedBegin = buildManagedGitattributes(null, []).split('\n')[0];
+    const truncated = `${managedBegin}\nold.bin filter=lfs diff=lfs merge=lfs -text\n* text=auto\n`;
+
+    const regenerated = buildManagedGitattributes(truncated, ['new.bin']);
+
+    expect(regenerated).toContain('* text=auto');
+    expect(regenerated).toContain('new.bin filter=lfs diff=lfs merge=lfs -text');
+  });
+
+  it('propagates a read failure that is not a missing file', async () => {
+    // Only ENOENT means "no .gitattributes yet". Anything else (here, a directory in its place) is
+    // a real filesystem problem that must not be silently regenerated over.
+    const cwd = await createTemporaryWorkingTree();
+    await mkdir(path.join(cwd, '.gitattributes'), { recursive: true });
+
+    await expect(writeManagedGitattributes(cwd, ['big.bin'])).rejects.toThrow();
   });
 });
 

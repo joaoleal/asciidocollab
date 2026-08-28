@@ -1,7 +1,9 @@
 import { stringify } from 'yaml';
 import {
   CLAIMED_THEME_KEYS,
+  NAMED_THEME_KEYS,
   RENDERER_TEXT_ALIGN_KEYS,
+  UNMODELLED_NAMED_THEME_KEYS,
   resolveAppearance,
   UNREAD_TEXT_ALIGN_KEYS,
 } from '../../src/print-appearance';
@@ -505,5 +507,29 @@ describe('the alignments the renderer actually reads', () => {
     const group = at(result.appearance, category);
     expect(group).toBeDefined();
     expect(Reflect.get(group as object, 'textAlign')).toBeUndefined();
+  });
+});
+
+describe('the keys a diagnostic may name but the model does not read', () => {
+  it('keeps them out of the claimed vocabulary and inside the named one', () => {
+    // Two closed sets with one relationship between them: everything nameable is either a setting
+    // the model reads or one of these. A key that drifted out of both would be interpolated into a
+    // warning from nowhere, and a key that drifted into the claimed list would be looked up in an
+    // appearance that has no field for it.
+    expect(UNMODELLED_NAMED_THEME_KEYS.length).toBeGreaterThan(0);
+    for (const key of UNMODELLED_NAMED_THEME_KEYS) {
+      expect(CLAIMED_THEME_KEYS).not.toContain(key);
+      expect(NAMED_THEME_KEYS).toContain(key);
+    }
+    for (const key of CLAIMED_THEME_KEYS) expect(NAMED_THEME_KEYS).toContain(key);
+  });
+
+  it('names the extends target among them, which is what a theme layering something else writes', () => {
+    expect(UNMODELLED_NAMED_THEME_KEYS).toContain('extends');
+    const result = resolveAppearance({
+      themeText: 'extends: brand\nbase:\n  font_size: 11\n',
+      themePath: 'brand-theme.yml',
+    });
+    expect(result.diagnostics.map((diagnostic) => diagnostic.themeKey)).toContain('extends');
   });
 });

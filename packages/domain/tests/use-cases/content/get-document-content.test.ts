@@ -107,6 +107,21 @@ describe('GetDocumentContentUseCase', () => {
     }
   });
 
+  it('returns FileNodeNotFoundError for a file node with no backing Document', async () => {
+    const assetNodeId = FileNodeId.create('aa1e8400-e29b-41d4-a716-446655440016');
+    const assetPath = FilePath.create('/logo.png');
+    await fileNodeRepo.save(
+      new FileNode(assetNodeId, projectId, rootFolderId, 'logo.png', FileNodeType.create('file'), assetPath),
+    );
+    await fileStore.write(projectId, assetPath, Buffer.from([0x89, 0x50]));
+
+    const result = await useCase.execute(actorId, projectId, assetNodeId);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(FileNodeNotFoundError);
+    }
+  });
+
   it('rejects read when fileNodeId belongs to a different project', async () => {
     const otherProjectId = ProjectId.create('ee0e8400-e29b-41d4-a716-446655440099');
     const otherRootFolderId = FileNodeId.create('ee4e8400-e29b-41d4-a716-446655440099');

@@ -12,6 +12,7 @@ import { ProjectDictionaryTermId } from '../../../src/value-objects/ids/project-
 import { ProjectDictionaryTerm } from '../../../src/entities/project-dictionary-term';
 import { PermissionDeniedError } from '../../../src/errors/common/permission-denied';
 import { DictionaryTermNotFoundError } from '../../../src/errors/grammar/dictionary-term-not-found';
+import { ValidationError } from '../../../src/errors/common/validation-error';
 import { AUDIT_DICTIONARY_TERM_ADDED } from '../../../src/audit-actions';
 
 const PROJECT = ProjectId.create('11111111-1111-4111-8111-111111111111');
@@ -96,6 +97,25 @@ describe('Project dictionary use cases', () => {
       expect(result.success).toBe(true);
       if (result.success) expect(result.value.id.value).toBe(existing.id.value);
       expect(findSpy).toHaveBeenCalledTimes(2); // pre-check miss, then the post-conflict re-read
+    });
+
+    it('rejects a blank term as invalid rather than storing it', async () => {
+      const result = await add.execute(EDITOR, PROJECT, '   ');
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error).toBeInstanceOf(ValidationError);
+      expect(await repo.listByProject(PROJECT)).toHaveLength(0);
+    });
+
+    it('does not translate an unexpected construction failure into a validation error', async () => {
+      const spy = jest.spyOn(ProjectDictionaryTermId, 'create').mockImplementation(() => {
+        throw new TypeError('identifier generator blew up');
+      });
+      try {
+        await expect(add.execute(EDITOR, PROJECT, 'Kubernetes')).rejects.toThrow('identifier generator blew up');
+        expect(await repo.listByProject(PROJECT)).toHaveLength(0);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('rethrows a genuine add failure when no racing term exists', async () => {

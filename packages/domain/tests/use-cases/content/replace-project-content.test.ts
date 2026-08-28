@@ -24,6 +24,9 @@ import { ValidationError } from '../../../src/errors/common/validation-error';
 import { AUDIT_PROJECT_CONTENT_REPLACED } from '../../../src/audit-actions';
 import type { ReplaceProjectContentInput } from '../../../src/use-cases/content/replace-project-content';
 import type { SearchQuery } from '../../../src/types/search';
+import type { StructuredCollaborativeEditor } from '../../../src/ports/storage/structured-collaborative-editor';
+import type { Logger } from '../../../src/ports/observability/logger';
+import type { Result } from '../../../src/types/result';
 
 const editorId = UserId.create('550e8400-e29b-41d4-a716-446655440001');
 const viewerId = UserId.create('660e8400-e29b-41d4-a716-446655440002');
@@ -136,6 +139,71 @@ describe('ReplaceProjectContentUseCase', () => {
     expect(result.success).toBe(true);
     // $1 → "foo"; $5 (no such group) stays literal.
     expect(structured.contentOf(liveYjs)).toBe('wrap [foo|$5] here');
+  });
+
+  it('ignores a file entry that confirms no selections', async () => {
+    const result = await useCase.execute(editorId, projectId, input({
+      files: [{ fileNodeId: liveFileId, selections: [] }],
+    }));
+    if (!result.success) return;
+    expect(result.value).toMatchObject({ replacedCount: 0, affectedFiles: 0, skipped: [] });
+    expect(structured.contentOf(liveYjs)).toBe('foo and foo');
+  });
+
+  it('refuses to edit a file node that does not belong to the project', async () => {
+    const foreignFileId = FileNodeId.create('dd0e8400-e29b-41d4-a716-446655440009');
+    const result = await useCase.execute(editorId, projectId, input({
+      files: [{ fileNodeId: foreignFileId, selections: [{ ordinal: 0, expectedText: 'foo' }] }],
+    }));
+    if (!result.success) return;
+    expect(result.value.replacedCount).toBe(0);
+    expect(result.value.skipped).toEqual([{ fileNodeId: foreignFileId, reason: 'not-editable' }]);
+  });
+
+  it('skips and warns when the collaborative apply cannot be delivered', async () => {
+    const warnings: string[] = [];
+    const logger: Logger = {
+      warn(message): void {
+        warnings.push(message);
+      },
+    };
+    const unreachableEditor: StructuredCollaborativeEditor = {
+      async applyStructuredReplacement(): Promise<Result<number, Error>> {
+        return { success: false, error: new Error('collab room unreachable') };
+      },
+    };
+    const withUnreachableEditor = new ReplaceProjectContentUseCase(
+      memberRepo, fileNodeRepo, fileStore, auditRepo, engine, unreachableEditor, documentRepo, logger,
+    );
+
+    const result = await withUnreachableEditor.execute(editorId, projectId, input({
+      files: [{ fileNodeId: liveFileId, selections: [{ ordinal: 0, expectedText: 'foo' }] }],
+    }));
+    if (!result.success) return;
+    expect(result.value.replacedCount).toBe(0);
+    expect(result.value.skipped).toEqual([{ fileNodeId: liveFileId, reason: 'not-editable' }]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('skips a dormant file whose confirmed text no longer matches the projection', async () => {
+    const result = await useCase.execute(editorId, projectId, input({
+      files: [{ fileNodeId: dormantFileId, selections: [{ ordinal: 0, expectedText: 'FOO' }] }],
+    }));
+    if (!result.success) return;
+    expect(result.value.replacedCount).toBe(0);
+    expect(result.value.skipped).toEqual([{ fileNodeId: dormantFileId, reason: 'stale' }]);
+    expect((await fileStore.read(projectId, FilePath.create('/dormant.adoc')))!.toString('utf8')).toBe('foo dormant');
+  });
+
+  it('skips a file that has neither a document nor stored bytes', async () => {
+    const ghostFileId = FileNodeId.create('ee0e8400-e29b-41d4-a716-44665544000a');
+    await fileNodeRepo.save(new FileNode(ghostFileId, projectId, rootId, 'ghost.adoc', FileNodeType.create('file'), FilePath.create('/ghost.adoc')));
+
+    const result = await useCase.execute(editorId, projectId, input({
+      files: [{ fileNodeId: ghostFileId, selections: [{ ordinal: 0, expectedText: 'foo' }] }],
+    }));
+    if (!result.success) return;
+    expect(result.value.skipped).toEqual([{ fileNodeId: ghostFileId, reason: 'not-editable' }]);
   });
 
   it('applies a regex capture-group substitution and records the audit entry', async () => {

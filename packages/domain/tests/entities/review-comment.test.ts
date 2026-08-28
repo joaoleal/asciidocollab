@@ -161,3 +161,116 @@ describe('ReviewComment.refreshAnchorLineHint', () => {
     expect(() => reply.refreshAnchorLineHint(1)).toThrow(ReviewOperationInvalidError);
   });
 });
+
+describe('ReviewComment structural rejections', () => {
+  test('a reply is rejected for each task field it carries', () => {
+    expect(
+      () => new ReviewComment(REPLY, PROJECT, DOCUMENT, ROOT, 'comment', 'r', AUTHOR, 'open'),
+    ).toThrow('a reply must not carry a status');
+    expect(
+      () => new ReviewComment(REPLY, PROJECT, DOCUMENT, ROOT, 'comment', 'r', AUTHOR, null, ASSIGNEE),
+    ).toThrow('a reply must not carry an assignee');
+    expect(
+      () =>
+        new ReviewComment(
+          REPLY, PROJECT, DOCUMENT, ROOT, 'comment', 'r', AUTHOR, null, null, new Date('2026-07-20'),
+        ),
+    ).toThrow('a reply must not carry a due date');
+  });
+
+  test('a root comment is rejected for each task field it carries', () => {
+    expect(
+      () => new ReviewComment(ROOT, PROJECT, DOCUMENT, null, 'comment', 'c', AUTHOR, null, ASSIGNEE),
+    ).toThrow('a comment must not carry an assignee');
+    expect(
+      () =>
+        new ReviewComment(
+          ROOT, PROJECT, DOCUMENT, null, 'comment', 'c', AUTHOR, null, null, new Date('2026-07-20'),
+        ),
+    ).toThrow('a comment must not carry a due date');
+  });
+
+  test('a resolver without a resolution timestamp is rejected', () => {
+    expect(
+      () =>
+        new ReviewComment(
+          ROOT, PROJECT, DOCUMENT, null, 'comment', 'c', AUTHOR, null, null, null, null, RESOLVER,
+        ),
+    ).toThrow('resolvedById requires resolvedAt');
+  });
+
+  test('a stored resolution stamp is accepted when both halves are present', () => {
+    const resolvedAt = new Date('2026-07-01T09:00:00.000Z');
+    const item = new ReviewComment(
+      ROOT, PROJECT, DOCUMENT, null, 'comment', 'c', AUTHOR, null, null, null, resolvedAt, RESOLVER,
+    );
+
+    expect(item.isResolved()).toBe(true);
+    expect(item.resolvedAt).toEqual(resolvedAt);
+    expect(item.resolvedById?.equals(RESOLVER)).toBe(true);
+  });
+});
+
+describe('ReviewComment timestamps', () => {
+  test('hands out a defensive copy of the creation date', () => {
+    const item = rootComment();
+
+    const first = item.createdAt;
+    expect(first).toBeInstanceOf(Date);
+    const originalTime = first.getTime();
+    first.setFullYear(1999);
+
+    expect(item.createdAt.getTime()).toBe(originalTime);
+  });
+});
+
+describe('ReviewComment operations rejected on the wrong kind', () => {
+  test('editBody rejects a blank body and leaves the original text', () => {
+    const item = rootComment();
+
+    expect(() => item.editBody('   ')).toThrow('review body must be non-empty');
+    expect(item.body).toBe('hello');
+  });
+
+  test('a plain comment cannot be converted to a comment', () => {
+    expect(() => rootComment().convertToComment()).toThrow(ReviewOperationInvalidError);
+  });
+
+  test('a plain comment cannot be assigned', () => {
+    expect(() => rootComment().assign(ASSIGNEE, null)).toThrow(ReviewOperationInvalidError);
+  });
+
+  test('a task cannot be reopened through the comment path', () => {
+    expect(() => rootTask().reopenAsComment()).toThrow(ReviewOperationInvalidError);
+  });
+
+  test('reopening an already-open comment thread is a no-op', () => {
+    const item = rootComment();
+
+    item.reopenAsComment();
+
+    expect(item.isResolved()).toBe(false);
+  });
+
+  test('reopening a resolved comment thread clears its stamp', () => {
+    const item = rootComment();
+    item.resolveAsComment(RESOLVER);
+
+    item.reopenAsComment();
+
+    expect(item.isResolved()).toBe(false);
+    expect(item.resolvedById).toBeNull();
+  });
+});
+
+describe('ReviewComment anchor operations without an anchor', () => {
+  test('degrading to a section requires an anchor', () => {
+    const reply = new ReviewComment(REPLY, PROJECT, DOCUMENT, ROOT, 'comment', 'r', AUTHOR);
+    expect(() => reply.degradeToSection('intro')).toThrow(ReviewOperationInvalidError);
+  });
+
+  test('detaching requires an anchor', () => {
+    const reply = new ReviewComment(REPLY, PROJECT, DOCUMENT, ROOT, 'comment', 'r', AUTHOR);
+    expect(() => reply.detachAnchor()).toThrow(ReviewOperationInvalidError);
+  });
+});

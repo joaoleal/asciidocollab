@@ -17,6 +17,7 @@ import { InMemoryAuditLogRepository } from '../../ports/admin/in-memory-audit-lo
 import { InMemoryGitRepositoryRepository } from '../../ports/project/in-memory-git-repository.repository';
 import { InMemoryGitCommandRunner } from '../../ports/git/in-memory-git-command-runner';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
+import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440010');
 const OWNER_ID = UserId.create('550e8400-e29b-41d4-a716-446655440011');
@@ -368,5 +369,30 @@ describe('InitializeRepositoryUseCase', () => {
 
     const entries = await harness.auditRepo.findByProjectId(PROJECT_ID);
     expect(entries.some((entry) => entry.action === 'git.repository_connected')).toBe(true);
+  });
+
+  test('another operation already active for the project refuses with GitOperationInProgressError and publishes nothing', async () => {
+    const harness = await buildHarness('owner');
+    await seedPlaceholderRepository(harness.gitRepositoryRepo);
+    seedSuccess(harness.commandRunner);
+    await harness.gitOperationRepo.enqueue({
+      projectId: PROJECT_ID,
+      kind: 'PULL',
+      triggeredByUserId: OWNER_ID,
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId: PROJECT_ID,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitOperationInProgressError);
+    expect(harness.commandRunner.initializeAndPublishCalls).toHaveLength(0);
+    const stored = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    expect(stored?.syncStatus).toBe('DISCONNECTED');
   });
 });

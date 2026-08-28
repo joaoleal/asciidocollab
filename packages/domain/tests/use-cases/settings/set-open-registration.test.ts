@@ -1,4 +1,5 @@
 import { GetOpenRegistrationUseCase, SetOpenRegistrationUseCase } from '../../../src/use-cases/settings/get-open-registration';
+import { SetOpenRegistrationUseCase as SetOpenRegistrationUseCaseFromLegacyPath } from '../../../src/use-cases/settings/set-open-registration';
 import { InMemoryUserRepository } from '../../ports/user/in-memory-user.repository';
 import { InMemorySystemSettingRepository } from '../../ports/admin/in-memory-system-setting.repository';
 import { InMemoryAuditLogRepository } from '../../ports/admin/in-memory-audit-log.repository';
@@ -98,5 +99,24 @@ describe('SetOpenRegistrationUseCase', () => {
     expect(result.success).toBe(true);
     const value = await settingRepo.get('openRegistration');
     expect(value).toBe('false');
+  });
+
+  test('is reachable under its own module path as well as the module that defines it', () => {
+    expect(SetOpenRegistrationUseCaseFromLegacyPath).toBe(SetOpenRegistrationUseCase);
+  });
+
+  test('behaves identically when constructed through its own module path', async () => {
+    const admin = makeUser(true);
+    await userRepo.save(admin);
+    const viaOwnPath = new SetOpenRegistrationUseCaseFromLegacyPath(
+      settingRepo,
+      userRepo,
+      auditLogRepo,
+    );
+
+    const result = await viaOwnPath.execute(admin.id, true);
+
+    expect(result.success).toBe(true);
+    expect(await settingRepo.get('openRegistration')).toBe('true');
   });
 });

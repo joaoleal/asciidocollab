@@ -123,6 +123,13 @@ describe('captureAnchor', () => {
     expect(input.quote.exact).toBe('c');
   });
 
+  test('an empty selection in an empty document captures an empty passage', () => {
+    const { ytext } = makeDocument('');
+    const input = captureAnchor(ytext, 0, 0, '', 1);
+    expect(input.quote).toEqual({ prefix: '', exact: '', suffix: '' });
+    expect(typeof input.relPos).toBe('string');
+  });
+
   test('an oversized selection is capped at MAX_ANCHOR_LEN', () => {
     const documentText = 'y'.repeat(MAX_ANCHOR_LEN + 500);
     const { ytext } = makeDocument(documentText);
@@ -170,5 +177,18 @@ describe('resolveAnchor', () => {
     const { ydoc, ytext } = makeDocument('abc');
     const anchor: AnchorDto = { relPos: 'garbage!!!', state: 'located' };
     expect(resolveAnchor(anchor, ytext, ydoc)).toBeNull();
+  });
+
+  test('returns null when the endpoints belong to a document this replica never saw', () => {
+    const documentText = 'The quick brown fox';
+    const { ytext } = makeDocument(documentText);
+    const input = captureAnchor(ytext, 4, 9, documentText, 1);
+    const anchor: AnchorDto = { ...input, state: 'located' };
+
+    // A completely unrelated replica: the referenced structs are absent from its store, so
+    // neither endpoint maps to an absolute index and the anchor must degrade rather than guess.
+    const foreign = makeDocument('a different document entirely');
+
+    expect(resolveAnchor(anchor, foreign.ytext, foreign.ydoc)).toBeNull();
   });
 });

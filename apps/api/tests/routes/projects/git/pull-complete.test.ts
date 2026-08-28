@@ -143,4 +143,16 @@ describe('POST /projects/:projectId/git/pull/complete', () => {
 
     await app.close();
   });
+
+  it('propagates a non-transport worker failure instead of reporting the worker unavailable', async () => {
+    const { build } = buildHarness({ clientError: new Error('unexpected failure') });
+    const app = await build();
+
+    const response = await postComplete(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+
+    await app.close();
+  });
 });

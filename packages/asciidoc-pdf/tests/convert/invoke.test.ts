@@ -50,6 +50,8 @@ const PROBE_RESULT_PATH = '/out/optimize-probe.txt';
 
 interface FakeConfig {
   convertReject?: boolean;
+  /** Abort the convert by throwing a NON-Error value, as a hard wasm trap surfaces. */
+  convertRejectsNonError?: boolean;
   convertJson?: string;
   probe?: string;
   optimizeJson?: string;
@@ -83,6 +85,8 @@ class FakeVm implements RubyPdfVm {
   readonly evalAsyncCalls: string[] = [];
   readonly reads: string[] = [];
   readonly removed: string[] = [];
+  /** Every file the convert path mounted into the VFS, in order. */
+  readonly writes: Array<{ path: string; bytes: Uint8Array }> = [];
 
   constructor(private readonly config: FakeConfig = {}) {}
 
@@ -105,6 +109,10 @@ class FakeVm implements RubyPdfVm {
     if (code.includes('convert_file') && this.config.convertReject === true) {
       throw new Error('vm exploded during convert');
     }
+    if (code.includes('convert_file') && this.config.convertRejectsNonError === true) {
+      // A hard wasm trap escapes as a bare value, not an Error instance.
+      throw 'memory access out of bounds';
+    }
     return makeValue('');
   }
 
@@ -116,7 +124,9 @@ class FakeVm implements RubyPdfVm {
     return makeValue('');
   }
 
-  writeFile(): void {}
+  writeFile(path: string, bytes: Uint8Array): void {
+    this.writes.push({ path, bytes });
+  }
 
   readFile(path: string): Uint8Array {
     this.reads.push(path);
@@ -957,5 +967,213 @@ describe('invokeConvert — in-VM stage timings', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected success');
     expect(result.vmStages).toEqual({ parseMs: 40 });
+  });
+
+  it('reports no figures when every reported stage is unusable', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: [],
+        timings: { parseMs: -1, converterWalkMs: 'slow' },
+      }),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.vmStages).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Theme aliasing into the VM filesystem.
+// ---------------------------------------------------------------------------
+
+describe('invokeConvert — theme alias mounting', () => {
+  it('mounts a second copy of a .yaml theme under the .yml name the engine looks for', async () => {
+    const vm = new FakeVm();
+    await invokeConvert({
+      vm,
+      request: request({
+        snapshot: snapshot({
+          themePath: 'branding/house.yaml',
+          files: { 'book.adoc': '= Title', 'branding/house.yaml': 'base:\n  font: X' },
+        }),
+      }),
+    });
+
+    expect(vm.writes).toHaveLength(1);
+    expect(vm.writes[0].path).toBe('/project/branding/house.yml');
+    expect(new TextDecoder().decode(vm.writes[0].bytes)).toBe('base:\n  font: X');
+  });
+
+  it('writes no alias for a theme already named .yml', async () => {
+    const vm = new FakeVm();
+    await invokeConvert({
+      vm,
+      request: request({
+        snapshot: snapshot({
+          themePath: 'house.yml',
+          files: { 'book.adoc': '= Title', 'house.yml': 'base:' },
+        }),
+      }),
+    });
+
+    expect(vm.writes).toHaveLength(0);
+  });
+
+  it('writes no alias when the .yaml theme has no content in the snapshot', async () => {
+    const vm = new FakeVm();
+    await invokeConvert({
+      vm,
+      request: request({
+        snapshot: snapshot({ themePath: 'missing.yaml', files: { 'book.adoc': '= Title' } }),
+      }),
+    });
+
+    expect(vm.writes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Malformed VM results: every one degrades rather than surfacing raw shapes.
+// ---------------------------------------------------------------------------
+
+describe('invokeConvert — malformed VM results', () => {
+  it('degrades to no map when the source-map file holds JSON that is not an array', async () => {
+    const vm = new FakeVm({ sourceMapFile: encodeText('{"blocks":[]}') });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.sourceMap).toBeUndefined();
+  });
+
+  it('fails the convert when the result file holds JSON that is not an object', async () => {
+    const vm = new FakeVm({ convertJson: '"not-a-result"' });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error.code).toBe(CONVERT_ERROR_CODES.CONVERT_FAILED);
+    expect(result.error.message).toContain('Convert returned a malformed result');
+  });
+
+  it('names a convert failure that reports no code or message with its own defaults', async () => {
+    const vm = new FakeVm({ convertJson: JSON.stringify({ ok: false, code: 7, message: 9 }) });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error.code).toBe(CONVERT_ERROR_CODES.CONVERT_FAILED);
+    expect(result.error.message).toBe('Asciidoctor convert failed');
+  });
+
+  it('carries a convert abort that threw a bare value, not an Error, into the message', async () => {
+    const vm = new FakeVm({ convertRejectsNonError: true });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error.message).toContain('memory access out of bounds');
+  });
+
+  it('ignores a warnings field that is not a list', async () => {
+    const vm = new FakeVm({ convertJson: JSON.stringify({ ok: true, warnings: 'none' }) });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
+  it('drops warning entries that are not objects', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: ['not an object', null, { severity: 'warn', message: 'image to embed not found' }],
+      }),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it('drops extension failures that are not objects or that name no extension', async () => {
+    const vm = new FakeVm({
+      convertJson: JSON.stringify({
+        ok: true,
+        warnings: [],
+        extension_failures: ['bare', { id: '', message: 'anonymous' }, { id: 'kroki' }],
+      }),
+    });
+
+    const result = await invokeConvert({ vm, request: request() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain('"kroki" extension failed to load');
+  });
+
+  it('records the optimize step as failed when its result is not an object', async () => {
+    const vm = new FakeVm({ probe: 'true', optimizeJson: '"broken"' });
+
+    const result = await invokeConvert({ vm, request: request({ optimize: true }) });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected success');
+    expect(result.diagnostics.some((entry) => entry.message.includes('unknown error'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Output naming and size measurement at the edges of a project path.
+// ---------------------------------------------------------------------------
+
+describe('invokeConvert — output naming', () => {
+  it('names the output from the root file stem even when it carries no extension', async () => {
+    const vm = new FakeVm({ outEntries: ['README.pdf'] });
+    await invokeConvert({
+      vm,
+      request: request({ snapshot: snapshot({ rootPath: 'README', files: { README: '= Title' } }) }),
+    });
+
+    const convertCode = vm.evalCalls.find((code) => code.includes('convert_file')) ?? '';
+    expect(convertCode).toContain("to_file: '/out/README.pdf'");
+  });
+
+  it('falls back to a default output name when the root path names no file', async () => {
+    const vm = new FakeVm({ outEntries: ['document.pdf'] });
+    await invokeConvert({
+      vm,
+      request: request({ snapshot: snapshot({ rootPath: '', files: {} }) }),
+    });
+
+    const convertCode = vm.evalCalls.find((code) => code.includes('convert_file')) ?? '';
+    expect(convertCode).toContain("to_file: '/out/document.pdf'");
+  });
+
+  it('measures nothing rather than failing when neither the VFS nor the snapshot holds the root', async () => {
+    const vm = new FakeVm({ readFileThrows: true });
+
+    const result = await invokeConvert({
+      vm,
+      request: request({ snapshot: snapshot({ rootPath: 'absent.adoc', files: {} }) }),
+    });
+
+    // The size gate passes on an unmeasurable document; the render fails later, on the read-back.
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error.code).not.toBe(DOCUMENT_TOO_LARGE_CODE);
   });
 });

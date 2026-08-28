@@ -20,6 +20,7 @@ import { FilePath } from '../../../src/value-objects/files/file-path';
 import { PermissionDeniedError } from '../../../src/errors/common/permission-denied';
 import { ValidationError } from '../../../src/errors/common/validation-error';
 import type { CollaborativeContentReader } from '../../../src/ports/storage/collaborative-content-reader';
+import type { Logger } from '../../../src/ports/observability/logger';
 import type { Result } from '../../../src/types/result';
 import type { SearchQuery } from '../../../src/use-cases/content/text-match';
 
@@ -32,6 +33,13 @@ const betaId = FileNodeId.create('bb0e8400-e29b-41d4-a716-446655440007');
 const liveYjs = YjsStateId.create('cc0e8400-e29b-41d4-a716-446655440008');
 
 const LIMITS: SearchLimits = { maxMatchesReturned: 1000, perFileTimeBudgetMs: 250, maxFileBytes: 2_000_000 };
+
+/** A collaborative reader that always answers with the same outcome. */
+const readerReturning = (outcome: Result<string | null, Error>): CollaborativeContentReader => ({
+  async readContent(): Promise<Result<string | null, Error>> {
+    return outcome;
+  },
+});
 
 const literal = (text: string, over: Partial<SearchQuery> = {}): SearchQuery => ({
   text,
@@ -54,6 +62,20 @@ describe('SearchProjectContentUseCase', () => {
   const seedFile = async (id: FileNodeId, name: string, content: Buffer | string): Promise<void> => {
     await fileNodeRepo.save(new FileNode(id, projectId, rootId, name, FileNodeType.create('file'), FilePath.create(`/${name}`)));
     await fileStore.write(projectId, FilePath.create(`/${name}`), Buffer.isBuffer(content) ? content : Buffer.from(content));
+  };
+
+  /** Seeds `live.adoc` as an open, document-backed file with the given file-store projection. */
+  const seedOpenDocument = async (projection: string): Promise<void> => {
+    await seedFile(alphaId, 'live.adoc', projection);
+    await documentRepo.save(
+      new Document(
+        DocumentId.create('22222222-e29b-41d4-a716-446655440222'),
+        alphaId,
+        ContentId.create('33333333-e29b-41d4-a716-446655440333'),
+        liveYjs,
+        MimeType.create('text/asciidoc'),
+      ),
+    );
   };
 
   beforeEach(async () => {
@@ -150,6 +172,57 @@ describe('SearchProjectContentUseCase', () => {
     expect(result.value.groups[0].matches).toHaveLength(2);
   });
 
+  it('reads the last line of a file that has no trailing newline', async () => {
+    await seedFile(alphaId, 'alpha.adoc', 'intro\nfoo at the very end');
+    const result = await build().execute(memberId, projectId, { query: literal('foo'), limits: LIMITS });
+    if (!result.success) return;
+    expect(result.value.groups[0].matches[0]).toMatchObject({ line: 2, column: 1, lineText: 'foo at the very end' });
+  });
+
+  it('strips the carriage return from a CRLF line snippet', async () => {
+    await seedFile(alphaId, 'alpha.adoc', 'foo on a windows line\r\nsecond\r\n');
+    const result = await build().execute(memberId, projectId, { query: literal('foo'), limits: LIMITS });
+    if (!result.success) return;
+    expect(result.value.groups[0].matches[0].lineText).toBe('foo on a windows line');
+  });
+
+  it('ignores a file node that has no bytes in the store', async () => {
+    await fileNodeRepo.save(new FileNode(alphaId, projectId, rootId, 'ghost.adoc', FileNodeType.create('file'), FilePath.create('/ghost.adoc')));
+    await seedFile(betaId, 'beta.adoc', 'foo\n');
+    const result = await build().execute(memberId, projectId, { query: literal('foo'), limits: LIMITS });
+    if (!result.success) return;
+    expect(result.value.groups.map((g) => g.path)).toEqual(['beta.adoc']);
+    expect(result.value.skippedFiles).toBe(0); // absent content is not a "skipped" file
+  });
+
+  it('reports the results as capped when a file exhausts its time budget', async () => {
+    await seedFile(alphaId, 'alpha.adoc', 'foo foo foo\n');
+    const result = await build().execute(memberId, projectId, { query: literal('foo'), limits: { ...LIMITS, perFileTimeBudgetMs: 0 } });
+    if (!result.success) return;
+    expect(result.value.capped).toBe(true);
+    expect(result.value.totalMatches).toBe(0);
+  });
+
+  it('reports named capture groups, with a non-participating group as null', async () => {
+    await seedFile(alphaId, 'alpha.adoc', 'foo\n');
+    const result = await build().execute(memberId, projectId, {
+      query: literal('(?<word>foo)(?<tail>bar)?', { mode: 'regex' }),
+      limits: LIMITS,
+    });
+    if (!result.success) return;
+    const match = result.value.groups[0].matches[0];
+    expect(match.named).toEqual({ word: 'foo', tail: null });
+    expect(match.groups).toEqual(['foo', 'foo', null]);
+  });
+
+  it('searches the file-store projection when no document repository is wired', async () => {
+    await seedFile(alphaId, 'alpha.adoc', 'foo\n');
+    const withoutDocuments = new SearchProjectContentUseCase(memberRepo, fileNodeRepo, fileStore, engine);
+    const result = await withoutDocuments.execute(memberId, projectId, { query: literal('foo'), limits: LIMITS });
+    if (!result.success) return;
+    expect(result.value.totalMatches).toBe(1);
+  });
+
   it('searches the LIVE content of an open file, not the stale projection', async () => {
     await fileNodeRepo.save(new FileNode(alphaId, projectId, rootId, 'live.adoc', FileNodeType.create('file'), FilePath.create('/live.adoc')));
     await fileStore.write(projectId, FilePath.create('/live.adoc'), Buffer.from('stale, no needle\n'));
@@ -173,5 +246,46 @@ describe('SearchProjectContentUseCase', () => {
     if (!result.success) return;
     expect(result.value.totalMatches).toBe(1);
     expect(result.value.groups[0].matches[0].lineText).toBe('freshly typed needle here');
+  });
+
+  describe('when a file is document-backed but its live content is unavailable', () => {
+    it('falls back to the file-store projection when the room holds no content', async () => {
+      await seedOpenDocument('needle in the projection\n');
+      const result = await build(readerReturning({ success: true, value: null })).execute(memberId, projectId, {
+        query: literal('needle'),
+        limits: LIMITS,
+      });
+      if (!result.success) return;
+      expect(result.value.totalMatches).toBe(1);
+      expect(result.value.groups[0].matches[0].lineText).toBe('needle in the projection');
+    });
+
+    it('skips a live document larger than the per-file size budget', async () => {
+      await seedOpenDocument('needle\n');
+      const reader = readerReturning({ success: true, value: 'needle '.repeat(50) });
+      const result = await build(reader).execute(memberId, projectId, {
+        query: literal('needle'),
+        limits: { ...LIMITS, maxFileBytes: 16 },
+      });
+      if (!result.success) return;
+      expect(result.value.totalMatches).toBe(0);
+      expect(result.value.skippedFiles).toBe(1);
+    });
+
+    it('warns and falls back to the file store when the live read fails', async () => {
+      await seedOpenDocument('needle in the projection\n');
+      const warnings: string[] = [];
+      const logger: Logger = {
+        warn(message): void {
+          warnings.push(message);
+        },
+      };
+      const reader = readerReturning({ success: false, error: new Error('room unavailable') });
+      const useCase = new SearchProjectContentUseCase(memberRepo, fileNodeRepo, fileStore, engine, documentRepo, reader, logger);
+      const result = await useCase.execute(memberId, projectId, { query: literal('needle'), limits: LIMITS });
+      if (!result.success) return;
+      expect(result.value.totalMatches).toBe(1);
+      expect(warnings).toHaveLength(1);
+    });
   });
 });

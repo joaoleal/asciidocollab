@@ -20,6 +20,7 @@ import { MimeType } from '../../../src/value-objects/files/mime-type';
 import { UserId } from '../../../src/value-objects/ids/user-id';
 import { Role } from '../../../src/value-objects/identity/role';
 import { PermissionDeniedError } from '../../../src/errors/common/permission-denied';
+import { ProjectNotFoundError } from '../../../src/errors/project/project-not-found';
 import type { CollaborativeContentReader } from '../../../src/ports/storage/collaborative-content-reader';
 
 const PROJECT_ID   = '550e8400-e29b-41d4-a716-446655440001';
@@ -111,6 +112,17 @@ describe('DownloadProjectUseCase', () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.error).toBeInstanceOf(PermissionDeniedError);
+  });
+
+  test('a member of a project row that no longer exists gets a not-found error', async () => {
+    const orphanedProjectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440099');
+    await memberRepo.addMember(new ProjectMember(orphanedProjectId, memberId, Role.create('viewer')));
+
+    const result = await useCase.execute(memberId, orphanedProjectId);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBeInstanceOf(ProjectNotFoundError);
   });
 
   test('result files list excludes folder nodes', async () => {

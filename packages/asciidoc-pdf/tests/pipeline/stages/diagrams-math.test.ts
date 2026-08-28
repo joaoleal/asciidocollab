@@ -433,3 +433,88 @@ describe('createDiagramsMathStage', () => {
     expect(createDiagramsMathStage().kind).toBe('diagrams-math');
   });
 });
+
+describe('createDiagramsMathStage — degraded inputs', () => {
+  it('does nothing when the root document is not present in the VFS', async () => {
+    const render = renderMock(async () => okSvg());
+    const { ctx, vfs } = makeContext(MERMAID_BLOCK, [fakeShim('diagram', 'mermaid', render)]);
+    vfs.remove(ROOT_VFS_PATH);
+
+    const result = await createDiagramsMathStage().run(ctx);
+
+    expect(result).toEqual({});
+    expect(render).not.toHaveBeenCalled();
+    expect(vfs.readText(ROOT_VFS_PATH)).toBeNull();
+    expect(ctx.diagnostics.all()).toHaveLength(0);
+  });
+
+  it('reports that no renderer is available and keeps the block when no diagram shim is registered', async () => {
+    const { ctx, vfs } = makeContext(MERMAID_BLOCK, []);
+
+    await createDiagramsMathStage().run(ctx);
+
+    const diags = ctx.diagnostics.all();
+    expect(diags).toHaveLength(1);
+    expect(diags[0].severity).toBe('warning');
+    expect(diags[0].message).toContain('No renderer is available for "mermaid"');
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toBe(MERMAID_BLOCK);
+    expect(vfs.list(GEN_PREFIX)).toHaveLength(0);
+  });
+
+  it('falls back to any registered diagram shim for an engine it has no named shim for', async () => {
+    const render = renderMock(async () => okSvg());
+    const block = ['[graphviz]', '....', 'digraph { a -> b }', '....'].join('\n');
+    const { ctx } = makeContext(block, [fakeShim('diagram', 'some-other-engine', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an inline math macro exactly as written when no math shim is registered', async () => {
+    const document = 'The value stem:[x^2] is shown.';
+    const { ctx, vfs } = makeContext(document, []);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toBe(document);
+    expect(vfs.list(GEN_PREFIX)).toHaveLength(0);
+  });
+
+  it('leaves an inline math macro as written when the math shim reports a failure', async () => {
+    const render = renderMock(async () => ({
+      ok: false,
+      diagnostic: { code: 'malformed-math', message: 'bad formula' },
+    }));
+    const document = 'The value stem:[x^2] is shown.';
+    const { ctx, vfs } = makeContext(document, [fakeShim('math', 'katex', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toBe(document);
+    expect(vfs.list(GEN_PREFIX)).toHaveLength(0);
+  });
+
+  it('copies an unterminated block and an unterminated verbatim region through unchanged', async () => {
+    const render = renderMock(async () => okSvg());
+    const document = ['[mermaid]', '----', 'graph TD; A-->B;'].join('\n');
+    const { ctx, vfs } = makeContext(document, [fakeShim('diagram', 'mermaid', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).not.toHaveBeenCalled();
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toBe(document);
+  });
+
+  it('treats an attribute line with no attributes as ordinary prose', async () => {
+    const render = renderMock(async () => okSvg());
+    const document = ['[ ]', '----', 'not a diagram', '----'].join('\n');
+    const { ctx, vfs } = makeContext(document, [fakeShim('diagram', 'mermaid', render)]);
+
+    await createDiagramsMathStage().run(ctx);
+
+    expect(render).not.toHaveBeenCalled();
+    expect(vfs.readText(ROOT_VFS_PATH) ?? '').toBe(document);
+  });
+});

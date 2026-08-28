@@ -124,4 +124,24 @@ describe('VerifyEmailUseCase', () => {
       expect(logs.some((l) => l.action === 'auth.email_verified')).toBe(true);
     }
   });
+
+  test('returns InvalidTokenError when the token names an account that no longer exists', async () => {
+    const token = new EmailVerificationToken(
+      EmailVerificationTokenId.create(randomUUID()),
+      user.id,
+      HASHED_TOKEN,
+      new Date(Date.now() + 86_400_000),
+      null,
+      new Date(),
+    );
+    await tokenRepo.save(token);
+
+    const result = await useCase.execute(RAW_TOKEN);
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(InvalidTokenError);
+    const untouched = await tokenRepo.findByTokenHash(HASHED_TOKEN);
+    expect(untouched?.usedAt).toBeNull();
+    expect(await auditLogRepo.findAll()).toHaveLength(0);
+  });
 });

@@ -22,6 +22,39 @@ import { InMemoryGitRepositoryRepository } from '../../ports/project/in-memory-g
 import { InMemoryGitCommandRunner } from '../../ports/git/in-memory-git-command-runner';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
 import { InMemoryConflictStageStore } from '../../ports/git/in-memory-conflict-stage-store';
+import type { ConflictStages } from '../../../src/ports/git/conflict-stage-store';
+import type { ConflictResolution } from '../../../src/types/conflict-resolution';
+import type { GitOperation } from '../../../src/entities/git-operation';
+import type { GitOperationTransitionTarget } from '../../../src/ports/git/git-operation-repository';
+import { IllegalGitOperationTransitionError } from '../../../src/errors/git/illegal-git-operation-transition';
+import type { Result } from '../../../src/types/result';
+
+/** Stage store whose captured-stage reads always fail, standing in for an unreadable blob store. */
+class UnreadableStagesStore extends InMemoryConflictStageStore {
+  async readStages(): Promise<Result<ConflictStages | null, GitCommandFailedError>> {
+    return { success: false, error: new GitCommandFailedError('the captured stages could not be read') };
+  }
+}
+
+/** Stage store whose merged-bytes reads always fail, standing in for an unreadable blob store. */
+class UnreadableMergedStore extends InMemoryConflictStageStore {
+  async readMerged(): Promise<Result<Buffer | null, GitCommandFailedError>> {
+    return { success: false, error: new GitCommandFailedError('the merged content could not be read') };
+  }
+}
+
+/** Operation repository that refuses to claim the awaiting operation back into RUNNING. */
+class UnclaimableGitOperationRepository extends InMemoryGitOperationRepository {
+  async transition(
+    operationId: GitOperationId,
+    toState: GitOperationTransitionTarget,
+  ): Promise<Result<GitOperation, IllegalGitOperationTransitionError>> {
+    if (toState === 'RUNNING') {
+      return { success: false, error: new IllegalGitOperationTransitionError('AWAITING_CONFLICT', toState) };
+    }
+    return super.transition(operationId, toState);
+  }
+}
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440000');
 const ACTOR_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
@@ -68,6 +101,18 @@ interface HarnessOptions {
   allResolved?: boolean;
   /** The remote head preserved on the CONFLICTED row; null when none was recorded at detection. */
   remoteHead?: string | null;
+  /** Substitute stage store, for exercising a failing blob read. */
+  conflictStageStore?: InMemoryConflictStageStore;
+  /** Substitute operation repository, for exercising a refused transition. */
+  gitOperationRepo?: InMemoryGitOperationRepository;
+  /** Marks both conflicting files binary. */
+  binaryConflicts?: boolean;
+  /** Recorded for BOTH conflicts; by default one takes `ours` and the other `theirs`. */
+  resolution?: ConflictResolution;
+  /** When false, no captured stages are written for either conflicting path. */
+  withStages?: boolean;
+  /** When true, the captured "ours" side is a deletion (a modify/delete conflict). */
+  oursDeleted?: boolean;
 }
 
 async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -78,6 +123,12 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     awaitingConflict = true,
     allResolved = true,
     remoteHead = 'previous-head-commit-hash',
+    conflictStageStore = new InMemoryConflictStageStore(),
+    gitOperationRepo = new InMemoryGitOperationRepository(),
+    binaryConflicts = false,
+    resolution,
+    withStages = true,
+    oursDeleted = false,
   } = options;
 
   const memberRepo = new InMemoryProjectMemberRepository();
@@ -86,9 +137,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
   }
   const auditRepo = new InMemoryAuditLogRepository();
   const gitRepositoryRepo = new InMemoryGitRepositoryRepository();
-  const gitOperationRepo = new InMemoryGitOperationRepository();
   const commandRunner = new InMemoryGitCommandRunner();
-  const conflictStageStore = new InMemoryConflictStageStore();
   const reconciler = makeReconciler();
 
   if (connected) {
@@ -116,26 +165,28 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     operationId = enqueued.id;
     await gitOperationRepo.claimNextQueued(30_000);
     await gitOperationRepo.transition(operationId, 'AWAITING_CONFLICT');
-    await gitOperationRepo.createConflict({ operationId, path: CONFLICT_PATH, isBinary: false });
-    await gitOperationRepo.createConflict({ operationId, path: OTHER_PATH, isBinary: false });
-    await gitOperationRepo.resolveConflict(operationId, CONFLICT_PATH, 'ours');
+    await gitOperationRepo.createConflict({ operationId, path: CONFLICT_PATH, isBinary: binaryConflicts });
+    await gitOperationRepo.createConflict({ operationId, path: OTHER_PATH, isBinary: binaryConflicts });
+    await gitOperationRepo.resolveConflict(operationId, CONFLICT_PATH, resolution ?? 'ours');
     if (allResolved) {
-      await gitOperationRepo.resolveConflict(operationId, OTHER_PATH, 'theirs');
+      await gitOperationRepo.resolveConflict(operationId, OTHER_PATH, resolution ?? 'theirs');
     }
 
     // Stages backing a BRANCH_SWITCH completion's stage-store reads.
-    await conflictStageStore.writeStages(operationId, CONFLICT_PATH, {
-      base: Buffer.from('base'),
-      ours: Buffer.from('ours text'),
-      theirs: Buffer.from('theirs text'),
-      isBinary: false,
-    });
-    await conflictStageStore.writeStages(operationId, OTHER_PATH, {
-      base: Buffer.from('base'),
-      ours: Buffer.from('ours other'),
-      theirs: Buffer.from('theirs other'),
-      isBinary: false,
-    });
+    if (withStages) {
+      await conflictStageStore.writeStages(operationId, CONFLICT_PATH, {
+        base: Buffer.from('base'),
+        ours: oursDeleted ? null : Buffer.from('ours text'),
+        theirs: Buffer.from('theirs text'),
+        isBinary: binaryConflicts,
+      });
+      await conflictStageStore.writeStages(operationId, OTHER_PATH, {
+        base: Buffer.from('base'),
+        ours: oursDeleted ? null : Buffer.from('ours other'),
+        theirs: Buffer.from('theirs other'),
+        isBinary: binaryConflicts,
+      });
+    }
   }
 
   const useCase = new CompleteMergeUseCase(
@@ -396,5 +447,140 @@ describe('CompleteMergeUseCase', () => {
     expect(audited.some((entry) => entry.action === AUDIT_AUTHZ_DENIED)).toBe(true);
     const operation = await harness.gitOperationRepo.findById(harness.operationId);
     expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('a re-run merge that fast-forwarded onto the observed remote head leaves the project UP_TO_DATE', async () => {
+    const harness = await buildHarness({ remoteHead: RESOLVED_HEAD });
+    harness.commandRunner.seedResolveMerge(PROJECT_ID, RESOLVED_OUTCOME);
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(true);
+    const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    // The resolving commit IS the observed remote head, so there is nothing local left to push.
+    expect(saved?.syncStatus).toBe('UP_TO_DATE');
+    expect(saved?.lastKnownRemoteHead).toBe(RESOLVED_HEAD);
+  });
+
+  test('a refused claim back into RUNNING leaves the awaiting operation untouched and lands nothing', async () => {
+    const harness = await buildHarness({ gitOperationRepo: new UnclaimableGitOperationRepository() });
+    harness.commandRunner.seedResolveMerge(PROJECT_ID, RESOLVED_OUTCOME);
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(IllegalGitOperationTransitionError);
+    expect(harness.commandRunner.resolveMergeCalls).toHaveLength(0);
+    expect(harness.reconciler.apply).not.toHaveBeenCalled();
+    const operation = await harness.gitOperationRepo.findById(harness.operationId);
+    expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('a completed switch lands the recorded merged bytes for a "merged" resolution', async () => {
+    const harness = await buildHarness({ kind: 'BRANCH_SWITCH', resolution: 'merged' });
+    harness.conflictStageStore.seedMerged(harness.operationId, CONFLICT_PATH, Buffer.from('merged intro'));
+    harness.conflictStageStore.seedMerged(harness.operationId, OTHER_PATH, Buffer.from('merged outro'));
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(true);
+    const changes: GitMergeFileChange[] = harness.reconciler.apply.mock.calls[0][1];
+    const byPath = new Map(changes.map((change) => [change.type === 'renamed' ? change.toPath : change.path, change]));
+    expect(byPath.get(CONFLICT_PATH)).toEqual({
+      type: 'modified',
+      path: CONFLICT_PATH,
+      content: Buffer.from('merged intro'),
+      mimeType: 'text/plain',
+    });
+    expect(byPath.get(OTHER_PATH)).toEqual({
+      type: 'modified',
+      path: OTHER_PATH,
+      content: Buffer.from('merged outro'),
+      mimeType: 'text/plain',
+    });
+  });
+
+  test('a "merged" resolution with no recorded bytes reverts to AWAITING_CONFLICT and lands nothing', async () => {
+    const harness = await buildHarness({ kind: 'BRANCH_SWITCH', resolution: 'merged' });
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toContain(CONFLICT_PATH);
+    }
+    expect(harness.reconciler.apply).not.toHaveBeenCalled();
+    const operation = await harness.gitOperationRepo.findById(harness.operationId);
+    expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('a failed merged-bytes read reverts to AWAITING_CONFLICT and lands nothing', async () => {
+    const harness = await buildHarness({
+      kind: 'BRANCH_SWITCH',
+      resolution: 'merged',
+      conflictStageStore: new UnreadableMergedStore(),
+    });
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(harness.reconciler.apply).not.toHaveBeenCalled();
+    const operation = await harness.gitOperationRepo.findById(harness.operationId);
+    expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('a failed captured-stage read reverts to AWAITING_CONFLICT and lands nothing', async () => {
+    const harness = await buildHarness({ kind: 'BRANCH_SWITCH', conflictStageStore: new UnreadableStagesStore() });
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(harness.reconciler.apply).not.toHaveBeenCalled();
+    const operation = await harness.gitOperationRepo.findById(harness.operationId);
+    expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('a conflict with no captured stages reverts to AWAITING_CONFLICT and names the path', async () => {
+    const harness = await buildHarness({ kind: 'BRANCH_SWITCH', withStages: false });
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toContain(CONFLICT_PATH);
+    }
+    const operation = await harness.gitOperationRepo.findById(harness.operationId);
+    expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('accepting a side that deleted the file lands a removal rather than any bytes', async () => {
+    const harness = await buildHarness({ kind: 'BRANCH_SWITCH', resolution: 'ours', oursDeleted: true });
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(true);
+    const changes: GitMergeFileChange[] = harness.reconciler.apply.mock.calls[0][1];
+    expect(changes).toHaveLength(2);
+    const removedPaths = changes
+      .filter((change) => change.type === 'removed')
+      .map((change) => change.path)
+      .toSorted();
+    expect(removedPaths).toEqual([CONFLICT_PATH, OTHER_PATH].toSorted());
+  });
+
+  test('a resolved binary conflict lands with a binary fallback mime type', async () => {
+    const harness = await buildHarness({ kind: 'BRANCH_SWITCH', binaryConflicts: true, resolution: 'ours' });
+
+    const result = await harness.useCase.execute(completeInput());
+
+    expect(result.success).toBe(true);
+    const changes: GitMergeFileChange[] = harness.reconciler.apply.mock.calls[0][1];
+    for (const change of changes) {
+      expect(change.type === 'modified' && change.mimeType).toBe('application/octet-stream');
+    }
   });
 });

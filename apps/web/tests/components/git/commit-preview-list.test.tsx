@@ -1,6 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { CommitPreviewList } from '@/components/git/commit-preview-list';
 import type { CommitDto } from '@asciidocollab/shared';
+
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
 
 const mockListMembers = jest.fn();
 
@@ -70,6 +73,33 @@ describe('CommitPreviewList rendering', () => {
     render(<CommitPreviewList projectId="proj1" enabled={false} commits={COMMITS} changedPaths={[]} />);
 
     expect(mockListMembers).not.toHaveBeenCalled();
+  });
+
+  test('falls back to the neutral placeholder for every commit when the member lookup fails', async () => {
+    mockListMembers.mockRejectedValue(new Error('network down'));
+    render(<CommitPreviewList projectId="proj1" enabled commits={COMMITS} changedPaths={[]} />);
+
+    await waitFor(() => expect(screen.getAllByText('Unknown author')).toHaveLength(COMMITS.length));
+    expect(screen.getByText('Fix the intro section')).toBeInTheDocument();
+  });
+
+  test('does not apply a member lookup that resolves after unmounting', async () => {
+    let settle: (value: unknown) => void = noop;
+    mockListMembers.mockReturnValue(
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const { unmount } = render(
+      <CommitPreviewList projectId="proj1" enabled commits={COMMITS} changedPaths={[]} />,
+    );
+
+    unmount();
+    await act(async () => {
+      settle({ data: { members: [{ userId: 'user1', displayName: 'Alice Smith' }] } });
+    });
+
+    expect(screen.queryByLabelText('Alice Smith')).not.toBeInTheDocument();
   });
 
   test('never renders a hardcoded hex or rgb color', () => {

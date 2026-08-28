@@ -39,7 +39,19 @@ describe('RenameSuggestionWidget', () => {
     const apply = dom.querySelector<HTMLButtonElement>('[data-testid="rename-suggestion-apply"]')!;
     expect(apply.disabled).toBe(true);
     apply.click();
+    // A click routed straight to the listener — an assistive technology activating the control, or a
+    // synthetic event — must be refused too, not only the one the browser already suppresses.
+    apply.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  test('swallows the editor’s own handling of events inside the widget', () => {
+    // The buttons manage their own clicks; letting the events reach the editor underneath would move
+    // the cursor (or start a selection) every time the author reached for Apply.
+    const widget = new RenameSuggestionWidget({
+      oldName: 'a', newName: 'b', kind: 'attribute', usageCount: 1, fileCount: 1, collision: false, revalidating: false, applied: false,
+    });
+    expect(widget.ignoreEvent(new MouseEvent('mousedown'))).toBe(true);
   });
 
   test('keeps the offer compact: shows the ref count but omits the file count for a single file', () => {

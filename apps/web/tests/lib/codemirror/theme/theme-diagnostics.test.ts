@@ -1,4 +1,13 @@
-import { themeDiagnostics } from '@/lib/codemirror/theme/theme-diagnostics';
+/* @jest-environment jsdom */
+import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
+import type { ThemeSettingDescriptor } from '@asciidocollab/shared';
+import {
+  themeDiagnostics,
+  createThemeDiagnosticsSource,
+} from '@/lib/codemirror/theme/theme-diagnostics';
+
+// jsdom environment — the lint source is handed a mounted EditorView to read the document from.
 
 /** The messages a document produces, for assertions that do not care about ranges. */
 function messages(text: string): string[] {
@@ -188,5 +197,38 @@ describe('themeDiagnostics — structure', () => {
   it('says nothing about an empty document', () => {
     expect(themeDiagnostics('')).toEqual([]);
     expect(themeDiagnostics('# only a comment\n')).toEqual([]);
+  });
+});
+
+describe('createThemeDiagnosticsSource', () => {
+  /** A theme key no bundled catalogue knows, standing in for one an enabled extension contributes. */
+  const CONTRIBUTED: ThemeSettingDescriptor = {
+    key: 'page.colour-scheme',
+    category: 'page',
+    valueKind: 'keyword',
+    description: 'Contributed by a hypothetical extension.',
+  };
+
+  /** Mounts a theme document and returns what the lint source reports for it. */
+  function lint(text: string, settings: readonly ThemeSettingDescriptor[]) {
+    const view = new EditorView({
+      state: EditorState.create({ doc: text }),
+      parent: document.body,
+    });
+    try {
+      return createThemeDiagnosticsSource(() => settings)(view);
+    } finally {
+      view.destroy();
+    }
+  }
+
+  it('reports the open document’s diagnostics', () => {
+    expect(lint('page:\n  colour-scheme: dark', [])[0].message).toMatch(/page\.colour-scheme/);
+  });
+
+  it('re-reads the offerable settings on every pass, so enabling an extension quietens its keys', () => {
+    // The getter is called per pass rather than captured at mount: an author enabling an extension
+    // mid-session must see its warnings disappear without the editor being torn down and rebuilt.
+    expect(lint('page:\n  colour-scheme: dark', [CONTRIBUTED])).toEqual([]);
   });
 });

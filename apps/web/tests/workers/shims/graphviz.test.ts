@@ -42,6 +42,19 @@ describe('graphviz diagram shim', () => {
     expect(seen).toBe(source);
   });
 
+  it('reports a non-Error render failure by its string form', async () => {
+    const shim = createGraphvizShim(async () => {
+      throw 'the engine gave up';
+    });
+
+    const output = await shim.render(blockInput('digraph { a -> b }'));
+
+    expect(output.ok).toBe(false);
+    if (!output.ok) {
+      expect(output.diagnostic.message).toBe('the engine gave up');
+    }
+  });
+
   it('maps a render throw to a malformed-diagram diagnostic and never throws', async () => {
     const shim = createGraphvizShim(async () => {
       throw new Error('syntax error in line 1');
@@ -53,6 +66,60 @@ describe('graphviz diagram shim', () => {
     if (!output.ok) {
       expect(output.diagnostic.code).toBe('malformed-diagram');
       expect(output.diagnostic.message).toContain('syntax error');
+    }
+  });
+});
+
+describe('graphviz diagram shim — bundled WASM engine', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  afterEach(() => {
+    jest.dontMock('@hpcc-js/wasm');
+  });
+
+  it('loads the WASM engine and hands it the DOT source unchanged', async () => {
+    const seen: string[] = [];
+    jest.doMock('@hpcc-js/wasm', () => ({
+      __esModule: true,
+      Graphviz: {
+        load: async () => ({
+          dot: (source: string) => {
+            seen.push(source);
+            return SAMPLE_SVG;
+          },
+        }),
+      },
+    }));
+    const { createGraphvizShim: create } = await import('@/workers/shims/graphviz');
+
+    const output = await create().render(blockInput('digraph { a -> b }'));
+
+    expect(seen).toEqual(['digraph { a -> b }']);
+    expect(output.ok).toBe(true);
+    if (output.ok) {
+      expect(new TextDecoder().decode(output.asset.bytes)).toBe(SAMPLE_SVG);
+    }
+  });
+
+  it('reports a WASM engine that will not load as a malformed-diagram diagnostic', async () => {
+    jest.doMock('@hpcc-js/wasm', () => ({
+      __esModule: true,
+      Graphviz: {
+        load: async () => {
+          throw new Error('wasm unavailable');
+        },
+      },
+    }));
+    const { createGraphvizShim: create } = await import('@/workers/shims/graphviz');
+
+    const output = await create().render(blockInput('digraph { a -> b }'));
+
+    expect(output.ok).toBe(false);
+    if (!output.ok) {
+      expect(output.diagnostic.code).toBe('malformed-diagram');
+      expect(output.diagnostic.message).toContain('wasm unavailable');
     }
   });
 });

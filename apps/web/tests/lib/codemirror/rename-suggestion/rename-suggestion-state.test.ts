@@ -536,4 +536,190 @@ describe('rename suggestion state machine', () => {
     expect(shown(view)?.status).toBe('applied'); // the Undo affordance is preserved
     view.destroy();
   });
+
+  test('a burst of content-changed frames costs one re-query, not one per frame', async () => {
+    // Every keystroke a collaborator makes sends a frame. Querying per frame would spend the
+    // detection rate-limit budget on answers that are obsolete before they arrive.
+    const { config, findSymbolUsages } = makeConfig({ refreshMs: 100 });
+    const view = mount(':edition:\n', config);
+    beginRename(view);
+    await jest.advanceTimersByTimeAsync(2000);
+    const callsBefore = findSymbolUsages.mock.calls.length;
+
+    for (let index = 0; index < 3; index++) {
+      view.dispatch({ effects: contentChangedRefreshEffect.of(null) });
+      await jest.advanceTimersByTimeAsync(20); // well inside the debounce window
+    }
+    await jest.advanceTimersByTimeAsync(100);
+    await flush();
+
+    // One evaluate: the old name's usages plus the new name's collision check.
+    expect(findSymbolUsages.mock.calls.length - callsBefore).toBe(2);
+    view.destroy();
+  });
+
+  test('a refresh that lands after the offer is gone re-queries nothing', async () => {
+    const { config, findSymbolUsages } = makeConfig({ refreshMs: 100 });
+    const view = mount(':edition:\n', config);
+    beginRename(view);
+    await jest.advanceTimersByTimeAsync(2000);
+
+    view.dispatch({ effects: contentChangedRefreshEffect.of(null) });
+    view.dispatch({ effects: setSuggestionEffect.of(null) }); // the author dismissed it meanwhile
+    const callsBefore = findSymbolUsages.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(100);
+    await flush();
+
+    expect(findSymbolUsages.mock.calls.length).toBe(callsBefore);
+    expect(shown(view)).toBeNull();
+    view.destroy();
+  });
+
+  test('moving to a different definition drops the offer at once', async () => {
+    // The offer is anchored to one definition line. Left on screen while the cursor sits on another
+    // definition, Apply would rewrite a symbol the author is no longer looking at.
+    const { config } = makeConfig();
+    const view = mount(':edition:\n:colour:\n', config);
+    beginRename(view);
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(shown(view)?.status).toBe('visible');
+
+    view.dispatch({ selection: { anchor: 13 } }); // inside `:colour:` on the second line
+    expect(shown(view)).toBeNull();
+    view.destroy();
+  });
+
+  test('offers nothing until the project and file are known', async () => {
+    // The extension is mounted with the editor, which can be ahead of the ids it needs; a lookup with
+    // no project id would search nothing and report a confident "no usages".
+    const { config, findSymbolUsages } = makeConfig({ getProjectId: () => undefined });
+    const view = mount(':edition:\n', config);
+    beginRename(view);
+    await jest.advanceTimersByTimeAsync(2000);
+    await flush();
+
+    expect(shown(view)).toBeNull();
+    expect(findSymbolUsages).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
+  test('a failed usage lookup leaves no offer stuck, and the next edit tries again', async () => {
+    // Rate limit or network: the lookup cannot confirm the rename is worth offering, so nothing is
+    // shown — but detection must re-arm, or one failure would end suggestions for the session.
+    let failing = true;
+    const findSymbolUsages = jest.fn(async (_p: string, name: string): Promise<SymbolUsage[]> => {
+      if (failing) throw new Error('rate limited');
+      return name === 'edition' ? [u('F', 'definition', 0), u('G', 'xref', 5), u('G', 'xref', 20)] : [];
+    });
+    const { config } = makeConfig({ findSymbolUsages });
+    const view = mount(':edition:\n', config);
+    beginRename(view);
+    await jest.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(shown(view)).toBeNull();
+
+    failing = false;
+    view.dispatch({ changes: { from: 8, to: 8, insert: 's' }, selection: { anchor: 9 } });
+    await jest.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(shown(view)?.status).toBe('visible');
+    view.destroy();
+  });
+});
+
+describe('applying an offer the editor has moved on from', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    document.body.innerHTML = '';
+  });
+
+  /** An offer over `:edition:` proposing `release`, installed without going through detection. */
+  const OFFER = {
+    candidate: {
+      kind: 'attribute' as const,
+      oldName: 'edition',
+      newName: 'release',
+      definitionRange: { from: 0, to: 9 },
+    },
+    usageCount: 2,
+    fileCount: 1,
+    status: 'visible' as const,
+    collision: false,
+    revalidating: false,
+  };
+
+  /** Mounts `:edition:` with the caret on the definition and the offer above already open. */
+  function mountWithOffer(config: RenameSuggestionConfig): EditorView {
+    const view = mount(':edition:\n', config);
+    view.dispatch({ selection: { anchor: 4 } });
+    view.dispatch({ effects: setSuggestionEffect.of(OFFER) });
+    return view;
+  }
+
+  test('drops the offer instead of rewriting when the definition no longer reads the new name', async () => {
+    // The author reverted or re-edited the definition after the offer appeared. Applying now would
+    // rewrite every reference to a name no definition carries — a project-wide dangling reference.
+    const { config, renameSymbol } = makeConfig();
+    const view = mountWithOffer(config);
+
+    view.dispatch({ effects: applyRequestEffect.of(null) });
+    await flush();
+
+    expect(renameSymbol).not.toHaveBeenCalled();
+    expect(shown(view)).toBeNull();
+    view.destroy();
+  });
+
+  test('refuses to write once edit rights are gone, leaving the offer alone', async () => {
+    let canEdit = true;
+    const { config, renameSymbol } = makeConfig({ getCanEdit: () => canEdit });
+    const view = mountWithOffer(config);
+
+    canEdit = false; // downgraded to observer between the offer appearing and the click
+    view.dispatch({ effects: applyRequestEffect.of(null) });
+    await flush();
+
+    expect(renameSymbol).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
+  test('refuses to write when the project id is no longer known', async () => {
+    let projectId: string | undefined = 'p1';
+    const { config, renameSymbol } = makeConfig({ getProjectId: () => projectId });
+    const view = mountWithOffer(config);
+
+    projectId = undefined; // the project unloaded underneath the open editor
+    view.dispatch({ effects: applyRequestEffect.of(null) });
+    await flush();
+
+    expect(renameSymbol).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
+  test('an editor torn down mid-rename never touches the destroyed view', async () => {
+    // The rewrite is a network round trip; the author can close the file inside it. Dispatching the
+    // applied state onto a destroyed view would throw out of a promise nothing is awaiting.
+    let settle: (() => void) | undefined;
+    const renameSymbol = jest.fn(
+      () =>
+        new Promise<RenameSymbolResult>((resolve) => {
+          settle = () => resolve({ rewrittenFiles: 1, updatedReferences: 2, warnings: [] });
+        }),
+    );
+    const { config } = makeConfig({ renameSymbol });
+    const view = mount(':edition:\n', config);
+    beginRename(view);
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(shown(view)?.status).toBe('visible');
+
+    view.dispatch({ effects: applyRequestEffect.of(null) });
+    await flush();
+    expect(renameSymbol).toHaveBeenCalled();
+
+    view.destroy();
+    settle?.();
+    await expect(flush()).resolves.toBeUndefined();
+  });
 });

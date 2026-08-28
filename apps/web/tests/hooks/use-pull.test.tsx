@@ -2,6 +2,9 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { usePull } from '@/hooks/use-pull';
 import { ApiError } from '@/lib/api/transport';
 
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
+
 const mockStartPull = jest.fn();
 const mockGetGitOperation = jest.fn();
 
@@ -371,6 +374,54 @@ describe('usePull polling outcomes', () => {
 
     await waitFor(() => expect(result.current.message).toEqual({ tone: 'error', text: 'The pull failed.' }));
     expect(result.current.pending).toBe(false);
+  });
+
+  test('ABORTED stops polling and reports the pull as aborted', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => usePull('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'ABORTED', progress: 20, errorCode: null, driftSummary: null });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(result.current.message).toEqual({ tone: 'error', text: 'The pull was aborted.' }));
+    expect(result.current.pending).toBe(false);
+    expect(onSucceeded).not.toHaveBeenCalled();
+  });
+
+  test('a poll that answers after the hook is gone reports nothing', async () => {
+    const onSucceeded = jest.fn();
+    let settle: (value: unknown) => void = noop;
+    const settling = new Promise((resolve) => {
+      settle = resolve;
+    });
+    const { result, unmount } = renderHook(() => usePull('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockReturnValue(settling);
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+    unmount();
+    await act(async () => {
+      settle({ id: 'op1', kind: 'PULL', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
+    });
+
+    expect(onSucceeded).not.toHaveBeenCalled();
   });
 
   test('keeps polling on an interval while the operation is non-terminal', async () => {

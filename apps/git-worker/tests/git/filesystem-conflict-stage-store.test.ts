@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { GitOperationId } from '@asciidocollab/domain';
@@ -197,5 +197,139 @@ describe('FilesystemConflictStageStore', () => {
     const { store } = await createStore();
 
     expect(await store.clear(OPERATION_A)).toEqual({ success: true, value: undefined });
+  });
+
+  it('rejects an absolute path on every path-keyed operation', async () => {
+    // An absolute path is refused outright rather than being resolved against the store root, so
+    // no read or write can ever be aimed at a location the store does not own.
+    const { root, store } = await createStore();
+    const absolutePath = path.join(tmpdir(), 'outside-the-store.adoc');
+
+    const written = await store.writeStages(OPERATION_A, absolutePath, {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+    const mergedWritten = await store.writeMerged(OPERATION_A, absolutePath, Buffer.from('merged'));
+    const stagesRead = await store.readStages(OPERATION_A, absolutePath);
+    const mergedRead = await store.readMerged(OPERATION_A, absolutePath);
+
+    expect(written.success).toBe(false);
+    expect(mergedWritten.success).toBe(false);
+    expect(stagesRead.success).toBe(false);
+    expect(mergedRead.success).toBe(false);
+    await expect(stat(path.join(root, OPERATION_A.value))).rejects.toThrow();
+  });
+
+  it('returns null reading merged bytes for a path that has no resolution recorded', async () => {
+    const { store } = await createStore();
+    await store.writeStages(OPERATION_A, 'a.adoc', {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+
+    expect(await store.readMerged(OPERATION_A, 'a.adoc')).toEqual({ success: true, value: null });
+  });
+
+  it('fails reading stages whose meta.json parses but is not the recorded shape', async () => {
+    // A truncated or foreign meta.json must not be trusted into a ConflictStages value — the
+    // caller would otherwise resolve a conflict against a path/binary flag that is not the file's.
+    const { root, store } = await createStore();
+    await store.writeStages(OPERATION_A, 'a.adoc', {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+    const fileDirectory = path.join(root, OPERATION_A.value, 'files', Buffer.from('a.adoc').toString('base64url'));
+    await writeFile(path.join(fileDirectory, 'meta.json'), JSON.stringify({ path: 'a.adoc' }), 'utf8');
+
+    const read = await store.readStages(OPERATION_A, 'a.adoc');
+
+    expect(read.success).toBe(false);
+  });
+
+  it('fails reading stages whose meta.json is not valid JSON at all', async () => {
+    const { root, store } = await createStore();
+    await store.writeStages(OPERATION_A, 'a.adoc', {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+    const fileDirectory = path.join(root, OPERATION_A.value, 'files', Buffer.from('a.adoc').toString('base64url'));
+    await writeFile(path.join(fileDirectory, 'meta.json'), 'not json at all', 'utf8');
+
+    const read = await store.readStages(OPERATION_A, 'a.adoc');
+
+    expect(read.success).toBe(false);
+  });
+
+  it('fails reading stages when a stage read fails for a reason other than absence', async () => {
+    // Only a genuinely missing stage file means "that side deleted the file". A real I/O failure
+    // must surface as a failure, never be reinterpreted as a deletion that drops the file.
+    const { root, store } = await createStore();
+    await store.writeStages(OPERATION_A, 'a.adoc', {
+      base: Buffer.from('base'),
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+    const fileDirectory = path.join(root, OPERATION_A.value, 'files', Buffer.from('a.adoc').toString('base64url'));
+    await rm(path.join(fileDirectory, 'base'));
+    await mkdir(path.join(fileDirectory, 'base'));
+
+    const read = await store.readStages(OPERATION_A, 'a.adoc');
+
+    expect(read.success).toBe(false);
+  });
+
+  it('fails reading a snapshot that parses but is not the recorded shape', async () => {
+    const { root, store } = await createStore();
+    await store.writeSnapshot(OPERATION_A, { preOpHead: 'a'.repeat(40), branch: 'main' });
+    await writeFile(path.join(root, OPERATION_A.value, 'snapshot.json'), JSON.stringify({ branch: 'main' }), 'utf8');
+
+    const read = await store.readSnapshot(OPERATION_A);
+
+    expect(read.success).toBe(false);
+  });
+
+  it('fails reading a snapshot that is not valid JSON at all', async () => {
+    const { root, store } = await createStore();
+    await store.writeSnapshot(OPERATION_A, { preOpHead: 'a'.repeat(40), branch: 'main' });
+    await writeFile(path.join(root, OPERATION_A.value, 'snapshot.json'), '{ truncated', 'utf8');
+
+    const read = await store.readSnapshot(OPERATION_A);
+
+    expect(read.success).toBe(false);
+  });
+
+  it('reports a generic failure, never a filesystem detail, when the store root cannot hold a directory', async () => {
+    // The root being unusable (here, a regular file where the directory belongs) must degrade into
+    // this port's opaque failure — no path, operation id, or errno may reach the caller.
+    const parent = await mkdtemp(path.join(tmpdir(), 'git-worker-test-conflict-store-'));
+    const rootAsFile = path.join(parent, 'root');
+    await writeFile(rootAsFile, 'not a directory');
+    const store = new FilesystemConflictStageStore(rootAsFile);
+
+    const snapshotWritten = await store.writeSnapshot(OPERATION_A, { preOpHead: 'a'.repeat(40), branch: 'main' });
+    const stagesWritten = await store.writeStages(OPERATION_A, 'a.adoc', {
+      base: null,
+      ours: Buffer.from('ours'),
+      theirs: Buffer.from('theirs'),
+      isBinary: false,
+    });
+    const mergedWritten = await store.writeMerged(OPERATION_A, 'a.adoc', Buffer.from('merged'));
+
+    expect(snapshotWritten.success).toBe(false);
+    expect(stagesWritten.success).toBe(false);
+    expect(mergedWritten.success).toBe(false);
+    if (snapshotWritten.success) throw new Error('expected failure');
+    expect(snapshotWritten.error.message).toBe(
+      'The conflict stage store could not complete the requested operation.',
+    );
   });
 });

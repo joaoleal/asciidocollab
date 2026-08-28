@@ -1,6 +1,12 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { defaultAppearance, resolveAppearance } from '../../src/print-appearance';
+import {
+  ADMONITION_TYPES,
+  defaultAppearance,
+  HEADING_LEVELS,
+  MAX_FONT_FAMILY_LENGTH,
+  resolveAppearance,
+} from '../../src/print-appearance';
 import type { AppearanceModel } from '../../src/print-appearance';
 
 const REPO_ROOT = path.join(__dirname, '..', '..', '..', '..');
@@ -2220,5 +2226,120 @@ describe('what an empty value writes, which is Ruby’s to_s of nil', () => {
     expect(appearanceOf('extends: default\nv:\nheading:\n  h2:\n    margin_top: $v\n').headings[2].marginTopPt).toBe(
       DEFAULT.headings[2].marginTopPt,
     );
+  });
+});
+
+describe('a setting the document never wrote a line of its own for', () => {
+  // A merge key hands one mapping's entries to another, so the settings it contributes exist in the
+  // theme without being written anywhere in its text — there is no line to point an author at. The
+  // anchor below is parked under `font`, whose subkeys the loader reads only for the catalogue and
+  // the fallback list and drops otherwise, so the anchor itself contributes no setting of its own
+  // and the merged copy is the only place the value is read.
+  const mergedRefusal = [
+    'v: true',
+    'font:',
+    '  holder: &shared',
+    '    font_color: -$v',
+    'base:',
+    '  <<: *shared',
+    '',
+  ].join('\n');
+
+  const mergedDangling = [
+    'font:',
+    '  holder: &shared',
+    '    caret_content: $nowhere',
+    'menu:',
+    '  <<: *shared',
+    '',
+  ].join('\n');
+
+  it('refuses the whole document over a merged setting without inventing a line for it', () => {
+    const result = resolveAppearance({ themeText: mergedRefusal, themePath: 'brand-theme.yml' });
+    expect(result.themeApplied).toBe(false);
+    // The resource still names the file, so the diagnostic is still attributable; what it must not
+    // carry is a line number, because the setting is on none of them.
+    expect(result.diagnostics[0]?.location).toEqual({ path: 'brand-theme.yml' });
+  });
+
+  it('names a merged dangling reference by its setting, still without a line', () => {
+    const result = resolveAppearance({ themeText: mergedDangling, themePath: 'brand-theme.yml' });
+    expect(result.themeApplied).toBe(true);
+    // The key is one this module's own vocabulary can name, so the sentence spells it out — the
+    // value survives as the text the export holds, so nothing else would mention it.
+    expect(result.diagnostics[0]?.themeKey).toBe('menu_caret_content');
+    expect(result.diagnostics[0]?.message).toContain('menu.caret.content');
+    expect(result.diagnostics[0]?.location).toEqual({ path: 'brand-theme.yml' });
+  });
+});
+
+describe('the seam the font catalogue puts through the middle of a document', () => {
+  const CATALOGUE = [
+    'font:',
+    '  catalog:',
+    '    Brand:',
+    '      normal: GEM_FONTS_DIR/notoserif-regular-subset.ttf',
+  ].join('\n');
+
+  it('reports a refusal written below the catalogue at the line it is written on', () => {
+    // The cascade is read in two passes split where the catalogue sits, and a refusal in the second
+    // one is still a refusal: the export throws the document away wherever it meets it.
+    const result = resolveAppearance({
+      themeText: `${CATALOGUE}\nv: true\nzzz: -$v\n`,
+      themePath: 'brand-theme.yml',
+    });
+    expect(result.themeApplied).toBe(false);
+    expect(result.diagnostics[0]?.location).toEqual({ path: 'brand-theme.yml', line: 6 });
+  });
+
+  it('expands a fallback list written below the catalogue against the settings below it too', () => {
+    // `font_fallbacks` written after the catalogue is expanded by the loader once it has read the
+    // settings between the two, so `-$v` finds the boolean and throws the document away. Against the
+    // settings ABOVE the split it would have found nothing and dangled harmlessly, which is the
+    // contrast the second half states.
+    const below = resolveAppearance({
+      themeText: `${CATALOGUE}\nv: true\nfont_fallbacks: [-$v]\n`,
+      themePath: 'brand-theme.yml',
+    });
+    expect(below.themeApplied).toBe(false);
+    expect(below.diagnostics[0]?.message).toContain('fallback name');
+
+    const above = resolveAppearance({
+      themeText: `font_fallbacks: [-$v]\n${CATALOGUE}\nv: true\n`,
+      themePath: 'brand-theme.yml',
+    });
+    expect(above.themeApplied).toBe(true);
+    expect(above.diagnostics).toEqual([]);
+  });
+
+  it('says once what a dangling reference written on both sides of the seam says twice', () => {
+    // One mistake, written under two spellings of the same setting — the nested one above the
+    // catalogue and the flat one below it — so each pass meets it separately. A list that reported
+    // both would count one fault twice in a panel an author reads top to bottom.
+    const result = resolveAppearance({
+      themeText: `menu:\n  caret_content: $nowhere\n${CATALOGUE}\nmenu_caret_content: $nowhere\n`,
+      themePath: 'brand-theme.yml',
+    });
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]?.themeKey).toBe('menu_caret_content');
+  });
+});
+
+describe('the shape constants the barrel publishes beside the appearance', () => {
+  it('names an admonition kind for every icon the default appearance carries', () => {
+    expect([...ADMONITION_TYPES].toSorted()).toEqual(Object.keys(DEFAULT.admonition.icons).toSorted());
+  });
+
+  it('names a heading level for every heading the default appearance carries', () => {
+    for (const level of HEADING_LEVELS) expect(DEFAULT.headings[level]).toBeDefined();
+    expect(Object.keys(DEFAULT.headings)).toHaveLength(HEADING_LEVELS.length);
+  });
+
+  it('reads a family name up to the published cap and no further', () => {
+    // The cap is exported because it is the bound a caller can state to an author before they save;
+    // a name longer than it is not read at all, and the default family stands.
+    const atCap = 'A'.repeat(MAX_FONT_FAMILY_LENGTH);
+    expect(appearanceOf(`base:\n  font_family: ${atCap}\n`).base.fontFamily).toBe(atCap);
+    expect(appearanceOf(`base:\n  font_family: ${atCap}B\n`).base.fontFamily).toBe(DEFAULT.base.fontFamily);
   });
 });

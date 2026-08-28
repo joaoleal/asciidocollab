@@ -53,6 +53,14 @@ describe('editorShortcutsKeymap', () => {
     expect(keys).not.toContain('Mod-b');
   });
 
+  it('binds nothing for a command the shortcut registry has no default combo for', () => {
+    // A command offered here but absent from the registry has no keystroke to bind: skipping it keeps
+    // the keymap free of an entry with an empty key, which CodeMirror would never be able to match.
+    const keymap = editorShortcutsKeymap({ 'editor:not-in-the-registry': () => true }, new Map());
+
+    expect(boundKeys(keymap)).toEqual([]);
+  });
+
   it('ignores a binding for an action this editor does not provide', () => {
     // The registry is shared with the file tree. Treating its actions as an error here would mean
     // adding a shortcut anywhere broke every other consumer of the same bindings.

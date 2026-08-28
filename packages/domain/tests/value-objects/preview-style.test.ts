@@ -1,4 +1,4 @@
-import { PreviewStyle } from '../../src/value-objects/editor/preview-style';
+import { PreviewStyle, isPreviewStyleValue } from '../../src/value-objects/editor/preview-style';
 import { ValidationError } from '../../src/errors/common/validation-error';
 
 describe('PreviewStyle', () => {
@@ -49,5 +49,15 @@ describe('PreviewStyle', () => {
     const result = PreviewStyle.parse('unknown');
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(ValidationError);
+  });
+});
+
+describe('isPreviewStyleValue re-export', () => {
+  test('domain consumers importing from this module get the working guard', () => {
+    expect(typeof isPreviewStyleValue).toBe('function');
+    expect(isPreviewStyleValue('asciidocollab')).toBe(true);
+    expect(isPreviewStyleValue('asciidoctor')).toBe(true);
+    expect(isPreviewStyleValue('print')).toBe(true);
+    expect(isPreviewStyleValue('markdown')).toBe(false);
   });
 });

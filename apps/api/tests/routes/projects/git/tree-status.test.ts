@@ -6,6 +6,7 @@ import type {
   GitWorkerResult,
   GitWorkerStatusData,
 } from '@asciidocollab/infrastructure';
+import { GitWorkerTransportError } from '@asciidocollab/infrastructure';
 import {
   buildTreeStatus,
   deriveFileGitStatus,
@@ -185,6 +186,47 @@ describe('GET /projects/:projectId/git/tree-status', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json().error.code).toBe('repository_not_connected');
+
+    await instance.close();
+  });
+
+  test('maps a thrown transport failure to 502 without leaking transport internals', async () => {
+    const instance = await register(
+      buildServer({
+        role: 'viewer',
+        client: {
+          getStatus: jest.fn(async () => {
+            throw new GitWorkerTransportError('git-worker request to /internal/git/status failed: secret-squirrel');
+          }),
+        },
+      }),
+    );
+
+    const response = await getTreeStatus(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.code).toBe('git_worker_unavailable');
+    expect(JSON.stringify(response.json())).not.toContain('secret-squirrel');
+
+    await instance.close();
+  });
+
+  test('propagates a non-transport worker failure instead of reporting the worker unavailable', async () => {
+    const instance = await register(
+      buildServer({
+        role: 'viewer',
+        client: {
+          getStatus: jest.fn(async () => {
+            throw new Error('unexpected failure');
+          }),
+        },
+      }),
+    );
+
+    const response = await getTreeStatus(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
 
     await instance.close();
   });

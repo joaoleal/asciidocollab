@@ -1,4 +1,15 @@
-import { computeDimmedRanges } from '@/lib/codemirror/conditional-dimming';
+/*
+ * @jest-environment jsdom
+ */
+import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
+import {
+  computeDimmedRanges,
+  asciidocConditionalDimming,
+  DIMMED_CONDITIONAL_CLASS,
+} from '@/lib/codemirror/conditional-dimming';
+
+// jsdom environment — the ViewPlugin builds mark decorations and EditorView needs a DOM host.
 
 /**
  * the conditional-dimming DECISION. Given a document containing
@@ -95,5 +106,38 @@ describe('computeDimmedRanges', () => {
     const text = 'ifdef::draft[]\n\nendif::[]\n';
     // The blank line (index 1) is empty; a zero-length dim range is pointless, so it is skipped.
     expect(computeDimmedRanges(text, new Map())).toEqual([]);
+  });
+
+  test('treats an unsupplied scope as the empty one, so every guarded branch reads inactive', () => {
+    // The editor mounts before the project index resolves anything, so the no-scope form is a real
+    // state rather than a test convenience: nothing is defined, so an ifdef body is dimmed.
+    expect(computeDimmedRanges('ifdef::draft[]\nhidden\nendif::[]\n')).toHaveLength(1);
+  });
+});
+
+describe('asciidocConditionalDimming ViewPlugin', () => {
+  test('dims the body of an inactive branch in a mounted editor', () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: 'ifdef::draft[]\nhidden\nendif::[]\n',
+        extensions: [asciidocConditionalDimming(() => new Map())],
+      }),
+      parent: document.body,
+    });
+    expect(view.dom.querySelector(`.${DIMMED_CONDITIONAL_CLASS}`)).not.toBeNull();
+    view.destroy();
+  });
+
+  test('dims against the empty scope when mounted without a scope accessor', () => {
+    // How the editor mounts before the symbol index has resolved the file's attributes.
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: 'ifdef::draft[]\nhidden\nendif::[]\n',
+        extensions: [asciidocConditionalDimming()],
+      }),
+      parent: document.body,
+    });
+    expect(view.dom.querySelector(`.${DIMMED_CONDITIONAL_CLASS}`)).not.toBeNull();
+    view.destroy();
   });
 });

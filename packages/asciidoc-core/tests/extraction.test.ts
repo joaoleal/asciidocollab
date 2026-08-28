@@ -1164,3 +1164,63 @@ describe('leveloffset is engine-reserved (never leaks into an attribute map)', (
     ).toBe(1);
   });
 });
+
+describe('inheritedLevelOffset with a file included more than once', () => {
+  test('the first include edge in document order decides the inherited offset', () => {
+    const files: Record<string, string> = {
+      main: 'include::shared.adoc[leveloffset=+1]\ninclude::shared.adoc[leveloffset=+3]\n',
+      shared: '',
+    };
+    const tree = buildIncludeGraph('main', (id) => files[id] ?? null, (_from, target) => target.replace('.adoc', ''));
+    expect(inheritedLevelOffset(tree, 'shared')).toBe(1);
+  });
+});
+
+describe('effectiveLevelOffset over an unresolvable include', () => {
+  test('an include whose target does not resolve contributes no offset to later content', () => {
+    const files = {
+      'main.adoc': 'include::missing.adoc[leveloffset=+4]\n\ninclude::child.adoc[]\n',
+      'child.adoc': '== Child\n',
+    };
+    expect(
+      effectiveLevelOffset({
+        rootFileId: 'main.adoc',
+        fileId: 'child.adoc',
+        readContent: read(files),
+        resolveInclude: resolveInclude(files),
+      }),
+    ).toBe(0);
+  });
+});
+
+describe('extractReferences over verbatim and empty targets', () => {
+  test('an include directive inside a listing block is a code sample, not a reference', () => {
+    const references = extractReferences('f1', '----\ninclude::part.adoc[]\n----\n');
+    expect(references).toEqual([]);
+  });
+
+  test('an xref whose target is only whitespace yields no reference', () => {
+    expect(extractReferences('f1', 'See <<   >> here.\n')).toEqual([]);
+  });
+});
+
+describe('extractSymbols with an inherited sectids seed', () => {
+  test('a seeded sectids value is kept, so headings still get auto-generated ids', () => {
+    const symbols = extractSymbols('f1', '== Intro\n', new Map([['sectids', '']]));
+    expect(symbols).toEqual([expect.objectContaining({ kind: 'section', name: '_intro' })]);
+  });
+});
+
+describe('resolveReference for an unknown attribute', () => {
+  test('an attributeRef with no matching attribute symbol is unresolved', () => {
+    const reference: Reference = { kind: 'attributeRef', target: 'missing', fileId: 'f1', range: { from: 0, to: 9 } };
+    const symbols: ProjectSymbol[] = [{ kind: 'anchor', name: 'missing', fileId: 'f1', range: { from: 0, to: 1 } }];
+    expect(resolveReference(reference, symbols)).toBe('unresolved');
+  });
+});
+
+describe('parseIncludeLines with a non-numeric single token', () => {
+  test('a token that is not a number and not a range is skipped', () => {
+    expect(parseIncludeLines('lines=abc;6')).toEqual([[6, 6]]);
+  });
+});

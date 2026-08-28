@@ -4,6 +4,10 @@ import { Tree } from '@lezer/common';
 import { blockTokenizer } from '@/lib/codemirror/asciidoc-block-tokens';
 import { asciidocLanguage } from '@/lib/codemirror/asciidoc-language';
 import { createBlockTokenLogic } from '@/lib/codemirror/asciidoc-block-token-logic';
+import {
+  isConstrainedOpenBoundary,
+  scanInlineMark,
+} from '@/lib/codemirror/asciidoc-block-token-helpers';
 import { BODY, HEADER_AFTER_TITLE, HEADER_AFTER_AUTHOR } from '@/lib/codemirror/asciidoc-block-context-logic';
 
 /**
@@ -802,5 +806,72 @@ describe('createBlockTokenLogic block detection', () => {
       expectAuthor('v1.0, 2026-07-18\n', null));
     test('neither is emitted at a generic block boundary', () =>
       expect(runLogic('Jane Doe\n').token).toBeNull());
+  });
+});
+
+/** The char code of a single character, as the tokenizer sees it. */
+const code = (character: string): number => character.codePointAt(0) ?? -1;
+/** A look-ahead view over `text` with the cursor on index 0. */
+const peekOver = (text: string) => ({
+  peek: (offset: number) => (offset < text.length ? text.codePointAt(offset)! : -1),
+});
+
+describe('constrained inline emphasis boundaries', () => {
+  describe('isConstrainedOpenBoundary', () => {
+    test('opens at the start of a line and after whitespace', () => {
+      expect(isConstrainedOpenBoundary(-1)).toBe(true);
+      expect(isConstrainedOpenBoundary(code('\n'))).toBe(true);
+      expect(isConstrainedOpenBoundary(code(' '))).toBe(true);
+      expect(isConstrainedOpenBoundary(code('\t'))).toBe(true);
+    });
+
+    test('never opens directly after a word character, so an in-word mark stays plain text', () => {
+      // `a*b*c` must not become emphasis — this is the rule that keeps `snake_case_names` readable.
+      expect(isConstrainedOpenBoundary(code('a'))).toBe(false);
+      expect(isConstrainedOpenBoundary(code('7'))).toBe(false);
+      expect(isConstrainedOpenBoundary(code('_'))).toBe(false);
+    });
+
+    test('never opens directly after another mark character', () => {
+      expect(isConstrainedOpenBoundary(code('*'))).toBe(false);
+      expect(isConstrainedOpenBoundary(code('`'))).toBe(false);
+    });
+
+    test('opens after the punctuation Asciidoctor’s pre-set allows', () => {
+      for (const character of [',', ';', ':', '"', "'", '-', '(', '[', '{', '<']) {
+        expect(isConstrainedOpenBoundary(code(character))).toBe(true);
+      }
+    });
+
+    test('does not open after punctuation outside that pre-set', () => {
+      // The set is deliberately conservative: anything not listed errs toward no highlight rather
+      // than toward a false one.
+      for (const character of ['!', '?', '@', ')', ']', '}', '>', '.', '/']) {
+        expect(isConstrainedOpenBoundary(code(character))).toBe(false);
+      }
+    });
+  });
+
+  describe('scanInlineMark', () => {
+    test('walks past a doubled mark inside the body rather than closing on it', () => {
+      // `*a**b*` is one bold span whose body contains `**`; closing at the doubled mark would leave
+      // the trailing `b*` as stray text.
+      expect(scanInlineMark(peekOver('*a**b*'), code('*'), -1)).toEqual({
+        length: 6,
+        unconstrained: false,
+      });
+    });
+
+    test('does not close on a mark that a word character follows', () => {
+      // `*ab*c` — closing here would emphasise part of a word, which Asciidoctor never does.
+      expect(scanInlineMark(peekOver('*ab*c'), code('*'), -1)).toBeNull();
+    });
+
+    test('closes on a mark that punctuation follows', () => {
+      expect(scanInlineMark(peekOver('*ab*.'), code('*'), -1)).toEqual({
+        length: 4,
+        unconstrained: false,
+      });
+    });
   });
 });

@@ -86,4 +86,62 @@ describe('EditorGoToSymbol', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     expect(onSelect).not.toHaveBeenCalled();
   });
+
+  test('ArrowUp moves the highlight back and stops at the first row', () => {
+    const { onSelect } = renderPalette();
+    const input = screen.getByRole('textbox');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith(SYMBOLS[1]);
+
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenLastCalledWith(SYMBOLS[0]);
+  });
+
+  test('ArrowDown stops at the last row', () => {
+    const { onSelect } = renderPalette();
+    const input = screen.getByRole('textbox');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith(SYMBOLS[2]);
+  });
+
+  test('typing an ordinary character leaves the highlight where it is', () => {
+    const { onSelect, onClose } = renderPalette();
+    const input = screen.getByRole('textbox');
+    fireEvent.keyDown(input, { key: 'a' });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith(SYMBOLS[0]);
+  });
+
+  test('hovering a row moves the highlight to it', () => {
+    const { onSelect } = renderPalette();
+    fireEvent.mouseEnter(screen.getByText('api-reference').closest('button') as HTMLElement);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith(SYMBOLS[2]);
+  });
+
+  test('a click on the backdrop closes the palette, one inside it does not', () => {
+    const { onClose } = renderPalette();
+    fireEvent.mouseDown(screen.getByRole('dialog'));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.mouseDown(screen.getByRole('dialog').parentElement as HTMLElement);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('a symbol whose file has no known path is listed and filtered on its name alone', () => {
+    const orphan: ProjectSymbol = { kind: 'anchor', name: 'orphan', fileId: 'gone', range: { from: 0, to: 1 } };
+    renderPalette({ symbols: [...SYMBOLS, orphan] });
+    expect(screen.getByText('orphan')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'orphan' } });
+    expect(screen.getByText('orphan')).toBeInTheDocument();
+    expect(screen.queryByText('overview')).not.toBeInTheDocument();
+  });
 });

@@ -62,6 +62,17 @@ const liveDocument = new Document(
   MimeType.create('text/asciidoc'),
 );
 
+// A document whose file node was removed from the tree while its collaborative room stayed open.
+const danglingDocument = new Document(
+  DocumentId.create('550e8400-e29b-41d4-a716-446655440031'),
+  FileNodeId.create('550e8400-e29b-41d4-a716-446655440030'),
+  ContentId.create('550e8400-e29b-41d4-a716-446655440032'),
+  YjsStateId.create('550e8400-e29b-41d4-a716-446655440033'),
+  MimeType.create('text/asciidoc'),
+);
+// An open room whose document row no longer exists at all.
+const ORPHAN_DOCUMENT_ID = DocumentId.create('550e8400-e29b-41d4-a716-446655440041');
+
 const MERGE_CHANGES: readonly GitMergeFileChange[] = [
   { type: 'added', path: 'chapters/new.adoc', content: Buffer.from('= New', 'utf8'), mimeType: 'text/asciidoc' },
 ];
@@ -114,6 +125,8 @@ interface HarnessOptions {
   reader?: CollaborativeContentReader;
   activeSession?: boolean;
   initialSyncStatus?: 'BEHIND' | 'UP_TO_DATE';
+  /** When true, two extra open rooms are seeded whose document/file node no longer resolve. */
+  danglingSessions?: boolean;
 }
 
 async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -123,6 +136,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     reader = makeReader({ success: true, value: LIVE_TEXT }),
     activeSession = true,
     initialSyncStatus = 'BEHIND',
+    danglingSessions = false,
   } = options;
 
   const memberRepo = await memberRepoWithRole(role);
@@ -139,6 +153,11 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
   await documentRepo.save(liveDocument);
   if (activeSession) {
     await collaborationSessionRepo.open(PROJECT_ID, liveDocument.id);
+  }
+  if (danglingSessions) {
+    await collaborationSessionRepo.open(PROJECT_ID, ORPHAN_DOCUMENT_ID);
+    await documentRepo.save(danglingDocument);
+    await collaborationSessionRepo.open(PROJECT_ID, danglingDocument.id);
   }
 
   if (connected) {
@@ -415,5 +434,28 @@ describe('PullChangesUseCase', () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(InsufficientRoleError);
     expect(harness.commandRunner.fetchCalls).toHaveLength(0);
+  });
+
+  test('open rooms whose document or file node no longer resolves are skipped instead of aborting the pull', async () => {
+    const harness = await buildHarness({ danglingSessions: true });
+    harness.commandRunner.seedFetch(PROJECT_ID, { remoteHead: REMOTE_HEAD });
+    harness.commandRunner.seedMerge(PROJECT_ID, MERGED_OUTCOME);
+
+    const result = await harness.useCase.execute(pullInput());
+
+    expect(result.success).toBe(true);
+    // Only the one resolvable live document is flushed as the merge's local side.
+    expect(harness.commandRunner.mergeCalls[0].input.flush).toEqual([{ path: LIVE_PATH, content: LIVE_TEXT }]);
+  });
+
+  test('a live room with no text yet contributes no flush entry, leaving the working tree bytes as the local side', async () => {
+    const harness = await buildHarness({ reader: makeReader({ success: true, value: null }) });
+    harness.commandRunner.seedFetch(PROJECT_ID, { remoteHead: REMOTE_HEAD });
+    harness.commandRunner.seedMerge(PROJECT_ID, MERGED_OUTCOME);
+
+    const result = await harness.useCase.execute(pullInput());
+
+    expect(result.success).toBe(true);
+    expect(harness.commandRunner.mergeCalls[0].input.flush).toEqual([]);
   });
 });

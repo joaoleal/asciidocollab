@@ -467,3 +467,166 @@ describe('useHtmlExport — where diagrams end up', () => {
     expect(view.result.current.failures).toEqual([]);
   });
 });
+
+// A saved file that asks a stranger's browser for `http://localhost:3000/_next/static/media/…` has
+// neither the app's typography nor any business naming the machine that made it. These pin that the
+// faces the page declares travel with the export, typed the way a browser will accept them.
+/** Declare one app webface in the page, the way `next/font` declares it. */
+function declareFontFace(source: string): void {
+  const style = document.createElement('style');
+  style.dataset.appFont = 'yes';
+  style.textContent =
+    '@font-face { font-family: Inter; font-style: normal; font-weight: 400; ' +
+    `src: url("${source}") format("woff2"); unicode-range: U+0-FF; }`;
+  document.head.append(style);
+}
+
+describe('useHtmlExport — the app’s own webfonts', () => {
+  const originalFetch = globalThis.fetch;
+  const FONT_BYTES = new Uint8Array([119, 79, 70, 50]);
+
+  /** Answer every font request with `contentType` (or none at all), or refuse it outright. */
+  function serveFonts(options: { ok: boolean; contentType?: string }): void {
+    const headers =
+      options.contentType === undefined ? new Headers() : new Headers({ 'content-type': options.contentType });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: async () => ({
+        ok: options.ok,
+        headers,
+        arrayBuffer: async () => FONT_BYTES.buffer,
+      }),
+    });
+  }
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    for (const style of document.querySelectorAll('style[data-app-font]')) style.remove();
+  });
+
+  test('embeds a woff2 face under the type its file name declares', async () => {
+    // A static-file server often labels a font `application/octet-stream`, and a `data:` URI with
+    // that type is a font some browsers refuse to use — so the path wins over the header here.
+    declareFontFace('/_next/static/media/inter.woff2');
+    serveFonts({ ok: true, contentType: 'application/octet-stream' });
+    const { view, downloads } = setup();
+
+    await start(view);
+    await finish(view);
+
+    expect(strFromU8(downloads[0].bytes)).toContain('data:font/woff2;base64,');
+  });
+
+  test('falls back to the served type when the file name carries no extension', async () => {
+    declareFontFace('/_next/static/media/interregular');
+    serveFonts({ ok: true, contentType: 'font/otf' });
+    const { view, downloads } = setup();
+
+    await start(view);
+    await finish(view);
+
+    expect(strFromU8(downloads[0].bytes)).toContain('data:font/otf;base64,');
+  });
+
+  test('falls back to woff2 when neither the name nor the server says what it is', async () => {
+    declareFontFace('/_next/static/media/interregular');
+    serveFonts({ ok: true, contentType: undefined });
+    const { view, downloads } = setup();
+
+    await start(view);
+    await finish(view);
+
+    expect(strFromU8(downloads[0].bytes)).toContain('data:font/woff2;base64,');
+  });
+
+  test('drops a face the server refuses rather than failing the export over typography', async () => {
+    // Unlike a missing image, a font that could not be retrieved costs only the exact typeface: the
+    // text renders in the next family of the stack, so it is not worth reporting to the author.
+    declareFontFace('/_next/static/media/inter.woff2');
+    serveFonts({ ok: false });
+    const { view, downloads } = setup();
+
+    await start(view);
+    await finish(view);
+
+    expect(downloads).toHaveLength(1);
+    expect(strFromU8(downloads[0].bytes)).not.toContain('inter.woff2');
+    expect(view.result.current.failures).toEqual([]);
+  });
+
+  test('writes the font beside the document in a zip rather than embedding it', async () => {
+    declareFontFace('/_next/static/media/inter.woff2');
+    serveFonts({ ok: true, contentType: 'font/woff2' });
+    const { view, downloads } = setup();
+
+    await start(view, { ...REQUEST, packaging: 'zip' });
+    await finish(view);
+
+    const entries = unzipSync(downloads[0].bytes);
+    expect(Object.keys(entries).some((path) => path.endsWith('.woff2'))).toBe(true);
+  });
+});
+
+describe('useHtmlExport — handing the file over', () => {
+  test('carries the revision date through to the document header', async () => {
+    const { view, downloads } = setup();
+    await start(view);
+    await finish(view, { details: { title: 'The Book', revdate: '2026-01-31' } });
+
+    expect(strFromU8(downloads[0].bytes)).toContain('2026-01-31');
+  });
+
+  test('saves through the browser when no download seam is injected', async () => {
+    const clicked: string[] = [];
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: () => 'blob:exported-document',
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+    const listener = (event: Event): void => {
+      // jsdom would otherwise try to navigate to the object URL, which it cannot do.
+      event.preventDefault();
+      const target = event.target;
+      if (target instanceof HTMLAnchorElement) clicked.push(target.download);
+    };
+    document.addEventListener('click', listener);
+    MockWorker.instances = [];
+    const view = renderHook(() =>
+      useHtmlExport({
+        projectId: 'project-1',
+        createWorker: () => new MockWorker() as unknown as Worker,
+        fetchAsset: fetchOk,
+      }),
+    );
+
+    await start(view);
+    await finish(view);
+
+    document.removeEventListener('click', listener);
+    expect(clicked).toEqual([expect.stringMatching(/^the-book-project-\d{4}-\d{2}-\d{2}\.html$/)]);
+  });
+
+  test('a superseded export’s failure never lands on the current one', async () => {
+    const { view } = setup();
+    await start(view);
+    const first = worker();
+    await start(view);
+
+    await act(async () => {
+      first.reply({ requestId: 1, ok: false, html: null, error: 'stale failure' });
+    });
+    await finish(view, { html: '<p>current</p>' });
+
+    expect(view.result.current.error).toBeUndefined();
+  });
+});

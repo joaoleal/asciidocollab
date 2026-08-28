@@ -196,4 +196,51 @@ describe('GET /projects/:projectId/git/preview/pull', () => {
 
     await instance.close();
   });
+
+  test('omits authorUserId entirely for an incoming commit authored outside the workspace', async () => {
+    const instance = await register(
+      buildServer({
+        client: {
+          previewPull: mockPreviewPull({
+            ok: true,
+            data: previewPullData({
+              incomingCommits: [
+                { hash: 'ff0011', message: 'External change', authoredAt: '2026-01-03T00:00:00.000Z' },
+              ],
+            }),
+          }),
+        },
+      }),
+    );
+
+    const response = await previewPull(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().incomingCommits[0]).toEqual({
+      hash: 'ff0011',
+      message: 'External change',
+      authoredAt: '2026-01-03T00:00:00.000Z',
+    });
+
+    await instance.close();
+  });
+
+  test('propagates a non-transport worker failure instead of reporting the worker unavailable', async () => {
+    const instance = await register(
+      buildServer({
+        client: {
+          previewPull: jest.fn(async () => {
+            throw new Error('unexpected failure');
+          }),
+        },
+      }),
+    );
+
+    const response = await previewPull(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+
+    await instance.close();
+  });
 });

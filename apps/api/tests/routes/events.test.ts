@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fileTreeEventBusPlugin } from '../../src/plugins/file-tree-event-bus';
 import { eventsRoutes } from '../../src/routes/projects/events';
 import { decorateApp } from '../helpers/decorate-app';
@@ -9,8 +10,19 @@ jest.mock('../../src/plugins/require-auth', () => ({
   getAuthenticatedUserId: jest.fn(() => '550e8400-e29b-41d4-a716-446655440001'),
 }));
 
+const openRequests: IncomingMessage[] = [];
+const openReplies: ServerResponse[] = [];
+
 async function buildTestServer(isMember: boolean) {
   const app = Fastify();
+  openRequests.length = 0;
+  openReplies.length = 0;
+  // The SSE handler writes straight to the raw streams and only returns once the client
+  // disconnects, so a test needs both halves of the connection to drive it to completion.
+  app.addHook('onRequest', async (request, reply) => {
+    openRequests.push(request.raw);
+    openReplies.push(reply.raw);
+  });
   await app.register(fileTreeEventBusPlugin);
 
   // Mock repos
@@ -82,6 +94,37 @@ describe('GET /projects/:projectId/events', () => {
     await Promise.race([request, new Promise((resolve) => setTimeout(resolve, 100))]);
 
     expect(subscribeSpy).toHaveBeenCalledWith('770e8400-e29b-41d4-a716-446655440003', expect.any(Function));
+    await app.close();
+  });
+
+  it('writes bus events and keepalive comments to the stream, then unsubscribes on disconnect', async () => {
+    const app = await buildTestServer(true);
+    const projectId = '770e8400-e29b-41d4-a716-446655440003';
+    const setIntervalSpy = jest.spyOn(globalThis, 'setInterval');
+
+    const pending = app.inject({ method: 'GET', url: `/projects/${projectId}/events` });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    app.fileTreeEventBus.emit(projectId, { type: 'content-changed', fileNodeId: 'node-9' });
+
+    const keepalive = setIntervalSpy.mock.calls.find(([, delay]) => delay === 30_000);
+    expect(keepalive).toBeDefined();
+    keepalive?.[0]();
+
+    // A disconnect stops the keepalive timer and releases the bus subscription.
+    openRequests[0].emit('close');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    app.fileTreeEventBus.emit(projectId, { type: 'content-changed', fileNodeId: 'node-after-close' });
+
+    openReplies[0].end();
+    const response = await pending;
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('data: {"type":"content-changed","fileNodeId":"node-9"}');
+    expect(response.body).toContain(': keepalive');
+    expect(response.body).not.toContain('node-after-close');
+
+    setIntervalSpy.mockRestore();
     await app.close();
   });
 });

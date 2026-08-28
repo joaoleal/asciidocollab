@@ -5,6 +5,7 @@ import { EditorPreferencesId } from '../../../src/value-objects/ids/editor-prefe
 import { EditorPreferences } from '../../../src/entities/editor-preferences';
 import { EditorTheme } from '../../../src/value-objects/editor/editor-theme';
 import { PreviewStyle } from '../../../src/value-objects/editor/preview-style';
+import { ValidationError } from '../../../src/errors/common/validation-error';
 import { DEFAULT_FONT_SIZE, DEFAULT_THEME, DEFAULT_PREVIEW_STYLE } from '../../../src/constants/editor-preferences';
 
 const userId = UserId.create('550e8400-e29b-41d4-a716-446655440000');
@@ -74,6 +75,23 @@ describe('GetEditorPreferencesUseCase', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(typeof result.value.softWrap).toBe('boolean');
+    }
+  });
+
+  test('fails loudly rather than returning junk defaults when the configured default theme is unusable', async () => {
+    const parse = jest.spyOn(EditorTheme, 'parse').mockReturnValue({
+      success: false,
+      error: new ValidationError('theme no longer supported'),
+    });
+    try {
+      const repo = new InMemoryEditorPreferencesRepository();
+      const useCase = new GetEditorPreferencesUseCase(repo);
+
+      await expect(useCase.execute(userId)).rejects.toThrow(
+        /Failed to parse default theme .*theme no longer supported/,
+      );
+    } finally {
+      parse.mockRestore();
     }
   });
 });

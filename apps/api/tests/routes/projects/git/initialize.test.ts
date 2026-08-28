@@ -29,13 +29,21 @@ interface HarnessOptions {
   gitRepositorySaveError?: Error;
   /** When set, `services.gitCredentialStore.save` throws this. */
   credentialSaveError?: Error;
-  /** When set, `repos.gitOperation.enqueue` throws this. */
-  enqueueError?: Error;
+  /** When set, `repos.gitOperation.enqueue` throws this — any value, not necessarily an `Error`. */
+  enqueueError?: unknown;
+  /** When false, `services.gitCredentialStore` itself is undefined (unconfigured). */
+  credentialStoreConfigured?: boolean;
 }
 
 function buildHarness(options: HarnessOptions = {}) {
-  const { role = 'owner', existingRepository = null, gitRepositorySaveError, credentialSaveError, enqueueError } =
-    options;
+  const {
+    role = 'owner',
+    existingRepository = null,
+    gitRepositorySaveError,
+    credentialSaveError,
+    enqueueError,
+    credentialStoreConfigured = true,
+  } = options;
 
   const savedGitRepositories: GitRepository[] = [];
   const savedCredentials: { projectId: string; token: string; provider: string; createdByUserId: string }[] = [];
@@ -85,7 +93,9 @@ function buildHarness(options: HarnessOptions = {}) {
       gitOperation: { enqueue },
     } as never);
     app.decorate('services', {
-      gitCredentialStore: { save: credentialSave, load: jest.fn(async () => null), delete: jest.fn() },
+      gitCredentialStore: credentialStoreConfigured
+        ? { save: credentialSave, load: jest.fn(async () => null), delete: jest.fn() }
+        : undefined,
     } as never);
     await app.register(gitInitializeRoutes);
     await app.ready();
@@ -296,6 +306,32 @@ describe('POST /projects/:projectId/git/initialize', () => {
     const response = await initialize(app, PROJECT_ID);
 
     expect(response.statusCode).toBe(500);
+
+    await app.close();
+  });
+
+  it('answers 500 and enqueues nothing when the credential store is not configured', async () => {
+    const { build, enqueue } = buildHarness({ credentialStoreConfigured: false });
+    const app = await build();
+
+    const response = await initialize(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('internal_error');
+    expect(enqueue).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('answers 500 when the enqueue rejects with a non-Error value', async () => {
+    const { build } = buildHarness({ enqueueError: 'queue unavailable' });
+    const app = await build();
+
+    const response = await initialize(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('internal_error');
+    expect(response.json().error.message).not.toContain('queue unavailable');
 
     await app.close();
   });

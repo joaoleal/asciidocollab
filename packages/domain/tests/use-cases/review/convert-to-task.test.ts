@@ -41,6 +41,13 @@ function reply(): ReviewComment {
   return new ReviewComment(REPLY_ID, PROJECT, DOCUMENT, COMMENT_ID, 'comment', 'a reply', EDITOR);
 }
 
+/** A comment whose promotion fails with an error the use case is not meant to translate. */
+class UnexpectedlyFailingComment extends ReviewComment {
+  override convertToTask(): void {
+    throw new TypeError('aggregate blew up');
+  }
+}
+
 describe('ConvertToTaskUseCase', () => {
   let reviewRepo: InMemoryReviewCommentRepository;
   let memberRepo: InMemoryProjectMemberRepository;
@@ -105,6 +112,13 @@ describe('ConvertToTaskUseCase', () => {
     if (!result.success) expect(result.error).toBeInstanceOf(PermissionDeniedError);
     const audits = await auditRepo.findByProjectId(PROJECT);
     expect(audits.some((a) => a.action === 'authz.denied')).toBe(true);
+  });
+
+  test('an unexpected aggregate failure is not translated into a result error', async () => {
+    await reviewRepo.create(
+      new UnexpectedlyFailingComment(COMMENT_ID, PROJECT, DOCUMENT, null, 'comment', 'body', EDITOR, null, null, null, null, null, anchor()),
+    );
+    await expect(useCase.execute(EDITOR, PROJECT, COMMENT_ID, { kind: 'task' })).rejects.toThrow('aggregate blew up');
   });
 
   test('a missing item yields a not-found error', async () => {

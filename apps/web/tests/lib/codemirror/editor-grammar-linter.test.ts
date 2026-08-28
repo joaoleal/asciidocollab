@@ -232,4 +232,16 @@ describe('readOnlyGrammarDiagnostic', () => {
     } as unknown as Diagnostic);
     expect(stripped.actions).toHaveLength(1);
   });
+
+  test('yields an empty action list for a diagnostic that carries no actions at all', () => {
+    // A lint source is free to emit a bare diagnostic. Read-only rendering must still produce an
+    // actions array the lint panel can iterate, rather than passing `undefined` through.
+    const stripped = readOnlyGrammarDiagnostic({
+      from: 0,
+      to: 1,
+      severity: 'warning',
+      message: 'no actions offered',
+    } as unknown as Diagnostic);
+    expect(stripped.actions).toEqual([]);
+  });
 });

@@ -184,6 +184,28 @@ describe('createGitWorkerConfig', () => {
     expect(config.get('lfsThresholdBytes')).toBe(1_048_576);
   });
 
+  it('accepts an already-split egressAllowedHosts array unchanged (config file or programmatic load)', () => {
+    const config = createGitWorkerConfig();
+    config.load({ egressAllowedHosts: ['git.example.com', 'self-hosted.internal'] });
+
+    expect(() => config.validate({ allowed: 'strict' })).not.toThrow();
+    expect(config.get('egressAllowedHosts')).toEqual(['git.example.com', 'self-hosted.internal']);
+  });
+
+  it('rejects an egressAllowedHosts value that is neither a string nor an array', () => {
+    const config = createGitWorkerConfig();
+    config.load({ egressAllowedHosts: 42 });
+
+    expect(() => config.validate({ allowed: 'strict' })).toThrow(/must be an array of strings/);
+  });
+
+  it('rejects an egressAllowedHosts array holding an empty or non-string host', () => {
+    const config = createGitWorkerConfig();
+    config.load({ egressAllowedHosts: ['github.com', ''] });
+
+    expect(() => config.validate({ allowed: 'strict' })).toThrow(/must be an array of non-empty strings/);
+  });
+
   it('rejects a zero or negative maxRepoSizeMB', () => {
     process.env.ASCIIDOCOLLAB_GIT_MAX_REPO_SIZE_MB = '0';
 

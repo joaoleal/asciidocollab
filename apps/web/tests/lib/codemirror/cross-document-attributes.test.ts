@@ -63,6 +63,24 @@ describe('asciidocCrossDocumentAttributes ViewPlugin', () => {
     view.destroy();
   });
 
+  test('marks nothing when no known-name set is supplied at all', () => {
+    // The caller-less form is what the editor mounts with before the project index has resolved: with
+    // nothing known, every reference is a local one and must stay undecorated.
+    expect(computeKnownAttributeMarks('Use {productName} now.\n')).toEqual([]);
+  });
+
+  test('decorates nothing when mounted without a known-name accessor', () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: 'Use {productName} now.\n',
+        extensions: [asciidocCrossDocumentAttributes()],
+      }),
+      parent: document.body,
+    });
+    expect(view.dom.querySelector(`.${KNOWN_CROSS_DOC_ATTRIBUTE_CLASS}`)).toBeNull();
+    view.destroy();
+  });
+
   test('does not decorate an unknown reference', () => {
     const view = mountView('Use {mystery} now.\n', new Set(['productname']));
     expect(view.dom.querySelector(`.${KNOWN_CROSS_DOC_ATTRIBUTE_CLASS}`)).toBeNull();

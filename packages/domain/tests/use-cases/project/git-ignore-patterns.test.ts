@@ -11,6 +11,7 @@ import { ProjectName } from '../../../src/value-objects/project/project-name';
 import { Role } from '../../../src/value-objects/identity/role';
 import { PermissionDeniedError } from '../../../src/errors/common/permission-denied';
 import { ProjectNotFoundError } from '../../../src/errors/project/project-not-found';
+import { ValidationError } from '../../../src/errors/common/validation-error';
 
 describe('git ignore patterns use cases', () => {
   let projectRepo: InMemoryProjectRepository;
@@ -113,6 +114,26 @@ describe('git ignore patterns use cases', () => {
       const result = await saveUseCase.execute(ownerId, missingId, 'build/');
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error).toBeInstanceOf(ProjectNotFoundError);
+    });
+
+    test('rejects patterns beyond the stored length cap without persisting them', async () => {
+      const result = await saveUseCase.execute(ownerId, projectId, 'x'.repeat(20_001));
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error).toBeInstanceOf(ValidationError);
+
+      const stored = await projectRepo.findById(projectId);
+      expect(stored?.gitIgnorePatterns).toBeNull();
+    });
+
+    test('an unexpected entity failure is not translated into a result error', async () => {
+      const spy = jest.spyOn(Project.prototype, 'setGitIgnorePatterns').mockImplementation(() => {
+        throw new TypeError('entity blew up');
+      });
+      try {
+        await expect(saveUseCase.execute(ownerId, projectId, 'build/')).rejects.toThrow('entity blew up');
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

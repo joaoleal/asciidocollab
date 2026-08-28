@@ -7,6 +7,8 @@ import {
   resolveAttributeScope,
   extractSymbols,
   definitionSymbols,
+  tracePersistedLevelOffset,
+  verbatimRanges,
 } from '../src/index';
 
 // Direct coverage for the public helpers the domain/editor callers use but the higher-level extraction
@@ -44,6 +46,49 @@ describe('applyLevelOffsetEntry', () => {
 
   test('a non-`:leveloffset:` line leaves the offset unchanged', () => {
     expect(applyLevelOffsetEntry('== Heading', 3, 0)).toBe(3);
+  });
+
+  test('a non-numeric value — relative-looking or absolute-looking — returns to the base', () => {
+    expect(applyLevelOffsetEntry(':leveloffset: +x', 3, 1)).toBe(1);
+    expect(applyLevelOffsetEntry(':leveloffset: two', 3, 1)).toBe(1);
+  });
+});
+
+/** The shared per-walk state a caller threads across sibling traces, fresh for one trace. */
+const walkState = () => ({
+  attributes: new Map<string, string>(),
+  stack: new Set<string>(),
+  budget: { expansions: 0 },
+});
+
+describe('tracePersistedLevelOffset', () => {
+  test('an attribute-form `:leveloffset:` inside the traced file persists into the result', () => {
+    const offset = tracePersistedLevelOffset({
+      fileId: 'child.adoc',
+      baseOffset: 1,
+      readContent: (id) => (id === 'child.adoc' ? ':leveloffset: +2\n== Section\n' : null),
+      resolveInclude: () => null,
+      ...walkState(),
+    });
+    expect(offset).toBe(3);
+  });
+
+  test('a nested include whose target does not resolve leaves the offset at the include point', () => {
+    const offset = tracePersistedLevelOffset({
+      fileId: 'child.adoc',
+      baseOffset: 2,
+      readContent: (id) => (id === 'child.adoc' ? 'include::missing.adoc[leveloffset=+5]\n' : null),
+      resolveInclude: () => null,
+      ...walkState(),
+    });
+    expect(offset).toBe(2);
+  });
+});
+
+describe('verbatimRanges', () => {
+  test('an unterminated block extends to the end of the document', () => {
+    const content = '----\ncode sample\n';
+    expect(verbatimRanges(content)).toEqual([{ from: 0, to: content.length }]);
   });
 });
 

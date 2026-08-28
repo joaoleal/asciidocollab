@@ -21,6 +21,7 @@ const DOC_A = DocumentId.create('22222222-2222-4222-8222-222222222222');
 const DOC_B = DocumentId.create('88888888-8888-4888-8888-888888888888');
 const OWNER = UserId.create('55555555-5555-4555-8555-555555555555');
 const EDITOR = UserId.create('66666666-6666-4666-8666-666666666666');
+const OUTSIDER = UserId.create('77777777-7777-4777-8777-777777777777');
 
 const confirmed: BulkDeleteForProjectCommand = { confirm: true };
 
@@ -83,6 +84,23 @@ describe('BulkDeleteForProjectUseCase', () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(ReviewCountConflictError);
     expect(await reviewRepo.countByProject(PROJECT)).toBe(2);
+  });
+
+  test('an expectedCount matching the live count lets the delete proceed', async () => {
+    const result = await useCase.execute(OWNER, PROJECT, { confirm: true, expectedCount: 2 });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.value.deleted).toBe(2);
+    expect(await reviewRepo.countByProject(PROJECT)).toBe(0);
+  });
+
+  test('a non-member is denied and the denial names the missing membership', async () => {
+    const result = await useCase.execute(OUTSIDER, PROJECT, confirmed);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(PermissionDeniedError);
+    expect(await reviewRepo.countByProject(PROJECT)).toBe(2);
+    const audits = await auditRepo.findByProjectId(PROJECT);
+    const denial = audits.find((a) => a.action === 'authz.denied');
+    expect(denial?.metadata.reason).toBe('not_a_project_member');
   });
 
   test('an unconfirmed command is rejected', async () => {

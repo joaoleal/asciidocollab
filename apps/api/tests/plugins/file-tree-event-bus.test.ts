@@ -81,4 +81,70 @@ describe('FileTreeEventBus', () => {
     expect(() => app.fileTreeEventBus.emit('project-1', makeEvent())).not.toThrow();
     await app.close();
   });
+
+  it('keeps delivering to the remaining listeners after one of several unsubscribes', async () => {
+    const app = await buildTestServer();
+    const stillSubscribed: ProjectEventDto[] = [];
+    const leaving: ProjectEventDto[] = [];
+    app.fileTreeEventBus.subscribe('project-1', (event) => stillSubscribed.push(event));
+    const unsubscribe = app.fileTreeEventBus.subscribe('project-1', (event) => leaving.push(event));
+
+    unsubscribe();
+    app.fileTreeEventBus.emit('project-1', makeEvent());
+
+    expect(stillSubscribed).toHaveLength(1);
+    expect(leaving).toHaveLength(0);
+    await app.close();
+  });
+
+  it('tolerates the same unsubscribe being called twice', async () => {
+    const app = await buildTestServer();
+    const received: ProjectEventDto[] = [];
+    const unsubscribe = app.fileTreeEventBus.subscribe('project-1', (event) => received.push(event));
+
+    unsubscribe();
+    expect(() => unsubscribe()).not.toThrow();
+
+    app.fileTreeEventBus.emit('project-1', makeEvent());
+    expect(received).toHaveLength(0);
+    await app.close();
+  });
+
+  it('ignores a dispatched event that is not a CustomEvent', async () => {
+    const app = await buildTestServer();
+    const received: ProjectEventDto[] = [];
+    app.fileTreeEventBus.subscribe('project-1', (event) => received.push(event));
+
+    // `emit` builds its event through the global CustomEvent. Swapping in a plain Event subclass —
+    // one that puts the real class back while it is being constructed, so the bus's own guard is
+    // checked against the genuine CustomEvent — proves the subscriber drops anything that is not one.
+    const realCustomEvent = globalThis.CustomEvent;
+    const restoreCustomEvent = () => {
+      Object.defineProperty(globalThis, 'CustomEvent', {
+        value: realCustomEvent,
+        configurable: true,
+        writable: true,
+      });
+    };
+    class PlainEventShim extends Event {
+      constructor(type: string) {
+        super(type);
+        restoreCustomEvent();
+      }
+    }
+    Object.defineProperty(globalThis, 'CustomEvent', {
+      value: PlainEventShim,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      app.fileTreeEventBus.emit('project-1', makeEvent());
+    } finally {
+      restoreCustomEvent();
+    }
+
+    expect(received).toHaveLength(0);
+    await app.close();
+  });
 });

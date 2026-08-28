@@ -119,6 +119,13 @@ describe('mermaidParserForSource (safe degradation)', () => {
     expect(mermaidParserForSource('totallyNotADiagram foo bar\n')).toBeNull();
   });
 
+  test('returns null when the first content line opens with punctuation rather than a word', () => {
+    // A partial diagram an author is midway through typing has no keyword to route on; injecting
+    // nothing degrades it to plain highlighting rather than breaking the document.
+    expect(mermaidParserForSource('--> B\n')).toBeNull();
+    expect(mermaidParserForSource('{"theme": "dark"}\n')).toBeNull();
+  });
+
   test('returns null for empty / whitespace / comment-only bodies', () => {
     expect(mermaidParserForSource('')).toBeNull();
     expect(mermaidParserForSource('   \n\t\n')).toBeNull();
@@ -157,6 +164,25 @@ describe('mermaidLexicalFallback (StreamParser)', () => {
   test('highlights node-shape brackets', () => {
     expect(tagOf('[')).toBe('bracket');
     expect(tagOf(']')).toBe('bracket');
+  });
+
+  test('highlights a single-quoted label', () => {
+    const quoted = tokenize(mermaidLexicalFallback, "mysteryDiagram\nA --> 'a label' B\n");
+    expect(quoted.find((token) => token.text === "'a label'")?.tag).toBe('string');
+  });
+
+  test('treats a leading YAML frontmatter block, fences included, as metadata', () => {
+    // The frontmatter sits before the diagram type and is not diagram syntax: styling it as content
+    // would put keyword/arrow colours on `title:` lines that mean nothing to mermaid.
+    const framed = tokenize(mermaidLexicalFallback, '---\ntitle: Demo\nconfig: {}\n---\nmysteryDiagram\n');
+    expect(framed.filter((token) => token.tag === 'meta').map((token) => token.text)).toEqual([
+      '---',
+      'title: Demo',
+      'config: {}',
+      '---',
+    ]);
+    // The keyword after the closing fence is still recognised as the diagram type.
+    expect(framed.find((token) => token.text === 'mysteryDiagram')?.tag).toBe('keyword');
   });
 
   test('never throws on odd input', () => {

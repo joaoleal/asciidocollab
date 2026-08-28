@@ -2,6 +2,32 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ConfirmationDialog } from '@/components/confirmation-dialog';
 
+/** The shape of the dismissal events Radix hands to the outside-interaction guards. */
+interface DismissEvent {
+  preventDefault: () => void;
+}
+
+// Radix decides on its own whether an outside pointer-down counts as a dismissal, and under jsdom
+// it never does — so the guard the dialog installs would go untested. Capturing the handler off
+// Radix's Content (while still rendering the real one) lets the guard be exercised directly.
+let capturedPointerDownOutside: ((event: DismissEvent) => void) | undefined;
+jest.mock('@radix-ui/react-dialog', () => {
+  const actual = jest.requireActual('@radix-ui/react-dialog');
+  return {
+    ...actual,
+    Content: ({
+      onPointerDownOutside,
+      ...rest
+    }: {
+      onPointerDownOutside: (event: DismissEvent) => void;
+      children: React.ReactNode;
+    }) => {
+      capturedPointerDownOutside = onPointerDownOutside;
+      return <actual.Content onPointerDownOutside={onPointerDownOutside} {...rest} />;
+    },
+  };
+});
+
 describe('ConfirmationDialog', () => {
   test('renders title and description when open', () => {
     render(
@@ -110,6 +136,23 @@ describe('ConfirmationDialog', () => {
     fireEvent(document.body, new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
     // The guard handlers preventDefault, so onOpenChange is never asked to close.
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test('refuses an outside pointer-down as a way of dismissing the decision', () => {
+    capturedPointerDownOutside = undefined;
+    render(
+      <ConfirmationDialog
+        open={true}
+        onOpenChange={jest.fn()}
+        title="Sticky"
+        description="Stays open."
+        onConfirm={jest.fn()}
+      />,
+    );
+    const preventDefault = jest.fn();
+    expect(capturedPointerDownOutside).toBeDefined();
+    capturedPointerDownOutside?.({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 
   test('awaits an async onConfirm handler', async () => {

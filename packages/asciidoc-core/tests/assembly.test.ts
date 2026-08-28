@@ -352,3 +352,222 @@ describe('assembleIncludes base leveloffset', () => {
     expect(result.content).toBe(':leveloffset: 3\n== Child\n:leveloffset: 2');
   });
 });
+
+describe('assembleIncludes source map over rejected, gated, and offset-shifting directives', () => {
+  const withMap = { withSourceMap: true } as const;
+
+  it('attributes the marker of a sandbox-rejected directive to the directive line', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'Intro\ninclude::https://evil/x.adoc[]',
+    }), withMap);
+    expect(result.content).toContain('Unresolved directive');
+    expect(result.sourceMap!.lineToSource).toEqual([
+      { path: 'main.adoc', sourceLine: 1 },
+      { path: 'main.adoc', sourceLine: 2 },
+    ]);
+  });
+
+  it('attributes a cycle marker to the directive line in the file that closed the cycle', () => {
+    const result = assembleIncludes('a.adoc', deps({
+      'a.adoc': 'include::b.adoc[]',
+      'b.adoc': 'include::a.adoc[]',
+    }), withMap);
+    expect(result.content).toBe('Unresolved directive in b.adoc - include::a.adoc[]');
+    expect(result.sourceMap!.lineToSource).toEqual([{ path: 'b.adoc', sourceLine: 1 }]);
+  });
+
+  it('attributes a depth-guard marker to the directive line', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::child.adoc[]',
+      'child.adoc': 'body',
+    }), { ...withMap, maxDepth: 0 });
+    expect(result.content).toBe('Unresolved directive in main.adoc - include::child.adoc[]');
+    expect(result.sourceMap!.lineToSource).toEqual([{ path: 'main.adoc', sourceLine: 1 }]);
+  });
+
+  it('attributes a fan-out-budget marker to the directive line', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::child.adoc[]',
+      'child.adoc': 'body',
+    }), { ...withMap, maxExpansions: 0 });
+    expect(result.content).toBe('Unresolved directive in main.adoc - include::child.adoc[]');
+    expect(result.sourceMap!.lineToSource).toEqual([{ path: 'main.adoc', sourceLine: 1 }]);
+  });
+
+  it('attributes the synthesized leveloffset set and restore lines to the include directive', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::child.adoc[leveloffset=+1]\nAfter',
+      'child.adoc': '== Child',
+    }), withMap);
+    expect(result.content).toBe(':leveloffset: 1\n== Child\n:leveloffset: 0\nAfter');
+    expect(result.sourceMap!.lineToSource).toEqual([
+      { path: 'main.adoc', sourceLine: 1 },
+      { path: 'child.adoc', sourceLine: 1 },
+      { path: 'main.adoc', sourceLine: 1 },
+      { path: 'main.adoc', sourceLine: 2 },
+    ]);
+  });
+
+  it('attributes conditional region directive lines to their own source lines', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'ifdef::flag[]\nBody\nendif::[]',
+    }), { ...withMap, seedAttributes: new Map([['flag', '']]) });
+    expect(result.content).toBe('ifdef::flag[]\nBody\nendif::[]');
+    expect(result.sourceMap!.lineToSource).toEqual([
+      { path: 'main.adoc', sourceLine: 1 },
+      { path: 'main.adoc', sourceLine: 2 },
+      { path: 'main.adoc', sourceLine: 3 },
+    ]);
+  });
+
+  it('attributes a gated include directive left verbatim to its own source line', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'ifdef::flag[]\ninclude::child.adoc[]\nendif::[]',
+      'child.adoc': 'Secret',
+    }), withMap);
+    expect(result.content).toBe('ifdef::flag[]\ninclude::child.adoc[]\nendif::[]');
+    expect(result.sourceMap!.lineToSource).toEqual([
+      { path: 'main.adoc', sourceLine: 1 },
+      { path: 'main.adoc', sourceLine: 2 },
+      { path: 'main.adoc', sourceLine: 3 },
+    ]);
+  });
+});
+
+describe('assembleIncludes hide mode without a provenance map', () => {
+  const hide = { showIncludes: false } as const;
+
+  it('emits a placeholder for a sandbox-rejected target', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::https://evil/x.adoc[]',
+    }), hide);
+    expect(result.content).toBe('[placeholder https://evil/x.adoc]');
+    expect(result.sourceMap).toBeUndefined();
+    expect(result.unresolved[0].reason).toBe('remote');
+  });
+
+  it('emits a placeholder for a not-found target', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::gone.adoc[]',
+    }), hide);
+    expect(result.content).toBe('[placeholder gone.adoc]');
+    expect(result.sourceMap).toBeUndefined();
+    expect(result.unresolved).toEqual([{ from: 'main.adoc', target: 'gone.adoc', reason: 'not-found' }]);
+  });
+
+  it('emits a placeholder for a cyclic target', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::main.adoc[]',
+    }), hide);
+    expect(result.content).toBe('[placeholder main.adoc]');
+    expect(result.sourceMap).toBeUndefined();
+    expect(result.unresolved.some((rejection) => rejection.reason === 'cycle')).toBe(true);
+  });
+
+  it('emits a placeholder when the nesting cap is exceeded', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::child.adoc[]',
+      'child.adoc': 'body',
+    }), { ...hide, maxDepth: 0 });
+    expect(result.content).toBe('[placeholder child.adoc]');
+    expect(result.sourceMap).toBeUndefined();
+    expect(result.unresolved).toEqual([{ from: 'main.adoc', target: 'child.adoc', reason: 'depth' }]);
+  });
+
+  it('emits a placeholder when the fan-out budget is spent', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::child.adoc[]',
+      'child.adoc': 'body',
+    }), { ...hide, maxExpansions: 0 });
+    expect(result.content).toBe('[placeholder child.adoc]');
+    expect(result.sourceMap).toBeUndefined();
+    expect(result.unresolved).toEqual([{ from: 'main.adoc', target: 'child.adoc', reason: 'limit' }]);
+  });
+});
+
+describe('assembleIncludes hide mode over a nested include subtree', () => {
+  const hide = { showIncludes: false } as const;
+
+  it("keeps a nested child's attributes and scoped offset without a second placeholder", () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::a.adoc[]',
+      'a.adoc': ':a: 1\ninclude::b.adoc[leveloffset=+1]',
+      'b.adoc': ':b: 2',
+    }), hide);
+    // One placeholder for the visible include; the hidden grandchild contributes attribute state and
+    // the scoped offset set/restore only.
+    expect(result.content.match(/\[placeholder/g)).toHaveLength(1);
+    expect(result.content).toContain(':a: 1');
+    expect(result.content).toContain(':b: 2');
+    expect(result.content).toContain(':leveloffset: 1');
+    expect(result.content).toContain(':leveloffset: 0');
+  });
+
+  it('drops a rejected or missing directive inside the hidden subtree entirely', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::a.adoc[]',
+      'a.adoc': 'include::https://evil/x.adoc[]\ninclude::gone.adoc[]\n:kept: yes',
+    }), hide);
+    expect(result.content.match(/\[placeholder/g)).toHaveLength(1);
+    expect(result.content).toContain(':kept: yes');
+    expect(result.content).not.toContain('Unresolved directive');
+    expect(result.unresolved).toEqual([
+      { from: 'a.adoc', target: 'https://evil/x.adoc', reason: 'remote' },
+      { from: 'a.adoc', target: 'gone.adoc', reason: 'not-found' },
+    ]);
+  });
+
+  it('reports but does not render a nesting-cap rejection inside the hidden subtree', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::a.adoc[]',
+      'a.adoc': 'include::b.adoc[]',
+      'b.adoc': 'body',
+    }), { ...hide, maxDepth: 1 });
+    expect(result.content.match(/\[placeholder/g)).toHaveLength(1);
+    expect(result.unresolved).toEqual([{ from: 'a.adoc', target: 'b.adoc', reason: 'depth' }]);
+  });
+
+  it('reports but does not render a budget rejection inside the hidden subtree', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::a.adoc[]',
+      'a.adoc': 'include::b.adoc[]',
+      'b.adoc': 'body',
+    }), { ...hide, maxExpansions: 1 });
+    expect(result.content.match(/\[placeholder/g)).toHaveLength(1);
+    expect(result.unresolved).toEqual([{ from: 'a.adoc', target: 'b.adoc', reason: 'limit' }]);
+  });
+
+  it("suppresses a hidden subtree's conditional directives and gated includes", () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': 'include::a.adoc[]',
+      'a.adoc': 'ifdef::flag[]\ninclude::b.adoc[]\nendif::[]\nifdef::flag[include::b.adoc[]]\n:kept: yes',
+      'b.adoc': 'Body',
+    }), hide);
+    expect(result.content).toContain(':kept: yes');
+    // Leaking the child's conditional or its gated include into the parent would corrupt the
+    // renderer's preprocessor state and make it resolve the raw target in the wrong context.
+    expect(result.content).not.toContain('ifdef::flag[]');
+    expect(result.content).not.toContain('include::b.adoc[]');
+    expect(result.content).not.toContain('Body');
+  });
+});
+
+describe('assembleIncludes without a provenance map', () => {
+  it('emits every physical line of a wrapped attribute value verbatim', () => {
+    const result = assembleIncludes('main.adoc', deps({
+      'main.adoc': ':desc: line one \\\ncontinued two\nUses {desc}',
+    }));
+    expect(result.content).toBe(':desc: line one \\\ncontinued two\nUses {desc}');
+    expect(result.sourceMap).toBeUndefined();
+  });
+});
+
+describe('assembleIncludes tag-filter selector tokens', () => {
+  it('ignores a bare `!` selector token', () => {
+    expect(runTagFilter('!;a')).toBe('Alpha');
+  });
+
+  it('applies `**` before `*`, so `**;!*` keeps only untagged lines', () => {
+    expect(runTagFilter('**;!*')).toBe('before\nbetween\nafter');
+  });
+});

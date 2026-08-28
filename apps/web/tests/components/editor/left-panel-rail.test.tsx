@@ -73,4 +73,96 @@ describe('LeftPanelRail', () => {
     render(<LeftPanelRail activeTab="files" onTabChange={jest.fn()} />);
     expect(screen.queryByRole('button', { name: /collapse sidebar/i })).not.toBeInTheDocument();
   });
+
+  test('leaves keys other than the arrows to the browser', () => {
+    const onTabChange = jest.fn();
+    render(<LeftPanelRail activeTab="files" onTabChange={onTabChange} />);
+    fireEvent.keyDown(screen.getByRole('tab', { name: /files/i }), { key: 'Enter' });
+    fireEvent.keyDown(screen.getByRole('tab', { name: /files/i }), { key: 'Home' });
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
+
+  test('swaps the top control for an expand control while collapsed', () => {
+    const onExpand = jest.fn();
+    render(
+      <LeftPanelRail
+        activeTab="files"
+        onTabChange={jest.fn()}
+        onCollapse={jest.fn()}
+        onExpand={onExpand}
+        collapsed
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /collapse sidebar/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  test('omits the expand control while collapsed when no expand handler is given', () => {
+    render(<LeftPanelRail activeTab="files" onTabChange={jest.fn()} onCollapse={jest.fn()} collapsed />);
+    expect(screen.queryByRole('button', { name: /expand sidebar/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /collapse sidebar/i })).not.toBeInTheDocument();
+  });
+
+  test('arrowing to another view while collapsed selects it and reopens the panel', () => {
+    const onTabChange = jest.fn();
+    const onExpand = jest.fn();
+    render(
+      <LeftPanelRail activeTab="files" onTabChange={onTabChange} onExpand={onExpand} collapsed />,
+    );
+    fireEvent.keyDown(screen.getByRole('tab', { name: /files/i }), { key: 'ArrowDown' });
+    expect(onTabChange).toHaveBeenCalledWith('outline');
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  test('arrowing while collapsed still selects the view when no expand handler is given', () => {
+    const onTabChange = jest.fn();
+    render(<LeftPanelRail activeTab="outline" onTabChange={onTabChange} collapsed />);
+    fireEvent.keyDown(screen.getByRole('tab', { name: /outline/i }), { key: 'ArrowUp' });
+    expect(onTabChange).toHaveBeenCalledWith('files');
+  });
+
+  test('clicking a view while collapsed still selects it when no expand handler is given', () => {
+    const onTabChange = jest.fn();
+    const onCollapse = jest.fn();
+    render(
+      <LeftPanelRail
+        activeTab="files"
+        onTabChange={onTabChange}
+        onCollapse={onCollapse}
+        collapsed
+      />,
+    );
+    // Even the view already showing selects rather than toggling — there is nothing to collapse.
+    fireEvent.click(screen.getByRole('tab', { name: /files/i }));
+    expect(onTabChange).toHaveBeenCalledWith('files');
+    expect(onCollapse).not.toHaveBeenCalled();
+  });
+
+  test('clicking the view already showing collapses the panel — the tab is a toggle', () => {
+    const onCollapse = jest.fn();
+    const onTabChange = jest.fn();
+    render(<LeftPanelRail activeTab="files" onTabChange={onTabChange} onCollapse={onCollapse} />);
+    fireEvent.click(screen.getByRole('tab', { name: /files/i }));
+    expect(onCollapse).toHaveBeenCalledTimes(1);
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
+
+  test('clicking a view while collapsed selects it and reopens the panel', () => {
+    const onTabChange = jest.fn();
+    const onExpand = jest.fn();
+    render(
+      <LeftPanelRail activeTab="files" onTabChange={onTabChange} onExpand={onExpand} collapsed />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: /search/i }));
+    expect(onTabChange).toHaveBeenCalledWith('search');
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  test('clicking the view already showing is inert when no collapse handler is given', () => {
+    const onTabChange = jest.fn();
+    render(<LeftPanelRail activeTab="search" onTabChange={onTabChange} />);
+    fireEvent.click(screen.getByRole('tab', { name: /search/i }));
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
 });

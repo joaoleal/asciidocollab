@@ -19,6 +19,19 @@ import { PermissionDeniedError } from '../../../src/errors/common/permission-den
 import { FileNodeNotFoundError } from '../../../src/errors/file-tree/file-node-not-found';
 import { ContentNotFoundError } from '../../../src/errors/content/content-not-found';
 
+/**
+ * Membership repository that answers the first composite-key lookup and then reports the actor as
+ * a non-member, modelling a membership revoked between the access check and the role lookup.
+ */
+class RevokedAfterFirstLookupMemberRepository extends InMemoryProjectMemberRepository {
+  private lookups = 0;
+
+  override async findByCompositeKey(projectId: ProjectId, userId: UserId): Promise<ProjectMember | null> {
+    this.lookups += 1;
+    return this.lookups === 1 ? super.findByCompositeKey(projectId, userId) : null;
+  }
+}
+
 describe('GetDocumentCollabInfoUseCase', () => {
   let projectMemberRepo: InMemoryProjectMemberRepository;
   let fileNodeRepo: InMemoryFileNodeRepository;
@@ -105,6 +118,18 @@ describe('GetDocumentCollabInfoUseCase', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toBeInstanceOf(ContentNotFoundError);
+    }
+  });
+
+  it('falls back to the editor role when the membership disappears after the access check', async () => {
+    const revokingRepo = new RevokedAfterFirstLookupMemberRepository();
+    await revokingRepo.addMember(new ProjectMember(projectId, viewerId, Role.create('viewer')));
+    const raced = new GetDocumentCollabInfoUseCase(revokingRepo, fileNodeRepo, documentRepo);
+
+    const result = await raced.execute(viewerId, projectId, fileNodeId);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.value.role).toBe('editor');
     }
   });
 });

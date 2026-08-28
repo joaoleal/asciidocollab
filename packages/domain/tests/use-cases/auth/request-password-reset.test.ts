@@ -9,6 +9,7 @@ import { PasswordResetNotifier } from '../../../src/services/password-reset-noti
 import { InMemoryPasswordResetTokenRepository } from '../../ports/auth-tokens/in-memory-password-reset-token.repository';
 import { InMemoryAuthAttemptTelemetryRepository } from '../../ports/admin/in-memory-auth-attempt-telemetry.repository';
 import { AUTH_ATTEMPT_PASSWORD_RESET_REQUEST } from '../../../src/entities/auth-attempt-telemetry';
+import { UNKNOWN_IP } from '../../../src/use-cases/auth/record-auth-attempt';
 
 const WINDOW_MS = 5 * 60_000;
 
@@ -162,5 +163,38 @@ describe('RequestPasswordResetUseCase', () => {
       expect(result.success).toBe(true);
       expect(logger.warn).toHaveBeenCalled();
     });
+
+    test('records under the unknown-origin sentinel when no request context is supplied', async () => {
+      const telemetry = new InMemoryAuthAttemptTelemetryRepository();
+      const useCase = new RequestPasswordResetUseCase(
+        userRepo, tokenRepo, tokenGenerator, notifier,
+        { repo: telemetry, windowSizeMs: WINDOW_MS },
+      );
+
+      await useCase.execute(Email.create(TEST_EMAIL));
+
+      const rows = await telemetry.findAll();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].identifier).toBe(TEST_EMAIL);
+      expect(rows[0].ipAddress).toBe(UNKNOWN_IP);
+      expect(rows[0].userAgent).toBeNull();
+    });
+  });
+
+  test('adds no further padding when the work already outlasts the constant-time floor', async () => {
+    (userRepo.findByEmail as jest.Mock).mockImplementation(
+      async () => new Promise((resolve) => {
+        setTimeout(() => resolve(createTestUser()), 600);
+      }),
+    );
+    const useCase = new RequestPasswordResetUseCase(userRepo, tokenRepo, tokenGenerator, notifier);
+
+    const startedAt = Date.now();
+    const result = await useCase.execute(Email.create(TEST_EMAIL));
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.success).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(600);
+    expect(elapsed).toBeLessThan(1100);
   });
 });

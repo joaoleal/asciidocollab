@@ -251,3 +251,107 @@ describe('assembleOutline — full scope with provenance (feature 032)', () => {
     expect(result.entries.length).toBeGreaterThan(0);
   });
 });
+
+describe('assembleOutline — attribute definitions in document order', () => {
+  test('resolves a title against the value in effect at that point', () => {
+    const files = {
+      'main.adoc': '= Doc\n:product: Acme\n\n== {product} Guide\n',
+    };
+    const result = assembleOutline({
+      rootPath: 'main.adoc',
+      openFilePath: 'main.adoc',
+      openFileId: 'id-main',
+      readFile: makeReader(files),
+      fileIdForPath: makeFileIdForPath({ 'main.adoc': 'id-main' }),
+      scopePreference: 'current',
+    });
+    expect(result.entries.map((entry) => entry.title)).toContain('Acme Guide');
+  });
+
+  test('stops resolving a title once the attribute is unset', () => {
+    const files = {
+      'main.adoc': '= Doc\n:product: Acme\n\n== {product} One\n\n:product!:\n\n== {product} Two\n',
+    };
+    const result = assembleOutline({
+      rootPath: 'main.adoc',
+      openFilePath: 'main.adoc',
+      openFileId: 'id-main',
+      readFile: makeReader(files),
+      fileIdForPath: makeFileIdForPath({ 'main.adoc': 'id-main' }),
+      scopePreference: 'current',
+    });
+    const titles = result.entries.map((entry) => entry.title);
+    expect(titles).toContain('Acme One');
+    expect(titles).toContain('{product} Two');
+  });
+
+  test('treats a valueless attribute definition as an empty value', () => {
+    const files = {
+      'main.adoc': '= Doc\n:draft:\n\n== {draft}Notes\n',
+    };
+    const result = assembleOutline({
+      rootPath: 'main.adoc',
+      openFilePath: 'main.adoc',
+      openFileId: 'id-main',
+      readFile: makeReader(files),
+      fileIdForPath: makeFileIdForPath({ 'main.adoc': 'id-main' }),
+      scopePreference: 'current',
+    });
+    expect(result.entries.map((entry) => entry.title)).toContain('Notes');
+  });
+});
+
+/** Loads assembleOutline against a stubbed assembler returning exactly `result`. */
+function loadOutlineWith(result: unknown) {
+  jest.resetModules();
+  jest.doMock('@/workers/assemble-includes', () => ({ assembleIncludes: () => result }));
+  return require('@/lib/outline/assemble-outline').assembleOutline;
+}
+
+describe('assembleOutline — degraded assembly results', () => {
+  afterEach(() => {
+    jest.dontMock('@/workers/assemble-includes');
+    jest.resetModules();
+  });
+
+  test('falls back to the current file when the assembler returns no source map', () => {
+    const assemble = loadOutlineWith({ content: '= Doc\n\n== Section\n', unresolved: [] });
+    const files = { 'main.adoc': '= Doc\n\n== Section\n' };
+    const result = assemble({
+      rootPath: 'main.adoc',
+      openFilePath: 'main.adoc',
+      openFileId: 'id-main',
+      readFile: makeReader(files),
+      fileIdForPath: makeFileIdForPath({ 'main.adoc': 'id-main' }),
+      scopePreference: 'full',
+    });
+    expect(result.scope).toBe('current');
+    expect(result.rootFileId).toBeNull();
+  });
+
+  test('attributes a heading past the end of the source map to the open file', () => {
+    const assemble = loadOutlineWith({
+      content: '= Doc\n\n== Beyond The Map\n',
+      unresolved: [],
+      // Deliberately shorter than the assembled content: assembled line 3 has no provenance.
+      sourceMap: { lineToSource: [{ path: 'main.adoc', sourceLine: 1 }] },
+    });
+    const files = { 'main.adoc': '= Doc\n\n== Beyond The Map\n' };
+    const result = assemble({
+      rootPath: 'main.adoc',
+      openFilePath: 'main.adoc',
+      openFileId: 'id-main',
+      readFile: makeReader(files),
+      fileIdForPath: makeFileIdForPath({ 'main.adoc': 'id-main' }),
+      scopePreference: 'full',
+    });
+    expect(result.scope).toBe('full');
+    const beyond = result.entries.find((entry: { title: string }) => entry.title === 'Beyond The Map');
+    expect(beyond).toMatchObject({
+      sourceFileId: 'id-main',
+      sourcePath: 'main.adoc',
+      sourceLine: 3,
+      isOpenFile: true,
+    });
+  });
+});

@@ -21,6 +21,18 @@ import { InMemoryFileNodeRepository } from '../../ports/file-tree/in-memory-file
 import { InMemoryDocumentRepository } from '../../ports/file-tree/in-memory-document.repository';
 import { InMemoryAssetRepository } from '../../ports/file-tree/in-memory-asset.repository';
 import { InMemoryProjectFileStore } from '../../ports/storage/in-memory-project-file-store';
+import { GitCommandFailedError } from '../../../src/errors/git/git-command-failed';
+import type { Logger } from '../../../src/ports/observability/logger';
+
+function makeLogger(): Logger & { warnCalls: { message: string; meta?: Record<string, unknown> }[] } {
+  const warnCalls: { message: string; meta?: Record<string, unknown> }[] = [];
+  return {
+    warnCalls,
+    warn(message: string, meta?: Record<string, unknown>) {
+      warnCalls.push({ message, meta });
+    },
+  };
+}
 
 const OWNER_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
 const ANOTHER_USER_ID = UserId.create('550e8400-e29b-41d4-a716-446655440002');
@@ -53,7 +65,7 @@ interface Harness {
   auditRepo: InMemoryAuditLogRepository;
 }
 
-function buildHarness(): Harness {
+function buildHarness(logger?: Logger): Harness {
   const projectRepo = new InMemoryProjectRepository();
   const fileNodeRepo = new InMemoryFileNodeRepository();
   const documentRepo = new InMemoryDocumentRepository();
@@ -74,6 +86,7 @@ function buildHarness(): Harness {
     commandRunner,
     memberRepo,
     auditRepo,
+    logger,
   );
 
   return {
@@ -390,5 +403,101 @@ describe('ImportRepositoryUseCase', () => {
       expect(await harness.memberRepo.findByUserId(OWNER_ID)).toHaveLength(0);
       await expectNoMaterializedTree(harness, projectId, savedNodeIds);
     });
+  });
+
+  test('a clone entry naming the internal root itself, or resolving to no path at all, is dropped', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingImport(harness, projectId, OWNER_ID);
+    harness.commandRunner.seedClone(REMOTE_URL, {
+      defaultBranch: 'main',
+      headCommit: CLONED_REPOSITORY.headCommit,
+      entries: [
+        { path: 'index.adoc', content: Buffer.from('= Handbook\n', 'utf8'), mimeType: 'text/asciidoc' },
+        { path: '.git', content: Buffer.from('gitdir: elsewhere', 'utf8'), mimeType: 'text/plain' },
+        { path: '.collab', content: Buffer.from('{}', 'utf8'), mimeType: 'application/json' },
+        { path: '/', content: Buffer.from('', 'utf8'), mimeType: 'text/plain' },
+      ],
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    expect(result.success).toBe(true);
+    const nodes = await harness.fileNodeRepo.findByProjectId(projectId);
+    const paths = nodes.map((node) => node.path.value).toSorted();
+    expect(paths).toEqual(['/', '/index.adoc']);
+  });
+
+  test('missing pre-allocated rows refuse with a GitCommandFailedError and no clone is attempted', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toContain(projectId.value);
+    }
+    expect(harness.commandRunner.cloneCalls).toHaveLength(0);
+  });
+
+  test('a domain failure raised mid-import is surfaced verbatim rather than flattened into a generic one', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingImport(harness, projectId, OWNER_ID);
+    harness.commandRunner.seedClone(REMOTE_URL, CLONED_REPOSITORY);
+    const raised = new ValidationError('the cloned tree could not be materialized');
+    jest.spyOn(harness.documentRepo, 'save').mockRejectedValue(raised);
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBe(raised);
+    expect(await harness.memberRepo.findByUserId(OWNER_ID)).toHaveLength(0);
+  });
+
+  test('a cleanup step that itself fails is logged and does not mask the import failure', async () => {
+    const logger = makeLogger();
+    const harness = buildHarness(logger);
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingImport(harness, projectId, OWNER_ID);
+    harness.commandRunner.seedCloneFailure(REMOTE_URL, new RepositoryUnreachableError());
+    jest.spyOn(harness.fileNodeRepo, 'findByProjectId').mockRejectedValue(new Error('tree read unavailable'));
+    jest.spyOn(harness.fileStore, 'removeProject').mockRejectedValue('the file store went away');
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    // The clone's own refusal is what the caller sees, not either cleanup failure.
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(RepositoryUnreachableError);
+    expect(logger.warnCalls).toHaveLength(2);
+    expect(logger.warnCalls[0].meta).toMatchObject({ error: 'tree read unavailable' });
+    expect(logger.warnCalls[1].meta).toMatchObject({ error: 'the file store went away' });
   });
 });

@@ -58,6 +58,49 @@ describe('useProjectFolders', () => {
     expect(result.current.folders).toEqual([]);
   });
 
+  it('sorts nested sub-folders by name and skips a root-level empty path', async () => {
+    mockFetch.mockResolvedValue(
+      node({
+        type: 'folder',
+        path: '/',
+        name: 'root',
+        children: [
+          node({ type: 'folder', path: '/', name: '' }),
+          node({
+            type: 'folder',
+            path: 'docs',
+            name: 'docs',
+            children: [
+              node({ type: 'folder', path: 'docs/zebra', name: 'zebra' }),
+              node({ type: 'folder', path: 'docs/alpha', name: 'alpha' }),
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const { result } = renderHook(() => useProjectFolders('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.tree[1].children.map((child) => child.name)).toEqual(['alpha', 'zebra']);
+    expect(result.current.folders).toEqual(['docs', 'docs/alpha', 'docs/zebra']);
+  });
+
+  it('ignores a failed load after unmount (no state update)', async () => {
+    let reject!: (reason: Error) => void;
+    mockFetch.mockReturnValue(
+      new Promise<FileTreeNode>((_resolve, rejectFunction) => {
+        reject = rejectFunction;
+      }),
+    );
+    const { unmount } = renderHook(() => useProjectFolders('p1'));
+    unmount();
+    await act(async () => {
+      reject(new Error('too late'));
+    });
+    expect(mockFetch).toHaveBeenCalled();
+  });
+
   it('ignores a resolved load after unmount (no state update)', async () => {
     let resolve!: (value: FileTreeNode) => void;
     mockFetch.mockReturnValue(

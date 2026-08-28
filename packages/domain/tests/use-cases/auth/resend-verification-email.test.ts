@@ -88,4 +88,12 @@ describe('ResendVerificationEmailUseCase', () => {
 
     expect(result.success).toBe(true);
   });
+
+  test('unknown user: returns success without sending mail (no account enumeration)', async () => {
+    const result = await useCase.execute(UserId.create(randomUUID()));
+
+    expect(result.success).toBe(true);
+    expect(notifier.sendResendVerificationEmail).not.toHaveBeenCalled();
+    expect(await tokenRepo.findByTokenHash(tokenData.hashedToken)).toBeNull();
+  });
 });

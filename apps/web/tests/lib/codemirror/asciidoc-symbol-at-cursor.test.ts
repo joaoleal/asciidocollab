@@ -69,6 +69,21 @@ describe('symbolAtCursor', () => {
     });
   });
 
+  test('detects the inline anchor:id[] macro as the anchor kind', () => {
+    const content = 'Start here anchor:setup[] and read on';
+    expect(symbolAtCursor(viewAt(content, content.indexOf('setup')))).toEqual({
+      kind: 'anchor',
+      name: 'setup',
+    });
+  });
+
+  test('returns null for a cross-reference whose target is only whitespace', () => {
+    // `<< >>` parses as a reference but names nothing, and offering a rename of the empty string
+    // would pre-fill the refactor dialog with a symbol no file can define.
+    const content = 'See << >> for details';
+    expect(symbolAtCursor(viewAt(content, content.indexOf('<<') + 2))).toBeNull();
+  });
+
   test('returns null when the cursor is on plain text', () => {
     const content = 'just some prose here';
     expect(symbolAtCursor(viewAt(content, 5))).toBeNull();

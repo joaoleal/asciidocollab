@@ -15,6 +15,7 @@ import {
   RepositoryTooLargeError,
   RepositoryUnreachableError,
 } from '@asciidocollab/domain';
+import { FailingConflictStageStore } from '../helpers/failing-conflict-stage-store.js';
 import { deriveLfsEndpoint, RealGitCommandRunner } from '../../src/git/git-command-runner.js';
 import { FilesystemConflictStageStore } from '../../src/git/filesystem-conflict-stage-store.js';
 import { RemoteHostNotAllowedError, type HostAddressResolver } from '../../src/git/egress-allowlist.js';
@@ -29,8 +30,9 @@ import {
   pushBranch,
   pushToOrigin,
 } from '../helpers/temporary-git-repo.js';
-import { startGitHttpServer } from '../helpers/git-http-server.js';
+import { startGitHttpServer, type GitHttpServer } from '../helpers/git-http-server.js';
 import { withArgvCapturingGit } from '../helpers/argv-capturing-git.js';
+import { withScriptedGit } from '../helpers/scripted-git.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -2856,5 +2858,837 @@ describe('RealGitCommandRunner.previewPush', () => {
     const result = await runner.previewPush(projectId, { branch: 'main' });
 
     expect(result.success).toBe(true);
+  });
+});
+
+/**
+ * Publishes a seeded working tree to a fresh bare remote and serves it over the test git-HTTP
+ * server, returning the URL of the served repository (setup helper, plain `git`).
+ */
+async function startServedRemote(
+  seed?: (tree: string) => Promise<void>,
+  options: { readonly requireAuth?: { readonly username: string; readonly password: string } } = {},
+): Promise<{ server: GitHttpServer; repositoryUrl: string; remotePath: string }> {
+  const remotePath = await createTemporaryBareRemote();
+  if (seed) {
+    const sourceTree = await createTemporaryWorkingTree();
+    await seed(sourceTree);
+    await commitAll(sourceTree, 'remote init');
+    await pushToOrigin(sourceTree, remotePath);
+  }
+  const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..'), ...options });
+  return { server, repositoryUrl: `${server.url}/repo.git`, remotePath };
+}
+
+describe('RealGitCommandRunner network failure mapping', () => {
+  it('reports a generic fetch failure when the remote is reachable but the branch does not exist', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440160');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const { server, repositoryUrl } = await startServedRemote(async (tree) => {
+      await writeFile(path.join(tree, 'remote.adoc'), 'remote\n');
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.fetch(projectId, {
+        remoteUrl: repositoryUrl,
+        token: 'unused',
+        branch: 'no-such-branch',
+      });
+
+      // Neither unreachable nor a rejected credential: the remote answered, it simply has no such
+      // ref — which must not be reported to the operator as a connectivity or auth problem.
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toBe('The repository could not be fetched.');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps a rejected fetch credential to an authentication failure', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440161');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const { server, repositoryUrl } = await startServedRemote(
+      async (tree) => {
+        await writeFile(path.join(tree, 'remote.adoc'), 'remote\n');
+      },
+      { requireAuth: { username: 'x-access-token', password: 'the-real-token' } },
+    );
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.fetch(projectId, {
+        remoteUrl: repositoryUrl,
+        token: 'the-wrong-token',
+        branch: 'main',
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(AuthenticationFailedError);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports a generic clone failure when the remote host answers but has no such repository', async () => {
+    const { server } = await startServedRemote(async (tree) => {
+      await writeFile(path.join(tree, 'remote.adoc'), 'remote\n');
+    });
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-storage-'));
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.clone({ remoteUrl: `${server.url}/no-such-repo.git`, token: 'unused' });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toBe('The repository could not be cloned.');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports a generic clone failure for a remote that has no commits to check out', async () => {
+    // The clone itself succeeds against an empty repository; everything after it (reading the
+    // default branch, the head commit) has no HEAD to resolve, and must surface as one failure
+    // rather than an unhandled throw.
+    const { server, repositoryUrl } = await startServedRemote();
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-storage-'));
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.clone({ remoteUrl: repositoryUrl, token: 'unused' });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toBe('The repository could not be cloned.');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports a generic push failure when the branch to push does not exist locally', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440162');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const { server, repositoryUrl } = await startServedRemote(async (tree) => {
+      await writeFile(path.join(tree, 'remote.adoc'), 'remote\n');
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.push(projectId, {
+        remoteUrl: repositoryUrl,
+        token: 'unused',
+        branch: 'no-such-branch',
+      });
+
+      // Not a non-fast-forward rejection, an unreachable remote, or a rejected credential — the
+      // three cases the caller acts on differently.
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error).not.toBeInstanceOf(NonFastForwardError);
+      expect(result.error.message).toBe('The push could not be completed.');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports an unreachable remote when a remote-access check cannot connect at all', async () => {
+    const port = await unusedLoopbackPort();
+    const storageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-storage-'));
+
+    const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+    const result = await runner.checkRemoteAccess({
+      remoteUrl: `http://127.0.0.1:${port}/repo.git`,
+      token: 'unused',
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(RepositoryUnreachableError);
+  });
+
+  it('reports a generic initialize failure when the branch to publish under is not a valid ref name', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440163');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'existing.adoc'), 'already here\n');
+    });
+    const { server, repositoryUrl } = await startServedRemote();
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: repositoryUrl,
+        token: 'unused',
+        branch: 'not a valid branch',
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toBe('The project could not be initialized and published.');
+      // All-or-nothing: the project is left exactly as non-git as it was.
+      await expect(stat(path.join(storageRoot, projectId.value, '.git'))).rejects.toThrow();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports a generic initialize failure when the working tree itself cannot be prepared', async () => {
+    // A directory where `.gitignore` belongs makes the managed-ignore write fail with a plain
+    // filesystem error rather than a git process failure — which must still be mapped to this
+    // port's initialize error union, not thrown.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440164');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'existing.adoc'), 'already here\n');
+      await mkdir(path.join(tree, '.gitignore'), { recursive: true });
+    });
+    const { server, repositoryUrl } = await startServedRemote();
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.initializeAndPublish(projectId, {
+        remoteUrl: repositoryUrl,
+        token: 'unused',
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toBe('The project could not be initialized and published.');
+      await expect(stat(path.join(storageRoot, projectId.value, '.git'))).rejects.toThrow();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('RealGitCommandRunner local read failures', () => {
+  it('reports a failure listing branches in a working tree that has no commits yet', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440165');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.listBranches(projectId);
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The project branches could not be listed.');
+  });
+
+  it('reports a failure when the requested history limit is not a whole number', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440166');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.log(projectId, { limit: 1.5 });
+
+    // The repository is valid and does have commits, so this is a real failure — not the
+    // empty-history case that answers with an empty list.
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The project history could not be read.');
+  });
+
+  it('reports a failure recording a commit when nothing is staged', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440167');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.commit(projectId, {
+      message: 'nothing to record',
+      author: { name: 'Ada', email: 'ada@example.com' },
+      flush: [],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The commit could not be recorded.');
+  });
+
+  it('reports a failure amending in a working tree that has no commit to amend', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440168');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.amendCommit(projectId, {
+      author: { name: 'Ada', email: 'ada@example.com' },
+      flush: [],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(result.error).not.toBeInstanceOf(CommitAlreadyPushedError);
+  });
+
+  it('refuses an amend whose flush entry path escapes the working tree, before writing anything', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440169');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.amendCommit(projectId, {
+      author: { name: 'Ada', email: 'ada@example.com' },
+      flush: [{ path: '../escaped.adoc', content: 'smuggled\n' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('A flush entry path escapes the project working tree.');
+    // Nothing was written outside the working tree.
+    await expect(stat(path.join(storageRoot, 'escaped.adoc'))).rejects.toThrow();
+  });
+
+  it('diffs a single uncommitted path against HEAD', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-44665544016a');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await writeFile(path.join(cwd, 'b.adoc'), 'other\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'a.adoc'), 'v2\n');
+    await writeFile(path.join(cwd, 'b.adoc'), 'other changed\n');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, { path: 'a.adoc' });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified).toContain('a.adoc');
+    // Scoped to the requested path only — the other modified file is not in the diff.
+    expect(result.value.unified).not.toContain('b.adoc');
+  });
+
+  it('reports a failure diffing two commits that do not exist', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-44665544016b');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, { from: 'deadbeef', to: 'cafebabe' });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The diff could not be produced.');
+  });
+
+  it('diffs live content for a path with no file name of its own', async () => {
+    // The scratch file the live text is written to is named after the path's basename; a path that
+    // has none must still produce a usable comparison rather than an unnamed temp file.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-44665544016c');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.diff(projectId, { currentContent: { path: '', content: 'live text\n' } });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.unified).toContain('+live text');
+  });
+
+  it('reports a failure previewing a pull into a working tree that has no commits yet', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-44665544016d');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const { server, repositoryUrl } = await startServedRemote(async (tree) => {
+      await writeFile(path.join(tree, 'remote.adoc'), 'remote\n');
+    });
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      // The fetch itself succeeds — there is simply no local HEAD to compare the fetched ref to.
+      const result = await runner.previewPull(projectId, {
+        remoteUrl: repositoryUrl,
+        token: 'unused',
+        branch: 'main',
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toBe('The incoming changes could not be previewed.');
+
+      // The same working tree now HAS a remote-tracking ref but still no HEAD, so the outgoing
+      // preview reaches its own comparison and fails there rather than degrading to empty.
+      const outgoing = await runner.previewPush(projectId, { branch: 'main' });
+      expect(outgoing.success).toBe(false);
+      if (outgoing.success) throw new Error('expected failure');
+      expect(outgoing.error.message).toBe('The outgoing changes could not be previewed.');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+/**
+ * Builds a project working tree whose local `main` and `refs/remotes/origin/main` both changed the
+ * same line of the same file, so merging the tracking ref leaves exactly one content conflict
+ * (setup uses plain `git`, never the code under test).
+ */
+async function setupContentConflict(projectId: string): Promise<{ storageRoot: string; cwd: string }> {
+  const storageRoot = await createTemporaryStorageRootWithProject(projectId);
+  const cwd = path.join(storageRoot, projectId);
+
+  await writeFile(path.join(cwd, 'base.adoc'), 'base\n');
+  await commitAll(cwd, 'base');
+
+  await execFile('git', ['checkout', '-q', '-b', 'incoming'], { cwd });
+  await writeFile(path.join(cwd, 'base.adoc'), 'theirs\n');
+  await commitAll(cwd, 'theirs edits base.adoc');
+  await execFile('git', ['update-ref', 'refs/remotes/origin/main', await readHeadCommit(cwd)], { cwd });
+  await execFile('git', ['checkout', '-q', 'main'], { cwd });
+  await execFile('git', ['branch', '-q', '-D', 'incoming'], { cwd });
+
+  await writeFile(path.join(cwd, 'base.adoc'), 'ours\n');
+  await commitAll(cwd, 'ours edits base.adoc');
+
+  return { storageRoot, cwd };
+}
+
+/** Reports whether a working tree currently has a merge in progress (`MERGE_HEAD` present). */
+async function hasMergeInProgress(cwd: string): Promise<boolean> {
+  return execFile('git', ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd }).then(
+    () => true,
+    () => false,
+  );
+}
+
+describe('RealGitCommandRunner conflict-stage-store failures', () => {
+  it('refuses a merge outright when the pre-operation undo snapshot cannot be recorded', async () => {
+    // Without a recorded undo target the pull would be irreversible, so the merge must not start.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440170');
+    const { storageRoot, cwd } = await setupContentConflict(projectId.value);
+    const headBefore = await readHeadCommit(cwd);
+    const store = await FailingConflictStageStore.create('writeSnapshot');
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The pre-operation snapshot could not be recorded.');
+    // Nothing was merged: the working tree is untouched.
+    expect(await readHeadCommit(cwd)).toBe(headBefore);
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+  });
+
+  it('still reports a conflict when no conflict-stage store is configured at all', async () => {
+    // The store is optional; without one the conflict is reported (and aborted) exactly the same,
+    // just with no stages captured for the resolution flow.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440171');
+    const { storageRoot, cwd } = await setupContentConflict(projectId.value);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value).toEqual({ status: 'conflicted', conflicts: [{ path: 'base.adoc', isBinary: false }] });
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+  });
+
+  it('fails a conflicted merge when the captured stages cannot be recorded, leaving a clean tree', async () => {
+    // A conflict whose stages were not captured cannot be resolved later, so it must surface as a
+    // failure rather than an awaiting-resolution outcome the user can never complete.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440172');
+    const { storageRoot, cwd } = await setupContentConflict(projectId.value);
+    const store = await FailingConflictStageStore.create('writeStages');
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The conflict could not be recorded.');
+    // The abort still ran: no half-merged state is left behind.
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+    expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('ours\n');
+  });
+
+  it('surfaces the store’s own failure when the undo snapshot cannot be read back', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440173');
+    const { storageRoot } = await setupContentConflict(projectId.value);
+    const store = await FailingConflictStageStore.create('readSnapshot');
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.restoreToSnapshot(projectId, { operationId: OPERATION_ID });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The conflict stage store is unavailable.');
+  });
+});
+
+describe('RealGitCommandRunner.resolveMerge failures', () => {
+  it('refuses a resolution whose path escapes the working tree, aborting the reproduced merge', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440174');
+    const { storageRoot, cwd } = await setupContentConflict(projectId.value);
+    const store = await createTemporaryConflictStageStore();
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.resolveMerge(projectId, {
+      branch: 'main',
+      operationId: OPERATION_ID,
+      resolutions: [{ path: '../escaped.adoc', resolution: 'merged' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The merge could not be completed.');
+    // The reproduced merge was aborted, so the project is left retryable rather than half-resolved.
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+    await expect(stat(path.join(storageRoot, 'escaped.adoc'))).rejects.toThrow();
+  });
+
+  it('refuses a "merged" resolution when no conflict-stage store is configured to read it from', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440175');
+    const { storageRoot, cwd } = await setupContentConflict(projectId.value);
+
+    const runner = new RealGitCommandRunner(storageRoot);
+    const result = await runner.resolveMerge(projectId, {
+      branch: 'main',
+      operationId: OPERATION_ID,
+      resolutions: [{ path: 'base.adoc', resolution: 'merged' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The merge could not be completed.');
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+  });
+
+  it('refuses a "merged" resolution when no merged content was recorded for the path', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440176');
+    const { storageRoot, cwd } = await setupContentConflict(projectId.value);
+    const store = await createTemporaryConflictStageStore();
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.resolveMerge(projectId, {
+      branch: 'main',
+      operationId: OPERATION_ID,
+      resolutions: [{ path: 'base.adoc', resolution: 'merged' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The merge could not be completed.');
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+    // The working tree keeps its own side rather than an empty or half-written file.
+    expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('ours\n');
+  });
+
+  it('completes with the remote’s changes when the re-run merge no longer conflicts', async () => {
+    // The remote can resolve the collision itself between detection and resolution; re-running the
+    // merge then applies cleanly and there is nothing to resolve.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440177');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'remote adds a file', async (clone) => {
+      await writeFile(path.join(clone, 'added.adoc'), 'brand new\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+    const result = await runner.resolveMerge(projectId, {
+      branch: 'main',
+      operationId: OPERATION_ID,
+      resolutions: [],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(result.value.status).toBe('resolved');
+    if (result.value.status !== 'resolved') throw new Error('expected a resolved outcome');
+    expect(result.value.changes).toEqual([
+      { type: 'added', path: 'added.adoc', content: Buffer.from('brand new\n'), mimeType: 'text/asciidoc' },
+    ]);
+  });
+});
+
+describe('RealGitCommandRunner.merge — binary classification across renames', () => {
+  it('classifies a conflicted binary path as binary while the incoming side also renamed other files', async () => {
+    // The incoming side renames both a binary and a text file, which git reports as rename records
+    // whose path field is empty and whose real paths follow separately. Misreading that stream
+    // would either lose the binary classification or misalign onto the wrong path.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440178');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    const originalLogo = Buffer.from(' logo-binary-original-padding-padding ', 'binary');
+    const ourLogo = Buffer.from(' logo-binary-ours-changed-padding-pad ', 'binary');
+
+    await writeFile(path.join(cwd, 'notes.adoc'), 'a\nb\nc\nd\ne\n');
+    await writeFile(path.join(cwd, 'art.png'), Buffer.from(' art-binary-padding-padding-pad ', 'binary'));
+    await writeFile(path.join(cwd, 'logo.png'), originalLogo);
+    await commitAll(cwd, 'base');
+
+    // "theirs": rename the text file, rename the (unchanged) binary file, and delete logo.png.
+    await execFile('git', ['checkout', '-q', '-b', 'incoming'], { cwd });
+    await execFile('git', ['mv', 'notes.adoc', 'notes-renamed.adoc'], { cwd });
+    await execFile('git', ['mv', 'art.png', 'art-renamed.png'], { cwd });
+    await execFile('git', ['rm', '-q', 'logo.png'], { cwd });
+    await commitAll(cwd, 'theirs renames and deletes');
+    await execFile('git', ['update-ref', 'refs/remotes/origin/main', await readHeadCommit(cwd)], { cwd });
+    await execFile('git', ['checkout', '-q', 'main'], { cwd });
+    await execFile('git', ['branch', '-q', '-D', 'incoming'], { cwd });
+
+    // "ours": modify the binary file the incoming side deleted — a modify/delete conflict on it.
+    await writeFile(path.join(cwd, 'logo.png'), ourLogo);
+    await commitAll(cwd, 'ours changes logo.png');
+
+    const store = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'conflicted') throw new Error('expected a conflicted outcome');
+    expect(result.value.conflicts).toEqual([{ path: 'logo.png', isBinary: true }]);
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+  });
+});
+
+describe('RealGitCommandRunner.stage — Git LFS installation', () => {
+  it('installs the local Git LFS filter once for a batch of large files, tracking every one', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440179');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'init.adoc'), 'init\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'first.bin'), 'x'.repeat(2048));
+    await writeFile(path.join(cwd, 'second.bin'), 'y'.repeat(4096));
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, undefined, 500, 1024);
+    const result = await runner.stage(projectId, ['first.bin', 'second.bin']);
+
+    if (!(await isGitLfsAvailable())) {
+      expect(result.success).toBe(false);
+      return;
+    }
+
+    expect(result).toEqual({ success: true, value: undefined });
+    const gitattributesContent = await readFile(path.join(cwd, '.gitattributes'), 'utf8');
+    expect(gitattributesContent).toContain('first.bin filter=lfs diff=lfs merge=lfs -text');
+    expect(gitattributesContent).toContain('second.bin filter=lfs diff=lfs merge=lfs -text');
+  });
+});
+
+describe('RealGitCommandRunner against unexpected git behavior', () => {
+  it('reports an unreadable status when the porcelain stream carries no branch header', async () => {
+    // The branch header is mandatory in porcelain v2; without it there is no current branch to
+    // report, and inventing one would misreport which branch the project is on.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440180');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const runner = new RealGitCommandRunner(storageRoot);
+
+    const result = await withScriptedGit(
+      [{ match: 'status --porcelain=v2', stdout: '? new.adoc\n' }],
+      async () => runner.getStatus(projectId),
+    );
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('Could not read the project working tree status.');
+  });
+
+  it('reports a failure when the divergence counts are not numbers', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440181');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+
+    const result = await withScriptedGit(
+      [{ match: 'rev-list --count --left-right', stdout: 'not counts\n' }],
+      async () => runner.getBehindAhead(projectId, 'main'),
+    );
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The branch divergence from its remote could not be determined.');
+  });
+
+  it('falls back to the current time when the recorded commit date cannot be read as a date', async () => {
+    // The commit itself already succeeded at this point, so an unreadable date must degrade to a
+    // usable timestamp rather than fail the whole commit.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440182');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    await writeFile(path.join(cwd, 'b.adoc'), 'v1\n');
+    await stage(cwd, 'b.adoc');
+    const runner = new RealGitCommandRunner(storageRoot);
+    const startedAt = Date.now();
+
+    const result = await withScriptedGit([{ match: '--format=%aI', stdout: 'not a date\n' }], async () =>
+      runner.commit(projectId, {
+        message: 'second',
+        author: { name: 'Ada', email: 'ada@example.com' },
+        flush: [],
+      }),
+    );
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(Number.isNaN(result.value.authoredAt.getTime())).toBe(false);
+    expect(result.value.authoredAt.getTime()).toBeGreaterThanOrEqual(startedAt - 1000);
+  });
+
+  it('falls back to the current time when an amended commit’s date cannot be read as a date', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440183');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const runner = new RealGitCommandRunner(storageRoot);
+    const startedAt = Date.now();
+
+    const result = await withScriptedGit([{ match: '--format=%aI', stdout: 'not a date\n' }], async () =>
+      runner.amendCommit(projectId, {
+        message: 'reworded',
+        author: { name: 'Ada', email: 'ada@example.com' },
+        flush: [],
+      }),
+    );
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    expect(Number.isNaN(result.value.authoredAt.getTime())).toBe(false);
+    expect(result.value.authoredAt.getTime()).toBeGreaterThanOrEqual(startedAt - 1000);
+  });
+
+  it('fails the merge when the staged-changes probe exits with an unexpected code', async () => {
+    // Exit 0/1 answer "nothing staged"/"something staged"; anything else is a real failure that
+    // must not be silently read as "nothing to flush".
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440184');
+    const { cwd } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+
+    const result = await withScriptedGit(
+      [{ match: 'diff --cached --quiet', stderr: 'fatal: unable to read index\n', exitCode: 2 }],
+      async () => runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID }),
+    );
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The merge could not be completed.');
+  });
+
+  it('keeps binary classification aligned when the numstat stream carries an unusable record', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440185');
+    const { storageRoot, cwd } = await setupContentConflict(projectId.value);
+    const runner = new RealGitCommandRunner(storageRoot);
+
+    const result = await withScriptedGit(
+      [{ match: 'diff --numstat -z', stdout: 'unusable-record\0-\t-\tbase.adoc\0' }],
+      async () => runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID }),
+    );
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'conflicted') throw new Error('expected a conflicted outcome');
+    // The unusable record was skipped without swallowing the binary record that follows it.
+    expect(result.value.conflicts).toEqual([{ path: 'base.adoc', isBinary: true }]);
+    expect(await hasMergeInProgress(cwd)).toBe(false);
+  });
+
+  it('skips a change status these diff flags can never emit rather than looping on it', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440186');
+    const { cwd, remotePath } = await setupProjectWithTracking(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addRemoteCommit(remotePath, 'remote adds a file', async (clone) => {
+      await writeFile(path.join(clone, 'added.adoc'), 'brand new\n');
+    });
+    await execFile('git', ['fetch', '-q', 'origin', 'main'], { cwd });
+    const runner = new RealGitCommandRunner(path.dirname(cwd));
+
+    const result = await withScriptedGit(
+      [{ match: 'diff --name-status -M -z', stdout: 'C100\0old.adoc\0new.adoc\0' }],
+      async () => runner.merge(projectId, { branch: 'main', flush: [], operationId: OPERATION_ID }),
+    );
+
+    // The merge still lands; the unrecognized record simply contributes no change.
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'merged') throw new Error('expected a merged outcome');
+    expect(result.value.changes).toEqual([]);
+  });
+
+  it('maps a publish whose push cannot reach the remote to an unreachable repository', async () => {
+    // The remote answers the emptiness probe and then becomes unreachable for the push — the
+    // failure the operator must see as connectivity, not as a broken project.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440187');
+    const storageRoot = await createTemporaryStorageRootWithUninitializedProject(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'existing.adoc'), 'already here\n');
+    });
+    const { server, repositoryUrl } = await startServedRemote();
+
+    try {
+      const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await withScriptedGit(
+        [
+          {
+            match: ' push ',
+            stderr: 'fatal: unable to access: Failed to connect to 127.0.0.1 port 1: Connection refused\n',
+            exitCode: 128,
+          },
+        ],
+        async () => runner.initializeAndPublish(projectId, { remoteUrl: repositoryUrl, token: 'unused' }),
+      );
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('expected failure');
+      expect(result.error).toBeInstanceOf(RepositoryUnreachableError);
+      // All-or-nothing: the project is left exactly as non-git as it was.
+      await expect(stat(path.join(storageRoot, projectId.value, '.git'))).rejects.toThrow();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports a failure when the live-content comparison itself cannot run', async () => {
+    // `git diff --no-index` exits 1 for "there is a diff"; only 2 and above is a real failure, and
+    // it must not be reported as an empty diff.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440188');
+    const storageRoot = await createTemporaryStorageRootWithProject(projectId.value);
+    const cwd = path.join(storageRoot, projectId.value);
+    await writeFile(path.join(cwd, 'a.adoc'), 'v1\n');
+    await commitAll(cwd, 'init');
+    const runner = new RealGitCommandRunner(storageRoot);
+
+    const result = await withScriptedGit(
+      [{ match: '--no-index', stderr: 'fatal: cannot compare\n', exitCode: 2 }],
+      async () => runner.diff(projectId, { currentContent: { path: 'a.adoc', content: 'live text\n' } }),
+    );
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The diff could not be produced.');
   });
 });

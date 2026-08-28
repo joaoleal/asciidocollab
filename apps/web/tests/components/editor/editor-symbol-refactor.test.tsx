@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { EditorSymbolRefactor } from '@/components/editor/editor-symbol-refactor';
 import type { SymbolUsage, RenameSymbolResult } from '@/lib/api/projects';
 
@@ -178,5 +178,84 @@ describe('EditorSymbolRefactor', () => {
     fireEvent.keyDown(screen.getByLabelText('Symbol name'), { key: 'Escape' });
     fireEvent.keyDown(screen.getByLabelText('New name'), { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  test('a click on the backdrop closes the dialog, one inside it does not', () => {
+    const { onClose } = setup({ initial: null });
+    fireEvent.mouseDown(screen.getByRole('dialog'));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.mouseDown(screen.getByRole('dialog').parentElement as HTMLElement);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('searching for a blank name does nothing', () => {
+    const { findUsages } = setup({ initial: null });
+    fireEvent.change(screen.getByLabelText('Symbol name'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: /find usages/i }));
+    expect(findUsages).not.toHaveBeenCalled();
+  });
+
+  test('renaming to or from a blank name does nothing', async () => {
+    const { renameSymbol } = setup({ initial: null });
+    // The button is disabled for a blank name, so the field's Enter shortcut is the way in.
+    fireEvent.keyDown(screen.getByLabelText('New name'), { key: 'Enter' });
+    await waitFor(() => expect(renameSymbol).not.toHaveBeenCalled());
+  });
+
+  test('a slow search cannot overwrite the results of a newer one', async () => {
+    let releaseFirst: ((usages: SymbolUsage[]) => void) | undefined;
+    const findUsages = jest
+      .fn<Promise<SymbolUsage[]>, [string, string, string]>()
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }))
+      .mockImplementationOnce(async () => USAGES);
+    setup({ initial: null, findUsages });
+
+    const nameInput = screen.getByLabelText('Symbol name');
+    fireEvent.change(nameInput, { target: { value: 'slow' } });
+    fireEvent.click(screen.getByRole('button', { name: /find usages/i }));
+    fireEvent.change(nameInput, { target: { value: 'fast' } });
+    fireEvent.click(screen.getByRole('button', { name: /find usages/i }));
+    expect(await screen.findByText('book.adoc')).toBeInTheDocument();
+
+    await act(async () => {
+      releaseFirst?.([{ fileNodeId: 'stale', path: 'stale.adoc', kind: 'xref', range: { from: 0, to: 1 } }]);
+    });
+    expect(screen.queryByText('stale.adoc')).not.toBeInTheDocument();
+    expect(screen.getByText('book.adoc')).toBeInTheDocument();
+  });
+
+  test('a slow search that fails cannot replace a newer search’s results with its error', async () => {
+    let rejectFirst: ((reason: unknown) => void) | undefined;
+    const findUsages = jest
+      .fn<Promise<SymbolUsage[]>, [string, string, string]>()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(async () => USAGES);
+    setup({ initial: null, findUsages });
+
+    const nameInput = screen.getByLabelText('Symbol name');
+    fireEvent.change(nameInput, { target: { value: 'slow' } });
+    fireEvent.click(screen.getByRole('button', { name: /find usages/i }));
+    fireEvent.change(nameInput, { target: { value: 'fast' } });
+    fireEvent.click(screen.getByRole('button', { name: /find usages/i }));
+    expect(await screen.findByText('book.adoc')).toBeInTheDocument();
+
+    await act(async () => { rejectFirst?.(new Error('the slow one gave up')); });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('book.adoc')).toBeInTheDocument();
+  });
+
+  test('reports a search that fails with something other than an error', async () => {
+    const failing = jest.fn(async (): Promise<SymbolUsage[]> => { throw 'not an error object'; });
+    setup({ findUsages: failing });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to find usages');
+  });
+
+  test('reports a rename that fails with something other than an error', async () => {
+    const failing = jest.fn(async (): Promise<RenameSymbolResult> => { throw 'not an error object'; });
+    setup({ renameSymbol: failing });
+    await screen.findByText('book.adoc');
+    fireEvent.change(screen.getByLabelText('New name'), { target: { value: 'overview' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Rename failed');
   });
 });

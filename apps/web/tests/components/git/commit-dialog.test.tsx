@@ -1,6 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CommitDialog } from '@/components/git/commit-dialog';
 import { ApiError } from '@/lib/api/transport';
+
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
 
 const mockGetGitStatus = jest.fn();
 const mockCommitChanges = jest.fn();
@@ -38,8 +41,20 @@ const STATUS_WITH_NOTHING_STAGED = {
 function renderDialog(overrides: Partial<{ onOpenChange: (open: boolean) => void; onCommitted: () => void }> = {}) {
   const onOpenChange = overrides.onOpenChange ?? jest.fn();
   const onCommitted = overrides.onCommitted ?? jest.fn();
-  render(<CommitDialog projectId="proj1" open onOpenChange={onOpenChange} onCommitted={onCommitted} />);
-  return { onOpenChange, onCommitted };
+  const view = render(<CommitDialog projectId="proj1" open onOpenChange={onOpenChange} onCommitted={onCommitted} />);
+  return { onOpenChange, onCommitted, unmount: view.unmount };
+}
+
+/** A never-settling promise plus the handles that settle it, for driving in-flight request states. */
+function deferred(): { promise: Promise<unknown>; resolve: (value: unknown) => void; reject: (reason: unknown) => void } {
+  let resolve: (value: unknown) => void = noop;
+  let reject: (reason: unknown) => void = noop;
+  const promise = new Promise<unknown>((resolveIt, rejectIt) => {
+    resolve = resolveIt;
+    reject = rejectIt;
+  });
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
 }
 
 const messageField = () => screen.getByLabelText(/commit message/i);
@@ -145,6 +160,134 @@ describe('CommitDialog submission', () => {
     fireEvent.click(submitButton());
     expect(await screen.findByText(/chapter-1\.adoc/)).toBeInTheDocument();
   });
+
+  test('names no file when a live_content_flush_failed refusal carries no path', async () => {
+    mockCommitChanges.mockRejectedValueOnce(new ApiError(409, 'live_content_flush_failed', 'server said so'));
+    renderDialog();
+    await screen.findByText('chapter-1.adoc');
+    fireEvent.change(messageField(), { target: { value: 'Fix typo' } });
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't read the latest content for a file — try again.",
+    );
+  });
+
+  test('shows a generic message when the commit never reaches the server', async () => {
+    mockCommitChanges.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    renderDialog();
+    await screen.findByText('chapter-1.adoc');
+    fireEvent.change(messageField(), { target: { value: 'Fix typo' } });
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't create the commit.");
+    expect(submitButton()).toBeEnabled();
+  });
+
+  test('submitting with a blank message commits nothing', async () => {
+    renderDialog();
+    await screen.findByText('chapter-1.adoc');
+    const form = messageField().closest('form');
+    expect(form).not.toBeNull();
+
+    await act(async () => {
+      if (form) fireEvent.submit(form);
+    });
+
+    expect(mockCommitChanges).not.toHaveBeenCalled();
+  });
+
+  test('closes on a successful commit even when no committed callback was given', async () => {
+    const onOpenChange = jest.fn();
+    render(<CommitDialog projectId="proj1" open onOpenChange={onOpenChange} />);
+    await screen.findByText('chapter-1.adoc');
+    fireEvent.change(messageField(), { target: { value: 'Fix typo' } });
+    fireEvent.click(submitButton());
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+});
+
+describe('CommitDialog staged-change loading failures', () => {
+  test('reports a refused staged-changes load without leaving the dialog on loading', async () => {
+    mockGetGitStatus.mockRejectedValue(new ApiError(500, 'internal_error', 'boom'));
+    renderDialog();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load staged changes.');
+    expect(screen.queryByText(/loading staged changes/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/nothing staged to commit/i)).toBeInTheDocument();
+  });
+
+  test('reports a staged-changes load that never reaches the server', async () => {
+    mockGetGitStatus.mockRejectedValue(new TypeError('Failed to fetch'));
+    renderDialog();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load staged changes.');
+    expect(screen.queryByText(/loading staged changes/i)).not.toBeInTheDocument();
+  });
+
+  test('drops a staged-changes result that arrives after dismissal', async () => {
+    const pending = deferred();
+    mockGetGitStatus.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    expect(screen.getByText(/loading staged changes/i)).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      pending.resolve(STATUS_WITH_STAGED);
+    });
+
+    expect(screen.queryByText('chapter-1.adoc')).not.toBeInTheDocument();
+  });
+
+  test('drops a staged-changes failure that arrives after dismissal', async () => {
+    const pending = deferred();
+    mockGetGitStatus.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+
+    unmount();
+    await act(async () => {
+      pending.reject(new TypeError('Failed to fetch'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+describe('CommitDialog commits that settle after dismissal', () => {
+  test('a commit that resolves after dismissal reports nothing', async () => {
+    const pending = deferred();
+    mockCommitChanges.mockReturnValue(pending.promise);
+    const { onCommitted, unmount } = renderDialog();
+    await screen.findByText('chapter-1.adoc');
+    fireEvent.change(messageField(), { target: { value: 'Fix typo' } });
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mockCommitChanges).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.resolve({ commit: { hash: 'abc123', message: 'Fix typo', authoredAt: '2026-08-24T00:00:00Z' } });
+    });
+
+    expect(onCommitted).not.toHaveBeenCalled();
+  });
+
+  test('a commit refused after dismissal shows no error', async () => {
+    const pending = deferred();
+    mockCommitChanges.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    await screen.findByText('chapter-1.adoc');
+    fireEvent.change(messageField(), { target: { value: 'Fix typo' } });
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mockCommitChanges).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.reject(new ApiError(409, 'nothing_staged', 'nope'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });
 
 describe('CommitDialog dismissal', () => {
@@ -160,6 +303,21 @@ describe('CommitDialog dismissal', () => {
     const { onOpenChange } = renderDialog();
     await screen.findByText('chapter-1.adoc');
     fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test('stays open when a pointer goes down outside it', async () => {
+    const { onOpenChange } = renderDialog();
+    await screen.findByText('chapter-1.adoc');
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    });
+
+    fireEvent.pointerDown(document.body, { button: 0, ctrlKey: false });
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 });

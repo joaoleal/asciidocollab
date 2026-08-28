@@ -16,6 +16,13 @@ const mockGetSource = pdfExtensionsApi.getSource as jest.MockedFunction<
 /** Placeholder resolver, replaced once the deferred fetch hands over its real one. */
 function noop(): void {}
 
+/** Let the pending promise chain run to completion without asserting on any particular render. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 /** A catalogue entry for `id`, available and shipped. */
 function entry(id: string) {
   return {
@@ -154,6 +161,44 @@ describe('usePdfExtensionBundle — readiness', () => {
     rerender({ ids: ['beta', 'alpha'] });
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(mockGetSource.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it('drops a source that arrives after the caller has gone', async () => {
+    catalogueOf(['alpha']);
+    let release: (value: string) => void = noop;
+    mockGetSource.mockReturnValue(
+      new Promise<string>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const { result, unmount } = renderHook(() => usePdfExtensionBundle('p1', ['alpha']));
+    await waitFor(() => expect(mockGetSource).toHaveBeenCalled());
+
+    unmount();
+    release('# alpha\n');
+    await settle();
+
+    expect(result.current.ready).toBe(false);
+    expect(result.current.bundle.sources).toEqual([]);
+  });
+
+  it('drops a fetch failure that arrives after the caller has gone', async () => {
+    catalogueOf(['alpha']);
+    let reject: (reason: unknown) => void = noop;
+    mockGetSource.mockReturnValue(
+      new Promise<string>((_resolve, rejectPromise) => {
+        reject = rejectPromise;
+      }),
+    );
+    const { result, unmount } = renderHook(() => usePdfExtensionBundle('p1', ['alpha']));
+    await waitFor(() => expect(mockGetSource).toHaveBeenCalled());
+
+    unmount();
+    reject(new Error('offline'));
+    await settle();
+
+    expect(result.current.ready).toBe(false);
+    expect(result.current.bundle.sources).toEqual([]);
   });
 });
 

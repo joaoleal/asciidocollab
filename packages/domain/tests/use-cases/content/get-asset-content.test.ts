@@ -84,6 +84,21 @@ describe('GetAssetContentUseCase', () => {
     }
   });
 
+  it('returns FileNodeNotFoundError when the node has no Asset record', async () => {
+    const documentNodeId = FileNodeId.create('bb0e8400-e29b-41d4-a716-446655440007');
+    const documentPath = FilePath.create('/notes.adoc');
+    await fileNodeRepo.save(
+      new FileNode(documentNodeId, projectId, rootFolderId, 'notes.adoc', FileNodeType.create('file'), documentPath),
+    );
+    await fileStore.write(projectId, documentPath, Buffer.from('= Notes'));
+
+    const result = await useCase.execute(actorId, projectId, documentNodeId);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(FileNodeNotFoundError);
+    }
+  });
+
   it('returns FileNodeNotFoundError when the FileNode belongs to a different project', async () => {
     const otherProjectId = ProjectId.create('ff0e8400-e29b-41d4-a716-446655440099');
     const alienRootId = FileNodeId.create('dd0e8400-e29b-41d4-a716-446655440098');

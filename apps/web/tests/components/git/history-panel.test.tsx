@@ -1,6 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { HistoryPanel } from '@/components/git/history-panel';
+import { ApiError } from '@/lib/api/transport';
 import type { CommitDto } from '@asciidocollab/shared';
+
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
 
 const mockGetHistory = jest.fn();
 const mockListMembers = jest.fn();
@@ -26,7 +30,7 @@ const COMMITS: CommitDto[] = [
 
 function renderPanel(overrides: Partial<{ onSelectCommit: (commit: CommitDto) => void }> = {}) {
   const onOpenChange = jest.fn();
-  render(
+  const view = render(
     <HistoryPanel
       projectId="proj1"
       open
@@ -34,7 +38,7 @@ function renderPanel(overrides: Partial<{ onSelectCommit: (commit: CommitDto) =>
       onSelectCommit={overrides.onSelectCommit}
     />,
   );
-  return { onOpenChange };
+  return { onOpenChange, unmount: view.unmount };
 }
 
 beforeEach(() => {
@@ -110,5 +114,85 @@ describe('HistoryPanel commit selection', () => {
 
     const row = await screen.findByText('Fix the intro section');
     expect(() => fireEvent.click(row)).not.toThrow();
+  });
+});
+
+describe('HistoryPanel scoping and closed state', () => {
+  test('requests nothing while closed', () => {
+    mockGetHistory.mockResolvedValue({ commits: [] });
+    render(<HistoryPanel projectId="proj1" open={false} onOpenChange={jest.fn()} />);
+
+    expect(mockListMembers).not.toHaveBeenCalled();
+  });
+
+  test('describes the history as scoped to one file when a path is given', async () => {
+    mockGetHistory.mockResolvedValue({ commits: COMMITS });
+    render(<HistoryPanel projectId="proj1" open path="docs/intro.adoc" limit={10} onOpenChange={jest.fn()} />);
+
+    expect(await screen.findByText('Commits touching docs/intro.adoc, most recent first.')).toBeInTheDocument();
+    expect(mockGetHistory).toHaveBeenCalledWith('proj1', { path: 'docs/intro.adoc', limit: 10 });
+  });
+
+  test('reports a project with no connected repository without showing an error', async () => {
+    mockGetHistory.mockRejectedValue(new ApiError(404, 'repository_not_connected', 'nope'));
+    renderPanel();
+
+    expect(await screen.findByText('This project has no connected repository.')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading commit history…')).not.toBeInTheDocument();
+  });
+});
+
+describe('HistoryPanel author lookup resilience', () => {
+  test('falls back to the neutral placeholder when the member lookup fails', async () => {
+    mockGetHistory.mockResolvedValue({ commits: COMMITS });
+    mockListMembers.mockRejectedValue(new Error('network down'));
+    renderPanel();
+
+    expect(await screen.findByText('Fix the intro section')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText('Unknown author')).toHaveLength(COMMITS.length));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  test('does not apply a member lookup that resolves after unmounting', async () => {
+    mockGetHistory.mockResolvedValue({ commits: COMMITS });
+    let settle: (value: unknown) => void = noop;
+    mockListMembers.mockReturnValue(
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const { unmount } = renderPanel();
+    expect(await screen.findByText('Fix the intro section')).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      settle({ data: { members: [{ userId: 'user1', displayName: 'Alice Smith' }] } });
+    });
+
+    expect(screen.queryByLabelText('Alice Smith')).not.toBeInTheDocument();
+  });
+});
+
+describe('HistoryPanel dismissal', () => {
+  test('asks to close when the Close button is pressed', async () => {
+    mockGetHistory.mockResolvedValue({ commits: [] });
+    const { onOpenChange } = renderPanel();
+    await screen.findByText('No commits yet.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  test('stays open when Escape is pressed or a pointer goes down outside it', async () => {
+    mockGetHistory.mockResolvedValue({ commits: [] });
+    const { onOpenChange } = renderPanel();
+    await screen.findByText('No commits yet.');
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.pointerDown(document.body, { button: 0, ctrlKey: false });
+
+    expect(screen.getByText('No commits yet.')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 });

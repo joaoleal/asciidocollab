@@ -98,6 +98,54 @@ describe('table separators and header cells', () => {
     const headerCells = markers(source).filter((m) => m.cls === TABLE_HEADER_CELL_CLASS);
     expect(headerCells.map((m) => m.text)).toEqual(['Feature', 'Status']);
   });
+
+  test('a table whose closing fence ends the document still recedes its separators', () => {
+    // With no trailing newline the block's last physical line is unterminated; splitting it off is
+    // what keeps the row above it — and its separators — inside the block.
+    const found = markers('[options="header"]\n|===\n| A | B\n|===');
+    expect(found.filter((m) => m.cls === TABLE_SEP_CLASS)).toHaveLength(2);
+    expect(found.filter((m) => m.cls === TABLE_HEADER_CELL_CLASS).map((m) => m.text)).toEqual([
+      'A',
+      'B',
+    ]);
+  });
+
+  test('an empty table marks nothing', () => {
+    expect(markers('|===\n|===\n')).toEqual([]);
+  });
+
+  test('a table of nothing but separators bolds no header', () => {
+    // Every cell is empty, so there is no header row to find and nothing to emphasise — but the
+    // separators themselves still recede.
+    const found = markers('|===\n||\n|===\n');
+    expect(found.some((m) => m.cls === TABLE_HEADER_CELL_CLASS)).toBe(false);
+    expect(found.filter((m) => m.cls === TABLE_SEP_CLASS)).toHaveLength(2);
+  });
+
+  test('an empty cell recedes its separators without producing a zero-width cell range', () => {
+    const found = markers('[options="header"]\n|===\n| A | B\n| 1 || 3\n|===\n');
+    // Two pipes on the header row, three on the body row — the empty cell between two of them is
+    // still a cell boundary.
+    expect(found.filter((m) => m.cls === TABLE_SEP_CLASS)).toHaveLength(5);
+    expect(found.filter((m) => m.cls === TABLE_HEADER_CELL_CLASS).map((m) => m.text)).toEqual([
+      'A',
+      'B',
+    ]);
+  });
+
+  test('a `cols="3*"` repeat factor counts as three columns', () => {
+    const source = '[cols="3*",options="header"]\n|===\n| A\n| B\n| C\n| 1 | 2 | 3\n|===\n';
+    const headerCells = markers(source).filter((m) => m.cls === TABLE_HEADER_CELL_CLASS);
+    expect(headerCells.map((m) => m.text)).toEqual(['A', 'B', 'C']);
+  });
+
+  test('a cols spec that declares no columns falls back to the first row’s cell count', () => {
+    // `0*` is a spec that counts to nothing. Trusting it would bold zero cells; falling back to what
+    // the first row actually contains keeps the header visible.
+    const source = '[cols="0*",options="header"]\n|===\n| A | B\n| 1 | 2\n|===\n';
+    const headerCells = markers(source).filter((m) => m.cls === TABLE_HEADER_CELL_CLASS);
+    expect(headerCells.map((m) => m.text)).toEqual(['A', 'B']);
+  });
 });
 
 describe('inline stem prefix and math body', () => {

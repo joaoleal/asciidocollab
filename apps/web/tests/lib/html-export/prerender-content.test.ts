@@ -129,6 +129,30 @@ describe('prerenderContent', () => {
     const result = await prerenderContent('<p>plain</p>', 'asciidocollab', capturingDeps().deps);
     expect(result.extraCss).toBe('');
   });
+
+  test('carries the stylesheet MathJax injected into the page when it typeset something', async () => {
+    const injected = document.createElement('style');
+    injected.id = 'MJX-CHTML-styles';
+    injected.textContent = 'mjx-container { display: inline-block; }';
+    document.head.append(injected);
+
+    const result = await prerenderContent('<p>plain</p>', 'asciidocollab', {
+      diagrams: false,
+      math: false,
+    });
+
+    injected.remove();
+    expect(result.extraCss).toBe('mjx-container { display: inline-block; }');
+  });
+
+  test('reports no stylesheet when MathJax has injected none into the page', async () => {
+    const result = await prerenderContent('<p>plain</p>', 'asciidocollab', {
+      diagrams: false,
+      math: false,
+    });
+
+    expect(result.extraCss).toBe('');
+  });
   // Where a rendered diagram ends up is the packaging's decision, taken here, so both export shapes go
   // through this one pass instead of a zip getting a post-processing step of its own.
   describe('diagram packaging', () => {

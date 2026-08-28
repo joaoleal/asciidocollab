@@ -21,6 +21,20 @@ describe('colorForUser', () => {
     }
   });
 
+  test('still returns a palette colour when a code point cannot be read', () => {
+    // The hash folds in a zero for any position that yields no code point, so an id the engine
+    // cannot decode still produces a colour rather than a NaN index and an undefined entry.
+    const codePointAt = jest
+      .spyOn(String.prototype, 'codePointAt')
+      .mockReturnValue(undefined);
+    try {
+      const result = colorForUser('abc');
+      expect(PRESENCE_COLOR_PALETTE).toContainEqual(result);
+    } finally {
+      codePointAt.mockRestore();
+    }
+  });
+
   test('distributes different ids across more than one palette entry', () => {
     const colors = new Set(
       Array.from({ length: 50 }, (_, index) => colorForUser(`user-${index}`).color),

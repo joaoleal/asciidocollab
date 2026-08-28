@@ -1,4 +1,5 @@
 import {
+  compareExtensionIds,
   pdfExtensionManifestSchema,
   pdfExtensionThemeKeySchema,
   pdfExtensionOriginSchema,
@@ -35,5 +36,16 @@ describe('pdf-extensions barrel re-exports', () => {
         sampleContent: '[.numbered]\nA paragraph.\n',
       }),
     ).toMatchObject({ id: 'paragraph-numbering' });
+  });
+
+  it('re-exports the id comparison the catalogue is ordered by', () => {
+    // Reached only through this barrel outside the package, and load order changes what a PDF looks
+    // like — so an id comparison the barrel stopped exposing would silently fall back to whatever
+    // order a caller's own sort happened to produce.
+    expect(compareExtensionIds('alpha', 'beta')).toBe(-1);
+    expect(compareExtensionIds('beta', 'alpha')).toBe(1);
+    expect(compareExtensionIds('alpha', 'alpha')).toBe(0);
+    // The hyphen orders by code unit, not by a locale that may treat it as ignorable punctuation.
+    expect(compareExtensionIds('title-block', 'titleblock')).toBe(-1);
   });
 });

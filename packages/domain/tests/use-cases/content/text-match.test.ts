@@ -78,6 +78,25 @@ describe('computeMatches — literal', () => {
     if (!result.success) return;
     expect(result.value).toHaveLength(2);
   });
+
+  it('stops a case-insensitive scan at the maxMatches budget', () => {
+    const result = computeMatches('aAaA', query({ text: 'a', caseSensitive: false }), undefined, budget({ maxMatches: 2 }));
+    if (!result.success) return;
+    expect(result.value.map((s) => s.from)).toEqual([0, 1]);
+  });
+
+  it('stops a case-insensitive scan once the deadline has passed', () => {
+    const result = computeMatches('aAaA', query({ text: 'a', caseSensitive: false }), undefined, budget({ deadline: 0, now: () => 1 }));
+    if (!result.success) return;
+    expect(result.value).toEqual([]);
+  });
+
+  it('finds nothing for an empty query', () => {
+    const result = computeMatches('anything', query({ text: '' }), undefined, budget());
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.value).toEqual([]);
+  });
 });
 
 describe('computeMatches — regex', () => {
@@ -130,6 +149,37 @@ describe('substitute', () => {
   it('emits an unknown named group reference literally', () => {
     expect(substitute('${month}!', span, 'regex')).toBe('${month}!');
   });
+
+  it('emits an unterminated ${ token literally', () => {
+    expect(substitute('${year', span, 'regex')).toBe('${year');
+  });
+
+  it('emits a trailing lone dollar sign literally', () => {
+    expect(substitute('cost$', span, 'regex')).toBe('cost$');
+  });
+
+  it('expands a named group that did not participate to an empty string', () => {
+    const withAbsentName: MatchSpan = { from: 0, to: 3, groups: ['abc'], named: { month: undefined } };
+    expect(substitute('[${month}]', withAbsentName, 'regex')).toBe('[]');
+  });
+
+  it('expands $& to an empty string when the whole match is absent', () => {
+    const withoutWholeMatch: MatchSpan = { from: 0, to: 0, groups: [undefined] };
+    expect(substitute('[$&]', withoutWholeMatch, 'regex')).toBe('[]');
+  });
+
+  it('expands a numbered group that did not participate to an empty string', () => {
+    const withAbsentGroup: MatchSpan = { from: 0, to: 3, groups: ['abc', undefined] };
+    expect(substitute('[$1]', withAbsentGroup, 'regex')).toBe('[]');
+  });
+
+  it('expands a two-digit group reference when the pattern defines that many groups', () => {
+    const groups = ['whole', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8', 'g9', 'g10', undefined];
+    const wideSpan: MatchSpan = { from: 0, to: 5, groups };
+    expect(substitute('$10', wideSpan, 'regex')).toBe('g10');
+    // Group 11 exists in the pattern but did not participate — it expands to nothing, not "$11".
+    expect(substitute('[$11]', wideSpan, 'regex')).toBe('[]');
+  });
 });
 
 describe('selectSpans', () => {
@@ -161,6 +211,13 @@ describe('selectSpans', () => {
 
   it('skips an ordinal that no longer exists', () => {
     expect(selectSpans(spans, [{ ordinal: 9, expectedText: 'foo' }], 'bar', 'literal')).toEqual([]);
+  });
+
+  it('confirms a zero-width span whose expected text is empty', () => {
+    const zeroWidth: MatchSpan[] = [{ from: 4, to: 4, groups: [undefined] }];
+    expect(selectSpans(zeroWidth, [{ ordinal: 0, expectedText: '' }], 'x', 'literal')).toEqual([
+      { from: 4, to: 4, replacement: 'x' },
+    ]);
   });
 
   it('de-duplicates a repeated ordinal so a span is edited at most once', () => {

@@ -124,4 +124,60 @@ describe('RightPanelRail', () => {
     expect(screen.getByRole('tab', { name: 'Comments' })).toHaveTextContent('');
     expect(screen.getByRole('tab', { name: 'Writing' })).toHaveTextContent('');
   });
+
+  test('caps a badge over ninety-nine so it stays inside the icon', () => {
+    render(<RightPanelRail activeTab="comments" onTabChange={jest.fn()} commentCount={100} writingCount={99} />);
+    expect(screen.getByTestId('right-panel-count-comments')).toHaveTextContent('99+');
+    expect(screen.getByTestId('right-panel-count-writing')).toHaveTextContent('99');
+  });
+
+  test('leaves keys other than the arrows to the browser', () => {
+    const onTabChange = jest.fn();
+    render(<RightPanelRail activeTab="comments" onTabChange={onTabChange} />);
+    const comments = screen.getByRole('tab', { name: 'Comments' });
+    fireEvent.keyDown(comments, { key: 'Enter' });
+    fireEvent.keyDown(comments, { key: 'End' });
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
+
+  test('arrowing to another view while collapsed selects it and reopens the panel', () => {
+    const onTabChange = jest.fn();
+    const onExpand = jest.fn();
+    render(
+      <RightPanelRail activeTab="comments" onTabChange={onTabChange} onExpand={onExpand} collapsed />,
+    );
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Comments' }), { key: 'ArrowDown' });
+    expect(onTabChange).toHaveBeenLastCalledWith('writing');
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  test('arrowing while collapsed still selects the view when no expand handler is given', () => {
+    const onTabChange = jest.fn();
+    render(<RightPanelRail activeTab="writing" onTabChange={onTabChange} collapsed />);
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Writing' }), { key: 'ArrowUp' });
+    expect(onTabChange).toHaveBeenLastCalledWith('comments');
+  });
+
+  test('clicking a view while collapsed still selects it when no expand handler is given', () => {
+    const onTabChange = jest.fn();
+    const onCollapse = jest.fn();
+    render(
+      <RightPanelRail
+        activeTab="comments"
+        onTabChange={onTabChange}
+        onCollapse={onCollapse}
+        collapsed
+      />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Comments' }));
+    expect(onTabChange).toHaveBeenLastCalledWith('comments');
+    expect(onCollapse).not.toHaveBeenCalled();
+  });
+
+  test('clicking the view already showing is inert when no collapse handler is given', () => {
+    const onTabChange = jest.fn();
+    render(<RightPanelRail activeTab="writing" onTabChange={onTabChange} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Writing' }));
+    expect(onTabChange).not.toHaveBeenCalled();
+  });
 });

@@ -191,6 +191,20 @@ describe('go-to-definition locators', () => {
     const index = buildProjectSymbolIndex('main', getContent, resolveInclude, 'main', pathOf);
     expect(index.lineOf('ghost', 0)).toBe(1);
   });
+
+  test('hands back a file’s raw text, and null for a file it cannot read', () => {
+    // Consumers that re-parse a file (heading levels, include tracing) read it through the index
+    // rather than holding their own reader, so the two never disagree about what a file contains.
+    const index = buildProjectSymbolIndex('main', getContent, resolveInclude, 'main', pathOf);
+    expect(index.getContent('chapter1')).toBe(FILES.chapter1.content);
+    expect(index.getContent('ghost')).toBeNull();
+  });
+
+  test('resolves an include target through the same sandboxed resolver the walk used', () => {
+    const index = buildProjectSymbolIndex('main', getContent, resolveInclude, 'main', pathOf);
+    expect(index.resolveInclude('main', 'chapter1.adoc')).toBe('chapter1');
+    expect(index.resolveInclude('main', '../secret.adoc')).toBeNull();
+  });
 });
 
 describe('makeIncludeResolver (Constitution IX sandbox)', () => {

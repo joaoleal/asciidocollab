@@ -6,6 +6,16 @@ import { UserId } from '../../../src/value-objects/ids/user-id';
 import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
 import { InMemoryConflictStageStore } from '../../ports/git/in-memory-conflict-stage-store';
+import { GitCommandFailedError } from '../../../src/errors/git/git-command-failed';
+import type { ConflictStages } from '../../../src/ports/git/conflict-stage-store';
+import type { Result } from '../../../src/types/result';
+
+/** Stage store whose reads always fail, standing in for an unreadable blob store. */
+class UnreadableConflictStageStore extends InMemoryConflictStageStore {
+  async readStages(): Promise<Result<ConflictStages | null, GitCommandFailedError>> {
+    return { success: false, error: new GitCommandFailedError('the captured stages could not be read') };
+  }
+}
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440000');
 const ACTOR_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
@@ -119,5 +129,40 @@ describe('GetConflictStagesUseCase', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(GitConflictNotFoundError);
+  });
+
+  test('maps a deleted "theirs" side to null while keeping the other sides as text', async () => {
+    const gitOperationRepo = new InMemoryGitOperationRepository();
+    const conflictStageStore = new InMemoryConflictStageStore();
+    const operationId = await buildAwaitingOperation(gitOperationRepo);
+    conflictStageStore.seedStages(operationId, TEXT_PATH, {
+      base: Buffer.from('base text', 'utf8'),
+      ours: Buffer.from('our text', 'utf8'),
+      theirs: null,
+      isBinary: false,
+    });
+    const useCase = new GetConflictStagesUseCase(gitOperationRepo, conflictStageStore);
+
+    const result = await useCase.execute({ projectId: PROJECT_ID, path: TEXT_PATH });
+
+    expect(result).toEqual({
+      success: true,
+      value: { base: 'base text', ours: 'our text', theirs: null, isBinary: false },
+    });
+  });
+
+  test('a failed stage read is surfaced verbatim rather than reported as a missing conflict', async () => {
+    const gitOperationRepo = new InMemoryGitOperationRepository();
+    const conflictStageStore = new UnreadableConflictStageStore();
+    await buildAwaitingOperation(gitOperationRepo);
+    const useCase = new GetConflictStagesUseCase(gitOperationRepo, conflictStageStore);
+
+    const result = await useCase.execute({ projectId: PROJECT_ID, path: TEXT_PATH });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error).not.toBeInstanceOf(GitConflictNotFoundError);
+    }
   });
 });

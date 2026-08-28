@@ -1,0 +1,13 @@
+{
+  // The WASI bridge is the one module that lazily `import()`s the ESM-only interop libraries. Under
+  // `module: node16` TypeScript preserves that call as a real dynamic import, which Jest cannot run
+  // (it needs `--experimental-vm-modules`) and cannot intercept with `jest.mock`. Compiling this one
+  // module to CommonJS turns the call into a `require`, so the unit tests can bind in-memory fakes for
+  // the libraries instead of loading them.
+  "extends": "./tsconfig.eslint.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0"
+  }
+}

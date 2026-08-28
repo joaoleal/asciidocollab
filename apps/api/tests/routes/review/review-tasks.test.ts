@@ -116,6 +116,16 @@ describe('PATCH a review item', () => {
       await app.close();
     });
 
+    test('200 — omitting the assignee clears the assignment and the due date', async () => {
+      const app = await buildServer({ reviewComment: { findById: jest.fn(async () => task()) } });
+      const response = await patch(app, { op: 'assign' });
+      expect(response.statusCode).toBe(200);
+      const dto = response.json().data;
+      expect(dto.assignee).toBeNull();
+      expect(dto.dueDate).toBeUndefined();
+      await app.close();
+    });
+
     test('409 CONFLICT — assigning a plain comment is rejected by the entity guard', async () => {
       const app = await buildServer({ reviewComment: { findById: jest.fn(async () => comment()) } });
       const response = await patch(app, { op: 'assign', assigneeId: ASSIGNEE_ID });
@@ -132,6 +142,14 @@ describe('PATCH a review item', () => {
       expect(response.statusCode).toBe(200);
       expect(response.json().data.status).toBe('resolved');
       expect(response.json().data.resolvedAt).toBeDefined();
+      await app.close();
+    });
+
+    test('400 VALIDATION_ERROR — a status change without a status', async () => {
+      const app = await buildServer();
+      const response = await patch(app, { op: 'status' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('VALIDATION_ERROR');
       await app.close();
     });
 

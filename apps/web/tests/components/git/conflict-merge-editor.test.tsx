@@ -1,7 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConflictMergeEditor } from '@/components/git/conflict-merge-editor';
 import { getConflictStages } from '@/lib/api/git';
 import type { ConflictStagesDto } from '@asciidocollab/shared';
+
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
 
 jest.mock('@/lib/api/git', () => ({
   getConflictStages: jest.fn(),
@@ -116,6 +119,45 @@ describe('ConflictMergeEditor loading', () => {
 
     await waitFor(() => expect(screen.getByText(/modified on one side and deleted on the other/i)).toBeInTheDocument());
     expect(screen.queryByTestId('merge-ours')).not.toBeInTheDocument();
+  });
+
+  it('does not render stages that resolve after the editor is gone', async () => {
+    let settle: (value: ConflictStagesDto) => void = noop;
+    mockGetConflictStages.mockReturnValue(
+      new Promise<ConflictStagesDto>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const { unmount } = render(
+      <ConflictMergeEditor projectId="proj1" path="a.adoc" onSave={jest.fn()} onCancel={jest.fn()} />,
+    );
+    expect(screen.getByText(/loading merge editor/i)).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      settle(STAGES);
+    });
+
+    expect(screen.queryByTestId('merge-ours')).not.toBeInTheDocument();
+  });
+
+  it('does not render a load failure that settles after the editor is gone', async () => {
+    let fail: (reason: unknown) => void = noop;
+    mockGetConflictStages.mockReturnValue(
+      new Promise<ConflictStagesDto>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    const { unmount } = render(
+      <ConflictMergeEditor projectId="proj1" path="a.adoc" onSave={jest.fn()} onCancel={jest.fn()} />,
+    );
+
+    unmount();
+    await act(async () => {
+      fail(new TypeError('Failed to fetch'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 

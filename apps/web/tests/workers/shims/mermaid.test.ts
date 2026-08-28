@@ -2,7 +2,11 @@ import type { MermaidConfig } from 'mermaid';
 
 import type { ShimInput } from '@asciidocollab/asciidoc-pdf';
 
-import { createMermaidShim, type MermaidRenderer } from '@/workers/shims/mermaid';
+import {
+  buildPreviewMermaidConfig,
+  createMermaidShim,
+  type MermaidRenderer,
+} from '@/workers/shims/mermaid';
 
 const SAMPLE_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><text>A</text></svg>';
 
@@ -72,6 +76,72 @@ describe('mermaid diagram shim', () => {
     if (!output.ok) {
       expect(output.diagnostic.code).toBe('malformed-diagram');
       expect(output.diagnostic.message).toContain('boom');
+    }
+  });
+
+  it('reports a non-Error render failure by its string form', async () => {
+    const shim = createMermaidShim(async () => {
+      throw 'the engine gave up';
+    });
+
+    const output = await shim.render(blockInput('graph TD; A-->B'));
+
+    expect(output.ok).toBe(false);
+    if (!output.ok) {
+      expect(output.diagnostic.message).toBe('the engine gave up');
+    }
+  });
+});
+
+describe('preview mermaid configuration', () => {
+  it('matches the export configuration so the preview is strict and label-safe too', async () => {
+    let exportConfig: MermaidConfig | undefined;
+    await createMermaidShim(async (config) => {
+      exportConfig = config;
+      return SAMPLE_SVG;
+    }).render(blockInput('graph TD; A-->B'));
+
+    expect(buildPreviewMermaidConfig()).toEqual(exportConfig);
+    expect(buildPreviewMermaidConfig().securityLevel).toBe('strict');
+    expect(buildPreviewMermaidConfig().htmlLabels).toBe(false);
+    expect(buildPreviewMermaidConfig().suppressErrorRendering).toBe(true);
+  });
+});
+
+describe('mermaid diagram shim — bundled engine', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  afterEach(() => {
+    jest.dontMock('mermaid');
+  });
+
+  it('initializes the real engine with the strict config and returns its SVG', async () => {
+    const initialized: MermaidConfig[] = [];
+    const renderCalls: string[][] = [];
+    jest.doMock('mermaid', () => ({
+      __esModule: true,
+      default: {
+        initialize: (config: MermaidConfig) => {
+          initialized.push(config);
+        },
+        render: async (id: string, source: string) => {
+          renderCalls.push([id, source]);
+          return { svg: SAMPLE_SVG };
+        },
+      },
+    }));
+    const { createMermaidShim: create } = await import('@/workers/shims/mermaid');
+
+    const output = await create().render(blockInput('graph TD; A-->B'));
+
+    expect(initialized).toHaveLength(1);
+    expect(initialized[0].securityLevel).toBe('strict');
+    expect(renderCalls[0][1]).toBe('graph TD; A-->B');
+    expect(output.ok).toBe(true);
+    if (output.ok) {
+      expect(new TextDecoder().decode(output.asset.bytes)).toBe(SAMPLE_SVG);
     }
   });
 });

@@ -5,7 +5,13 @@
  * and pin that a zip is self-consistent: the paths inside it are the paths the document links to.
  */
 import { unzipSync, strFromU8 } from 'fflate';
-import { packageExport, ZIP_DOCUMENT_NAME } from '@/lib/html-export/package-export';
+import {
+  downloadExport,
+  packageExport,
+  stylesheetAsset,
+  ZIP_DOCUMENT_NAME,
+  ZIP_STYLESHEET_NAME,
+} from '@/lib/html-export/package-export';
 import type { ExportAsset } from '@/lib/html-export/inline-assets';
 
 const ASSETS: ExportAsset[] = [
@@ -60,5 +66,90 @@ describe('packageExport — zip', () => {
     const packaged = packageExport('<html>doc</html>', [], 'zip', 'Guide Project');
     const entries = unzip(packaged.bytes);
     expect(Object.keys(entries)).toEqual([ZIP_DOCUMENT_NAME]);
+  });
+});
+
+describe('stylesheetAsset', () => {
+  test('names and types the stylesheet so the zip carries it like any other file', () => {
+    const asset = stylesheetAsset('body { color: red }');
+
+    expect(asset.path).toBe(ZIP_STYLESHEET_NAME);
+    expect(asset.contentType).toBe('text/css;charset=utf-8');
+    expect(strFromU8(asset.bytes)).toBe('body { color: red }');
+  });
+
+  test('is written into the archive at the root, beside the document', () => {
+    const packaged = packageExport(
+      '<html>doc</html>',
+      [stylesheetAsset('body { color: red }')],
+      'zip',
+      'Guide Project',
+    );
+
+    expect(strFromU8(unzip(packaged.bytes)[ZIP_STYLESHEET_NAME])).toBe('body { color: red }');
+  });
+});
+
+describe('downloadExport', () => {
+  let created: Blob[];
+  let revoked: string[];
+
+  beforeEach(() => {
+    created = [];
+    revoked = [];
+    jest.useFakeTimers();
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (blob: Blob) => {
+        created.push(blob);
+        return 'blob:packaged-export';
+      },
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: (url: string) => {
+        revoked.push(url);
+      },
+    });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('clicks a named anchor for the packaged bytes and leaves no element behind', () => {
+    const packaged = packageExport('<html>doc</html>', [], 'single-file', 'Guide Project');
+    let clickedDownload: string | undefined;
+    let clickedHref: string | undefined;
+    const clickListener = (event: Event): void => {
+      // jsdom would otherwise try to navigate to the object URL, which it cannot do.
+      event.preventDefault();
+      const target = event.target;
+      if (target instanceof HTMLAnchorElement) {
+        clickedDownload = target.download;
+        clickedHref = target.href;
+      }
+    };
+    document.addEventListener('click', clickListener);
+
+    downloadExport(packaged);
+
+    document.removeEventListener('click', clickListener);
+    expect(created).toEqual([packaged.blob]);
+    expect(clickedDownload).toBe(packaged.fileName);
+    expect(clickedHref).toBe('blob:packaged-export');
+    expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  test('revokes the object url on a later task, not in the click', () => {
+    const packaged = packageExport('<html>doc</html>', [], 'single-file', 'Guide Project');
+
+    downloadExport(packaged);
+
+    expect(revoked).toEqual([]);
+    jest.runAllTimers();
+    expect(revoked).toEqual(['blob:packaged-export']);
   });
 });

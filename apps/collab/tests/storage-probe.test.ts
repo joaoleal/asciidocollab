@@ -290,4 +290,73 @@ describe('verifySharedStorage', () => {
       verifySharedStorage({ storagePath, apiInternalUrl: API_URL, timeoutMs: 1000, fetch: fetchMock, logger }),
     ).rejects.toThrow(/returned HTTP 500/);
   });
+
+  it('probes through the global fetch when no fetch is injected', async () => {
+    // Production wiring passes a fetch only when mTLS is configured; a plain loopback deployment
+    // relies on this fallback, so the probe must still reach the API without one.
+    const globalFetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(Response.json({ shared: true }, { status: 200 }));
+
+    try {
+      await expect(
+        verifySharedStorage({ storagePath, apiInternalUrl: API_URL, timeoutMs: 1000, logger }),
+      ).resolves.toBeUndefined();
+
+      expect(globalFetch).toHaveBeenCalledTimes(1);
+      expect(String(globalFetch.mock.calls[0][0])).toMatch(/\/internal\/collab\/storage-probe\?token=/);
+    } finally {
+      globalFetch.mockRestore();
+    }
+  });
+
+  it('describes a rejection that is not an Error in the unreachable message', async () => {
+    // Undici can reject with a non-Error value; the diagnostic must still name what went wrong
+    // rather than rendering "[object Object]" or crashing on a missing `.message`.
+    const nonErrorFailure: unknown = 'socket hang up';
+    const fetchMock = jest.fn<Promise<Response>, FetchArguments>(async () => {
+      throw nonErrorFailure;
+    });
+
+    const error = (await verifySharedStorage({
+      storagePath,
+      apiInternalUrl: API_URL,
+      timeoutMs: 1000,
+      readyTimeoutMs: 0,
+      fetch: fetchMock,
+      logger,
+    }).then(() => null, (error_: unknown) => error_)) as Error;
+
+    expect(error.message).toBe(
+      `Could not reach the API storage-probe endpoint at ${API_URL} to verify shared storage ` +
+        'after 0ms (socket hang up). Is apps/api running?',
+    );
+  });
+
+  it('treats a body that is not JSON at all as not shared', async () => {
+    // A proxy or captive portal can answer 200 with HTML; parsing it throws, and the probe must
+    // fail with the divergent-storage diagnosis rather than an unhandled parse error.
+    const fetchMock = jest.fn<Promise<Response>, FetchArguments>(async () =>
+      new Response('<html>not json</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    );
+
+    await expect(
+      verifySharedStorage({ storagePath, apiInternalUrl: API_URL, timeoutMs: 1000, fetch: fetchMock, logger }),
+    ).rejects.toThrow(/do NOT share the same file-storage root/);
+  });
+
+  it('still resolves when the sentinel cleanup itself fails', async () => {
+    // A stray sentinel is harmless; a failed cleanup must never turn a verified-shared storage
+    // root into a startup abort.
+    const fetchMock = jest.fn<Promise<Response>, FetchArguments>(async () =>
+      Response.json({ shared: true }, { status: 200 }),
+    );
+    rmSpy.mockRejectedValueOnce(new Error('EBUSY'));
+
+    await expect(
+      verifySharedStorage({ storagePath, apiInternalUrl: API_URL, timeoutMs: 1000, fetch: fetchMock, logger }),
+    ).resolves.toBeUndefined();
+
+    expect(rmSpy).toHaveBeenCalled();
+  });
 });

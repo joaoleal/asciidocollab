@@ -100,6 +100,29 @@ describe('writeManagedGitignore', () => {
     }
   });
 
+  it('preserves a managed block whose end marker was lost, rather than swallowing the rest of the file', async () => {
+    // A hand-edit can delete the closing marker. Treating the orphaned opening marker as an
+    // unterminated section would strip everything after it — including unrelated user rules.
+    const managedBegin = buildManagedGitignore(null, null).split('\n')[0];
+    const truncated = `${managedBegin}\n.collab/\nkeep-me/\n`;
+
+    const regenerated = buildManagedGitignore(truncated, null);
+
+    expect(regenerated).toContain('keep-me/');
+    for (const entry of MANAGED_GITIGNORE_ENTRIES) {
+      expect(regenerated).toContain(entry);
+    }
+  });
+
+  it('propagates a read failure that is not a missing file', async () => {
+    // Only ENOENT means "no .gitignore yet". Anything else (here, a directory in its place) is a
+    // real filesystem problem that must not be silently regenerated over.
+    const cwd = await createTemporaryWorkingTree();
+    await mkdir(path.join(cwd, '.gitignore'), { recursive: true });
+
+    await expect(writeManagedGitignore(cwd, null)).rejects.toThrow();
+  });
+
   it('never lets .collab/ or an internal temp artifact be staged, even with `git add -A`', async () => {
     const cwd = await createTemporaryWorkingTree();
 

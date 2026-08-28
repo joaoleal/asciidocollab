@@ -1,7 +1,7 @@
 import type { InjectOptions } from 'fastify';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
-import { ProjectId, FileNodeId, FileNode, FileNodeType, FilePath } from '@asciidocollab/domain';
+import { ProjectId, FileNodeId, FileNode, FileNodeType, FilePath, ProjectNotFoundError } from '@asciidocollab/domain';
 import { Re2RegexEngine } from '@asciidocollab/infrastructure';
 import { projectSearchRoutes } from '../../../src/routes/projects/search';
 import { decorateApp } from '../../helpers/decorate-app';
@@ -29,6 +29,8 @@ interface ServerOptions {
   role?: string;
   store?: Map<string, string>;
   applyStructured?: jest.Mock;
+  /** Replaces the RE2 engine, e.g. with one whose compile fails for an unexpected reason. */
+  regexEngine?: { compile: jest.Mock };
 }
 
 async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance> {
@@ -66,7 +68,7 @@ async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance
         store.set(path.value, content.toString('utf8'));
       }),
     },
-    regexEngine: new Re2RegexEngine(),
+    regexEngine: options.regexEngine ?? new Re2RegexEngine(),
     collaborativeContentEditor: { readContent: jest.fn(async () => ({ success: true, value: null })) },
     structuredCollaborativeEditor: { applyStructuredReplacement: options.applyStructured ?? jest.fn(async () => ({ success: true, value: 1 })) },
   });
@@ -128,6 +130,29 @@ describe('POST /projects/:projectId/search', () => {
     expect(response.statusCode).toBe(400);
     await app.close();
   });
+
+  test('200 — named capture groups are surfaced alongside the numbered ones', async () => {
+    const app = await buildServer({ store: new Map([['/alpha.adoc', 'ref 2026-07\n'], ['/beta.txt', '']]) });
+    const response = await search(app, {
+      query: String.raw`(?<year>\d{4})-(?<month>\d{2})`,
+      mode: 'regex',
+      caseSensitive: true,
+      wholeWord: false,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.groups[0].matches[0].named).toEqual({ year: '2026', month: '07' });
+    await app.close();
+  });
+
+  test('500 — a use-case failure outside the mapped kinds is reported without leaking details', async () => {
+    const app = await buildServer({
+      regexEngine: { compile: jest.fn(() => ({ success: false, error: new ProjectNotFoundError(PROJECT_ID) })) },
+    });
+    const response = await search(app, { query: 'foo', mode: 'regex', caseSensitive: true, wholeWord: false });
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error).toEqual({ code: 'INTERNAL_ERROR', message: 'Failed to search project' });
+    await app.close();
+  });
 });
 
 const replace = (app: FastifyInstance, body: InjectOptions['payload']) =>
@@ -181,6 +206,34 @@ describe('POST /projects/:projectId/replace', () => {
     const app = await buildServer({ role: 'editor' });
     const response = await replace(app, { query: { query: 'foo', mode: 'literal', caseSensitive: true, wholeWord: false }, replacement: 'X', scope: 'project' });
     expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  test('200 — a selection that no longer matches is reported as skipped, not force-written', async () => {
+    const app = await buildServer({ role: 'editor' });
+    const response = await replace(app, replaceBody({
+      scope: 'match',
+      files: [{ fileNodeId: ALPHA_ID, selections: [{ ordinal: 99, expectedText: 'foo' }] }],
+    }));
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toMatchObject({
+      replacedCount: 0,
+      skipped: [{ fileNodeId: ALPHA_ID, reason: 'stale' }],
+    });
+    await app.close();
+  });
+
+  test('500 — a use-case failure outside the mapped kinds is reported without leaking details', async () => {
+    const app = await buildServer({
+      role: 'editor',
+      regexEngine: { compile: jest.fn(() => ({ success: false, error: new ProjectNotFoundError(PROJECT_ID) })) },
+    });
+    const response = await replace(app, replaceBody({
+      query: { query: 'foo', mode: 'regex', caseSensitive: true, wholeWord: false },
+      files: [],
+    }));
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error).toEqual({ code: 'INTERNAL_ERROR', message: 'Failed to replace project content' });
     await app.close();
   });
 });

@@ -29,6 +29,26 @@ function makeBase64KeyConfig() {
   });
 }
 
+function makeOptionalBase64KeyConfig() {
+  return convict<{ value: unknown }>({
+    value: {
+      format: 'optional-base64-32byte-key',
+      default: '',
+      env: 'FORMATS_TEST_OPTIONAL_KEY_' + Math.random(),
+    },
+  });
+}
+
+function makeCommaSeparatedConfig() {
+  return convict<{ value: unknown }>({
+    value: {
+      format: 'comma-separated-strings',
+      default: [],
+      env: 'FORMATS_TEST_LIST_' + Math.random(),
+    },
+  });
+}
+
 // A canonical valid key: 32 zero bytes, base64-encoded (44 chars). `openssl rand -base64 32`
 // produces the same shape.
 const VALID_32_BYTE_KEY = Buffer.alloc(32).toString('base64');
@@ -186,5 +206,76 @@ describe('base64-32byte-key format', () => {
     const cfg = makeBase64KeyConfig();
     cfg.set('value', 123 as never);
     expect(() => cfg.validate({ allowed: 'strict' })).toThrow('must be a string');
+  });
+});
+
+describe('optional-base64-32byte-key format', () => {
+  it('accepts an unset value, so the key stays optional until a provider needs it', () => {
+    const cfg = makeOptionalBase64KeyConfig();
+    expect(() => cfg.validate({ allowed: 'strict' })).not.toThrow();
+  });
+
+  it('accepts an explicitly empty string', () => {
+    const cfg = makeOptionalBase64KeyConfig();
+    cfg.set('value', '');
+    expect(() => cfg.validate({ allowed: 'strict' })).not.toThrow();
+  });
+
+  it('accepts a base64-encoded 32-byte key', () => {
+    const cfg = makeOptionalBase64KeyConfig();
+    cfg.set('value', VALID_32_BYTE_KEY);
+    expect(() => cfg.validate({ allowed: 'strict' })).not.toThrow();
+  });
+
+  it('rejects a key of the wrong decoded length', () => {
+    const cfg = makeOptionalBase64KeyConfig();
+    cfg.set('value', KEY_48_BYTES);
+    expect(() => cfg.validate({ allowed: 'strict' })).toThrow('must be a base64-encoded 32-byte string');
+  });
+
+  it('rejects a string containing non-base64 characters', () => {
+    const cfg = makeOptionalBase64KeyConfig();
+    cfg.set('value', 'this is not base64 and it is definitely wrong!');
+    expect(() => cfg.validate({ allowed: 'strict' })).toThrow('must be a base64-encoded 32-byte string');
+  });
+
+  it('rejects a non-string value', () => {
+    const cfg = makeOptionalBase64KeyConfig();
+    cfg.set('value', 123);
+    expect(() => cfg.validate({ allowed: 'strict' })).toThrow('must be a string');
+  });
+});
+
+describe('comma-separated-strings format', () => {
+  it('splits, trims and drops empty entries from an environment string', () => {
+    const cfg = makeCommaSeparatedConfig();
+    cfg.set('value', 'github.com, gitlab.com,,');
+    expect(() => cfg.validate({ allowed: 'strict' })).not.toThrow();
+    expect(cfg.get('value')).toEqual(['github.com', 'gitlab.com']);
+  });
+
+  it('passes an array default through unchanged', () => {
+    const cfg = makeCommaSeparatedConfig();
+    cfg.set('value', ['github.com']);
+    expect(() => cfg.validate({ allowed: 'strict' })).not.toThrow();
+    expect(cfg.get('value')).toEqual(['github.com']);
+  });
+
+  it('rejects a value that is neither a string nor an array', () => {
+    const cfg = makeCommaSeparatedConfig();
+    cfg.set('value', 42);
+    expect(() => cfg.validate({ allowed: 'strict' })).toThrow('must be an array of strings');
+  });
+
+  it('rejects an array holding a non-string entry', () => {
+    const cfg = makeCommaSeparatedConfig();
+    cfg.set('value', ['github.com', 7]);
+    expect(() => cfg.validate({ allowed: 'strict' })).toThrow('must be an array of non-empty strings');
+  });
+
+  it('rejects an array holding an empty entry', () => {
+    const cfg = makeCommaSeparatedConfig();
+    cfg.set('value', ['github.com', '']);
+    expect(() => cfg.validate({ allowed: 'strict' })).toThrow('must be an array of non-empty strings');
   });
 });

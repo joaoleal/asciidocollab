@@ -9,6 +9,10 @@ import {
   isFileGitStatus,
   CONFLICT_RESOLUTIONS,
   isConflictResolution,
+  GIT_OPERATION_KINDS,
+  isGitOperationKind,
+  GIT_OPERATION_STATES,
+  isGitOperationState,
 } from '../../src/dtos/git.dto';
 import type {
   GitProvider,
@@ -295,5 +299,54 @@ describe('PushPreviewDto', () => {
     expect(dto.outgoingCommits).toHaveLength(1);
     expect(dto.changedPaths).toEqual(['chapters/outro.adoc']);
     expect('affectsOpenFiles' in dto).toBe(false);
+  });
+});
+
+describe('git operation kind', () => {
+  test('the kind set names every whole-project operation, in the documented order', () => {
+    expect(GIT_OPERATION_KINDS).toEqual([
+      'IMPORT',
+      'INITIALIZE',
+      'CONNECT',
+      'DISCONNECT',
+      'COMMIT',
+      'PUSH',
+      'PULL',
+      'FETCH',
+      'BRANCH_CREATE',
+      'BRANCH_SWITCH',
+      'RESOLVE',
+      'DISCARD',
+      'AMEND',
+      'UNDO_PULL',
+    ]);
+  });
+
+  test('type guard accepts every member and rejects a non-member', () => {
+    for (const kind of GIT_OPERATION_KINDS) expect(isGitOperationKind(kind)).toBe(true);
+    expect(isGitOperationKind('REBASE')).toBe(false);
+    // Case matters: the wire spelling is upper case, and a lower-case one is a different string.
+    expect(isGitOperationKind('pull')).toBe(false);
+    expect(isGitOperationKind('')).toBe(false);
+  });
+});
+
+describe('git operation state', () => {
+  test('the state set covers the whole lifecycle', () => {
+    expect(GIT_OPERATION_STATES).toEqual([
+      'QUEUED',
+      'RUNNING',
+      'AWAITING_CONFLICT',
+      'SUCCEEDED',
+      'FAILED',
+      'ABORTED',
+    ]);
+  });
+
+  test('type guard accepts every member and rejects a non-member', () => {
+    for (const state of GIT_OPERATION_STATES) expect(isGitOperationState(state)).toBe(true);
+    expect(isGitOperationState('PENDING')).toBe(false);
+    expect(isGitOperationState('succeeded')).toBe(false);
+    expect(isGitOperationState('')).toBe(false);
   });
 });

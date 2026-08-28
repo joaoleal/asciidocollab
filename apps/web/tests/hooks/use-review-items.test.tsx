@@ -110,6 +110,128 @@ describe('useReviewItems', () => {
     await waitFor(() => expect(result.current.error?.message).toBe('offline'));
   });
 
+  test('honours an explicit includeResolved seed', async () => {
+    renderHook(() =>
+      useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc: null, includeResolved: true }),
+    );
+    await waitFor(() => expect(mockList).toHaveBeenCalledWith('p1', 'd1', { includeResolved: true }));
+  });
+
+  test('exposes a refetch control that re-runs the fetch', async () => {
+    const { result } = renderHook(() => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc: null }));
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+
+    act(() => result.current.refetch());
+
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+  });
+
+  test('drops the resolved ranges when the collaborative doc goes away', async () => {
+    mockList.mockResolvedValue([thread('r1')]);
+    mockResolveAnchors.mockReturnValue([{ id: 'r1', range: { from: 0, to: 4 }, state: 'located' }]);
+    mockToRanges.mockReturnValue([{ id: 'r1', from: 0, to: 4 }]);
+    const ydoc = ydocWithText('some text');
+
+    const { result, rerender } = renderHook(
+      ({ doc }: { doc: Y.Doc | null }) => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc: doc }),
+      { initialProps: { doc: ydoc } },
+    );
+    await waitFor(() => expect(result.current.ranges).toHaveLength(1));
+
+    rerender({ doc: null });
+
+    await waitFor(() => expect(result.current.ranges).toHaveLength(0));
+    expect(result.current.anchorStates.size).toBe(0);
+  });
+
+  test('a superseded in-flight fetch never overwrites the newer result', async () => {
+    let releaseFirst: ((value: ThreadDto[]) => void) | undefined;
+    mockList.mockImplementationOnce(
+      () =>
+        new Promise<ThreadDto[]>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+    mockList.mockResolvedValue([thread('newer')]);
+
+    const { result } = renderHook(() => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc: null }));
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      sseHandler?.({ documentId: 'd1' });
+    });
+    await waitFor(() => expect(result.current.threads.map((entry) => entry.root.id)).toEqual(['newer']));
+
+    await act(async () => {
+      releaseFirst?.([thread('stale')]);
+    });
+
+    expect(result.current.threads.map((entry) => entry.root.id)).toEqual(['newer']);
+    expect(result.current.loading).toBe(false);
+  });
+
+  test('a superseded fetch that fails never surfaces its error', async () => {
+    let rejectFirst: ((reason: Error) => void) | undefined;
+    mockList.mockImplementationOnce(
+      () =>
+        new Promise<ThreadDto[]>((_resolve, reject) => {
+          rejectFirst = reject;
+        }),
+    );
+    mockList.mockResolvedValue([thread('newer')]);
+
+    const { result } = renderHook(() => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc: null }));
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      sseHandler?.({ documentId: 'd1' });
+    });
+    await waitFor(() => expect(result.current.threads.map((entry) => entry.root.id)).toEqual(['newer']));
+
+    await act(async () => {
+      rejectFirst?.(new Error('stale failure'));
+    });
+
+    expect(result.current.error).toBeNull();
+  });
+
+  test('reports a generic message when the failure is not an Error', async () => {
+    mockList.mockRejectedValue('a string rejection');
+    const { result } = renderHook(() => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc: null }));
+    await waitFor(() => expect(result.current.error?.message).toBe('Failed to load review items'));
+  });
+
+  test('coalesces a burst of document transactions into a single re-resolve', async () => {
+    const ydoc = ydocWithText('start');
+    renderHook(() => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc }));
+    await waitFor(() => expect(mockResolveAnchors).toHaveBeenCalled());
+
+    const before = mockResolveAnchors.mock.calls.length;
+    act(() => {
+      const ytext = ydoc.getText(COLLAB_YTEXT_KEY);
+      ytext.insert(0, 'X');
+      ytext.insert(0, 'Y');
+      ytext.insert(0, 'Z');
+    });
+
+    await waitFor(() => expect(mockResolveAnchors.mock.calls.length).toBe(before + 1));
+  });
+
+  test('cancels a pending re-resolve frame when the doc is torn down', async () => {
+    const cancel = jest.spyOn(globalThis, 'cancelAnimationFrame');
+    const ydoc = ydocWithText('start');
+    const { unmount } = renderHook(() => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc }));
+    await waitFor(() => expect(mockResolveAnchors).toHaveBeenCalled());
+
+    act(() => {
+      ydoc.getText(COLLAB_YTEXT_KEY).insert(0, 'X');
+    });
+    unmount();
+
+    expect(cancel).toHaveBeenCalled();
+    cancel.mockRestore();
+  });
+
   test('clears the previous document state on a document switch', async () => {
     mockList.mockResolvedValue([thread('r1')]);
     const { result, rerender } = renderHook(

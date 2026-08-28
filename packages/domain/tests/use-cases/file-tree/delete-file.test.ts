@@ -181,6 +181,40 @@ describe('DeleteFileUseCase', () => {
     expect(logs[0].action).toBe('file.deleted');
   });
 
+  test('cascades through nested folders and deletes files that have no document', async () => {
+    const nestedFolderId = FileNodeId.create('110e8400-e29b-41d4-a716-44665544001a');
+    const documentlessFileId = FileNodeId.create('220e8400-e29b-41d4-a716-44665544001b');
+
+    await fileNodeRepo.save(
+      new FileNode(
+        nestedFolderId,
+        projectId,
+        childFolderId,
+        'nested-folder',
+        FileNodeType.create('folder'),
+        FilePath.create('/child-folder/nested-folder'),
+      ),
+    );
+    await fileNodeRepo.save(
+      new FileNode(
+        documentlessFileId,
+        projectId,
+        nestedFolderId,
+        'plain.txt',
+        FileNodeType.create('file'),
+        FilePath.create('/child-folder/nested-folder/plain.txt'),
+      ),
+    );
+
+    const result = await useCase.execute(actorId, childFolderId, projectId);
+
+    expect(result.success).toBe(true);
+    expect(await fileNodeRepo.findById(childFolderId)).toBeNull();
+    expect(await fileNodeRepo.findById(nestedFolderId)).toBeNull();
+    expect(await fileNodeRepo.findById(documentlessFileId)).toBeNull();
+    expect(await fileNodeRepo.findById(rootFolderId)).not.toBeNull();
+  });
+
   test('returns error when deleting root folder', async () => {
     const result = await useCase.execute(actorId, rootFolderId, projectId);
 
@@ -658,6 +692,36 @@ describe('DeleteFileUseCase — main-file consistency', () => {
     if (result.success) expect(result.value.mainFileCleared).toBe(true);
     const reloaded = await projectRepo.findById(project);
     expect(reloaded!.mainFileNodeId).toBeNull();
+  });
+
+  it('clears the main-file configuration when the folder containing the main file is deleted', async () => {
+    const chaptersId = FileNodeId.create('cc0e8400-e29b-41d4-a716-44665544000c');
+    const nestedMainId = FileNodeId.create('dd0e8400-e29b-41d4-a716-44665544000d');
+    await fileNodeRepo.save(new FileNode(chaptersId, project, rootId, 'chapters', FileNodeType.create('folder'), FilePath.create('/chapters')));
+    await fileNodeRepo.save(new FileNode(nestedMainId, project, chaptersId, 'intro.adoc', FileNodeType.create('file'), FilePath.create('/chapters/intro.adoc')));
+    projectEntity.setMainFile(nestedMainId);
+    await projectRepo.save(projectEntity);
+
+    const result = await buildUseCase().execute(actor, chaptersId, project);
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.value.mainFileCleared).toBe(true);
+    const reloaded = await projectRepo.findById(project);
+    expect(reloaded!.mainFileNodeId).toBeNull();
+  });
+
+  it('leaves the main-file configuration intact when a folder that does not contain it is deleted', async () => {
+    const chaptersId = FileNodeId.create('cc0e8400-e29b-41d4-a716-44665544000c');
+    await fileNodeRepo.save(new FileNode(chaptersId, project, rootId, 'chapters', FileNodeType.create('folder'), FilePath.create('/chapters')));
+    projectEntity.setMainFile(mainId);
+    await projectRepo.save(projectEntity);
+
+    const result = await buildUseCase().execute(actor, chaptersId, project);
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.value.mainFileCleared).toBe(false);
+    const reloaded = await projectRepo.findById(project);
+    expect(reloaded!.mainFileNodeId!.value).toBe(mainId.value);
   });
 
   it('leaves the main-file configuration intact when a different file is deleted', async () => {

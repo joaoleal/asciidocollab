@@ -15,6 +15,54 @@ jest.mock('@/lib/navigate', () => ({
   navigateTo: (...parameters: unknown[]) => mockNavigateTo(...parameters),
 }));
 
+/** The visibility seam every dialog this section hosts exposes back to it. */
+interface HostedDialogSeam {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+/** Each hosted dialog's latest visibility seam, keyed by which action it belongs to. */
+const mockHostedDialogs = new Map<string, HostedDialogSeam>();
+
+// The hosted dialogs are wrapped rather than replaced, so this file still exercises them end to end
+// while their `onOpenChange` seams stay reachable — none of them ever asks to *open*, so that half
+// of each seam has to be driven directly.
+jest.mock('@/components/git/repository-connect-dialog', () => {
+  const actual = jest.requireActual('@/components/git/repository-connect-dialog');
+  const react = jest.requireActual('react');
+  return {
+    ...actual,
+    ConnectOrInitializeDialog: (properties: HostedDialogSeam & { mode: string }) => {
+      mockHostedDialogs.set(properties.mode, properties);
+      return react.createElement(actual.ConnectOrInitializeDialog, properties);
+    },
+  };
+});
+
+jest.mock('@/components/git/repository-rotate-dialog', () => {
+  const actual = jest.requireActual('@/components/git/repository-rotate-dialog');
+  const react = jest.requireActual('react');
+  return {
+    ...actual,
+    RotateCredentialDialog: (properties: HostedDialogSeam) => {
+      mockHostedDialogs.set('rotate', properties);
+      return react.createElement(actual.RotateCredentialDialog, properties);
+    },
+  };
+});
+
+jest.mock('@/components/git/repository-disconnect-dialog', () => {
+  const actual = jest.requireActual('@/components/git/repository-disconnect-dialog');
+  const react = jest.requireActual('react');
+  return {
+    ...actual,
+    DisconnectDialog: (properties: HostedDialogSeam) => {
+      mockHostedDialogs.set('disconnect', properties);
+      return react.createElement(actual.DisconnectDialog, properties);
+    },
+  };
+});
+
 jest.mock('@/lib/api/git', () => ({
   ...jest.requireActual('@/lib/api/git'),
   connectRepository: (...parameters: unknown[]) => mockConnectRepository(...parameters),
@@ -74,6 +122,7 @@ function fillValidForm() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockHostedDialogs.clear();
   gitStatus.status = null;
   gitStatus.connected = false;
   gitStatus.loading = false;
@@ -395,6 +444,74 @@ describe('RepositorySection — connected', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/no connected repository/i);
     expect(mockRefetch).not.toHaveBeenCalled();
+  });
+});
+
+/** Drives one hosted dialog's visibility seam and settles the resulting render. */
+async function requestVisibility(key: string, open: boolean) {
+  const seam = mockHostedDialogs.get(key);
+  expect(seam).toBeDefined();
+  await act(async () => {
+    seam?.onOpenChange(open);
+  });
+}
+
+/** Lets the newly opened dialog's own mount-time lookups settle before anything is asserted. */
+async function settle() {
+  await act(async () => {
+    jest.advanceTimersByTime(0);
+  });
+}
+
+describe('RepositorySection — hosted dialog visibility', () => {
+  test('a request to reopen the connect dialog leaves it open', async () => {
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    await settle();
+    await requestVisibility('connect', true);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByLabelText(/remote url/i)).toBeInTheDocument();
+  });
+
+  test('a request to reopen the initialize dialog leaves it open', async () => {
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /initialize & publish/i }));
+    await settle();
+    await requestVisibility('initialize', true);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  test('closing the connect dialog through its own seam hides it', async () => {
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /connect to a remote/i }));
+    await settle();
+    await requestVisibility('connect', false);
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  test('closing the rotate dialog hides it, and a reopen request leaves it open', async () => {
+    gitStatus.connected = true;
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /rotate credential/i }));
+    expect(screen.getByLabelText(/new access token/i)).toBeInTheDocument();
+
+    await requestVisibility('rotate', true);
+    expect(screen.getByLabelText(/new access token/i)).toBeInTheDocument();
+
+    await requestVisibility('rotate', false);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  test('a request to reopen the disconnect dialog leaves it open', async () => {
+    gitStatus.connected = true;
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /^disconnect$/i }));
+    await requestVisibility('disconnect', true);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });
 

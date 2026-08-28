@@ -95,6 +95,42 @@ describe('useFileTreeEvents', () => {
     expect(onReconnect).not.toHaveBeenCalled();
   });
 
+  it('routes a review-items-changed event to onReviewItemsChanged only', () => {
+    const onReviewItemsChanged = jest.fn();
+    renderHook(() => useFileTreeEvents(projectId, { ...handlers, onReviewItemsChanged }));
+    const event = { type: 'review-items-changed', documentId: 'doc-1' };
+    act(() => triggerMessage({ type: 'project-event', event }));
+    expect(onReviewItemsChanged).toHaveBeenCalledWith(event);
+    expect(onFileTreeEvent).not.toHaveBeenCalled();
+  });
+
+  it('drops every event type when no handler is registered for it', () => {
+    renderHook(() => useFileTreeEvents(projectId, {}));
+
+    act(() => triggerMessage({ type: 'reconnect' }));
+    act(() => triggerMessage({ type: 'sse-connected' }));
+    act(() => triggerMessage({ type: 'project-event', event: { type: 'content-changed', fileNodeId: 'n1' } }));
+    act(() => triggerMessage({ type: 'project-event', event: { type: 'main-file-changed', mainFileNodeId: 'n2' } }));
+    act(() => triggerMessage({ type: 'project-event', event: { type: 'review-items-changed', documentId: 'd1' } }));
+    act(() =>
+      triggerMessage({
+        type: 'project-event',
+        event: {
+          type: 'created',
+          fileNodeId: 'n3',
+          nodeType: 'file',
+          name: 'a.txt',
+          path: '/a.txt',
+          parentId: null,
+        },
+      }),
+    );
+
+    expect(onReconnect).not.toHaveBeenCalled();
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(onFileTreeEvent).not.toHaveBeenCalled();
+  });
+
   it('posts unsubscribe message on unmount', () => {
     const { unmount } = renderHook(() => useFileTreeEvents(projectId, handlers));
     unmount();

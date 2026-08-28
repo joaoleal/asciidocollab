@@ -1,5 +1,55 @@
+// The two low-level libraries the adapter binds lazily are ESM-only and pull in a wasm engine, so the
+// real-library binding is exercised against in-memory stand-ins that keep the same construction shapes.
+jest.mock('@bjorn3/browser_wasi_shim', () => {
+  class MockFile {
+    constructor(public data: Uint8Array) {}
+  }
+  class MockOpenFile {
+    constructor(public file: MockFile) {}
+  }
+  class MockDirectory {
+    contents: Map<string, unknown>;
+    constructor(entries: Iterable<[string, unknown]> = []) {
+      this.contents = new Map(entries);
+    }
+  }
+  class MockPreopenDirectory {
+    constructor(
+      public prestatName: string,
+      public contents: Map<string, unknown>,
+    ) {}
+  }
+  class MockWasi {
+    readonly wasiImport: Record<string, unknown> = { fd_write: () => 0 };
+    constructor(
+      public arguments_: string[],
+      public environment: string[],
+      public fds: unknown[],
+    ) {}
+    initialize(): void {}
+  }
+  return {
+    WASI: MockWasi,
+    File: MockFile,
+    OpenFile: MockOpenFile,
+    Directory: MockDirectory,
+    PreopenDirectory: MockPreopenDirectory,
+  };
+});
+
+jest.mock('@ruby/wasm-wasi', () => ({
+  RubyVM: {
+    instantiateModule: async (): Promise<{ vm: { eval: (code: string) => unknown } }> => ({
+      vm: {
+        eval: (code: string) => ({ toString: () => code, toJS: () => code }),
+      },
+    }),
+  },
+}));
+
 import {
   createWasiBridge,
+  loadDefaultDeps,
   WasiBridgeError,
   WASI_BRIDGE_ERROR,
   WRITABLE_MOUNT_PATHS,
@@ -427,5 +477,98 @@ describe('createWasiBridge', () => {
       expect(rec.createWasi).toHaveLength(2);
       expect(bridge.ready).toBe(true);
     });
+  });
+
+  describe('writing under a path whose parent is a file', () => {
+    it('reuses a directory it already created for a sibling file', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+
+      bridge.writeFile('/project/chapters/one.adoc', new Uint8Array([1]));
+      bridge.writeFile('/project/chapters/two.adoc', new Uint8Array([2]));
+
+      expect(bridge.readdir('/project/chapters').toSorted()).toEqual(['one.adoc', 'two.adoc']);
+      expect(bridge.readFile('/project/chapters/one.adoc')).toEqual(new Uint8Array([1]));
+    });
+
+    it('refuses to descend through a regular file to reach a parent directory', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+      bridge.writeFile('/project/book.adoc', new Uint8Array([1]));
+
+      expect(() => bridge.writeFile('/project/book.adoc/nested.txt', new Uint8Array([2]))).toThrow(
+        WasiBridgeError,
+      );
+      try {
+        bridge.writeFile('/project/book.adoc/nested.txt', new Uint8Array([2]));
+      } catch (error) {
+        expect((error as WasiBridgeError).code).toBe(WASI_BRIDGE_ERROR.INVALID_PATH);
+        expect((error as WasiBridgeError).message).toContain('is not a directory');
+      }
+    });
+  });
+
+  describe('the bare root path', () => {
+    it('refuses a path that names a mount root and nothing else', async () => {
+      const { deps } = makeDeps();
+      const bridge = createWasiBridge({ module: MODULE }, deps);
+      await bridge.instantiate();
+
+      expect(() => bridge.readFile('/')).toThrow(WasiBridgeError);
+      try {
+        bridge.readFile('/');
+      } catch (error) {
+        expect((error as WasiBridgeError).code).toBe(WASI_BRIDGE_ERROR.INVALID_PATH);
+        expect((error as WasiBridgeError).message).toContain('bare root');
+      }
+    });
+  });
+});
+
+describe('loadDefaultDeps', () => {
+  it('allocates files and directories the VFS layer can read back', async () => {
+    const deps = await loadDefaultDeps();
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    const file = deps.createFile(bytes);
+    expect(file.data).toBe(bytes);
+
+    const directory = deps.createDirectory([['a.txt', file]]);
+    expect(directory.contents.get('a.txt')).toBe(file);
+
+    const empty = deps.createDirectory([]);
+    expect(empty.contents.size).toBe(0);
+  });
+
+  it('builds a WASI shim over the preopened mounts and instantiates the VM against it', async () => {
+    const deps = await loadDefaultDeps();
+
+    const root = deps.createDirectory([]);
+    const preopen = deps.createPreopen('/project', root);
+    expect(preopen).toBeDefined();
+
+    const wasi = deps.createWasi(['ruby.wasm'], ['RUBYOPT=-EUTF-8'], [preopen]);
+    expect(wasi.wasiImport).toBeDefined();
+    expect(typeof wasi.initialize).toBe('function');
+
+    const { vm } = await deps.instantiateVm({ module: MODULE, wasip1: wasi, args: ['ruby.wasm'] });
+    expect(vm.eval('1 + 1').toString()).toBe('1 + 1');
+  });
+});
+
+describe('createWasiBridge without injected dependencies', () => {
+  it('binds the real libraries on instantiate and serves its mounts from them', async () => {
+    const bridge = createWasiBridge({ module: MODULE });
+
+    await bridge.instantiate();
+
+    expect(bridge.ready).toBe(true);
+    const payload = new TextEncoder().encode('= Title');
+    bridge.writeFile('/project/book.adoc', payload);
+    expect(bridge.readFile('/project/book.adoc')).toEqual(payload);
+    expect(bridge.readdir('/project')).toEqual(['book.adoc']);
+    expect(bridge.exists('/project/book.adoc')).toBe(true);
   });
 });

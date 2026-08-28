@@ -1,8 +1,11 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { DiffView } from '@/components/git/diff-view';
 import { getDiff } from '@/lib/api/git';
 import { ApiError } from '@/lib/api/transport';
 import type { DiffDto } from '@asciidocollab/shared';
+
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
 
 jest.mock('@/lib/api/git', () => ({
   ...jest.requireActual('@/lib/api/git'),
@@ -107,5 +110,85 @@ describe('DiffView error handling', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/no connected git repository/i);
+  });
+
+  test('shows a generic message for a refusal carrying an unrecognized typed code', async () => {
+    mockGetDiff.mockRejectedValue(new ApiError(400, 'some_new_code', 'server prose'));
+    render(<DiffView projectId="proj1" open onOpenChange={jest.fn()} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't load this diff/i);
+    expect(screen.queryByText(/loading diff/i)).not.toBeInTheDocument();
+  });
+
+  test('shows a generic message when the request never reaches the server', async () => {
+    mockGetDiff.mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<DiffView projectId="proj1" open onOpenChange={jest.fn()} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't load this diff/i);
+    expect(screen.queryByText(/loading diff/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('DiffView dismissal', () => {
+  test('asks to close when the Close button is pressed', async () => {
+    mockGetDiff.mockResolvedValue({ unified: '' });
+    const onOpenChange = jest.fn();
+    render(<DiffView projectId="proj1" open onOpenChange={onOpenChange} />);
+    await waitFor(() => expect(screen.getByText('No changes.')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  test('stays open when Escape is pressed or a pointer goes down outside it', async () => {
+    mockGetDiff.mockResolvedValue({ unified: '' });
+    const onOpenChange = jest.fn();
+    render(<DiffView projectId="proj1" open onOpenChange={onOpenChange} />);
+    await waitFor(() => expect(screen.getByText('No changes.')).toBeInTheDocument());
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.pointerDown(document.body, { button: 0, ctrlKey: false });
+
+    expect(screen.getByText('No changes.')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('DiffView unmount during an in-flight load', () => {
+  test('does not render a diff that resolves after unmounting', async () => {
+    let settle: (value: DiffDto) => void = noop;
+    mockGetDiff.mockReturnValue(
+      new Promise<DiffDto>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const { unmount } = render(<DiffView projectId="proj1" open onOpenChange={jest.fn()} />);
+    expect(screen.getByText(/loading diff/i)).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      settle({ unified: UNIFIED });
+    });
+
+    expect(diffLines()).toHaveLength(0);
+  });
+
+  test('does not render a failure that rejects after unmounting', async () => {
+    let fail: (reason: unknown) => void = noop;
+    mockGetDiff.mockReturnValue(
+      new Promise<DiffDto>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    const { unmount } = render(<DiffView projectId="proj1" open onOpenChange={jest.fn()} />);
+
+    unmount();
+    await act(async () => {
+      fail(new ApiError(500, 'git_command_failed', 'boom'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

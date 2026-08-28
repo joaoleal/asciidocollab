@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ReviewItemDto, ThreadDto } from '@asciidocollab/shared';
 import { ReviewThreadCard } from '@/components/review/thread-card';
 
@@ -255,6 +255,136 @@ describe('ReviewThreadCard', () => {
     expect(card).toHaveAttribute('data-hovered');
     expect(card).toHaveClass('bg-primary/5');
     expect(card).not.toHaveAttribute('data-active');
+  });
+
+  test('hides Edit for an item whose author was deleted', () => {
+    render(<ReviewThreadCard projectId="p1" thread={thread({ author: null })} currentUserId="u1" />);
+    expect(screen.queryByTestId('review-edit')).not.toBeInTheDocument();
+  });
+
+  test('cancelling the inline edit composer restores the rendered body', () => {
+    render(<ReviewThreadCard projectId="p1" thread={thread()} currentUserId="u1" />);
+
+    fireEvent.click(screen.getByTestId('review-edit'));
+    expect(screen.getByDisplayValue('Hello world')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.queryByDisplayValue('Hello world')).not.toBeInTheDocument();
+    expect(screen.getByText('Hello world')).toBeInTheDocument();
+  });
+
+  test('a hover that settles reveals the card inside the scrolling rail', () => {
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    const scrollIntoView = jest.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: scrollIntoView,
+      configurable: true,
+      writable: true,
+    });
+    jest.useFakeTimers();
+    try {
+      render(<ReviewThreadCard projectId="p1" thread={thread()} hoveredItemId="r1" />);
+      act(() => {
+        jest.advanceTimersByTime(200);
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    } finally {
+      jest.useRealTimers();
+      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+      if (original) Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+    }
+  });
+
+  test('degrades silently on an engine that does not implement scrollIntoView', () => {
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+    jest.useFakeTimers();
+    try {
+      render(<ReviewThreadCard projectId="p1" thread={thread()} hoveredItemId="r1" />);
+      act(() => {
+        jest.advanceTimersByTime(200);
+      });
+      expect(screen.getByTestId('review-thread-card')).toHaveAttribute('data-hovered');
+    } finally {
+      jest.useRealTimers();
+      if (original) Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+    }
+  });
+
+  test('an unhovered card never schedules a reveal scroll', () => {
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    const scrollIntoView = jest.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: scrollIntoView,
+      configurable: true,
+      writable: true,
+    });
+    jest.useFakeTimers();
+    try {
+      render(<ReviewThreadCard projectId="p1" thread={thread()} />);
+      act(() => {
+        jest.advanceTimersByTime(200);
+      });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+      if (original) Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+    }
+  });
+
+  test('hovering a card wired to no view-state setters is inert', () => {
+    render(<ReviewThreadCard projectId="p1" thread={thread()} />);
+    const card = screen.getByTestId('review-thread-card');
+
+    fireEvent.mouseEnter(card);
+    fireEvent.mouseLeave(card);
+    fireEvent.click(card);
+
+    expect(card).not.toHaveAttribute('data-hovered');
+    expect(card).not.toHaveAttribute('data-active');
+  });
+
+  test('resolving without a change listener still calls the API', async () => {
+    const { resolveReviewItem } = jest.requireMock('@/lib/api/review');
+    resolveReviewItem.mockClear();
+    render(<ReviewThreadCard projectId="p1" thread={thread()} />);
+
+    fireEvent.click(screen.getByTestId('review-resolve'));
+
+    await waitFor(() => expect(resolveReviewItem).toHaveBeenCalledWith('p1', 'r1', false));
+  });
+
+  test('submitting a reply without a change listener closes the composer', async () => {
+    const { replyToThread } = jest.requireMock('@/lib/api/review');
+    replyToThread.mockClear();
+    render(<ReviewThreadCard projectId="p1" thread={thread()} />);
+
+    fireEvent.click(screen.getByTestId('review-reply'));
+    fireEvent.change(screen.getByPlaceholderText('Write a reply…'), { target: { value: 'ok' } });
+    fireEvent.click(screen.getByTestId('review-composer-submit'));
+
+    await waitFor(() => expect(replyToThread).toHaveBeenCalledWith('p1', 'r1', { body: 'ok' }));
+    await waitFor(() => expect(screen.queryByPlaceholderText('Write a reply…')).not.toBeInTheDocument());
+  });
+
+  test('reacting on a reply forwards the change to onChanged', async () => {
+    const mock = jest.requireMock('@/lib/api/review');
+    mock.reactToItem.mockResolvedValueOnce([]);
+    const onChanged = jest.fn();
+    const reply = item({
+      id: 'r2',
+      body: 'A reply',
+      author: { id: 'u2', displayName: 'Bob', avatarKey: null },
+      reactions: [{ emoji: '🎉', count: 1, reactedByMe: false, userIds: ['u9'] }],
+    });
+    render(<ReviewThreadCard projectId="p1" thread={thread({}, [reply])} onChanged={onChanged} />);
+
+    fireEvent.click(screen.getByTestId('review-reaction-🎉'));
+
+    await waitFor(() => expect(mock.reactToItem).toHaveBeenCalledWith('p1', 'r2', { emoji: '🎉' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
   test('renders the taskControls extension slot', () => {

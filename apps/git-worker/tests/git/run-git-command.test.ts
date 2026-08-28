@@ -1,10 +1,15 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { classifyNetworkFailure, GitProcessError, runGitCommand } from '../../src/git/run-git-command.js';
+import {
+  classifyNetworkFailure,
+  GitProcessError,
+  runGitCommand,
+  runGitCommandForBytes,
+} from '../../src/git/run-git-command.js';
 import {
   createPushedRepoPair,
   createTemporaryBareRemote,
@@ -392,5 +397,55 @@ describe('runGitCommand', () => {
         await server.close();
       }
     });
+  });
+});
+
+describe('runGitCommandForBytes', () => {
+  it('returns a blob’s raw bytes untouched, including NUL and invalid-UTF-8 bytes', async () => {
+    const cwd = await createTemporaryWorkingTree();
+    const binary = Buffer.from([0x00, 0xFF, 0x10, 0x00, 0xFE, 0x42]);
+    await writeFile(path.join(cwd, 'asset.bin'), binary);
+    await execFile('git', ['add', '-A'], { cwd });
+    await execFile('git', ['commit', '-q', '-m', 'add asset'], { cwd });
+
+    const bytes = await runGitCommandForBytes(cwd, { command: 'show', positionals: ['HEAD:asset.bin'] });
+
+    expect(bytes.equals(binary)).toBe(true);
+  });
+
+  it('omits the options terminator when the invocation has no positionals to guard', async () => {
+    // `--end-of-options` with nothing after it is not merely redundant: the subcommands that reject
+    // a trailing argument fail outright on it.
+    const cwd = await createTemporaryWorkingTree();
+    await writeFile(path.join(cwd, 'a.adoc'), 'a\n');
+    await execFile('git', ['add', '-A'], { cwd });
+    await execFile('git', ['commit', '-q', '-m', 'seed'], { cwd });
+
+    const capture = await withArgvCapturingGit(async (getCalls) => {
+      const bytes = await runGitCommandForBytes(cwd, { command: 'rev-parse', flags: ['HEAD'] });
+      return { bytes, calls: await getCalls() };
+    });
+
+    expect(capture.bytes.toString('utf8').trim()).toMatch(/^[0-9a-f]{40}$/);
+    expect(capture.calls).toHaveLength(1);
+    expect(capture.calls[0]).not.toContain('--end-of-options');
+  });
+
+  it('reports a null exit code, and no exit-code suffix, when git cannot be spawned at all', async () => {
+    // A working tree that does not exist makes the spawn itself fail, so there is no process exit
+    // code to report — the message must degrade rather than claim a bogus one.
+    const missingDirectory = path.join(await mkdtemp(path.join(tmpdir(), 'git-worker-missing-')), 'gone');
+
+    let caught: unknown;
+    try {
+      await runGitCommandForBytes(missingDirectory, { command: 'rev-parse', flags: ['HEAD'] });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(GitProcessError);
+    const failure = caught instanceof GitProcessError ? caught : null;
+    expect(failure?.exitCode).toBeNull();
+    expect(failure?.message).toBe('git rev-parse failed');
   });
 });

@@ -34,6 +34,16 @@ describe('findQuoteRange', () => {
   test('returns null when the passage is gone', () => {
     expect(findQuoteRange('nothing here', { prefix: '', exact: 'missing', suffix: '' })).toBeNull();
   });
+
+  test('returns null for an empty passage rather than matching everywhere', () => {
+    expect(findQuoteRange('some text', { prefix: 'so', exact: '', suffix: 'xt' })).toBeNull();
+  });
+
+  test('keeps the best-scoring occurrence when a later one matches its context worse', () => {
+    const text = 'foo dup bar ... baz dup qux';
+    const range = findQuoteRange(text, { prefix: 'foo ', exact: 'dup', suffix: ' bar' });
+    expect(range).toEqual({ from: text.indexOf('dup'), to: text.indexOf('dup') + 3 });
+  });
 });
 
 describe('resolveAnchorWithDegradation', () => {
@@ -74,6 +84,34 @@ describe('resolveAnchorWithDegradation', () => {
     });
     expect(result.state).toBe('detached');
     expect(result.range).toBeNull();
+  });
+
+  test('detaches with no options at all when the relpos no longer resolves', () => {
+    const { doc: ydoc, ytext } = documentWith('gone');
+    const anchor: AnchorDto = {
+      quote: { prefix: '', exact: 'deleted passage', suffix: '' },
+      sectionId: 'intro/overview',
+      state: 'located',
+    };
+
+    const result = resolveAnchorWithDegradation(anchor, ytext, ydoc);
+
+    expect(result).toEqual({ range: null, state: 'detached' });
+  });
+
+  test('detaches when the quote is gone and the anchor carries no section id', () => {
+    const { doc: ydoc, ytext } = documentWith('gone');
+    const anchor: AnchorDto = {
+      quote: { prefix: '', exact: 'deleted passage', suffix: '' },
+      state: 'located',
+    };
+
+    const result = resolveAnchorWithDegradation(anchor, ytext, ydoc, {
+      documentText: 'gone',
+      findSectionRange: () => ({ from: 0, to: 4 }),
+    });
+
+    expect(result).toEqual({ range: null, state: 'detached' });
   });
 
   test('re-anchors via quote when the relpos is stale but the text survived', () => {

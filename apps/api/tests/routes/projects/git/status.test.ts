@@ -170,4 +170,24 @@ describe('GET /projects/:projectId/git/status', () => {
 
     await instance.close();
   });
+
+  test('propagates a non-transport worker failure instead of reporting the worker unavailable', async () => {
+    const instance = await register(
+      buildServer({
+        role: 'viewer',
+        client: {
+          getStatus: jest.fn(async () => {
+            throw new Error('unexpected failure');
+          }),
+        },
+      }),
+    );
+
+    const response = await getStatus(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+
+    await instance.close();
+  });
 });

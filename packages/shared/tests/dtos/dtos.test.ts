@@ -1,3 +1,21 @@
+import {
+  CONFLICT_RESOLUTIONS,
+  FILE_GIT_STATUSES,
+  GIT_ERROR_CODES,
+  GIT_OPERATION_KINDS,
+  GIT_OPERATION_STATES,
+  GIT_PROVIDERS,
+  GIT_SYNC_STATUSES,
+  PENDING_CHANGE_TYPES,
+  isConflictResolution,
+  isFileGitStatus,
+  isGitErrorCode,
+  isGitOperationKind,
+  isGitOperationState,
+  isGitProvider,
+  isGitSyncStatus,
+  isPendingChangeType,
+} from '../../src/dtos';
 import { CreateProjectDto, CreateProjectResultDto } from '../../src/dtos/create-project.dto';
 import { RenameFileDto, RenameFileResultDto } from '../../src/dtos/rename-file.dto';
 import { CloneProjectDto } from '../../src/dtos/clone-project.dto';
@@ -210,5 +228,27 @@ describe('CloneProject DTOs', () => {
     const dto: CloneProjectDto = { name: 'Handbook 2027' };
     expect(dto.name).toBe('Handbook 2027');
     expect(Object.keys(dto)).toEqual(['name']);
+  });
+});
+
+describe('the DTO barrel', () => {
+  // The barrel is the only import path the other rings use, so every runtime value it re-exports is
+  // reached through it here. A re-export dropped from the barrel while the module still exports it
+  // is invisible to a test that imports the module directly, and breaks every consumer.
+  const sets: [string, readonly string[], (value: string) => boolean][] = [
+    ['providers', GIT_PROVIDERS, isGitProvider],
+    ['sync statuses', GIT_SYNC_STATUSES, isGitSyncStatus],
+    ['pending change types', PENDING_CHANGE_TYPES, isPendingChangeType],
+    ['file git statuses', FILE_GIT_STATUSES, isFileGitStatus],
+    ['conflict resolutions', CONFLICT_RESOLUTIONS, isConflictResolution],
+    ['operation kinds', GIT_OPERATION_KINDS, isGitOperationKind],
+    ['operation states', GIT_OPERATION_STATES, isGitOperationState],
+    ['error codes', GIT_ERROR_CODES, isGitErrorCode],
+  ];
+
+  test.each(sets)('re-exports the %s beside a guard that agrees with them', (_label, members, guard) => {
+    expect(members.length).toBeGreaterThan(0);
+    for (const member of members) expect(guard(member)).toBe(true);
+    expect(guard('not-a-member')).toBe(false);
   });
 });

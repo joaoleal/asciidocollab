@@ -2,6 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ImportRepositoryDialog } from '@/components/git/import-repository-dialog';
 import { ApiError } from '@/lib/api/transport';
 
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
+
 const mockImportRepository = jest.fn();
 const mockGetGitOperation = jest.fn();
 
@@ -22,8 +25,20 @@ jest.useFakeTimers();
 const NEVER_RESOLVE = () => undefined;
 
 function renderDialog(onOpenChange: (open: boolean) => void = jest.fn()) {
-  render(<ImportRepositoryDialog open onOpenChange={onOpenChange} />);
-  return { onOpenChange };
+  const view = render(<ImportRepositoryDialog open onOpenChange={onOpenChange} />);
+  return { onOpenChange, unmount: view.unmount };
+}
+
+/** A never-settling promise plus the handles that settle it, for driving in-flight request states. */
+function deferred(): { promise: Promise<unknown>; resolve: (value: unknown) => void; reject: (reason: unknown) => void } {
+  let resolve: (value: unknown) => void = noop;
+  let reject: (reason: unknown) => void = noop;
+  const promise = new Promise<unknown>((resolveIt, rejectIt) => {
+    resolve = resolveIt;
+    reject = rejectIt;
+  });
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
 }
 
 const providerRadio = (name: RegExp) => screen.getByRole('radio', { name });
@@ -122,6 +137,96 @@ describe('ImportRepositoryDialog submission', () => {
     expect(remoteUrlField()).toBeInTheDocument();
     expect(mockGetGitOperation).not.toHaveBeenCalled();
   });
+
+  test('treats a 429 with any other code as a rate limit too', async () => {
+    mockImportRepository.mockRejectedValueOnce(new ApiError(429, 'too_many_requests', 'slow down'));
+    renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(/too many imports recently/i)).toBeInTheDocument();
+  });
+
+  test('asks the author to sign in again when the start is unauthorized', async () => {
+    mockImportRepository.mockRejectedValueOnce(new ApiError(401, 'unauthorized', 'no session'));
+    renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText('Sign in again to start an import.')).toBeInTheDocument();
+  });
+
+  test('shows the server explanation for any other refusal', async () => {
+    mockImportRepository.mockRejectedValueOnce(new ApiError(409, 'already_importing', 'An import is already running.'));
+    renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText('An import is already running.')).toBeInTheDocument();
+  });
+
+  test('falls back to generic wording for a refusal with no explanation of its own', async () => {
+    mockImportRepository.mockRejectedValueOnce(new ApiError(500, 'internal_error', '   '));
+    renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText('The import could not be started.')).toBeInTheDocument();
+  });
+
+  test('falls back to generic wording when the request never reaches the server', async () => {
+    mockImportRepository.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText('The import could not be started.')).toBeInTheDocument();
+    expect(submitButton()).toBeEnabled();
+  });
+
+  test('submitting an empty form starts nothing', async () => {
+    renderDialog();
+    const form = remoteUrlField().closest('form');
+    expect(form).not.toBeNull();
+
+    await act(async () => {
+      if (form) fireEvent.submit(form);
+    });
+
+    expect(mockImportRepository).not.toHaveBeenCalled();
+  });
+
+  test('an import queued after the dialog is gone starts no polling', async () => {
+    const pending = deferred();
+    mockImportRepository.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mockImportRepository).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.resolve({ operationId: 'op1', projectId: 'proj1' });
+    });
+
+    expect(mockGetGitOperation).not.toHaveBeenCalled();
+  });
+
+  test('an import refused after the dialog is gone shows no error', async () => {
+    const pending = deferred();
+    mockImportRepository.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mockImportRepository).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.reject(new ApiError(401, 'unauthorized', 'no session'));
+    });
+
+    expect(screen.queryByText('Sign in again to start an import.')).not.toBeInTheDocument();
+  });
 });
 
 describe('ImportRepositoryDialog polling', () => {
@@ -216,6 +321,96 @@ describe('ImportRepositoryDialog polling', () => {
     });
 
     expect(await screen.findByText(/import was aborted/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  test('shows a neutral working label for a progress state it has no wording for', async () => {
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'IMPORT',
+      state: 'PREPARING',
+      progress: 12,
+      errorCode: null,
+      driftSummary: null,
+    });
+    renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(/working…\s*12%/i)).toBeInTheDocument();
+  });
+
+  test('falls back to generic wording for a failure code it has no message for', async () => {
+    renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'IMPORT',
+      state: 'FAILED',
+      progress: 60,
+      errorCode: 'some_new_code',
+      driftSummary: null,
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(5000);
+    });
+
+    expect(await screen.findByText('The import failed.')).toBeInTheDocument();
+  });
+
+  test('closing after a failed import asks to close', async () => {
+    const { onOpenChange } = renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({
+      id: 'op1',
+      kind: 'IMPORT',
+      state: 'FAILED',
+      progress: 60,
+      errorCode: 'repository_unreachable',
+      driftSummary: null,
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(5000);
+    });
+    await screen.findByText(/could not be reached/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  test('closing while the import is still running asks to close', async () => {
+    const { onOpenChange } = renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+    await screen.findByRole('status');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  test('a poll that answers after the dialog is gone routes nowhere', async () => {
+    const pending = deferred();
+    mockGetGitOperation.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    fillValidForm();
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.resolve({ id: 'op1', kind: 'IMPORT', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
+    });
+
+    expect(mockPush).not.toHaveBeenCalled();
   });
 });
 

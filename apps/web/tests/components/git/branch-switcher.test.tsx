@@ -1,9 +1,12 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { BranchSwitcher, describeBranchFailure } from '@/components/git/branch-switcher';
 import { BranchSwitchDialog, describeCheckoutFailure } from '@/components/git/branch-switch-dialog';
 import { ApiError } from '@/lib/api/transport';
 import type { BranchDto } from '@asciidocollab/shared';
+
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
 
 const mockCheckoutBranch = jest.fn();
 
@@ -54,10 +57,31 @@ beforeEach(() => {
   mockCheckoutBranch.mockResolvedValue({ operationId: 'op1', projectId: 'proj1' });
 });
 
+/** A never-settling promise plus the handles that settle it, for driving in-flight request states. */
+function deferred(): { promise: Promise<void>; resolve: () => void; reject: (reason: unknown) => void } {
+  let resolve: () => void = noop;
+  let reject: (reason: unknown) => void = noop;
+  const promise = new Promise<void>((resolveIt, rejectIt) => {
+    resolve = resolveIt;
+    reject = rejectIt;
+  });
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+/** Lets the dialog's outside-pointer listener, registered a macrotask after mount, come online. */
+async function settleListeners() {
+  await act(async () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  });
+}
+
 function renderSwitcher(overrides: Partial<React.ComponentProps<typeof BranchSwitcher>> = {}) {
   const onSwitch = overrides.onSwitch ?? jest.fn();
   const onCreate = overrides.onCreate ?? jest.fn().mockResolvedValue(undefined);
-  render(
+  const view = render(
     <BranchSwitcher
       current={'current' in overrides ? overrides.current ?? null : 'main'}
       branches={overrides.branches ?? BRANCHES}
@@ -67,7 +91,7 @@ function renderSwitcher(overrides: Partial<React.ComponentProps<typeof BranchSwi
       onCreate={onCreate}
     />,
   );
-  return { onSwitch, onCreate };
+  return { onSwitch, onCreate, unmount: view.unmount };
 }
 
 function openCreateDialog() {
@@ -83,6 +107,12 @@ describe('BranchSwitcher trigger', () => {
   test('shows a neutral label while loading and no branch is known yet', () => {
     renderSwitcher({ current: null, branches: [], loading: true });
     expect(screen.getByRole('button', { name: /switch branch/i })).toHaveTextContent('Loading…');
+  });
+
+  test('shows a plain label once loading finished without resolving a branch', () => {
+    renderSwitcher({ current: null, branches: [], loading: false });
+    expect(screen.getByRole('button', { name: /switch branch/i })).toHaveTextContent('Branch');
+    expect(screen.getByText('No branches found.')).toBeInTheDocument();
   });
 });
 
@@ -171,6 +201,64 @@ describe('BranchSwitcher create branch', () => {
     expect(onCreate).not.toHaveBeenCalled();
     expect(screen.queryByLabelText(/branch name/i)).not.toBeInTheDocument();
   });
+
+  test('submitting the form with a blank name creates nothing', async () => {
+    const { onCreate } = renderSwitcher();
+    openCreateDialog();
+    const form = screen.getByLabelText(/branch name/i).closest('form');
+    expect(form).not.toBeNull();
+
+    await act(async () => {
+      if (form) fireEvent.submit(form);
+    });
+
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
+  test('stays open when Escape is pressed or a pointer goes down outside it', async () => {
+    renderSwitcher();
+    openCreateDialog();
+    await settleListeners();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.pointerDown(document.body, { button: 0, ctrlKey: false });
+
+    expect(screen.getByLabelText(/branch name/i)).toBeInTheDocument();
+  });
+
+  test('a creation that resolves after the switcher is gone closes nothing', async () => {
+    const pending = deferred();
+    const onCreate = jest.fn().mockReturnValue(pending.promise);
+    const { unmount } = renderSwitcher({ onCreate });
+    openCreateDialog();
+    fireEvent.change(screen.getByLabelText(/branch name/i), { target: { value: 'feature/x' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create branch$/i }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.resolve();
+    });
+
+    expect(screen.queryByLabelText(/branch name/i)).not.toBeInTheDocument();
+  });
+
+  test('a creation refused after the switcher is gone shows no error', async () => {
+    const pending = deferred();
+    const onCreate = jest.fn().mockReturnValue(pending.promise);
+    const { unmount } = renderSwitcher({ onCreate });
+    openCreateDialog();
+    fireEvent.change(screen.getByLabelText(/branch name/i), { target: { value: 'feature/x' } });
+    fireEvent.click(screen.getByRole('button', { name: /^create branch$/i }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.reject(new ApiError(403, 'insufficient_role', 'nope'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });
 
 describe('describeBranchFailure', () => {
@@ -199,7 +287,7 @@ function renderConfirmDialog(
 ) {
   const onOpenChange = overrides.onOpenChange ?? jest.fn();
   const onConfirmed = overrides.onConfirmed ?? jest.fn();
-  render(
+  const view = render(
     <BranchSwitchDialog
       projectId="proj1"
       open
@@ -209,7 +297,7 @@ function renderConfirmDialog(
       onConfirmed={onConfirmed}
     />,
   );
-  return { onOpenChange, onConfirmed };
+  return { onOpenChange, onConfirmed, unmount: view.unmount };
 }
 
 const confirmButton = () => screen.getByRole('button', { name: /^(Switch anyway|Switching…)$/ });
@@ -237,10 +325,58 @@ describe('BranchSwitchDialog accessibility', () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
-  test('cannot be dismissed by an outside click', () => {
+  test('cannot be dismissed by an outside click', async () => {
     const { onOpenChange } = renderConfirmDialog();
-    fireEvent.pointerDown(document.body);
+    await settleListeners();
+    fireEvent.pointerDown(document.body, { button: 0, ctrlKey: false });
     expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  test('renders nothing until a branch and a refusal code are known', () => {
+    render(
+      <BranchSwitchDialog
+        projectId="proj1"
+        open={false}
+        branchName={null}
+        code={null}
+        onOpenChange={jest.fn()}
+        onConfirmed={jest.fn()}
+      />,
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('BranchSwitchDialog retries that settle after dismissal', () => {
+  test('a retry that resolves after dismissal confirms nothing', async () => {
+    const pending = deferred();
+    mockCheckoutBranch.mockReturnValue(pending.promise);
+    const { onConfirmed, unmount } = renderConfirmDialog();
+    fireEvent.click(confirmButton());
+    await waitFor(() => expect(mockCheckoutBranch).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.resolve();
+    });
+
+    expect(onConfirmed).not.toHaveBeenCalled();
+  });
+
+  test('a retry refused after dismissal shows no error', async () => {
+    const pending = deferred();
+    mockCheckoutBranch.mockReturnValue(pending.promise);
+    const { unmount } = renderConfirmDialog();
+    fireEvent.click(confirmButton());
+    await waitFor(() => expect(mockCheckoutBranch).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.reject(new ApiError(409, 'uncommitted_changes', 'still uncommitted'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 

@@ -97,6 +97,69 @@ describe('collectAppFontFaceCss', () => {
     });
     expect(collectAppFontFaceCss('asciidocollab')).toBe('');
   });
+
+  test('reads the document it is given rather than the running page', () => {
+    loadStylesheet(face('Inter', '/_next/static/media/page.woff2', LATIN));
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const other = frame.contentDocument;
+    const style = other?.createElement('style');
+    if (style) {
+      style.textContent = face('Inter', '/_next/static/media/given.woff2', LATIN);
+      other?.head.append(style);
+    }
+
+    const css = other === null ? '' : collectAppFontFaceCss('asciidocollab', other);
+
+    frame.remove();
+    expect(css).toContain('given.woff2');
+    expect(css).not.toContain('page.woff2');
+  });
+
+  test('walks past the rules that are not font faces', () => {
+    loadStylesheet(
+      ['body { color: red; }', face('Inter', '/_next/static/media/inter.woff2', LATIN)].join('\n'),
+    );
+
+    const css = collectAppFontFaceCss('asciidocollab');
+
+    expect(css).toContain('inter.woff2');
+    expect(css).not.toContain('color');
+  });
+
+  test('resolves a relative src against the stylesheet URL when the sheet has one', () => {
+    loadStylesheet(face('Inter', '../media/inter.woff2', LATIN));
+    const sheet = document.styleSheets[0];
+    Object.defineProperty(sheet, 'href', {
+      get() {
+        return 'https://app.example.com/_next/static/css/app.css';
+      },
+    });
+
+    const css = collectAppFontFaceCss('asciidocollab');
+
+    expect(css).toContain('https://app.example.com/_next/static/media/inter.woff2');
+  });
+
+  test('skips a rule that reports no text at all', () => {
+    loadStylesheet(face('Inter', '/_next/static/media/inter.woff2', LATIN));
+    const sheet = document.styleSheets[0];
+    Object.defineProperty(sheet, 'cssRules', {
+      get() {
+        return [{}];
+      },
+    });
+
+    expect(collectAppFontFaceCss('asciidocollab')).toBe('');
+  });
+
+  test('leaves an already-embedded data: src exactly as it was written', () => {
+    loadStylesheet(face('Inter', 'data:font/woff2;base64,AAAA', LATIN));
+
+    const css = collectAppFontFaceCss('asciidocollab');
+
+    expect(css).toContain('data:font/woff2;base64,AAAA');
+  });
 });
 
 describe('EXPORT_WEBFONT_FAMILIES', () => {

@@ -2,6 +2,9 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { usePush } from '@/hooks/use-push';
 import { ApiError } from '@/lib/api/transport';
 
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
+
 const mockStartPush = jest.fn();
 const mockGetGitOperation = jest.fn();
 
@@ -77,6 +80,41 @@ describe('usePush start', () => {
     await waitFor(() => expect(result.current.message).toEqual({ tone: 'error', text: 'You need editor access to push.' }));
     expect(result.current.pending).toBe(false);
     expect(mockGetGitOperation).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['git_worker_unavailable', 'The git service is unavailable. Try again shortly.'],
+    ['repository_not_connected', 'This project has no connected repository.'],
+    ['some_unmapped_code', 'The push could not be started.'],
+  ])('maps a %s refusal of the queue request to its own wording', async (code, expectedText) => {
+    mockStartPush.mockRejectedValueOnce(new ApiError(409, code, 'server said so'));
+    const { result } = renderHook(() => usePush('proj1', jest.fn()));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.message).toEqual({ tone: 'error', text: expectedText }));
+    expect(result.current.pending).toBe(false);
+    expect(mockGetGitOperation).not.toHaveBeenCalled();
+  });
+
+  test('falls back to generic wording when the queue request never reaches the server', async () => {
+    mockStartPush.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const { result } = renderHook(() => usePush('proj1', jest.fn()));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(result.current.message).toEqual({ tone: 'error', text: 'The push could not be started.' }),
+    );
+    expect(result.current.pending).toBe(false);
   });
 });
 
@@ -209,6 +247,54 @@ describe('usePush polling outcomes', () => {
       }),
     );
     expect(result.current.pending).toBe(false);
+  });
+
+  test('ABORTED stops polling and reports the push as aborted', async () => {
+    const onSucceeded = jest.fn();
+    const { result } = renderHook(() => usePush('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PUSH', state: 'ABORTED', progress: 20, errorCode: null, driftSummary: null });
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+
+    await waitFor(() => expect(result.current.message).toEqual({ tone: 'error', text: 'The push was aborted.' }));
+    expect(result.current.pending).toBe(false);
+    expect(onSucceeded).not.toHaveBeenCalled();
+  });
+
+  test('a poll that answers after the hook is gone reports nothing', async () => {
+    const onSucceeded = jest.fn();
+    let settle: (value: unknown) => void = noop;
+    const pending = new Promise((resolve) => {
+      settle = resolve;
+    });
+    const { result, unmount } = renderHook(() => usePush('proj1', onSucceeded));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockGetGitOperation).toHaveBeenCalledTimes(1));
+
+    mockGetGitOperation.mockReturnValue(pending);
+    await act(async () => {
+      jest.advanceTimersByTime(1500);
+    });
+    unmount();
+    await act(async () => {
+      settle({ id: 'op1', kind: 'PUSH', state: 'SUCCEEDED', progress: 100, errorCode: null, driftSummary: null });
+    });
+
+    expect(onSucceeded).not.toHaveBeenCalled();
   });
 
   test('keeps polling on an interval while the operation is non-terminal', async () => {

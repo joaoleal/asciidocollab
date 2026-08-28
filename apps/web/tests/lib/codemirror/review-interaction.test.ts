@@ -1,11 +1,15 @@
 /* @jest-environment jsdom */
-import { EditorView } from '@codemirror/view';
+import { EditorView, keymap } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { reviewDecorations, setReviewRangesEffect } from '@/lib/codemirror/review-decorations';
 import {
   reviewMarkerHoverHandler,
+  reviewMarkerClickHandler,
+  reviewIdFromEventTarget,
+  reviewCommentKeymap,
   commentTargetRange,
   reviewCommentCommand,
+  REVIEW_COMMENT_KEY,
 } from '@/lib/codemirror/review-interaction';
 
 /** Mounts an editor whose text has one review passage over "world" (offsets 6–11). */
@@ -98,6 +102,72 @@ describe('reviewMarkerHoverHandler', () => {
   });
 });
 
+describe('reviewIdFromEventTarget', () => {
+  test('reports nothing for an event that carries no element target', () => {
+    // A DOM event's target is typed as EventTarget: a document/window listener firing through the
+    // same handler must resolve to "no passage" rather than throwing on `closest`.
+    expect(reviewIdFromEventTarget(null)).toBeNull();
+  });
+
+  test('reports nothing for a non-HTML element carrying the attribute', () => {
+    // SVG content inside the editor (a diagram preview) can carry arbitrary attributes without being
+    // an HTML element, and its `dataset` is not the review-marker dataset this reads.
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    svg.dataset.reviewId = 'item-1';
+    expect(reviewIdFromEventTarget(svg)).toBeNull();
+  });
+});
+
+/** Mounts an editor whose text has one review passage over "world", wired for clicks. */
+function mountClickable(getOnClick: () => ((id: string) => void) | null) {
+  const parent = document.createElement('div');
+  document.body.append(parent);
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: 'hello world and more text',
+      extensions: [reviewDecorations(() => undefined), reviewMarkerClickHandler(getOnClick)],
+    }),
+    parent,
+  });
+  view.dispatch({ effects: setReviewRangesEffect.of([{ id: 'item-1', from: 6, to: 11 }]) });
+  return { view, parent };
+}
+
+describe('reviewMarkerClickHandler', () => {
+  test('focuses the thread of the passage that was clicked', () => {
+    const onClick = jest.fn();
+    const { view, parent } = mountClickable(() => onClick);
+
+    view.dom.querySelector('[data-review-id="item-1"]')!
+      .dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(onClick).toHaveBeenCalledWith('item-1');
+    view.destroy();
+    parent.remove();
+  });
+
+  test('ignores a click that lands outside every passage', () => {
+    const onClick = jest.fn();
+    const { view, parent } = mountClickable(() => onClick);
+
+    view.contentDOM.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(onClick).not.toHaveBeenCalled();
+    view.destroy();
+    parent.remove();
+  });
+
+  test('is inert when no click handler is supplied', () => {
+    const { view, parent } = mountClickable(() => null);
+    expect(() => {
+      view.dom.querySelector('[data-review-id="item-1"]')!
+        .dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    }).not.toThrow();
+    view.destroy();
+    parent.remove();
+  });
+});
+
 // doc lines: 1="hello world" [0-11], 2="and more" [12-20].
 const COMMENT_DOC = 'hello world\nand more';
 
@@ -153,6 +223,33 @@ describe('reviewCommentCommand', () => {
   test('falls through (returns false) when no comment handler is available', () => {
     const { view, parent } = mountView({ anchor: 2, head: 7 });
     expect(reviewCommentCommand(() => null)(view)).toBe(false);
+    view.destroy();
+    parent.remove();
+  });
+});
+
+/** The bindings a keymap extension contributes, read back through the keymap facet. */
+function bindingsOf(extension: ReturnType<typeof reviewCommentKeymap>) {
+  return EditorState.create({ extensions: extension }).facet(keymap).flat();
+}
+
+describe('reviewCommentKeymap', () => {
+  test('binds the comment shortcut, which is the accessible path to the gutter affordance', () => {
+    const bindings = bindingsOf(reviewCommentKeymap(() => undefined));
+    expect(bindings.map((binding) => binding.key)).toContain(REVIEW_COMMENT_KEY);
+  });
+
+  test('the bound key comments the current selection', () => {
+    const onComment = jest.fn();
+    const { view, parent } = mountCommentView({ anchor: 2, head: 7 });
+    const binding = bindingsOf(reviewCommentKeymap(() => onComment)).find(
+      (candidate) => candidate.key === REVIEW_COMMENT_KEY,
+    );
+
+    expect(binding?.run?.(view)).toBe(true);
+    expect(onComment).toHaveBeenCalledWith(2, 7);
+    // The browser default for the combo must not also fire, or the shortcut would type a character.
+    expect(binding?.preventDefault).toBe(true);
     view.destroy();
     parent.remove();
   });

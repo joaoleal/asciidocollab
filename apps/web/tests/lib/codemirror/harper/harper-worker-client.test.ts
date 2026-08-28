@@ -476,6 +476,84 @@ describe('createHarperWorkerClient — cache invalidation and eviction', () => {
     await expect(client.exportIgnoredLints()).resolves.toBe('["hash-a"]');
   });
 
+  test('forwards the read-only engine calls straight through', async () => {
+    // These neither read nor invalidate the segment cache: they ask the engine a question about a
+    // piece of text and hand the answer back unchanged.
+    const engine = makeFakeEngine({
+      async applySuggestion(text) {
+        return `${text}!`;
+      },
+      async organizedLints() {
+        return { SpellCheck: [] };
+      },
+      async exportWords() {
+        return ['asciidoc'];
+      },
+    });
+    const client = createHarperWorkerClient(engine);
+    await client.warmUp();
+
+    await expect(
+      client.applySuggestion('bad text', {
+        span: { start: 0, end: 3 },
+        kind: 'Spelling',
+        rule: 'SpellCheck',
+        message: '“bad” may be misspelled',
+        suggestions: [{ text: 'bar', kind: 'replace' }],
+      }, 0),
+    ).resolves.toBe('bad text!');
+    await expect(client.organizedLints('bad text')).resolves.toEqual({ SpellCheck: [] });
+    await expect(client.exportWords()).resolves.toEqual(['asciidoc']);
+  });
+
+  test('importing ignored lints invalidates the cached results they would suppress', async () => {
+    // Restoring the reader's ignored-lint blob changes what the engine reports; serving the cache
+    // afterwards would keep showing issues the reader had already dismissed.
+    const engine = makeFakeEngine();
+    const client = createHarperWorkerClient(engine);
+    await client.warmUp();
+
+    await client.lint([{ id: '1', text: 'a bad line' }]);
+    await client.lint([{ id: '1', text: 'a bad line' }]);
+    expect(engine.lintCalls).toHaveLength(1); // second pass served from the cache
+
+    await client.importIgnoredLints('["hash-a"]');
+    await client.lint([{ id: '1', text: 'a bad line' }]);
+    expect(engine.lintCalls).toHaveLength(2);
+  });
+
+  test('a pass superseded while the engine was still starting reports nothing', async () => {
+    // Two passes can queue behind one setup. The older one must not answer: its results describe a
+    // document state the newer pass has already replaced.
+    const gate = deferred<void>();
+    const engine = makeFakeEngine({
+      setup: () => gate.promise,
+    });
+    const client = createHarperWorkerClient(engine);
+
+    const superseded = client.lint([]);
+    const latest = client.lint([]);
+    gate.resolve();
+
+    await expect(superseded).resolves.toBeNull();
+    await expect(latest).resolves.toEqual([]);
+    expect(engine.setupCalls).toBe(0); // the overridden setup never touches the counter
+  });
+
+  test('a setup that throws before it starts is reported as a failed engine', async () => {
+    // Thrown synchronously, the failure arrives before the load watchdog has been armed — there is
+    // then no timer to cancel, and the client must still settle on `failed` rather than hang.
+    const engine = makeFakeEngine({
+      setup() {
+        throw new HarperEngineInitError('the worker script never loaded');
+      },
+    });
+    const client = createHarperWorkerClient(engine);
+
+    await client.warmUp();
+    expect(client.getStatus()).toBe('failed');
+  });
+
   test('a non-init failure from setup is not swallowed', async () => {
     // A HarperEngineInitError is an expected outcome the client reports as `failed`; anything else is a
     // programming fault and must surface rather than look like a clean unavailable engine.

@@ -400,4 +400,65 @@ describe('CommitChangesUseCase', () => {
     expect(entry).toBeDefined();
     expect(entry?.metadata).toMatchObject({ hash: COMMIT_HASH, messageLength: MESSAGE.length });
   });
+
+  test('a failing status read propagates its GitCommandFailedError without committing', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatusFailure(PROJECT_ID, new GitCommandFailedError('git status failed'));
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(harness.commandRunner.commitCalls).toHaveLength(0);
+  });
+
+  test('a staged path with no matching file node is committed from the working tree without a flush entry', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatus(PROJECT_ID, {
+      currentBranch: 'main',
+      changes: [
+        { path: STAGED_LIVE_PATH, changeType: 'modified', state: 'staged' },
+        { path: 'untracked-by-the-tree/notes.txt', changeType: 'added', state: 'staged' },
+      ],
+    });
+    harness.commandRunner.seedCommitResult(PROJECT_ID, {
+      hash: COMMIT_HASH,
+      message: MESSAGE,
+      authoredAt: new Date('2024-06-01T12:00:00.000Z'),
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(true);
+    expect(harness.commandRunner.commitCalls).toHaveLength(1);
+    expect(harness.commandRunner.commitCalls[0].input.flush).toEqual([
+      { path: STAGED_LIVE_PATH, content: LIVE_TEXT },
+    ]);
+  });
+
+  test('an actor with no user row refuses with a GitCommandFailedError and commits nothing', async () => {
+    const harness = await buildHarness({ withUser: false });
+    harness.commandRunner.seedStatus(PROJECT_ID, MIXED_STATUS);
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error.message).toBe('The commit author could not be resolved');
+    }
+    expect(harness.commandRunner.commitCalls).toHaveLength(0);
+  });
 });

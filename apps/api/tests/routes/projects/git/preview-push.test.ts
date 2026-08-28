@@ -150,4 +150,51 @@ describe('GET /projects/:projectId/git/preview/push', () => {
 
     await instance.close();
   });
+
+  test('omits authorUserId entirely for an outgoing commit authored outside the workspace', async () => {
+    const instance = await register(
+      buildServer({
+        client: {
+          previewPush: mockPreviewPush({
+            ok: true,
+            data: previewPushData({
+              outgoingCommits: [
+                { hash: 'ff0022', message: 'External change', authoredAt: '2026-01-04T00:00:00.000Z' },
+              ],
+            }),
+          }),
+        },
+      }),
+    );
+
+    const response = await previewPush(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().outgoingCommits[0]).toEqual({
+      hash: 'ff0022',
+      message: 'External change',
+      authoredAt: '2026-01-04T00:00:00.000Z',
+    });
+
+    await instance.close();
+  });
+
+  test('propagates a non-transport worker failure instead of reporting the worker unavailable', async () => {
+    const instance = await register(
+      buildServer({
+        client: {
+          previewPush: jest.fn(async () => {
+            throw new Error('unexpected failure');
+          }),
+        },
+      }),
+    );
+
+    const response = await previewPush(instance, PROJECT_ID);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
+
+    await instance.close();
+  });
 });

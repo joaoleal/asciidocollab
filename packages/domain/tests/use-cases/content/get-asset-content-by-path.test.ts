@@ -15,6 +15,7 @@ import { FilePath } from '../../../src/value-objects/files/file-path';
 import { MimeType } from '../../../src/value-objects/files/mime-type';
 import { PermissionDeniedError } from '../../../src/errors/common/permission-denied';
 import { FileNodeNotFoundError } from '../../../src/errors/file-tree/file-node-not-found';
+import { ContentNotFoundError } from '../../../src/errors/content/content-not-found';
 
 describe('GetAssetContentByPathUseCase', () => {
   let projectMemberRepo: InMemoryProjectMemberRepository;
@@ -85,5 +86,25 @@ describe('GetAssetContentByPathUseCase', () => {
     const result = await useCase.execute(actorId, projectId, 'img');
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(FileNodeNotFoundError);
+  });
+
+  it('returns not-found when the resolved node has no Asset record', async () => {
+    const documentNodeId = FileNodeId.create('cc0e8400-e29b-41d4-a716-446655440008');
+    const documentPath = FilePath.create('/img/notes.adoc');
+    await fileNodeRepo.save(
+      new FileNode(documentNodeId, projectId, folderId, 'notes.adoc', FileNodeType.create('file'), documentPath),
+    );
+    await fileStore.write(projectId, documentPath, Buffer.from('= Notes'));
+
+    const result = await useCase.execute(actorId, projectId, 'img/notes.adoc');
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(FileNodeNotFoundError);
+  });
+
+  it('reports missing content when the asset record exists but its bytes do not', async () => {
+    await fileStore.remove(projectId, filePath);
+    const result = await useCase.execute(actorId, projectId, 'img/photo.png');
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(ContentNotFoundError);
   });
 });

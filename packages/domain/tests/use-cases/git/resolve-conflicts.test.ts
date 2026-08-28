@@ -14,6 +14,26 @@ import { InMemoryProjectMemberRepository } from '../../ports/project/in-memory-p
 import { InMemoryAuditLogRepository } from '../../ports/admin/in-memory-audit-log.repository';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
 import { InMemoryConflictStageStore } from '../../ports/git/in-memory-conflict-stage-store';
+import { GitCommandFailedError } from '../../../src/errors/git/git-command-failed';
+import type { GitConflict } from '../../../src/entities/git-conflict';
+import type { Result } from '../../../src/types/result';
+
+/** Stage store whose merged-bytes write always fails, standing in for an unwritable blob store. */
+class UnwritableConflictStageStore extends InMemoryConflictStageStore {
+  async writeMerged(): Promise<Result<void, GitCommandFailedError>> {
+    return { success: false, error: new GitCommandFailedError('the merged content could not be stored') };
+  }
+}
+
+/** Operation repository that refuses to record a resolution, as a concurrent clear would. */
+class UnrecordableGitOperationRepository extends InMemoryGitOperationRepository {
+  async resolveConflict(
+    _operationId: GitOperationId,
+    path: string,
+  ): Promise<Result<GitConflict, GitConflictNotFoundError>> {
+    return { success: false, error: new GitConflictNotFoundError(path) };
+  }
+}
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440000');
 const ACTOR_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
@@ -242,5 +262,64 @@ describe('ResolveConflictsUseCase', () => {
 
     const operation = await harness.gitOperationRepo.findById(harness.operationId);
     expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('a stage-store write failure refuses without recording the resolution', async () => {
+    const memberRepo = new InMemoryProjectMemberRepository();
+    await memberRepo.addMember(new ProjectMember(PROJECT_ID, ACTOR_ID, Role.create('editor')));
+    const auditRepo = new InMemoryAuditLogRepository();
+    const gitOperationRepo = new InMemoryGitOperationRepository();
+    const enqueued = await gitOperationRepo.enqueue({ projectId: PROJECT_ID, kind: 'PULL', triggeredByUserId: ACTOR_ID });
+    await gitOperationRepo.claimNextQueued(30_000);
+    await gitOperationRepo.transition(enqueued.id, 'AWAITING_CONFLICT');
+    await gitOperationRepo.createConflict({ operationId: enqueued.id, path: CONFLICT_PATH, isBinary: false });
+    const useCase = new ResolveConflictsUseCase(
+      memberRepo,
+      auditRepo,
+      gitOperationRepo,
+      new UnwritableConflictStageStore(),
+    );
+
+    const result = await useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      path: CONFLICT_PATH,
+      resolution: 'merged',
+      mergedContent: 'merged text',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    const conflicts = await gitOperationRepo.listConflicts(enqueued.id);
+    expect(conflicts.find((c) => c.path === CONFLICT_PATH)?.resolved).toBe(false);
+    expect(await auditRepo.findByProjectId(PROJECT_ID)).toHaveLength(0);
+  });
+
+  test('a failure recording the resolution is surfaced and nothing is audited', async () => {
+    const memberRepo = new InMemoryProjectMemberRepository();
+    await memberRepo.addMember(new ProjectMember(PROJECT_ID, ACTOR_ID, Role.create('editor')));
+    const auditRepo = new InMemoryAuditLogRepository();
+    const gitOperationRepo = new UnrecordableGitOperationRepository();
+    const enqueued = await gitOperationRepo.enqueue({ projectId: PROJECT_ID, kind: 'PULL', triggeredByUserId: ACTOR_ID });
+    await gitOperationRepo.claimNextQueued(30_000);
+    await gitOperationRepo.transition(enqueued.id, 'AWAITING_CONFLICT');
+    await gitOperationRepo.createConflict({ operationId: enqueued.id, path: CONFLICT_PATH, isBinary: false });
+    const useCase = new ResolveConflictsUseCase(
+      memberRepo,
+      auditRepo,
+      gitOperationRepo,
+      new InMemoryConflictStageStore(),
+    );
+
+    const result = await useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      path: CONFLICT_PATH,
+      resolution: 'ours',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitConflictNotFoundError);
+    expect(await auditRepo.findByProjectId(PROJECT_ID)).toHaveLength(0);
   });
 });

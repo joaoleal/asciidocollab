@@ -1,5 +1,5 @@
 import { createConfig } from '../../src/config/schema';
-import { assertGitOAuthConfigConsistent, isGitOAuthProviderConfigured } from '../../src/config/schema-git';
+import { assertGitOAuthConfigConsistent, getGitOAuthProviderConfig, isGitOAuthProviderConfigured } from '../../src/config/schema-git';
 import type { GitConfig } from '../../src/config/schema-git';
 import { setupTestEnvironment } from '../helpers/test-environment';
 
@@ -143,6 +143,16 @@ describe('git oauth config', () => {
   it('accepts a well-formed 32-byte stateEncryptionKey', () => {
     process.env.ASCIIDOCOLLAB_GIT_OAUTH_STATE_ENCRYPTION_KEY = Buffer.alloc(32).toString('base64');
     expect(createConfig().get('git.oauth.stateEncryptionKey')).toBe(Buffer.alloc(32).toString('base64'));
+  });
+
+  describe('getGitOAuthProviderConfig', () => {
+    it('returns the named provider fragment', () => {
+      process.env.ASCIIDOCOLLAB_GIT_OAUTH_GITLAB_CLIENT_ID = 'gl-client-id';
+      const oauth = createConfig().get('git.oauth');
+
+      expect(getGitOAuthProviderConfig(oauth, 'gitlab').clientId).toBe('gl-client-id');
+      expect(getGitOAuthProviderConfig(oauth, 'github').clientId).toBe('');
+    });
   });
 
   describe('isGitOAuthProviderConfigured', () => {

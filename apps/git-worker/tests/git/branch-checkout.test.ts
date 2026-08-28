@@ -7,6 +7,7 @@ import { GitCommandFailedError, GitOperationId, ProjectId } from '@asciidocollab
 import { RealGitCommandRunner } from '../../src/git/git-command-runner.js';
 import { FilesystemConflictStageStore } from '../../src/git/filesystem-conflict-stage-store.js';
 import { commitAll, createTemporaryStorageRootWithProject } from '../helpers/temporary-git-repo.js';
+import { FailingConflictStageStore } from '../helpers/failing-conflict-stage-store.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -275,6 +276,62 @@ describe('RealGitCommandRunner.checkout', () => {
     expect(result.error).toBeInstanceOf(GitCommandFailedError);
     await expect(stat(path.join(cwd, '..', 'escaped-by-checkout-test.adoc'))).rejects.toThrow();
     expect(await currentBranch(cwd)).toBe('main');
+  });
+
+  it('refuses to switch at all when the pre-operation undo snapshot cannot be recorded', async () => {
+    // Without a recorded undo target the switch would be irreversible, so it must not start —
+    // nothing is flushed, stashed, or checked out.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440097');
+    const { storageRoot, cwd } = await setupProjectOnMain(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addLocalBranch(cwd, 'feature', async (tree) => {
+      await writeFile(path.join(tree, 'feature.adoc'), 'feature only\n');
+    });
+    const store = await FailingConflictStageStore.create('writeSnapshot');
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.checkout(projectId, {
+      branch: 'feature',
+      flush: [{ path: 'live.adoc', content: 'live edit\n' }],
+      stashLocal: true,
+      operationId: OPERATION_ID,
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The pre-operation snapshot could not be recorded.');
+    expect(await currentBranch(cwd)).toBe('main');
+    await expect(stat(path.join(cwd, 'live.adoc'))).rejects.toThrow();
+  });
+
+  it('fails a conflicted switch when the captured stages cannot be recorded, leaving a clean tree', async () => {
+    // A conflict whose stages were not captured can never be resolved, so it must surface as a
+    // failure — after the reset/drop have already restored a clean checkout of the target branch.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-44665544009a');
+    const { storageRoot, cwd } = await setupProjectOnMain(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addLocalBranch(cwd, 'feature', async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'feature version\n');
+    });
+    const store = await FailingConflictStageStore.create('writeStages');
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+    const result = await runner.checkout(projectId, {
+      branch: 'feature',
+      flush: [{ path: 'base.adoc', content: 'local version\n' }],
+      stashLocal: true,
+      operationId: OPERATION_ID,
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('expected failure');
+    expect(result.error.message).toBe('The conflict could not be recorded.');
+    expect(await currentBranch(cwd)).toBe('feature');
+    const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
+    expect(status.trim()).toBe('');
+    expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('feature version\n');
   });
 
   it('returns GitCommandFailedError for a non-existent target branch', async () => {

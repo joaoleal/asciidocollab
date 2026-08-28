@@ -71,6 +71,21 @@ describe('DetachedTray', () => {
     expect(screen.queryByText('Detached', { selector: 'span' })).not.toBeInTheDocument();
   });
 
+  test('truncates a long body to a single-line preview', () => {
+    const longBody = `${'word '.repeat(40)}tail`;
+    render(<DetachedTray projectId="p1" entries={[{ item: item({ body: longBody }), state: 'detached' }]} />);
+
+    const preview = screen.getByText(/^word word/);
+    expect(preview.textContent).toHaveLength(80);
+    expect(preview.textContent?.endsWith('…')).toBe(true);
+  });
+
+  test('resolving without a change listener still calls the API', async () => {
+    render(<DetachedTray projectId="p1" entries={entries} />);
+    fireEvent.click(screen.getByTestId('detached-resolve'));
+    await waitFor(() => expect(mockResolve).toHaveBeenCalledWith('p1', 'r1'));
+  });
+
   test('collapsing the tray hides its rows', () => {
     render(<DetachedTray projectId="p1" entries={entries} />);
     expect(screen.getByText('Orphaned note')).toBeInTheDocument();

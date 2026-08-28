@@ -55,6 +55,19 @@ describe('review CRUD happy paths', () => {
       await app.close();
     });
 
+    test('201 — round-trips a base64 relative position on the anchor', async () => {
+      const relativePos = Buffer.from([1, 2, 3, 4]).toString('base64');
+      const app = await buildServer();
+      const response = await app.inject({
+        method: 'POST',
+        url: documentItemsUrl,
+        payload: { kind: 'comment', body: 'anchored', anchor: { ...validAnchor, relPos: relativePos } },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().data.anchor.relPos).toBe(relativePos);
+      await app.close();
+    });
+
     test('persists the item through reviewComment.create', async () => {
       const create = jest.fn(async () => undefined);
       const app = await buildServer({ reviewComment: { create } });
@@ -87,6 +100,14 @@ describe('review CRUD happy paths', () => {
       const response = await app.inject({ method: 'GET', url: documentItemsUrl });
       expect(response.statusCode).toBe(200);
       expect(response.json().data.threads).toEqual([]);
+      await app.close();
+    });
+
+    test('403 FORBIDDEN — a non-member cannot read a document’s threads', async () => {
+      const app = await buildServer({ role: null });
+      const response = await app.inject({ method: 'GET', url: documentItemsUrl });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe('FORBIDDEN');
       await app.close();
     });
   });
@@ -143,6 +164,27 @@ describe('review CRUD happy paths', () => {
       expect(reactions).toEqual([
         { emoji: '👍', count: 1, reactedByMe: true, userIds: [ACTOR_ID] },
       ]);
+      await app.close();
+    });
+
+    test('200 — an item deleted between the toggle and the lookup skips the change event', async () => {
+      let itemGone = false;
+      const app = await buildServer({
+        reviewComment: { findById: jest.fn(async () => (itemGone ? null : comment())) },
+        reviewReaction: {
+          toggle: jest.fn(async () => {
+            itemGone = true;
+          }),
+          listForItems: jest.fn(async () => [reaction('👍')]),
+        },
+      });
+      const response = await app.inject({
+        method: 'POST',
+        url: `${itemUrl()}/reactions`,
+        payload: { emoji: '👍' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(emitMock(app)).not.toHaveBeenCalled();
       await app.close();
     });
 
@@ -208,6 +250,40 @@ describe('review CRUD happy paths', () => {
       const { items } = response.json().data;
       expect(items[0].fileNodeId).toBeUndefined();
       expect(items[0].fileName).toBeUndefined();
+      await app.close();
+    });
+
+    test('200 — an item whose file node no longer resolves omits the file fields', async () => {
+      const app = await buildServer({
+        reviewComment: { listByProject: jest.fn(async () => [comment()]) },
+        fileNode: { findById: jest.fn(async () => null) },
+      });
+      const response = await app.inject({ method: 'GET', url: projectItemsUrl });
+      expect(response.statusCode).toBe(200);
+      const { items } = response.json().data;
+      expect(items[0].fileNodeId).toBeUndefined();
+      expect(items[0].fileName).toBeUndefined();
+      await app.close();
+    });
+
+    test('200 — a known status filter is forwarded to the use case', async () => {
+      const listByProject = jest.fn(async () => []);
+      const app = await buildServer({ reviewComment: { listByProject } });
+      const response = await app.inject({
+        method: 'GET',
+        url: `${projectItemsUrl}?status=open&assigneeId=${ACTOR_ID}`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data.items).toEqual([]);
+      expect(listByProject).toHaveBeenCalled();
+      await app.close();
+    });
+
+    test('403 FORBIDDEN — a non-member cannot list a project’s items', async () => {
+      const app = await buildServer({ role: null });
+      const response = await app.inject({ method: 'GET', url: projectItemsUrl });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe('FORBIDDEN');
       await app.close();
     });
 

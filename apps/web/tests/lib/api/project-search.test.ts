@@ -158,4 +158,15 @@ describe('replaceProjectContent', () => {
       message: expect.stringContaining('Replace failed'),
     });
   });
+
+  test('reports the status when the failing replace body is not JSON at all', async () => {
+    // A proxy or gateway can answer with HTML; the status has to survive that rather than the
+    // parse failure escaping as an unrelated error.
+    mockFetch.mockResolvedValue(respond({ ok: false, status: 502, throwOnJson: true }));
+    await expect(replaceProjectContent('proj-1', REPLACE)).rejects.toMatchObject({
+      status: 502,
+      code: 'SEARCH_ERROR',
+      message: 'Replace failed: 502',
+    });
+  });
 });

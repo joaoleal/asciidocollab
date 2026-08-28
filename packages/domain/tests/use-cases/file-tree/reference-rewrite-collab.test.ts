@@ -1,5 +1,6 @@
 import {
   rewriteReferencesForPathChanges,
+  clearMainFileIfMatches,
   type ReferenceRewriteDeps,
 } from '../../../src/use-cases/file-tree/reference-rewrite';
 import { RenameFileUseCase } from '../../../src/use-cases/file-tree/rename-file';
@@ -9,7 +10,10 @@ import { InMemoryProjectFileStore } from '../../ports/storage/in-memory-project-
 import { InMemoryDocumentRepository } from '../../ports/file-tree/in-memory-document.repository';
 import { InMemoryProjectMemberRepository } from '../../ports/project/in-memory-project-member.repository';
 import { InMemoryAuditLogRepository } from '../../ports/admin/in-memory-audit-log.repository';
+import { InMemoryProjectRepository } from '../../ports/project/in-memory-project.repository';
 import { Document } from '../../../src/entities/document';
+import { Project } from '../../../src/entities/project';
+import { ProjectName } from '../../../src/value-objects/project/project-name';
 import { FileNode } from '../../../src/entities/file-node';
 import { ProjectMember } from '../../../src/entities/project-member';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
@@ -240,5 +244,193 @@ describe('Rename/Move use cases route the rewrite through the collaborative edit
     expect(result.success).toBe(true);
     expect(editor.calls).toHaveLength(1);
     expect(editor.calls[0].yjsStateId).toBe(bookYjs.value);
+  });
+});
+
+
+describe('rewriteReferencesForPathChanges — which targets it will and will not touch', () => {
+  const projectId = ProjectId.create('770e8400-e29b-41d4-a716-446655440003');
+  const rootId = FileNodeId.create('880e8400-e29b-41d4-a716-446655440004');
+  const bookId = FileNodeId.create('aa0e8400-e29b-41d4-a716-446655440006');
+  const bookPath = FilePath.create('/book.adoc');
+
+  let fileNodeRepo: InMemoryFileNodeRepository;
+  let fileStore: InMemoryProjectFileStore;
+
+  async function writeBook(content: string): Promise<void> {
+    await fileStore.write(projectId, bookPath, Buffer.from(content));
+  }
+
+  async function bookOnDisk(): Promise<string> {
+    return (await fileStore.read(projectId, bookPath))!.toString('utf8');
+  }
+
+  beforeEach(async () => {
+    fileNodeRepo = new InMemoryFileNodeRepository();
+    fileStore = new InMemoryProjectFileStore();
+    await fileNodeRepo.save(new FileNode(rootId, projectId, null, 'Root', FileNodeType.create('folder'), FilePath.create('/')));
+    await fileNodeRepo.save(new FileNode(bookId, projectId, rootId, 'book.adoc', FileNodeType.create('file'), bookPath));
+  });
+
+  it('does no work at all when nothing changed path', async () => {
+    await writeBook('= Book\n\ninclude::intro.adoc[]\n');
+
+    const result = await rewriteReferencesForPathChanges({ fileNodeRepo, fileStore }, projectId, new Map());
+
+    expect(result).toEqual({ rewrittenFiles: 0, warnings: [] });
+    expect(await bookOnDisk()).toContain('include::intro.adoc[]');
+  });
+
+  it('rewrites only the moved target, leaving anchors, templated, escaping and unrelated targets alone', async () => {
+    await writeBook(
+      [
+        '= Book',
+        '',
+        'See <<intro>> for context.',
+        '',
+        'include::{docdir}/template.adoc[]',
+        '',
+        'include::../outside.adoc[]',
+        '',
+        'include::other.adoc[]',
+        '',
+        'include::intro.adoc[]',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await rewriteReferencesForPathChanges(
+      { fileNodeRepo, fileStore },
+      projectId,
+      new Map([['intro.adoc', 'introduction.adoc']]),
+    );
+
+    expect(result.rewrittenFiles).toBe(1);
+    expect(result.warnings).toEqual([]);
+    const onDisk = await bookOnDisk();
+    expect(onDisk).toContain('include::introduction.adoc[]');
+    expect(onDisk).toContain('See <<intro>> for context.');       // a same-file anchor, not a path
+    expect(onDisk).toContain('include::{docdir}/template.adoc[]'); // templated: rewriting would lose the variable
+    expect(onDisk).toContain('include::../outside.adoc[]');        // outside the sandbox: not ours to touch
+    expect(onDisk).toContain('include::other.adoc[]');             // points at a file that did not move
+  });
+
+  it('rewrites an xref target and preserves its fragment', async () => {
+    await writeBook('= Book\n\nSee xref:intro.adoc#overview[the overview].\n');
+
+    const result = await rewriteReferencesForPathChanges(
+      { fileNodeRepo, fileStore },
+      projectId,
+      new Map([['intro.adoc', 'chapters/introduction.adoc']]),
+    );
+
+    expect(result.rewrittenFiles).toBe(1);
+    expect(await bookOnDisk()).toContain('xref:chapters/introduction.adoc#overview[the overview]');
+  });
+
+  it('writes nothing when a path change maps a file onto its own path', async () => {
+    await writeBook('= Book\n\ninclude::intro.adoc[]\n');
+
+    const result = await rewriteReferencesForPathChanges(
+      { fileNodeRepo, fileStore },
+      projectId,
+      new Map([['intro.adoc', 'intro.adoc']]),
+    );
+
+    expect(result).toEqual({ rewrittenFiles: 0, warnings: [] });
+    expect(await bookOnDisk()).toBe('= Book\n\ninclude::intro.adoc[]\n');
+  });
+
+  it('warns instead of writing a target that would not resolve back to the new location', async () => {
+    await writeBook('= Book\n\ninclude::intro.adoc[]\n');
+
+    const result = await rewriteReferencesForPathChanges(
+      { fileNodeRepo, fileStore },
+      projectId,
+      // A destination a reference target cannot faithfully express: the surrounding whitespace is
+      // dropped when the written target is resolved again, so it would point somewhere else.
+      new Map([['intro.adoc', ' introduction.adoc']]),
+    );
+
+    expect(result.rewrittenFiles).toBe(0);
+    expect(result.warnings).toEqual(['Could not rewrite reference to "intro.adoc" in book.adoc']);
+    expect(await bookOnDisk()).toContain('include::intro.adoc[]');
+  });
+
+  it('warns when the live document matched no occurrence, rather than counting a rewrite', async () => {
+    await writeBook('= Book\n\ninclude::intro.adoc[]\n');
+    const documentRepo = new InMemoryDocumentRepository();
+    const yjsStateId = YjsStateId.create('11111111-e29b-41d4-a716-446655440111');
+    await documentRepo.save(
+      new Document(
+        DocumentId.create('22222222-e29b-41d4-a716-446655440222'),
+        bookId,
+        ContentId.create('33333333-e29b-41d4-a716-446655440333'),
+        yjsStateId,
+        MimeType.create('text/asciidoc'),
+      ),
+    );
+    const editor = new FakeCollaborativeContentEditor();
+    editor.result = { success: true, value: 0 };
+
+    const result = await rewriteReferencesForPathChanges(
+      { fileNodeRepo, fileStore, documentRepo, collaborativeContentEditor: editor },
+      projectId,
+      new Map([['intro.adoc', 'introduction.adoc']]),
+    );
+
+    expect(result.rewrittenFiles).toBe(0);
+    expect(result.warnings).toEqual([
+      'No references rewritten in book.adoc: the live document diverged from the scan',
+    ]);
+  });
+});
+
+describe('clearMainFileIfMatches', () => {
+  const projectId = ProjectId.create('770e8400-e29b-41d4-a716-446655440003');
+  const rootId = FileNodeId.create('880e8400-e29b-41d4-a716-446655440004');
+  const mainId = FileNodeId.create('aa0e8400-e29b-41d4-a716-446655440006');
+
+  let projectRepo: InMemoryProjectRepository;
+  let project: Project;
+
+  beforeEach(async () => {
+    projectRepo = new InMemoryProjectRepository();
+    project = new Project(projectId, ProjectName.create('Book'), null, [], rootId);
+    await projectRepo.save(project);
+  });
+
+  it('clears the configuration when the predicate matches the current main file', async () => {
+    project.setMainFile(mainId);
+    await projectRepo.save(project);
+
+    const cleared = await clearMainFileIfMatches(projectRepo, projectId, (id) => id.value === mainId.value);
+
+    expect(cleared).toBe(true);
+    expect((await projectRepo.findById(projectId))!.mainFileNodeId).toBeNull();
+  });
+
+  it('leaves the configuration alone when the predicate does not match', async () => {
+    project.setMainFile(mainId);
+    await projectRepo.save(project);
+
+    const cleared = await clearMainFileIfMatches(projectRepo, projectId, () => false);
+
+    expect(cleared).toBe(false);
+    expect((await projectRepo.findById(projectId))!.mainFileNodeId!.value).toBe(mainId.value);
+  });
+
+  it('does nothing when no main file is configured', async () => {
+    const cleared = await clearMainFileIfMatches(projectRepo, projectId, () => true);
+
+    expect(cleared).toBe(false);
+  });
+
+  it('does nothing when the project no longer exists', async () => {
+    const missing = ProjectId.create('770e8400-e29b-41d4-a716-446655440099');
+
+    const cleared = await clearMainFileIfMatches(projectRepo, missing, () => true);
+
+    expect(cleared).toBe(false);
   });
 });

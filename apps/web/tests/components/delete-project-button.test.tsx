@@ -10,9 +10,17 @@ jest.mock('@/lib/api', () => ({
   },
 }));
 
+/** The shape of the dismissal events Radix hands to the outside-interaction guards. */
+interface DismissEvent {
+  preventDefault: () => void;
+}
+
 // Capture the Radix onOpenChange so a test can drive the close path directly while
-// leaving the rest of the dialog primitives intact.
+// leaving the rest of the dialog primitives intact. The outside-pointer guard is captured the
+// same way: Radix decides on its own whether an outside pointer-down counts as a dismissal, and
+// under jsdom it never does, so the guard has to be exercised through the handler itself.
 let capturedOnOpenChange: ((open: boolean) => void) | undefined;
+let capturedPointerDownOutside: ((event: DismissEvent) => void) | undefined;
 jest.mock('@radix-ui/react-dialog', () => {
   const actual = jest.requireActual('@radix-ui/react-dialog');
   return {
@@ -26,6 +34,16 @@ jest.mock('@radix-ui/react-dialog', () => {
     }) => {
       capturedOnOpenChange = onOpenChange;
       return <actual.Root onOpenChange={onOpenChange} {...rest} />;
+    },
+    Content: ({
+      onPointerDownOutside,
+      ...rest
+    }: {
+      onPointerDownOutside: (event: DismissEvent) => void;
+      children: React.ReactNode;
+    }) => {
+      capturedPointerDownOutside = onPointerDownOutside;
+      return <actual.Content onPointerDownOutside={onPointerDownOutside} {...rest} />;
     },
   };
 });
@@ -134,6 +152,25 @@ describe('DeleteProjectButton', () => {
     expect(screen.queryByText(/permanent and cannot be undone/)).not.toBeInTheDocument();
     openDialog();
     expect(screen.getByLabelText(/Type/)).toHaveValue('');
+  });
+
+  test('refuses an outside pointer-down as a way of dismissing the confirmation', () => {
+    capturedPointerDownOutside = undefined;
+    render(<DeleteProjectButton projectId="p1" projectName="Docs" onDeleted={jest.fn()} />);
+    openDialog();
+    const preventDefault = jest.fn();
+    expect(capturedPointerDownOutside).toBeDefined();
+    capturedPointerDownOutside?.({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the typed value when Radix reports the dialog opening', () => {
+    render(<DeleteProjectButton projectId="p1" projectName="Docs" onDeleted={jest.fn()} />);
+    openDialog();
+    fireEvent.change(screen.getByLabelText(/Type/), { target: { value: 'Do' } });
+    // Reporting an open must not run the reset path that a close does.
+    act(() => capturedOnOpenChange?.(true));
+    expect(screen.getByLabelText(/Type/)).toHaveValue('Do');
   });
 
   test('cancel clears the typed value and closes the dialog', () => {

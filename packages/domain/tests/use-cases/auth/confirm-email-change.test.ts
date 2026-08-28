@@ -170,4 +170,21 @@ describe('ConfirmEmailChangeUseCase', () => {
       expect(result.error.name).toBe('InvalidTokenError');
     }
   });
+
+  test('valid token whose account has since been deleted returns InvalidTokenError', async () => {
+    const token = createValidToken('hashed-raw-token');
+    await tokenRepo.save(token);
+    (userRepo.findById as jest.Mock).mockResolvedValue(null);
+
+    const result = await useCase.execute('raw-token');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.name).toBe('InvalidTokenError');
+    }
+    expect(userRepo.save).not.toHaveBeenCalled();
+    const untouched = await tokenRepo.findByTokenHash('hashed-raw-token');
+    expect(untouched?.isUsed).toBe(false);
+    expect(await auditRepo.findAll()).toHaveLength(0);
+  });
 });

@@ -8,7 +8,17 @@ import { Email } from '../../../src/value-objects/identity/email';
 import { Timestamps } from '../../../src/value-objects/common/timestamps';
 import { PermissionDeniedError } from '../../../src/errors/common/permission-denied';
 import { CannotModifySelfAdminError } from '../../../src/errors/members/cannot-modify-self-admin';
+import { CannotRemoveLastAdminError } from '../../../src/errors/members/cannot-remove-last-admin';
+import { UserNotFoundError } from '../../../src/errors/auth/user-not-found';
 import { randomUUID } from 'crypto';
+
+// Stands in for the window where another request demotes an admin between the target lookup and
+// the admin count, so the count reports fewer admins than the store still holds.
+class LastAdminUserRepository extends InMemoryUserRepository {
+  async countAdmins(): Promise<number> {
+    return 1;
+  }
+}
 
 function makeUser(isAdmin = false): User {
   return new User(
@@ -106,5 +116,60 @@ describe('SetAdminStatusUseCase', () => {
     expect(updated?.isAdmin).toBe(false);
     const logs = await auditLogRepo.findAll();
     expect(logs.some((l) => l.action === 'user.admin_revoked')).toBe(true);
+  });
+
+  test('returns PermissionDeniedError when the acting account no longer exists', async () => {
+    const target = makeUser(false);
+    await userRepo.save(target);
+
+    const result = await useCase.execute(UserId.create(randomUUID()), target.id, true);
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(PermissionDeniedError);
+  });
+
+  test('returns UserNotFoundError when the target account does not exist', async () => {
+    const admin = makeUser(true);
+    await userRepo.save(admin);
+    const missingId = UserId.create(randomUUID());
+
+    const result = await useCase.execute(admin.id, missingId, true);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(UserNotFoundError);
+      expect(result.error.message).toContain(missingId.value);
+    }
+  });
+
+  test('refuses to demote an admin target when only one admin would remain', async () => {
+    const lastAdminRepo = new LastAdminUserRepository();
+    const admin = makeUser(true);
+    const target = makeUser(true);
+    await lastAdminRepo.save(admin);
+    await lastAdminRepo.save(target);
+    const guarded = new SetAdminStatusUseCase(lastAdminRepo, auditLogRepo, sessionRepo);
+
+    const result = await guarded.execute(admin.id, target.id, false);
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(CannotRemoveLastAdminError);
+    const unchanged = await lastAdminRepo.findById(target.id);
+    expect(unchanged?.isAdmin).toBe(true);
+  });
+
+  test('skips the last-admin check when promoting an existing admin', async () => {
+    const lastAdminRepo = new LastAdminUserRepository();
+    const admin = makeUser(true);
+    const target = makeUser(true);
+    await lastAdminRepo.save(admin);
+    await lastAdminRepo.save(target);
+    const guarded = new SetAdminStatusUseCase(lastAdminRepo, auditLogRepo, sessionRepo);
+
+    const result = await guarded.execute(admin.id, target.id, true);
+
+    expect(result.success).toBe(true);
+    const updated = await lastAdminRepo.findById(target.id);
+    expect(updated?.isAdmin).toBe(true);
   });
 });

@@ -167,4 +167,49 @@ describe('createMermaidPrerenderer', () => {
 
     expect(result.assets).toHaveLength(1);
   });
+
+  it('yields through requestIdleCallback when the host provides one', async () => {
+    const scheduled: Array<() => void> = [];
+    Object.defineProperty(globalThis, 'requestIdleCallback', {
+      configurable: true,
+      writable: true,
+      value: (callback: () => void) => {
+        scheduled.push(callback);
+        queueMicrotask(callback);
+      },
+    });
+    const prerenderer = createMermaidPrerenderer({ mermaidRenderer: fakeRenderer });
+
+    const result = await prerenderer.prerender(MIXED_DOCUMENT);
+
+    Reflect.deleteProperty(globalThis, 'requestIdleCallback');
+    expect(scheduled.length).toBeGreaterThan(0);
+    expect(result.assets).toHaveLength(1);
+  });
+
+  it('discards a diagram that finished rendering after the run was aborted', async () => {
+    const controller = new AbortController();
+    const renderer: MermaidRenderer = async (_config, source) => {
+      controller.abort();
+      return `<svg data-source="${source}"></svg>`;
+    };
+    const prerenderer = createMermaidPrerenderer({ mermaidRenderer: renderer, scheduleIdle: runNow });
+
+    const result = await prerenderer.prerender(MIXED_DOCUMENT, { signal: controller.signal });
+
+    expect(result.aborted).toBe(true);
+    expect(result.assets).toEqual([]);
+  });
+
+  it('reports an aborted run even for a document with no mermaid diagrams to render', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const prerenderer = createMermaidPrerenderer({ mermaidRenderer: fakeRenderer, scheduleIdle: runNow });
+
+    const result = await prerenderer.prerender('= Title\n\nJust prose.\n', { signal: controller.signal });
+
+    expect(result.aborted).toBe(true);
+    expect(result.assets).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
 });

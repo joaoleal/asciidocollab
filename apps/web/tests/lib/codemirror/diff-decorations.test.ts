@@ -1,4 +1,11 @@
-import { diffLineRole, diffRoleStyle, type DiffLineRole } from '@/lib/codemirror/diff-decorations';
+import { EditorState } from '@codemirror/state';
+import { EditorView, type DecorationSet } from '@codemirror/view';
+import {
+  diffLineDecorations,
+  diffLineRole,
+  diffRoleStyle,
+  type DiffLineRole,
+} from '@/lib/codemirror/diff-decorations';
 
 describe('diffLineRole', () => {
   test.each([
@@ -58,5 +65,52 @@ describe('diffRoleStyle', () => {
       expect(className).not.toMatch(/#[0-9a-fA-F]{3,8}/);
       expect(className).not.toMatch(/rgb\(/);
     }
+  });
+});
+
+/** The decoration set the extension currently provides for `state`. */
+function decorationsOf(state: EditorState): DecorationSet {
+  return state.facet(EditorView.decorations)[0];
+}
+
+/** Every line decoration's class attribute, in document order. */
+function lineClasses(state: EditorState): string[] {
+  const classes: string[] = [];
+  decorationsOf(state).between(0, state.doc.length, (_from, _to, value) => {
+    const className = value.spec.attributes?.class;
+    classes.push(typeof className === 'string' ? className : '');
+  });
+  return classes;
+}
+
+function stateFor(document_: string): EditorState {
+  return EditorState.create({ doc: document_, extensions: [diffLineDecorations()] });
+}
+
+describe('diffLineDecorations', () => {
+  const DOC = ['@@ -1,2 +1,2 @@', '-old line', '+new line'].join('\n');
+
+  test('decorates every line by its diff role', () => {
+    expect(lineClasses(stateFor(DOC))).toEqual([
+      diffRoleStyle('hunk').className,
+      diffRoleStyle('removed').className,
+      diffRoleStyle('added').className,
+    ]);
+  });
+
+  test('re-derives the decorations after the document changes', () => {
+    const state = stateFor(DOC);
+    const next = state.update({
+      changes: { from: 0, to: state.doc.line(1).to, insert: ' context line' },
+    }).state;
+
+    expect(lineClasses(next)[0]).toBe(diffRoleStyle('context').className);
+  });
+
+  test('keeps the existing decorations for a transaction that leaves the document alone', () => {
+    const state = stateFor(DOC);
+    const next = state.update({ selection: { anchor: 1 } }).state;
+
+    expect(decorationsOf(next)).toBe(decorationsOf(state));
   });
 });

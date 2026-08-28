@@ -17,6 +17,7 @@ import { InMemoryGitRepositoryRepository } from '../../ports/project/in-memory-g
 import { InMemoryGitCredentialStore } from '../../ports/git/in-memory-git-credential-store';
 import { InMemoryGitCommandRunner } from '../../ports/git/in-memory-git-command-runner';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
+import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
 import type { Logger } from '../../../src/ports/observability/logger';
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440000');
@@ -375,5 +376,27 @@ describe('ConnectRepositoryUseCase', () => {
     for (const entry of await failed.auditRepo.findByProjectId(PROJECT_ID)) {
       expect(JSON.stringify(entry.metadata)).not.toContain(TOKEN);
     }
+  });
+
+  test('another operation already running for the project refuses with GitOperationInProgressError and stores nothing', async () => {
+    const harness = await buildHarness('owner');
+    await harness.gitOperationRepo.enqueue({
+      projectId: PROJECT_ID,
+      kind: 'PULL',
+      triggeredByUserId: OWNER_ID,
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId: PROJECT_ID,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitOperationInProgressError);
+    expect(await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID)).toBeNull();
+    expect(await harness.credentialStore.load(PROJECT_ID)).toBeNull();
   });
 });

@@ -57,4 +57,31 @@ describe('GET /admin/failed-sign-ins', () => {
     const response = await app.inject({ method: 'GET', url: '/admin/failed-sign-ins' });
     expect(response.statusCode).toBe(403);
   });
+
+  it('passes a fromDate/toDate window through to the telemetry query as Date bounds', async () => {
+    const findWithFilters = jest.fn().mockResolvedValue({ items: [mockAttempt], total: 1, page: 1, limit: 50 });
+    const app = Fastify();
+    decorateApp(app, 'config', { failedSignIn: { rateLimitMax: 120, rateLimitWindow: 60_000 } });
+    decorateApp(app, 'repos', {
+      authAttemptTelemetry: { findWithFilters },
+      user: {
+        findById: jest.fn().mockResolvedValue({ id: { value: '550e8400-e29b-41d4-a716-446655440001' }, isAdmin: true }),
+      },
+    });
+    app.register(failedSignInsRoute);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/admin/failed-sign-ins?fromDate=2026-06-01T00:00:00.000Z&toDate=2026-06-30T00:00:00.000Z',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(findWithFilters).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromDate: new Date('2026-06-01T00:00:00.000Z'),
+        toDate: new Date('2026-06-30T00:00:00.000Z'),
+      }),
+      expect.anything(),
+    );
+  });
 });

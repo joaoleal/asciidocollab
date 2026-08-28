@@ -58,4 +58,14 @@ describe('internal storage-probe route', () => {
     expect(response.statusCode).toBe(400);
     await app.close();
   });
+
+  it('rejects the probe with 400 when the storage root cannot contain the sentinel path', async () => {
+    const app = await buildTestServer(path.parse(storagePath).root);
+
+    const response = await app.inject({ method: 'GET', url: `/internal/collab/storage-probe?token=${TOKEN}` });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'Invalid token' });
+    await app.close();
+  });
 });

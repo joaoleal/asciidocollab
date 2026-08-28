@@ -21,6 +21,31 @@ import { InMemoryGitRepositoryRepository } from '../../ports/project/in-memory-g
 import { InMemoryGitCommandRunner } from '../../ports/git/in-memory-git-command-runner';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
 import { InMemoryConflictStageStore } from '../../ports/git/in-memory-conflict-stage-store';
+import type { ConflictUndoSnapshot } from '../../../src/ports/git/conflict-stage-store';
+import type { GitOperation } from '../../../src/entities/git-operation';
+import type { GitOperationTransitionTarget } from '../../../src/ports/git/git-operation-repository';
+import { IllegalGitOperationTransitionError } from '../../../src/errors/git/illegal-git-operation-transition';
+import type { Result } from '../../../src/types/result';
+
+/** Stage store whose snapshot read always fails, standing in for an unreadable blob store. */
+class UnreadableSnapshotStageStore extends InMemoryConflictStageStore {
+  async readSnapshot(): Promise<Result<ConflictUndoSnapshot | null, GitCommandFailedError>> {
+    return { success: false, error: new GitCommandFailedError('the undo snapshot could not be read') };
+  }
+}
+
+/** Operation repository that refuses to claim the awaiting operation back into RUNNING. */
+class UnclaimableGitOperationRepository extends InMemoryGitOperationRepository {
+  async transition(
+    operationId: GitOperationId,
+    toState: GitOperationTransitionTarget,
+  ): Promise<Result<GitOperation, IllegalGitOperationTransitionError>> {
+    if (toState === 'RUNNING') {
+      return { success: false, error: new IllegalGitOperationTransitionError('AWAITING_CONFLICT', toState) };
+    }
+    return super.transition(operationId, toState);
+  }
+}
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440000');
 const ACTOR_ID = UserId.create('550e8400-e29b-41d4-a716-446655440001');
@@ -52,10 +77,22 @@ interface Harness {
 interface HarnessOptions {
   role?: string | null;
   connected?: boolean;
+  /** The sync status the stored repository link starts on. */
+  syncStatus?: 'UP_TO_DATE' | 'BEHIND';
+  /** Substitute stage store, for exercising a failing blob read. */
+  conflictStageStore?: InMemoryConflictStageStore;
+  /** Substitute operation repository, for exercising a refused transition. */
+  gitOperationRepo?: InMemoryGitOperationRepository;
 }
 
 async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
-  const { role = 'editor', connected = true } = options;
+  const {
+    role = 'editor',
+    connected = true,
+    syncStatus = 'UP_TO_DATE',
+    conflictStageStore = new InMemoryConflictStageStore(),
+    gitOperationRepo = new InMemoryGitOperationRepository(),
+  } = options;
 
   const memberRepo = new InMemoryProjectMemberRepository();
   if (role) {
@@ -63,9 +100,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
   }
   const auditRepo = new InMemoryAuditLogRepository();
   const gitRepositoryRepo = new InMemoryGitRepositoryRepository();
-  const gitOperationRepo = new InMemoryGitOperationRepository();
   const commandRunner = new InMemoryGitCommandRunner();
-  const conflictStageStore = new InMemoryConflictStageStore();
   const reconciler = makeReconciler();
 
   if (connected) {
@@ -77,7 +112,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
         REMOTE_URL,
         PROJECT_ID.value,
         CURRENT_BRANCH,
-        'UP_TO_DATE',
+        syncStatus,
         'main',
         'remote-head-commit-hash',
         new Date('2024-01-01T00:00:00.000Z'),
@@ -277,5 +312,69 @@ describe('UndoPullUseCase', () => {
     expect(audited.some((entry) => entry.action === AUDIT_AUTHZ_DENIED)).toBe(true);
     const operation = await harness.gitOperationRepo.findById(operationId);
     expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('a refused claim back into RUNNING leaves the awaiting operation untouched and restores nothing', async () => {
+    const harness = await buildHarness({ gitOperationRepo: new UnclaimableGitOperationRepository() });
+    const operationId = await seedAwaitingConflictPull(harness);
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(IllegalGitOperationTransitionError);
+    expect(harness.commandRunner.restoreToSnapshotCalls).toHaveLength(0);
+    const operation = await harness.gitOperationRepo.findById(operationId);
+    expect(operation?.state).toBe('AWAITING_CONFLICT');
+  });
+
+  test('undoing a succeeded pull on a project with no connected repository refuses with RepositoryNotConnectedError', async () => {
+    const harness = await buildHarness({ connected: false });
+    await seedSucceededPull(harness);
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(RepositoryNotConnectedError);
+    expect(harness.commandRunner.restoreToSnapshotCalls).toHaveLength(0);
+  });
+
+  test('a failed snapshot read is surfaced rather than reported as nothing to undo', async () => {
+    const harness = await buildHarness({ conflictStageStore: new UnreadableSnapshotStageStore() });
+    await seedSucceededPull(harness);
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBeInstanceOf(GitCommandFailedError);
+      expect(result.error).not.toBeInstanceOf(NothingToUndoError);
+    }
+    expect(harness.commandRunner.restoreToSnapshotCalls).toHaveLength(0);
+  });
+
+  test('a failed restore of a succeeded pull propagates and reverts nothing', async () => {
+    const harness = await buildHarness();
+    await seedSucceededPull(harness);
+    harness.commandRunner.seedRestoreToSnapshotFailure(PROJECT_ID, new GitCommandFailedError('reset failed'));
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(harness.reconciler.apply).not.toHaveBeenCalled();
+    expect(await harness.auditRepo.findByProjectId(PROJECT_ID)).toHaveLength(0);
+  });
+
+  test('a failed behind/ahead recompute keeps the repository row on its prior sync status', async () => {
+    const harness = await buildHarness({ syncStatus: 'BEHIND' });
+    await seedSucceededPull(harness);
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, changes: REVERT_CHANGES });
+    harness.commandRunner.seedBehindAheadFailure(PROJECT_ID, new GitCommandFailedError('rev-list failed'));
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result.success).toBe(true);
+    const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    expect(saved?.syncStatus).toBe('BEHIND');
   });
 });

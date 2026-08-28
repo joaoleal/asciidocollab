@@ -1,4 +1,4 @@
-// LoginForm component tests.
+// LoginForm component tests and LoginPage server component redirect behavior.
 // Requires: @testing-library/react, @testing-library/jest-dom, jest-environment-jsdom
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -18,6 +18,10 @@ jest.mock('@/lib/api', () => ({
       super(message);
     }
   },
+}));
+
+jest.mock('@/lib/auth', () => ({
+  getSession: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock('next/navigation', () => ({
@@ -214,5 +218,60 @@ describe('LoginForm validation and conditional UI', () => {
     fireEvent.submit(screen.getByRole('form'));
 
     await waitFor(() => expect(router.push).toHaveBeenCalledWith('/projects/42'));
+  });
+});
+
+describe('LoginPage redirect behavior', () => {
+  const { authApi } = require('@/lib/api');
+  const { getSession } = require('@/lib/auth');
+  const { redirect } = require('next/navigation');
+  const { default: LoginPage } = require('@/app/(auth)/login/page');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getSession.mockResolvedValue(null);
+    authApi.setupStatus.mockResolvedValue({ configured: true });
+  });
+
+  test('sends a signed-in visitor to the dashboard', async () => {
+    getSession.mockResolvedValue({ userId: 'u1' });
+
+    await LoginPage({ searchParams: Promise.resolve({}) });
+
+    expect(redirect).toHaveBeenCalledWith('/dashboard');
+  });
+
+  test('sends an anonymous visitor to first-run setup when the install is unconfigured', async () => {
+    authApi.setupStatus.mockResolvedValue({ configured: false });
+
+    await LoginPage({ searchParams: Promise.resolve({}) });
+
+    expect(redirect).toHaveBeenCalledWith('/register');
+  });
+
+  test('renders the form defaulting to the dashboard when no redirect is requested', async () => {
+    const element = await LoginPage({ searchParams: Promise.resolve({}) });
+
+    expect(redirect).not.toHaveBeenCalled();
+    expect(element.props.redirectTo).toBe('/dashboard');
+    expect(element.props.showExpiredNotice).toBe(false);
+  });
+
+  test('passes the requested redirect target through to the form', async () => {
+    const element = await LoginPage({ searchParams: Promise.resolve({ redirect: '/projects/42' }) });
+
+    expect(element.props.redirectTo).toBe('/projects/42');
+  });
+
+  test('asks the form to explain an expired session when that is the reason given', async () => {
+    const element = await LoginPage({ searchParams: Promise.resolve({ reason: 'expired' }) });
+
+    expect(element.props.showExpiredNotice).toBe(true);
+  });
+
+  test('does not claim an expired session for any other reason', async () => {
+    const element = await LoginPage({ searchParams: Promise.resolve({ reason: 'signed-out' }) });
+
+    expect(element.props.showExpiredNotice).toBe(false);
   });
 });

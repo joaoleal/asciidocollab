@@ -65,6 +65,46 @@ describe('FileNode entity', () => {
     expect(folder.type.value).toBe('folder');
   });
 
+  test('rejects a node whose name is blank', () => {
+    expect(
+      () =>
+        new FileNode(
+          childId,
+          projectId,
+          rootId,
+          '',
+          FileNodeType.create('folder'),
+          FilePath.create('/docs'),
+        ),
+    ).toThrow('FileNode name must not be empty');
+
+    expect(
+      () =>
+        new FileNode(
+          childId,
+          projectId,
+          rootId,
+          '   ',
+          FileNodeType.create('folder'),
+          FilePath.create('/docs'),
+        ),
+    ).toThrow('FileNode name must not be empty');
+  });
+
+  test('rejects a file placed at root level, where only folders may live', () => {
+    expect(
+      () =>
+        new FileNode(
+          childId,
+          projectId,
+          null,
+          'readme.adoc',
+          FileNodeType.create('file'),
+          FilePath.create('/readme.adoc'),
+        ),
+    ).toThrow('Root-level node must be a folder, not a file');
+  });
+
   test('rejects invalid FileNodeType', () => {
     expect(() => FileNodeType.create('symlink')).toThrow();
   });

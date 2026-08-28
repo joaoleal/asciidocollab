@@ -1,6 +1,15 @@
-import { themeHoverAt, themeHoverLines } from '@/lib/codemirror/theme/theme-key-hover';
+/* @jest-environment jsdom */
+import { EditorState } from '@codemirror/state';
+import { EditorView, activateHover } from '@codemirror/view';
+import {
+  themeHoverAt,
+  themeHoverLines,
+  createThemeKeyHover,
+} from '@/lib/codemirror/theme/theme-key-hover';
 import { THEME_SETTINGS, canonicalThemeKey, themeSetting } from '@asciidocollab/shared';
 import type { ThemeSettingDescriptor } from '@asciidocollab/shared';
+
+// jsdom environment — the tooltip half of the module builds DOM nodes inside a mounted editor.
 
 /** A nested theme, so a hover has to resolve a leaf against the container path above it. */
 const THEME = ['heading:', '  font-color: 191970', '  font-style: bold', ''].join('\n');
@@ -158,5 +167,69 @@ describe('themeHoverLines', () => {
     expect(themeHoverLines(hoverFor('heading.font-style')!)).toContainEqual(
       `One of: ${keyword!.permittedValues!.join(', ')}`,
     );
+  });
+});
+
+/**
+ * Mounts `text` with the hover extension, hovers the first occurrence of `needle`, and returns the
+ * tooltip's line elements — empty when the hover produced nothing.
+ */
+function hoverLineElements(
+  text: string,
+  needle: string,
+  settings: readonly ThemeSettingDescriptor[] = [],
+): HTMLElement[] {
+  const view = new EditorView({
+    state: EditorState.create({ doc: text, extensions: [createThemeKeyHover(() => settings)] }),
+    parent: document.body,
+  });
+  try {
+    activateHover(view, offsetOf(text, needle), 1);
+    const body = view.dom.querySelector('.cm-tooltip-hover > div');
+    return body === null ? [] : [...body.querySelectorAll<HTMLElement>(':scope > div')];
+  } finally {
+    view.destroy();
+  }
+}
+
+describe('createThemeKeyHover', () => {
+  it('opens a tooltip naming the full dotted key of the leaf under the pointer', () => {
+    const lines = hoverLineElements('heading:\n  font-color: 191970\n', 'font-color');
+    expect(lines[0].textContent).toBe('heading.font-color');
+  });
+
+  it('sets the key apart from its prose, so the two do not read as one paragraph', () => {
+    const lines = hoverLineElements('heading:\n  font-color: 191970\n', 'font-color');
+    expect(lines[0].style.fontWeight).toBe('600');
+    expect(lines[0].style.fontFamily).toContain('mono');
+    // The description carries no styling of its own — it is the sentence the tooltip exists for.
+    expect(lines[1].style.fontWeight).toBe('');
+  });
+
+  it('recedes the supporting facts beneath the description', () => {
+    // The permitted words and the renderer default are reference material, not the answer: dimming
+    // them keeps the description the thing the eye lands on.
+    const lines = hoverLineElements('heading:\n  font-style: bold\n', 'font-style');
+    expect(lines.length).toBeGreaterThan(2);
+    for (const line of lines.slice(2)) expect(line.style.opacity).toBe('0.75');
+  });
+
+  it('opens nothing over a key the renderer does not know', () => {
+    // The linter already underlines an unknown key with a message saying so; a tooltip repeating
+    // "unknown" would be a second voice saying less.
+    expect(hoverLineElements('page:\n  colour-scheme: dark\n', 'colour-scheme')).toEqual([]);
+  });
+
+  it('reads the offerable settings at hover time, so an enabled extension is documented too', () => {
+    const contributed: ThemeSettingDescriptor = {
+      key: 'page.colour-scheme',
+      category: 'page',
+      valueKind: 'keyword',
+      description: 'Chooses the page colour scheme.',
+      contributedBy: 'colour-schemes',
+    };
+    const lines = hoverLineElements('page:\n  colour-scheme: dark\n', 'colour-scheme', [contributed]);
+    expect(lines[0].textContent).toBe('page.colour-scheme');
+    expect(lines.at(-1)?.textContent).toBe('Contributed by the colour-schemes extension.');
   });
 });

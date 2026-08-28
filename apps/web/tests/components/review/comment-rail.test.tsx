@@ -1,8 +1,9 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ReviewItemDto, ThreadDto } from '@asciidocollab/shared';
 import type { UseReviewItemsResult } from '@/hooks/use-review-items';
 import { CommentRail } from '@/components/review/comment-rail';
+import { ReviewViewStateProvider } from '@/components/review/view-state';
 import { useReviewItems } from '@/hooks/use-review-items';
 
 jest.mock('@/components/avatar', () => ({
@@ -183,6 +184,140 @@ describe('CommentRail', () => {
     renderRail();
     const ids = screen.getAllByTestId('review-thread-card').map((card) => card.dataset.itemId);
     expect(ids).toEqual(['located', 'unresolved']);
+  });
+
+  test('shows a tasks-specific empty state under the Tasks filter', () => {
+    primeHook([thread({ id: 'c1', kind: 'comment' })]);
+    renderRail();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Tasks' }));
+
+    expect(screen.getByTestId('comment-rail-empty')).toHaveTextContent('No tasks yet.');
+  });
+
+  test('submitting the pinned composer refreshes the rail and notifies the layout', async () => {
+    const refetch = jest.fn();
+    const onMutated = jest.fn();
+    const onPendingResolved = jest.fn();
+    primeHook([], { refetch });
+    render(
+      <CommentRail
+        projectId="p1"
+        documentId="d1"
+        ydoc={null}
+        role="editor"
+        pendingAnchor={{ quote: { prefix: '', exact: 'x', suffix: '' }, lineHint: 1 }}
+        onPendingResolved={onPendingResolved}
+        onMutated={onMutated}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Add a comment…'), { target: { value: 'looks good' } });
+    fireEvent.click(screen.getByTestId('review-composer-submit'));
+
+    await waitFor(() => expect(refetch).toHaveBeenCalled());
+    expect(onMutated).toHaveBeenCalled();
+    expect(onPendingResolved).toHaveBeenCalled();
+  });
+
+  test('submitting the pinned composer without listeners still refreshes the rail', async () => {
+    const refetch = jest.fn();
+    primeHook([], { refetch });
+    render(
+      <CommentRail
+        projectId="p1"
+        documentId="d1"
+        ydoc={null}
+        role="editor"
+        pendingAnchor={{ quote: { prefix: '', exact: 'x', suffix: '' }, lineHint: 1 }}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Add a comment…'), { target: { value: 'looks good' } });
+    fireEvent.click(screen.getByTestId('review-composer-submit'));
+
+    await waitFor(() => expect(refetch).toHaveBeenCalled());
+  });
+
+  test('cancelling the pinned composer clears the captured selection', () => {
+    const onPendingResolved = jest.fn();
+    primeHook([]);
+    render(
+      <CommentRail
+        projectId="p1"
+        documentId="d1"
+        ydoc={null}
+        role="editor"
+        pendingAnchor={{ quote: { prefix: '', exact: 'x', suffix: '' }, lineHint: 1 }}
+        onPendingResolved={onPendingResolved}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(onPendingResolved).toHaveBeenCalled();
+  });
+
+  test('cancelling the pinned composer without a listener leaves it mounted', () => {
+    primeHook([]);
+    render(
+      <CommentRail
+        projectId="p1"
+        documentId="d1"
+        ydoc={null}
+        role="editor"
+        pendingAnchor={{ quote: { prefix: '', exact: 'x', suffix: '' }, lineHint: 1 }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.getByTestId('comment-composer')).toBeInTheDocument();
+  });
+
+  test('adopts the ambient view-state when no overrides are passed', () => {
+    primeHook([thread({ id: 'c1' })]);
+    render(
+      <ReviewViewStateProvider>
+        <CommentRail projectId="p1" documentId="d1" ydoc={null} role="editor" />
+      </ReviewViewStateProvider>,
+    );
+
+    const card = screen.getByTestId('review-thread-card');
+    fireEvent.mouseEnter(card);
+    expect(screen.getByTestId('review-thread-card')).toHaveAttribute('data-hovered');
+
+    fireEvent.click(card);
+    expect(screen.getByTestId('review-thread-card')).toHaveAttribute('data-active');
+  });
+
+  test('explicit view-state props win over the ambient provider', () => {
+    const setHoveredItemId = jest.fn();
+    const setActiveThreadId = jest.fn();
+    primeHook([thread({ id: 'c1' })]);
+    render(
+      <ReviewViewStateProvider>
+        <CommentRail
+          projectId="p1"
+          documentId="d1"
+          ydoc={null}
+          role="editor"
+          hoveredItemId="c1"
+          setHoveredItemId={setHoveredItemId}
+          activeThreadId="c1"
+          setActiveThreadId={setActiveThreadId}
+        />
+      </ReviewViewStateProvider>,
+    );
+
+    const card = screen.getByTestId('review-thread-card');
+    expect(card).toHaveAttribute('data-hovered');
+    expect(card).toHaveAttribute('data-active');
+
+    fireEvent.mouseEnter(card);
+    expect(setHoveredItemId).toHaveBeenCalledWith('c1');
+    fireEvent.click(card);
+    expect(setActiveThreadId).toHaveBeenCalledWith('c1');
   });
 
   test('the signed-in author gets an Edit control on their own item', () => {

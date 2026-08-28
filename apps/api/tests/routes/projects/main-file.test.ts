@@ -34,17 +34,27 @@ interface ServerOptions {
   role?: string | null;
   projectExists?: boolean;
   rateLimitMax?: number;
+  /** When false, the project carries no root folder (a project whose tree was never created). */
+  hasRootFolder?: boolean;
 }
 
 async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance> {
-  const { role = 'editor', projectExists = true, rateLimitMax = 50 } = options;
+  const { role = 'editor', projectExists = true, rateLimitMax = 50, hasRootFolder = true } = options;
   const app = Fastify();
   await app.register(rateLimit, { global: false });
   decorateApp(app, 'config', { project: { mainFile: { rateLimitMax, rateLimitWindow: 60_000 } } });
   decorateApp(app, 'repos', {
     project: {
       findById: jest.fn(async () =>
-        projectExists ? new Project(ProjectId.create(PROJECT_ID), ProjectName.create('P'), null, [], FileNodeId.create(ROOT_ID)) : null,
+        projectExists
+          ? new Project(
+              ProjectId.create(PROJECT_ID),
+              ProjectName.create('P'),
+              null,
+              [],
+              hasRootFolder ? FileNodeId.create(ROOT_ID) : null,
+            )
+          : null,
       ),
       save: jest.fn(),
     },
@@ -149,6 +159,14 @@ describe('PUT /projects/:projectId/main-file', () => {
     expect(first.statusCode).toBe(200);
     const second = await put(app, { mainFileNodeId: ADOC_ID });
     expect(second.statusCode).toBe(429);
+    await app.close();
+  });
+
+  test('200 — a project with no root folder reports rootFolderId as null', async () => {
+    const app = await buildServer({ role: 'editor', hasRootFolder: false });
+    const response = await put(app, { mainFileNodeId: ADOC_ID });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.rootFolderId).toBeNull();
     await app.close();
   });
 });

@@ -1,7 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describePullFailure, PullDialog } from '@/components/git/pull-dialog';
 import { ApiError } from '@/lib/api/transport';
 import type { CommitDto } from '@asciidocollab/shared';
+
+/** Placeholder for a deferred handle before its promise executor assigns the real one. */
+const noop = () => undefined;
 
 const mockStartPull = jest.fn();
 const mockGetPullPreview = jest.fn();
@@ -29,8 +32,20 @@ const COMMITS: CommitDto[] = [
 function renderDialog(overrides: Partial<{ onOpenChange: (open: boolean) => void; onConfirmed: (result: unknown) => void }> = {}) {
   const onOpenChange = overrides.onOpenChange ?? jest.fn();
   const onConfirmed = overrides.onConfirmed ?? jest.fn();
-  render(<PullDialog projectId="proj1" open onOpenChange={onOpenChange} onConfirmed={onConfirmed} />);
-  return { onOpenChange, onConfirmed };
+  const view = render(<PullDialog projectId="proj1" open onOpenChange={onOpenChange} onConfirmed={onConfirmed} />);
+  return { onOpenChange, onConfirmed, unmount: view.unmount };
+}
+
+/** A never-settling promise plus the handles that settle it, for driving in-flight request states. */
+function deferred(): { promise: Promise<unknown>; resolve: (value: unknown) => void; reject: (reason: unknown) => void } {
+  let resolve: (value: unknown) => void = noop;
+  let reject: (reason: unknown) => void = noop;
+  const promise = new Promise<unknown>((resolveIt, rejectIt) => {
+    resolve = resolveIt;
+    reject = rejectIt;
+  });
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
 }
 
 const confirmButton = () => screen.getByRole('button', { name: /^(Pull anyway|Pulling…)$/ });
@@ -121,6 +136,54 @@ describe('PullDialog preview', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('You need editor access to see what would be pulled.');
   });
+
+  test.each([
+    ['git_worker_unavailable', 'The git service is unavailable. Try again shortly.'],
+    ['repository_not_connected', 'This project has no connected repository.'],
+    ['some_unmapped_code', "Couldn't load the pull preview."],
+  ])('maps a %s preview refusal to its own wording', async (code, expectedMessage) => {
+    mockGetPullPreview.mockRejectedValue(new ApiError(409, code, 'server said so'));
+    renderDialog();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(expectedMessage);
+    expect(screen.queryByText('Loading pull preview…')).not.toBeInTheDocument();
+  });
+
+  test('shows a generic message when the preview request never reaches the server', async () => {
+    mockGetPullPreview.mockRejectedValue(new TypeError('Failed to fetch'));
+    renderDialog();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the pull preview.");
+    expect(screen.queryByText('Loading pull preview…')).not.toBeInTheDocument();
+  });
+
+  test('does not render a preview that resolves after the dialog is gone', async () => {
+    const pending = deferred();
+    mockGetPullPreview.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    expect(screen.getByText('Loading pull preview…')).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      pending.resolve({ incomingCommits: COMMITS, changedPaths: ['a.adoc'], affectsOpenFiles: false });
+    });
+
+    expect(screen.queryByText('Fix the intro section')).not.toBeInTheDocument();
+  });
+
+  test('does not render a preview failure that settles after the dialog is gone', async () => {
+    const pending = deferred();
+    mockGetPullPreview.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    await waitFor(() => expect(mockGetPullPreview).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.reject(new ApiError(403, 'insufficient_role', 'nope'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });
 
 describe('PullDialog confirmation', () => {
@@ -158,6 +221,52 @@ describe('PullDialog confirmation', () => {
     const { onOpenChange } = renderDialog();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test('stays open when a pointer goes down outside it', async () => {
+    const { onOpenChange } = renderDialog();
+    await screen.findByText('Already up to date.');
+    // The outside-pointer listener is registered a macrotask after the dialog mounts.
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    });
+
+    fireEvent.pointerDown(document.body, { button: 0, ctrlKey: false });
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test('a pull that resolves after dismissal confirms nothing', async () => {
+    const pending = deferred();
+    mockStartPull.mockReturnValue(pending.promise);
+    const { onConfirmed, unmount } = renderDialog();
+    fireEvent.click(confirmButton());
+    await waitFor(() => expect(mockStartPull).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.resolve({ operationId: 'op1', projectId: 'proj1' });
+    });
+
+    expect(onConfirmed).not.toHaveBeenCalled();
+  });
+
+  test('a pull refused after dismissal shows no error', async () => {
+    const pending = deferred();
+    mockStartPull.mockReturnValue(pending.promise);
+    const { unmount } = renderDialog();
+    fireEvent.click(confirmButton());
+    await waitFor(() => expect(mockStartPull).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {
+      pending.reject(new ApiError(409, 'git_worker_unavailable', 'nope'));
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   test('still allows confirming a pull when the preview failed to load (additive, not blocking)', async () => {

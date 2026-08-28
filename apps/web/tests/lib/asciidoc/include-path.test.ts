@@ -111,4 +111,32 @@ describe('relativeImagePath', () => {
     const resolved = resolveImageTarget(written, attributeMap);
     expect(resolved.ok && resolved.path).toBe('assets/pic.png');
   });
+
+  it('folds a leading "./" in imagesdir instead of treating it as a folder', () => {
+    const attributeMap = attributes({ imagesdir: './assets' });
+    expect(relativeImagePath('assets/pic.png', attributeMap)).toBe('pic.png');
+  });
+
+  it('folds an empty segment left by a doubled slash in imagesdir', () => {
+    const attributeMap = attributes({ imagesdir: 'assets//nested' });
+    expect(relativeImagePath('assets/nested/pic.png', attributeMap)).toBe('pic.png');
+  });
+
+  it('folds a ".." segment in imagesdir against the segment before it', () => {
+    const attributeMap = attributes({ imagesdir: 'assets/../images' });
+    expect(relativeImagePath('images/pic.png', attributeMap)).toBe('pic.png');
+  });
+
+  it('treats an imagesdir of "." as the project root, writing the path unchanged', () => {
+    const attributeMap = attributes({ imagesdir: '.' });
+    const written = relativeImagePath('New Folder/pic.png', attributeMap);
+    expect(written).toBe('New Folder/pic.png');
+    const resolved = resolveImageTarget(written, attributeMap);
+    expect(resolved.ok && resolved.path).toBe('New Folder/pic.png');
+  });
+
+  it('clamps a leading ".." in imagesdir at the project root', () => {
+    // `..` at the top pops nothing, so the base collapses to the root and the path is written whole.
+    expect(relativeImagePath('pic.png', attributes({ imagesdir: '..' }))).toBe('pic.png');
+  });
 });

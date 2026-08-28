@@ -99,6 +99,28 @@ describe('GetPdfExtensionCatalogueUseCase — a duplicate id is a conflict (FR-0
     ]);
   });
 
+  it('keeps the first administrator entry when two of them claim the same id', async () => {
+    // Two folders offering the same id: the first found wins, and the reason must say so rather
+    // than blaming a shipped extension that is not involved.
+    administrator.add(manifest('house-style')).add({ ...manifest('house-style'), displayName: 'Second' });
+    const result = await catalogue();
+    const houseStyle = result.entries.filter((entry) => entry.manifest.id === 'house-style');
+    expect(houseStyle).toHaveLength(1);
+    expect(houseStyle[0].manifest.displayName).toBe('house-style');
+    expect(result.conflicts).toEqual([
+      { id: 'house-style', reason: expect.stringMatching(/two administrator-provided extensions/i) },
+    ]);
+  });
+
+  it('reports several conflicts in a stable order', async () => {
+    administrator
+      .add({ ...manifest('paragraph-numbering'), displayName: 'Impostor' })
+      .add(manifest('house-style'))
+      .add({ ...manifest('house-style'), displayName: 'Second' });
+    const result = await catalogue();
+    expect(result.conflicts.map((conflict) => conflict.id)).toEqual(['house-style', 'paragraph-numbering']);
+  });
+
   it('reports no conflict when the ids are distinct', async () => {
     administrator.add(manifest('house-style'));
     const result = await catalogue();

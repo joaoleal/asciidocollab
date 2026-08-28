@@ -1,5 +1,9 @@
 import { createHarperEngineProxy } from '@/lib/codemirror/harper/harper-engine-proxy';
-import { HarperEngineInitError, type EngineLint } from '@/lib/codemirror/harper/harper-engine';
+import {
+  HarperEngineInitError,
+  type EngineLint,
+  type HarperEngine,
+} from '@/lib/codemirror/harper/harper-engine';
 import type {
   FromHarperWorker,
   HarperValue,
@@ -69,6 +73,14 @@ function makeProxy(dialect: 'en-US' | 'en-GB' = 'en-US') {
   return { engine, createWorker, worker: () => FakeWorker.instances.at(-1)! };
 }
 
+/** Starts `call` on a fresh proxy and answers it with an unrelated method's value. */
+function crossed(call: (engine: HarperEngine) => Promise<unknown>): Promise<unknown> {
+  const { engine, worker } = makeProxy();
+  const pending = call(engine);
+  worker().answer(1, { method: 'setup', result: null });
+  return pending;
+}
+
 describe('createHarperEngineProxy', () => {
   it('spawns no worker until the first call', () => {
     const { createWorker } = makeProxy();
@@ -111,6 +123,97 @@ describe('createHarperEngineProxy', () => {
 
     worker().answer(1, { method: 'applySuggestion', result: 'the cat' });
     await expect(pending).resolves.toBe('the cat');
+  });
+
+  it('carries the dictionary and ignored-lint calls that answer with nothing', async () => {
+    // These are the writes: they change what the engine reports next, and the caller only needs to
+    // know the worker got them. Each must still be awaited, or a `resetWords` could re-import before
+    // the clear landed.
+    const { engine, worker } = makeProxy();
+    const calls = [
+      engine.ignore('teh cat', LINT),
+      engine.importWords(['asciidoc']),
+      engine.clearWords(),
+      engine.importIgnoredLints('[]'),
+      engine.setLintConfig({ SpellCheck: false }),
+    ];
+    expect(worker().calls().slice(1)).toEqual([
+      { method: 'ignore', segmentText: 'teh cat', lint: LINT },
+      { method: 'importWords', words: ['asciidoc'] },
+      { method: 'clearWords' },
+      { method: 'importIgnoredLints', json: '[]' },
+      { method: 'setLintConfig', config: { SpellCheck: false } },
+    ]);
+
+    worker().answer(1, { method: 'ignore', result: null });
+    worker().answer(2, { method: 'importWords', result: null });
+    worker().answer(3, { method: 'clearWords', result: null });
+    worker().answer(4, { method: 'importIgnoredLints', result: null });
+    worker().answer(5, { method: 'setLintConfig', result: null });
+    await expect(Promise.all(calls)).resolves.toEqual([undefined, undefined, undefined, undefined, undefined]);
+  });
+
+  it('returns the rule configuration and the rule descriptions the worker holds', async () => {
+    // The settings page renders one row per rule from these two answers together, so both have to
+    // come back as the engine's own shapes rather than as the raw union the boundary carries.
+    const { engine, worker } = makeProxy();
+    const config = engine.getLintConfig();
+    const descriptions = engine.getLintDescriptions();
+    worker().answer(1, { method: 'getLintConfig', result: { SpellCheck: true, Spaces: null } });
+    worker().answer(2, { method: 'getLintDescriptions', result: { SpellCheck: 'Checks spelling.' } });
+
+    await expect(config).resolves.toEqual({ SpellCheck: true, Spaces: null });
+    await expect(descriptions).resolves.toEqual({ SpellCheck: 'Checks spelling.' });
+  });
+
+  it('returns the organized lints the worker computed', async () => {
+    const { engine, worker } = makeProxy();
+    const pending = engine.organizedLints('teh cat');
+    expect(worker().calls().at(-1)).toEqual({ method: 'organizedLints', segmentText: 'teh cat' });
+
+    worker().answer(1, { method: 'organizedLints', result: { Spelling: [LINT] } });
+    await expect(pending).resolves.toEqual({ Spelling: [LINT] });
+  });
+
+  it('rejects every value-returning call whose answer names a different method', async () => {
+    // Correlation is by id, so a crossed answer means the worker is broken rather than that two
+    // answers raced. Returning it anyway would hand a lint array back as a dictionary, and so on.
+    await expect(crossed((engine) => engine.lint('teh cat'))).rejects.toThrow(/lint/);
+    await expect(crossed((engine) => engine.organizedLints('teh cat'))).rejects.toThrow(/organizedLints/);
+    await expect(crossed((engine) => engine.applySuggestion('teh cat', LINT, 0))).rejects.toThrow(
+      /applySuggestion/,
+    );
+    await expect(crossed((engine) => engine.exportWords())).rejects.toThrow(/exportWords/);
+    await expect(crossed((engine) => engine.exportIgnoredLints())).rejects.toThrow(/exportIgnoredLints/);
+    await expect(crossed((engine) => engine.getLintConfig())).rejects.toThrow(/getLintConfig/);
+  });
+
+  it('ignores an answer to a call it is no longer waiting on', async () => {
+    // A worker torn down mid-call can still deliver its last answer; matching it to nothing must not
+    // throw, and must not resolve some unrelated later call that happens to reuse the id.
+    const { engine, worker } = makeProxy();
+    const pending = engine.exportWords();
+    worker().answer(1, { method: 'exportWords', result: ['asciidoc'] });
+    await expect(pending).resolves.toEqual(['asciidoc']);
+
+    expect(() => worker().answer(1, { method: 'exportWords', result: ['stale'] })).not.toThrow();
+  });
+
+  it('survives the worker dying after it has already been disposed', async () => {
+    // Disposal drops the worker reference but leaves its `error` listener attached: a script that
+    // fails on the way out must not throw on a worker that is already gone.
+    const { engine, worker } = makeProxy();
+    const pending = engine.setup();
+    const running = worker();
+    running.answer(1, { method: 'setup', result: null });
+    await pending;
+
+    const disposed = engine.dispose();
+    running.answer(2, { method: 'dispose', result: null });
+    await disposed;
+
+    expect(() => running.crash()).not.toThrow();
+    expect(running.terminate).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an init failure as a HarperEngineInitError and never memoizes it', async () => {

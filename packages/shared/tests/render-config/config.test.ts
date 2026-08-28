@@ -1,3 +1,4 @@
+import { PREVIEW_STYLE_VALUES } from '@asciidocollab/primitives';
 import {
   normalizeRenderConfig,
   safeNormalizeRenderConfig,
@@ -7,6 +8,7 @@ import {
   EMPTY_RENDER_CONFIG,
   HTML_EXPORT_PACKAGINGS,
   HTML_EXPORT_STYLES,
+  htmlExportStyleFor,
   HTML_EXPORT_THEMES,
   DEFAULT_HTML_EXPORT_PACKAGING,
   DEFAULT_HTML_EXPORT_THEME,
@@ -219,5 +221,24 @@ describe('renderConfigSchema — htmlExport', () => {
   it('defaults name a packaging and theme that are both valid schema values', () => {
     expect(HTML_EXPORT_PACKAGINGS).toContain(DEFAULT_HTML_EXPORT_PACKAGING);
     expect(HTML_EXPORT_THEMES).toContain(DEFAULT_HTML_EXPORT_THEME);
+  });
+});
+
+describe('htmlExportStyleFor', () => {
+  it('carries the Asciidoctor preview style straight through to the export', () => {
+    expect(htmlExportStyleFor('asciidoctor')).toBe('asciidoctor');
+  });
+
+  it("dresses the export in the application's own style for every other preview style", () => {
+    // Print has no export counterpart — an unpaginated HTML file cannot reproduce a page — so a
+    // reader with Print selected must still get a styled download rather than an unstyled one.
+    expect(htmlExportStyleFor('asciidocollab')).toBe('asciidocollab');
+    expect(htmlExportStyleFor('print')).toBe('asciidocollab');
+  });
+
+  it('only ever names a style the schema accepts', () => {
+    for (const style of PREVIEW_STYLE_VALUES) {
+      expect(HTML_EXPORT_STYLES).toContain(htmlExportStyleFor(style));
+    }
   });
 });

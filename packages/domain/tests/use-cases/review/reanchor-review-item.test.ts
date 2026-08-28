@@ -47,6 +47,13 @@ function reply(): ReviewComment {
   return new ReviewComment(REPLY, PROJECT, DOCUMENT, ROOT, 'comment', 'a reply', EDITOR);
 }
 
+/** A root whose reanchor fails with an error the use case is not meant to translate. */
+class UnexpectedlyFailingRoot extends ReviewComment {
+  override reanchor(): void {
+    throw new TypeError('aggregate blew up');
+  }
+}
+
 describe('ReanchorReviewItemUseCase', () => {
   let reviewRepo: InMemoryReviewCommentRepository;
   let memberRepo: InMemoryProjectMemberRepository;
@@ -96,6 +103,14 @@ describe('ReanchorReviewItemUseCase', () => {
     const result = await useCase.execute(EDITOR, PROJECT, ROOT, command({ quote: { prefix: '', exact: '   ', suffix: '' } }));
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(AnchorInvalidError);
+  });
+
+  test('an unexpected aggregate failure is not translated into a result error', async () => {
+    const anchor = new ReviewAnchor(null, { prefix: '', exact: 'old', suffix: '' }, 1, 'sec-old', 'section');
+    await reviewRepo.update(
+      new UnexpectedlyFailingRoot(ROOT, PROJECT, DOCUMENT, null, 'comment', 'a root', EDITOR, null, null, null, null, null, anchor),
+    );
+    await expect(useCase.execute(EDITOR, PROJECT, ROOT, command())).rejects.toThrow('aggregate blew up');
   });
 
   test('reanchoring a reply is rejected as an invalid operation', async () => {
