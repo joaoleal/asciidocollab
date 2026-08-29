@@ -35,6 +35,7 @@ function line(overrides: Partial<GitBlameLine> = {}): GitBlameLine {
   return {
     lineNumber: 1,
     hash: '0'.repeat(40),
+    message: 'A commit subject',
     authorEmail: 'author@example.com',
     authoredAt: new Date('2026-01-01T00:00:00.000Z'),
     content: 'Some line of text.',
@@ -49,9 +50,9 @@ describe('GetBlameUseCase', () => {
     const userRepo = new InMemoryUserRepository();
 
     const lines: GitBlameLine[] = [
-      line({ lineNumber: 1, hash: 'c1', content: '= Title' }),
-      line({ lineNumber: 2, hash: 'c2', content: '' }),
-      line({ lineNumber: 3, hash: 'c3', content: 'Some prose.' }),
+      line({ lineNumber: 1, hash: 'c1', message: 'Add the title', content: '= Title' }),
+      line({ lineNumber: 2, hash: 'c2', message: 'Blank line', content: '' }),
+      line({ lineNumber: 3, hash: 'c3', message: 'Write the intro', content: 'Some prose.' }),
     ];
     commandRunner.seedBlame(PROJECT_ID, lines);
 
@@ -62,6 +63,7 @@ describe('GetBlameUseCase', () => {
     if (!result.success) return;
     expect(result.value.lines.map((l) => l.lineNumber)).toEqual([1, 2, 3]);
     expect(result.value.lines.map((l) => l.hash)).toEqual(['c1', 'c2', 'c3']);
+    expect(result.value.lines.map((l) => l.message)).toEqual(['Add the title', 'Blank line', 'Write the intro']);
     expect(result.value.lines.map((l) => l.content)).toEqual(['= Title', '', 'Some prose.']);
     expect(result.value.lines.map((l) => l.authoredAt)).toEqual([
       line().authoredAt,

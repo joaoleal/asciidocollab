@@ -265,7 +265,7 @@ describe('ImportRepositoryUseCase', () => {
     });
 
     expect(harness.commandRunner.cloneCalls).toHaveLength(1);
-    expect(harness.commandRunner.cloneCalls[0]).toEqual({ remoteUrl: REMOTE_URL, token: TOKEN, branch: 'develop' });
+    expect(harness.commandRunner.cloneCalls[0]).toEqual({ projectId, remoteUrl: REMOTE_URL, token: TOKEN, branch: 'develop' });
   });
 
   describe('validation', () => {

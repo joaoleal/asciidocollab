@@ -7,6 +7,7 @@ import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { lineNumbersWithFold } from '@/lib/codemirror/line-fold-gutter';
 import { linter, lintGutter } from '@codemirror/lint';
 import { showMinimap } from '@replit/codemirror-minimap';
+import { blameExtension } from '@/lib/codemirror/blame-gutter';
 import { asciidoc } from '@/lib/codemirror/asciidoc-language';
 import { asciidocTheme } from '@/lib/codemirror/asciidoc-theme';
 import { searchPanelTheme } from '@/lib/codemirror/search-panel-theme';
@@ -59,6 +60,8 @@ export interface EditorCompartments {
   grammar: Compartment;
   /** Minimap (document text-preview) compartment, reconfigured when the minimap preference toggles. */
   minimap: Compartment;
+  /** Blame gutter compartment, reconfigured (empty ⇄ field+gutter) when the blame toggle flips. */
+  blame: Compartment;
   /**
    * The author's configurable shortcuts. Empty at mount and reconfigured as soon as the mount hook
    * has the bindings — which is the same frame for the defaults, and again if the server's copy
@@ -89,6 +92,8 @@ export interface BuildEditorExtensionsOptions {
   softWrap: boolean;
   /** Whether the minimap (text-preview) is enabled at mount (drives the minimap compartment). */
   minimapEnabled: boolean;
+  /** Whether the blame gutter is shown at mount (drives the blame compartment's initial value). */
+  blameEnabled: boolean;
   /** Persistence key for per-file fold state; null ⇒ folds not persisted. */
   foldStorageKey: string | null;
   /** Returns the current spell-check ignore list. */
@@ -169,6 +174,7 @@ export function buildEditorExtensions(options: BuildEditorExtensionsOptions): Ex
     canEdit,
     softWrap,
     minimapEnabled,
+    blameEnabled,
     foldStorageKey,
     getSpellIgnore,
     spellcheckLanguage,
@@ -292,6 +298,9 @@ export function buildEditorExtensions(options: BuildEditorExtensionsOptions): Ex
     tableContextField,
     // Text-preview (minimap), gated behind its compartment and off unless the user opts in.
     compartments.minimap.of(minimapEnabled ? minimapExtension() : []),
+    // Per-line authorship (blame) gutter + its backing field, gated behind its compartment and off
+    // unless the toolbar toggle turns blame on. Empty when off, so the blame column takes no width.
+    compartments.blame.of(blameEnabled ? blameExtension() : []),
     autocompletion({
       override: [
         createAttributeCompletionSource(projectIndexAccessor),

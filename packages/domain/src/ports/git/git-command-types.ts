@@ -1,3 +1,4 @@
+import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitCommandFailedError } from '../../errors/git/git-command-failed';
 import { RepositoryUnreachableError } from '../../errors/git/repository-unreachable';
@@ -52,6 +53,12 @@ export interface GitRemoteAccessCheck {
 
 /** Input for {@link GitCommandRunner.clone}. */
 export interface GitCloneInput {
+  /**
+   * The project this clone materializes. The runner adopts the fully-validated clone as this
+   * project's own working tree (`.git` and all), so every later git operation runs against a real
+   * repository at the cloned HEAD.
+   */
+  readonly projectId: ProjectId;
   /** The remote's URL, exactly as the caller supplied it. */
   readonly remoteUrl: string;
   /** The plaintext access token to authenticate with. Used only for this call, never persisted. */
@@ -246,6 +253,8 @@ export interface GitBlameLine {
   readonly lineNumber: number;
   /** The full hash of the commit that last modified this line. */
   readonly hash: string;
+  /** The subject/summary line of that commit (may be empty). */
+  readonly message: string;
   /** The author email recorded on that commit (may map to no platform user). */
   readonly authorEmail: string;
   /** When that commit was authored. */

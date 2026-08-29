@@ -58,19 +58,21 @@ export interface CommitChangesResult {
 }
 
 /**
- * Commits a project's staged changes, but with LIVE-ACCURATE content.
+ * Commits a project's pending changes, with LIVE-ACCURATE content, staging them itself.
  *
  * A whole-project mutating git action (the authorization matrix lists commit under EDITOR): it
- * self-gates role and takes the project's single-flight guard. Before committing, it captures each
- * staged open document's current collaborative text and hands that to the runner to write and
- * re-stage, so the commit reflects what collaborators currently see rather than the older bytes the
- * index captured when each file was first staged.
+ * self-gates role and takes the project's single-flight guard. The commit stages the project's
+ * pending changes itself — there is no separate staging step in the UI: an open document's current
+ * collaborative text is captured and handed to the runner to write and re-stage, and a dormant or
+ * binary file's on-disk bytes are `git add`ed — so the commit reflects what collaborators currently
+ * see rather than the older bytes the index captured when a file was first staged.
  *
- * Only STAGED files are committed, and only staged files with an ACTIVE collaborative session are
- * flushed: a dormant (no-session) staged file keeps its already-staged bytes, and an unstaged file
- * with a live session is not committed at all. If ANY staged open document's live read fails, the
- * whole commit is aborted — no file is written and the runner's commit is never called — so a
- * commit never mixes freshly-read live content with a stale copy of a file that could not be read.
+ * Every pending change is committable EXCEPT a conflicted one, which is never auto-committed here.
+ * An open document (active collaborative session) is flushed with its live text; a dormant
+ * (no-session) document or a binary asset is committed from the bytes already on disk (staged first
+ * when not yet indexed). If ANY committable open document's live read fails, the whole commit is
+ * aborted — no file is written and the runner's commit is never called — so a commit never mixes
+ * freshly-read live content with a stale copy of a file that could not be read.
  */
 export class CommitChangesUseCase {
   /**
@@ -78,8 +80,9 @@ export class CommitChangesUseCase {
    * @param auditLogRepo - Records the authorization denial.
    * @param gitRepositoryRepo - Confirms the project has a connected repository.
    * @param gitOperationRepo - Single-flight guard so this cannot race another git action.
-   * @param commandRunner - Records the actual commit (write + re-stage + commit).
-   * @param fileNodeRepo - Loads the project's file nodes to map staged paths to nodes.
+   * @param commandRunner - Reads the pending changes, stages dormant/binary files, and records the
+   *   actual commit (write + re-stage + commit).
+   * @param fileNodeRepo - Loads the project's file nodes to map pending paths to nodes.
    * @param documentRepo - Resolves a file node's document to find its live collaborative state.
    * @param collaborativeContentReader - Reads a document's current live text.
    * @param collaborationSessionRepo - Tells whether a document has an active collaborative session.
@@ -104,15 +107,16 @@ export class CommitChangesUseCase {
   ) {}
 
   /**
-   * Commits the project's currently staged changes, capturing live collaborative content first.
+   * Commits the project's pending changes, staging them itself and capturing live collaborative
+   * content first.
    *
    * @param input - The acting user, the project, and the commit message.
    * @returns The recorded commit on success; a typed refusal otherwise —
    *   {@link InsufficientRoleError} when the actor is not at least an EDITOR,
    *   {@link EmptyCommitMessageError} when the message is empty,
    *   {@link RepositoryNotConnectedError} when the project has no connected repository,
-   *   {@link NothingStagedError} when nothing is staged,
-   *   {@link LiveContentFlushFailedError} when a staged file's live content could not be read (the
+   *   {@link NothingStagedError} when there is nothing pending to commit,
+   *   {@link LiveContentFlushFailedError} when a committable file's live content could not be read (the
    *   commit is aborted with no partial write), the {@link GitCommandFailedError} the underlying git
    *   command fails with, or a {@link GitOperationInProgressError} when another git action is
    *   already in flight for this project.
@@ -150,8 +154,9 @@ export class CommitChangesUseCase {
   }
 
   /**
-   * Reads the staged set, captures live content for each staged open document, and records the
-   * commit — the part of the flow held under the project's single-flight guard.
+   * Reads the pending set, captures live content for each committable open document, stages the
+   * dormant/binary files, and records the commit — the part of the flow held under the project's
+   * single-flight guard.
    */
   private async commitWhileGuarded(
     input: CommitChangesInput,
@@ -159,8 +164,10 @@ export class CommitChangesUseCase {
     const statusResult = await this.commandRunner.getStatus(input.projectId);
     if (!statusResult.success) return statusResult;
 
-    const staged = statusResult.value.changes.filter((change) => change.state === 'staged');
-    if (staged.length === 0) {
+    // Everything pending except conflicts: staged ∪ unstaged ∪ untracked. Conflicted files are
+    // never auto-committed here — the user resolves them through the merge flow first.
+    const committable = statusResult.value.changes.filter((change) => change.state !== 'conflicted');
+    if (committable.length === 0) {
       return { success: false, error: new NothingStagedError() };
     }
 
@@ -169,12 +176,17 @@ export class CommitChangesUseCase {
       nodesByPath.set(node.path.value, node);
     }
 
-    // Resolve every staged file's content source first, collecting the live-content flush entries;
-    // if ANY staged open document's live read failed, abort without committing so no partial or
-    // mixed-freshness write happens.
+    // Resolve every committable file's content source first. An open document contributes a
+    // live-content flush entry the commit op writes and re-stages; a dormant document or binary
+    // asset whose authoritative bytes are already on disk is staged as-is when it is not already in
+    // the index. If ANY committable open document's live read fails, abort without committing so no
+    // partial or mixed-freshness write happens.
     const flush: GitCommitFlushEntry[] = [];
-    for (const change of staged) {
-      // Git paths carry no leading slash; a FilePath requires one.
+    const toStage: string[] = [];
+    for (const change of committable) {
+      // Git paths carry no leading slash; a FilePath requires one. A path with no file-tree node
+      // (for example a managed dotfile) is left in whatever state it is already in — never
+      // force-staged.
       const node = nodesByPath.get(FilePath.create('/' + change.path).value);
       if (!node) continue;
 
@@ -195,7 +207,25 @@ export class CommitChangesUseCase {
       }
       if (source.kind === 'inline') {
         flush.push({ path: change.path, content: source.bytes.toString('utf8') });
+        continue;
       }
+      // source.kind === 'stored': a binary asset or a dormant (no live session) document — its
+      // authoritative bytes are already on disk. Stage those bytes when they are not yet indexed.
+      if (change.state !== 'staged') {
+        toStage.push(change.path);
+      }
+    }
+
+    // Guard against a no-op commit: nothing to flush, nothing new to stage, and nothing already in
+    // the index means there is genuinely nothing to record.
+    const alreadyStaged = committable.some((change) => change.state === 'staged');
+    if (flush.length === 0 && toStage.length === 0 && !alreadyStaged) {
+      return { success: false, error: new NothingStagedError() };
+    }
+
+    if (toStage.length > 0) {
+      const staged = await this.commandRunner.stage(input.projectId, toStage);
+      if (!staged.success) return staged;
     }
 
     const user = await this.userRepo.findById(input.actorId);

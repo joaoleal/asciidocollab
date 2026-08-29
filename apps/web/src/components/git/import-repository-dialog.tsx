@@ -12,6 +12,7 @@ import { getGitOperation, importRepository, isGitOperationTerminal } from '@/lib
 import { ApiError } from '@/lib/api/transport';
 import { GIT_PROVIDERS } from '@asciidocollab/shared';
 import type { GitOperationState, GitOperationStatusDto, GitProvider } from '@asciidocollab/shared';
+import { ProviderIcon } from './provider-icon';
 
 /** How often the operation status is re-read while an import is queued or running. */
 const POLL_INTERVAL_MS = 1500;
@@ -225,12 +226,13 @@ function ImportRepositoryForm({ onOpenChange }: ImportRepositoryFormProperties) 
                   aria-checked={provider === candidate}
                   disabled={pending}
                   onClick={() => setProvider(candidate)}
-                  className={`flex-1 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors ${
                     provider === candidate
                       ? 'bg-primary text-primary-foreground'
                       : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
+                  <ProviderIcon provider={candidate} />
                   {PROVIDER_LABELS[candidate]}
                 </button>
               ))}

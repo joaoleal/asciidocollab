@@ -202,7 +202,7 @@ function handlerDoubles(): HandlerDoubles {
       success: true,
       value: {
         lines: [
-          { lineNumber: 1, hash: 'abc123', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
+          { lineNumber: 1, hash: 'abc123', message: 'Initial commit', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
         ],
       },
     })),
@@ -1261,7 +1261,7 @@ describe('createGitOpsRequestHandler', () => {
       ok: true,
       data: {
         lines: [
-          { lineNumber: 1, hash: 'abc123', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
+          { lineNumber: 1, hash: 'abc123', message: 'Initial commit', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
         ],
       },
     });

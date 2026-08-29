@@ -11,7 +11,7 @@ import type { PendingChangeDto, PendingChangeType } from '@asciidocollab/shared'
 
 const MESSAGE_FIELD_ID = 'commit-dialog-message';
 
-/** Tokenized label for a pending change's kind, shown beside its path in the staged list. */
+/** Tokenized label for a pending change's kind, shown beside its path in the changes list. */
 const CHANGE_TYPE_LABELS: Record<PendingChangeType, string> = {
   added: 'Added',
   modified: 'Modified',
@@ -66,12 +66,12 @@ interface CommitFormProperties {
 }
 
 /**
- * The dialog's interactive body: fetches the staged changes on open, then submits a commit
+ * The dialog's interactive body: fetches the pending changes on open, then submits a commit
  * message against them. Lives in its own component, same as the import form, so state (the typed
  * message, any error) never survives a close/reopen.
  */
 function CommitForm({ projectId, open, onOpenChange, onCommitted }: CommitFormProperties) {
-  const [staged, setStaged] = useState<PendingChangeDto[]>([]);
+  const [committable, setCommittable] = useState<PendingChangeDto[]>([]);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [message, setMessage] = useState('');
   const [pending, setPending] = useState(false);
@@ -94,12 +94,14 @@ function CommitForm({ projectId, open, onOpenChange, onCommitted }: CommitFormPr
     getGitStatus(projectId)
       .then((status) => {
         if (!onScreen.current) return;
-        setStaged(status.staged);
+        // Everything a commit would include: staged ∪ unstaged ∪ untracked. Conflicted changes are
+        // excluded — they are resolved through the merge flow, never by a plain commit.
+        setCommittable([...status.staged, ...status.unstaged, ...status.untracked]);
       })
       .catch(() => {
         if (!onScreen.current) return;
-        setStaged([]);
-        setError('Failed to load staged changes.');
+        setCommittable([]);
+        setError('Failed to load changes.');
       })
       .finally(() => {
         if (onScreen.current) setLoadingStatus(false);
@@ -107,7 +109,7 @@ function CommitForm({ projectId, open, onOpenChange, onCommitted }: CommitFormPr
   }, [open, projectId]);
 
   const trimmedMessage = message.trim();
-  const canSubmit = trimmedMessage.length > 0 && staged.length > 0 && !pending;
+  const canSubmit = trimmedMessage.length > 0 && committable.length > 0 && !pending;
 
   const handleSubmit = async (event: React.SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -134,7 +136,7 @@ function CommitForm({ projectId, open, onOpenChange, onCommitted }: CommitFormPr
         Commit changes
       </Dialog.Title>
       <Dialog.Description className="mt-2 text-sm text-muted-foreground">
-        Enter a message to commit your staged changes.
+        Enter a message to commit your changes.
       </Dialog.Description>
 
       <form onSubmit={handleSubmit} className="mt-4 space-y-4">
@@ -145,14 +147,14 @@ function CommitForm({ projectId, open, onOpenChange, onCommitted }: CommitFormPr
         )}
 
         <div className="space-y-2">
-          <span className="text-sm font-medium">Staged changes</span>
-          {loadingStatus && <p className="text-sm text-muted-foreground">Loading staged changes…</p>}
-          {!loadingStatus && staged.length === 0 && (
-            <p className="text-sm text-muted-foreground">Nothing staged to commit.</p>
+          <span className="text-sm font-medium">Changes to commit</span>
+          {loadingStatus && <p className="text-sm text-muted-foreground">Loading changes…</p>}
+          {!loadingStatus && committable.length === 0 && (
+            <p className="text-sm text-muted-foreground">Nothing to commit.</p>
           )}
-          {!loadingStatus && staged.length > 0 && (
+          {!loadingStatus && committable.length > 0 && (
             <ul className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-input p-2">
-              {staged.map((change) => (
+              {committable.map((change) => (
                 <li key={change.path} className="flex items-center justify-between gap-2 text-sm">
                   <span className="truncate">{change.path}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">
@@ -192,7 +194,7 @@ function CommitForm({ projectId, open, onOpenChange, onCommitted }: CommitFormPr
 
 /** Props for {@link CommitDialog}. */
 export interface CommitDialogProperties {
-  /** The project whose staged changes are being committed. */
+  /** The project whose pending changes are being committed. */
   projectId: string;
   /** Whether the dialog is currently shown. */
   open: boolean;
@@ -207,7 +209,7 @@ export interface CommitDialogProperties {
 }
 
 /**
- * Reviews the project's staged changes and commits them with a typed message. Escape and outside
+ * Reviews the project's pending changes and commits them with a typed message. Escape and outside
  * clicks never dismiss it — same as the import dialog — so a message being typed is never lost to
  * a stray click; only the explicit Cancel button (or a successful commit) closes it.
  */

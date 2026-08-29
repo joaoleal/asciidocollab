@@ -205,6 +205,8 @@ export interface GitWorkerBlameLine {
   readonly lineNumber: number;
   /** The full hash of the commit that last modified this line. */
   readonly hash: string;
+  /** The subject/summary line of that commit (may be empty). */
+  readonly message: string;
   /** ID of the authoring user, when the line's commit author maps to one; absent for unmapped authors. */
   readonly authorUserId?: string;
   /** ISO-8601 timestamp of when the line's commit was authored. */

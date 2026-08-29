@@ -416,7 +416,13 @@ export class GitChangeReconciler {
       return { success: true, value: false };
     }
 
-    if (await this.wouldDropBinaryIntoOpenDocument(node.id, node.name, gitPath, activeDocumentIds)) {
+    // Read the file's Document row ONCE: reused below both to decide the binary-into-open-document
+    // drop and — when the change lands — to decide whether the content also routes through the
+    // collaborative writer. A second, identical findByFileNodeId for the same node is exactly the
+    // redundant read this single fetch exists to avoid.
+    const document = await this.documentRepo.findByFileNodeId(node.id);
+
+    if (this.wouldDropBinaryIntoOpenDocument(node.name, gitPath, document, activeDocumentIds)) {
       // Binary content cannot land in a path held by an OPEN live document: the room owns that file and
       // its next writeback would clobber any bytes written here, and nothing re-applies them once the
       // room closes. DROP the change — write nothing — and tell the user how to recover it.
@@ -427,7 +433,6 @@ export class GitChangeReconciler {
     // Reached only when the change WILL apply: the projection write lands the bytes.
     await this.fileStore.write(projectId, node.path, content);
 
-    const document = await this.documentRepo.findByFileNodeId(node.id);
     if (document && activeDocumentIds.has(document.id.value)) {
       // Guaranteed editable text here (the binary case returned above).
       const written = await this.collaborativeContentWriter.replaceContent(
@@ -444,23 +449,27 @@ export class GitChangeReconciler {
   }
 
   /**
-   * Whether landing `content` at the file identified by `fileNodeId` (with the given classifying
-   * `fileName` and workspace-relative `gitPath`) would be DROPPED as `content_dropped_binary_open_document`:
-   * the file's Document row is in an OPEN collaboration room AND the content is not co-editable text by
-   * the reconciler's name-based rule (`isAsciiDocumentFileName || isThemeFilePath`). The single source
-   * of truth for that outcome, so {@link landContent} and the `renamed` branch decide it identically.
+   * Whether landing content at the file classified by the given `fileName` and workspace-relative
+   * `gitPath` would be DROPPED as `content_dropped_binary_open_document`: `document` (the file's
+   * Document row, already looked up by the caller — `null` when it has none) is in an OPEN
+   * collaboration room AND the content is not co-editable text by the reconciler's name-based rule
+   * (`isAsciiDocumentFileName || isThemeFilePath`). The single source of truth for that outcome, so
+   * {@link landContent} and the `renamed` branch decide it identically.
    *
-   * For a rename this is evaluated for the DESTINATION using the SOURCE node's id, because
-   * {@link reconcileRowClassification} KEEPS the source's live Document row in place at the destination —
-   * that kept row is the "open document at the destination"; it does not assume a Document already
-   * exists there under a different id.
+   * Takes the already-fetched `document` rather than a `fileNodeId` to look up itself: the caller reads
+   * the Document row once and reuses it (in `landContent`, also for deciding whether to route content
+   * through the collaborative writer), rather than this predicate re-reading it internally on every
+   * call. For a rename, the caller passes the row fetched for the SOURCE node's id evaluated against the
+   * DESTINATION's name/path, because {@link reconcileRowClassification} KEEPS the source's live Document
+   * row in place at the destination — that kept row is the "open document at the destination"; it does
+   * not assume a Document already exists there under a different id.
    */
-  private async wouldDropBinaryIntoOpenDocument(
-    fileNodeId: FileNodeId,
+  private wouldDropBinaryIntoOpenDocument(
     fileName: string,
     gitPath: string,
+    document: Document | null,
     activeDocumentIds: Set<string>,
-  ): Promise<boolean> {
+  ): boolean {
     // Only co-editable TEXT may be pushed into an open collaboration room. A demoting rename into an
     // open room (e.g. notes.adoc → logo.png) keeps the live Document row intact (see
     // reconcileRowClassification), so without this guard binary bytes would be decoded as UTF-8 and
@@ -468,7 +477,6 @@ export class GitChangeReconciler {
     // reconciler tells a Document from an Asset: by name.
     const isEditableText = isAsciiDocumentFileName(fileName) || isThemeFilePath(gitPath);
     if (isEditableText) return false;
-    const document = await this.documentRepo.findByFileNodeId(fileNodeId);
     return document !== null && activeDocumentIds.has(document.id.value);
   }
 
@@ -509,10 +517,11 @@ export class GitChangeReconciler {
     const newName = segments.at(-1)!;
 
     // Decide the binary-into-open-document drop BEFORE mutating anything (before ensureFolder can even
-    // create a parent folder). The predicate uses this node's id because reconcileRowClassification
-    // KEEPS its live Document row at the destination. If it would drop, skip the rename entirely so the
+    // create a parent folder). Read this node's Document row because reconcileRowClassification KEEPS
+    // its live Document row at the destination. If it would drop, skip the rename entirely so the
     // persisted tree and the reported result cannot disagree.
-    if (await this.wouldDropBinaryIntoOpenDocument(node.id, newName, change.toPath, activeDocumentIds)) {
+    const sourceDocument = await this.documentRepo.findByFileNodeId(node.id);
+    if (this.wouldDropBinaryIntoOpenDocument(newName, change.toPath, sourceDocument, activeDocumentIds)) {
       this.recordBinaryOpenDocumentDrop(anomalies, change.toPath);
       return { success: true, value: false };
     }

@@ -11,13 +11,18 @@ import { parseBlameOutput } from '../../src/git/output-parsers.js';
 const SHA1 = 'a'.repeat(40);
 const SHA256 = 'b'.repeat(64);
 
-function group(hash: string, finalLine: number, content: string, options: { withAuthor?: boolean } = {}): string {
-  const { withAuthor = true } = options;
+function group(
+  hash: string,
+  finalLine: number,
+  content: string,
+  options: { withAuthor?: boolean; summary?: string } = {},
+): string {
+  const { withAuthor = true, summary = 'A commit subject' } = options;
   const lines = [`${hash} ${finalLine} ${finalLine} 1`];
   if (withAuthor) {
     lines.push('author Jane Doe', 'author-mail <jane@example.com>', 'author-time 1700000000', 'author-tz +0000');
   }
-  lines.push('filename file.txt', `\t${content}`);
+  lines.push(`summary ${summary}`, 'filename file.txt', `\t${content}`);
   return lines.join('\n');
 }
 
@@ -26,6 +31,21 @@ describe('parseBlameOutput', () => {
     const entries = parseBlameOutput(`${group(SHA1, 1, 'hello')}\n`);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ lineNumber: 1, hash: SHA1, authorEmail: 'jane@example.com', content: 'hello' });
+  });
+
+  it("captures each group's summary line as the entry's commit message", () => {
+    const entries = parseBlameOutput(`${group(SHA1, 1, 'hello', { summary: 'Fix the intro heading' })}\n`);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].message).toBe('Fix the intro heading');
+  });
+
+  it('defaults the message to an empty string when a group carries no summary line', () => {
+    // A degenerate group (author headers but no `summary`) still yields an entry, with an empty
+    // message rather than a dropped line.
+    const text = `${SHA1} 1 1 1\nauthor-mail <jane@example.com>\nauthor-time 1700000000\nfilename file.txt\n\tkept\n`;
+    const entries = parseBlameOutput(text);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ lineNumber: 1, hash: SHA1, message: '', content: 'kept' });
   });
 
   it('parses a SHA-256 (64-hex) object name from an --object-format=sha256 repository', () => {

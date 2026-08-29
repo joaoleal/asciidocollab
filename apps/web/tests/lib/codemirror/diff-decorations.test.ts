@@ -70,7 +70,9 @@ describe('diffRoleStyle', () => {
 
 /** The decoration set the extension currently provides for `state`. */
 function decorationsOf(state: EditorState): DecorationSet {
-  return state.facet(EditorView.decorations)[0];
+  // The decorations facet is typed as a union of a static set or a per-view provider; this extension
+  // only ever contributes a static set, so narrow to it here.
+  return state.facet(EditorView.decorations)[0] as DecorationSet;
 }
 
 /** Every line decoration's class attribute, in document order. */

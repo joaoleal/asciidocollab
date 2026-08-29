@@ -473,14 +473,21 @@ export interface GitMutationPort {
  */
 export interface GitRemotePort {
   /**
-   * Clones a remote's branch (its default branch when none is given) into a scratch working tree
-   * and returns every tracked file it contains. Used by `ImportRepository` to materialize a
-   * brand-new project's file tree from an external remote — this call does not touch any
-   * project's own working tree or storage; translating the returned entries into that project's
-   * `FileNode`/`Document`/`Asset` rows and stored bytes is the caller's job.
+   * Clones a remote's branch (its default branch when none is given) and returns every tracked
+   * file it contains. Used by `ImportRepository` to materialize a brand-new project from an
+   * external remote.
    *
-   * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
-   *   clone (defaults to the remote's default branch).
+   * The clone is validated in isolation (size ceiling, LFS, symlink-escape checks) and only then
+   * ADOPTED as `input.projectId`'s own working tree — `.git` and all — so every later git
+   * operation (status, commit, push, pull, branch) runs against a real repository at the cloned
+   * HEAD, with `origin`/`refs/remotes/origin/<branch>` already set up by the clone itself (the
+   * behind-ahead read is therefore correct the moment the import completes). A clone that fails any
+   * check adopts nothing and leaves no working tree behind. Translating the returned entries into
+   * the project's `FileNode`/`Document`/`Asset` rows and content-store bytes remains the caller's
+   * job — separate from, and in addition to, the git working tree this call establishes.
+   *
+   * @param input - The project to materialize, the remote URL, the plaintext token to authenticate
+   *   with, and the branch to clone (defaults to the remote's default branch).
    * @returns The cloned repository's files and the branch/commit they were cloned at; a
    *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
    *   {@link checkRemoteAccess}, a `RepositoryTooLargeError` when the cloned working tree exceeds

@@ -143,11 +143,7 @@ export function GitConnectionStatusBar({
 
   return (
     <div className="flex items-center gap-3 text-sm">
-      <span className="flex items-center gap-1 text-muted-foreground" title="Current branch">
-        <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
-        {status.branch}
-      </span>
-      <span className={`flex items-center gap-1 ${syncStyle.className}`} title={syncStyle.label}>
+      <span className={`flex items-center gap-1 shrink-0 whitespace-nowrap ${syncStyle.className}`} title={syncStyle.label}>
         <SyncIcon className="h-3.5 w-3.5" aria-hidden="true" />
         {syncStyle.label}
         {behindAhead !== null && behindAhead.ahead > 0 && (
@@ -163,7 +159,7 @@ export function GitConnectionStatusBar({
           </span>
         )}
       </span>
-      <span className="text-muted-foreground">
+      <span className="text-muted-foreground shrink-0 whitespace-nowrap">
         {status.lastSyncAt ? formatRelativeTime(status.lastSyncAt) : 'Never synced'}
       </span>
       {onPreviewPushClick && behindAhead !== null && behindAhead.ahead > 0 && (

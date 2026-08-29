@@ -33,8 +33,20 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
   /** @param clock - Time source for timestamps; defaults to the wall clock. */
   constructor(private readonly clock: Clock = () => new Date()) {}
 
-  /** Enqueues a new operation in the QUEUED state, oldest-first for later FIFO claiming. */
+  /**
+   * Enqueues a new operation in the QUEUED state, oldest-first for later FIFO claiming. Mirrors the
+   * real adapter's `GitOperation_one_active_per_project` partial-unique invariant (and the port's
+   * documented contract): a project that already has an active (QUEUED/RUNNING/AWAITING_CONFLICT)
+   * operation rejects a second enqueue with {@link GitOperationInProgressError}, exactly as the
+   * Prisma adapter maps the Postgres P2002 unique-constraint violation.
+   */
   async enqueue(input: EnqueueGitOperationInput): Promise<GitOperation> {
+    const alreadyActive = [...this.operations.values()].some(
+      (op) => op.projectId.value === input.projectId.value && op.isActive,
+    );
+    if (alreadyActive) {
+      throw new GitOperationInProgressError();
+    }
     const operation = new GitOperation(
       GitOperationId.create(randomUUID()),
       input.projectId,
@@ -133,13 +145,22 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return { success: true, value: transitioned };
   }
 
-  /** Runs `action` only when the project has no active operation; otherwise reports it is busy. */
+  /**
+   * Runs `action` only when the project has no active operation (other than `excludeOperationId`
+   * itself, when given — mirrors the Prisma adapter's `id: { not: excludeOperationId.value }`
+   * exclusion so an already-claimed, `RUNNING` operation running its own use case does not conflict
+   * with itself); otherwise reports it is busy.
+   */
   async withGuard<T>(
     projectId: ProjectId,
     action: () => Promise<T>,
+    excludeOperationId?: GitOperationId,
   ): Promise<Result<T, GitOperationInProgressError>> {
     const busy = [...this.operations.values()].some(
-      (op) => op.projectId.value === projectId.value && op.isActive,
+      (op) =>
+        op.projectId.value === projectId.value &&
+        op.isActive &&
+        op.id.value !== excludeOperationId?.value,
     );
     if (busy) {
       return { success: false, error: new GitOperationInProgressError() };

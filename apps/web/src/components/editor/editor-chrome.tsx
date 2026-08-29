@@ -20,10 +20,14 @@ interface EditorChromeProperties {
   theme: EditorThemeValue;
   softWrap: boolean;
   minimapEnabled: boolean;
+  /** Whether the inline blame gutter is shown. Defaults to false for hosts that never blame. */
+  blameEnabled?: boolean;
   setFontSize: (size: number) => void;
   setTheme: (theme: EditorThemeValue) => void;
   setSoftWrap: (enabled: boolean) => void;
   setMinimapEnabled: (enabled: boolean) => void;
+  // Toggles the inline blame gutter; omitted when blame is unavailable (no repo / no open file).
+  setBlameEnabled?: (enabled: boolean) => void;
   /** Active table context, or null when the cursor is not in a table. */
   tableContext: TableContext | null;
   /** Awareness for the collab presence bar; null/undefined on the non-collab path. */
@@ -55,10 +59,12 @@ export function EditorChrome({
   theme,
   softWrap,
   minimapEnabled,
+  blameEnabled = false,
   setFontSize,
   setTheme,
   setSoftWrap,
   setMinimapEnabled,
+  setBlameEnabled,
   tableContext,
   awareness,
   trailing,
@@ -76,10 +82,12 @@ export function EditorChrome({
           theme={theme}
           softWrap={softWrap}
           minimapEnabled={minimapEnabled}
+          blameEnabled={blameEnabled}
           setFontSize={setFontSize}
           setTheme={setTheme}
           setSoftWrap={setSoftWrap}
           setMinimapEnabled={setMinimapEnabled}
+          setBlameEnabled={setBlameEnabled}
           onGoToSymbol={onGoToSymbol}
           onRefactor={onRefactor}
         />
@@ -104,10 +112,12 @@ export function EditorChrome({
           theme={theme}
           softWrap={softWrap}
           minimapEnabled={minimapEnabled}
+          blameEnabled={blameEnabled}
           setFontSize={setFontSize}
           setTheme={setTheme}
           setSoftWrap={setSoftWrap}
           setMinimapEnabled={setMinimapEnabled}
+          setBlameEnabled={setBlameEnabled}
         />
       )}
       {awareness != null && <CollabPresenceBar awareness={awareness} />}

@@ -101,11 +101,15 @@ function fakePrismaClient() {
           where,
           select,
         }: {
-          where: { projectId: string; state: { in: string[] } };
+          where: { projectId: string; state: { in: string[] }; id?: { not: string } };
           select?: { id: true };
         }) => {
           for (const row of operations.values()) {
-            if (row.projectId === where.projectId && where.state.in.includes(row.state)) {
+            if (
+              row.projectId === where.projectId &&
+              where.state.in.includes(row.state) &&
+              (!where.id || row.id !== where.id.not)
+            ) {
               // withGuard's active-op check passes `select: { id: true }`; findActiveOperation
               // passes no select and needs the full row back to map into a domain `GitOperation`.
               return select ? { id: row.id } : row;
@@ -234,6 +238,35 @@ describe('PrismaGitOperationRepository', () => {
       const op = await repo.enqueue({ projectId: projA, kind: 'COMMIT', triggeredByUserId: user });
 
       expect(op.branch).toBeNull();
+    });
+
+    it('regression: maps a P2002 unique-constraint violation (a concurrent enqueue racing GitOperation_one_active_per_project) to GitOperationInProgressError', async () => {
+      const { client } = fakePrismaClient();
+      (client.gitOperation.create as unknown as jest.Mock).mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the fields: (`projectId`)', {
+          code: 'P2002',
+          clientVersion: '7.9.1',
+        }),
+      );
+      const repo = new PrismaGitOperationRepository(client);
+
+      await expect(repo.enqueue({ projectId: projA, kind: 'PUSH', triggeredByUserId: user })).rejects.toBeInstanceOf(
+        GitOperationInProgressError,
+      );
+    });
+
+    it('re-throws an unrelated Prisma error from enqueue rather than treating it as an in-progress conflict', async () => {
+      const { client } = fakePrismaClient();
+      const unrelated = new Prisma.PrismaClientKnownRequestError('connection reset', {
+        code: 'P1017',
+        clientVersion: '7.9.1',
+      });
+      (client.gitOperation.create as unknown as jest.Mock).mockRejectedValueOnce(unrelated);
+      const repo = new PrismaGitOperationRepository(client);
+
+      await expect(repo.enqueue({ projectId: projA, kind: 'PUSH', triggeredByUserId: user })).rejects.toBe(
+        unrelated,
+      );
     });
   });
 
@@ -601,6 +634,75 @@ describe('PrismaGitOperationRepository', () => {
       await repo.withGuard(projA, async () => 'done');
 
       expect(getTransactionOptions()).toEqual({ isolationLevel: 'Serializable', maxWait: 1234, timeout: 5678 });
+    });
+
+    it('omits the id exclusion from the active-op check when excludeOperationId is not given (every synchronous caller)', async () => {
+      const { client } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+
+      await repo.withGuard(projA, async () => 'done');
+
+      const [{ where }] = (client.gitOperation.findFirst as unknown as jest.Mock).mock.calls[0] as [
+        { where: { projectId: string; state: { in: string[] }; id?: { not: string } } },
+      ];
+      expect(where.id).toBeUndefined();
+    });
+
+    it('regression: with excludeOperationId given (the async queued path), runs action outside any transaction and returns its value — no self-touch, no active-op re-check', async () => {
+      const { client, operations, repositories } = fakePrismaClient();
+      repositories.set(projA.value, { projectId: projA.value, currentBranch: 'main' });
+      const repo = new PrismaGitOperationRepository(client);
+      const enqueued = await repo.enqueue({ projectId: projA, kind: 'INITIALIZE', triggeredByUserId: user });
+      // The worker claims the operation into RUNNING before this use case's own `withGuard` call
+      // ever runs (see claimNextQueued); simulate that directly, as the other tests above do.
+      operations.get(enqueued.id.value)!.state = 'RUNNING';
+      const action = jest.fn(async () => 'done');
+
+      const result = await repo.withGuard(projA, action, enqueued.id);
+
+      expect(result).toEqual({ success: true, value: 'done' });
+      expect(action).toHaveBeenCalledTimes(1);
+      // The index-backed single-flight guarantee means this path never opens the SERIALIZABLE
+      // transaction, never re-checks for an active operation, and never self-touches the
+      // GitRepository row — the exact mechanics that previously caused the async INITIALIZE
+      // self-deadlock (a self-touch lock the action's own GitRepository write then waited on).
+      expect(client.$transaction).not.toHaveBeenCalled();
+      expect(client.gitOperation.findFirst).not.toHaveBeenCalled();
+      expect(client.gitRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('regression: on the excludeOperationId (async) path, propagates the action’s own error unchanged rather than swallowing it into a Result', async () => {
+      const { client } = fakePrismaClient();
+      const repo = new PrismaGitOperationRepository(client);
+      const boom = new Error('publish failed');
+
+      await expect(
+        repo.withGuard(
+          projA,
+          async () => {
+            throw boom;
+          },
+          GitOperationId.create(randomUUID()),
+        ),
+      ).rejects.toBe(boom);
+    });
+
+    it('regression: without excludeOperationId, still performs the SERIALIZABLE check + self-touch guard (existing synchronous-caller behavior preserved)', async () => {
+      const { client, repositories, getTransactionOptions } = fakePrismaClient();
+      repositories.set(projA.value, { projectId: projA.value, currentBranch: 'main' });
+      const repo = new PrismaGitOperationRepository(client);
+      const action = jest.fn(async () => 'done');
+
+      const result = await repo.withGuard(projA, action);
+
+      expect(result).toEqual({ success: true, value: 'done' });
+      expect(client.$transaction).toHaveBeenCalledTimes(1);
+      expect(getTransactionOptions()).toEqual({ isolationLevel: 'Serializable', maxWait: 5000, timeout: 30_000 });
+      expect(client.gitOperation.findFirst).toHaveBeenCalledTimes(1);
+      expect(client.gitRepository.update).toHaveBeenCalledWith({
+        where: { projectId: projA.value },
+        data: { currentBranch: 'main' },
+      });
     });
   });
 

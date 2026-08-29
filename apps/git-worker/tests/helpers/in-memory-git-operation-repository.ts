@@ -40,7 +40,20 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
   private readonly conflicts = new Map<string, GitConflict>();
   private nextSequence = 0;
 
+  /**
+   * Enqueues a new operation in the QUEUED state, oldest-first for later FIFO claiming. Mirrors the
+   * real adapter's `GitOperation_one_active_per_project` partial-unique invariant: a project that
+   * already has an active (QUEUED/RUNNING/AWAITING_CONFLICT) operation rejects a second enqueue
+   * with {@link GitOperationInProgressError}, exactly as the Prisma adapter maps the Postgres
+   * P2002 unique-constraint violation (and as the domain package's own in-memory fake does).
+   */
   async enqueue(input: EnqueueGitOperationInput): Promise<GitOperation> {
+    const alreadyActive = [...this.operations.values()].some(
+      (op) => op.projectId.value === input.projectId.value && op.isActive,
+    );
+    if (alreadyActive) {
+      throw new GitOperationInProgressError();
+    }
     const operation = new GitOperation(
       GitOperationId.create(randomUUID()),
       input.projectId,
@@ -131,9 +144,13 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
   async withGuard<T>(
     projectId: ProjectId,
     action: () => Promise<T>,
+    excludeOperationId?: GitOperationId,
   ): Promise<Result<T, GitOperationInProgressError>> {
     const busy = [...this.operations.values()].some(
-      (op) => op.projectId.value === projectId.value && op.isActive,
+      (op) =>
+        op.projectId.value === projectId.value &&
+        op.isActive &&
+        op.id.value !== excludeOperationId?.value,
     );
     if (busy) {
       return { success: false, error: new GitOperationInProgressError() };

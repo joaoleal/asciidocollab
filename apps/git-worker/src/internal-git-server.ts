@@ -6,7 +6,6 @@ import {
   DomainError,
   type AmendCommitResult,
   type CommitChangesResult,
-  type CompleteMergeResult,
   type CreateBranchResult,
   type DiscardChangesResult,
   type GetBranchesResult,
@@ -14,30 +13,13 @@ import {
   type GetGitStatusResult,
   type GitBehindAhead,
   type GitDiffResult,
-  type ListConflictsResult,
   type ResolveConflictsResult,
   type Result,
   type StageChangesResult,
-  type UndoPullResult,
 } from '@asciidocollab/domain';
 import { SECRET_HEADER, secretMatches } from './internal-git-server/auth.js';
 import { toEnvelope } from './internal-git-server/envelope.js';
-import {
-  parseGitStatusBody,
-  parseStageChangesBody,
-  parseCommitChangesBody,
-  parseConnectBody,
-  parseCreateBranchBody,
-  parseConflictPathBody,
-  parseResolveConflictBody,
-  parseHistoryBody,
-  parseDiffBody,
-  parseBlameBody,
-  parseDiscardBody,
-  parseAmendBody,
-  parsePreviewPullBody,
-  parsePreviewPushBody,
-} from './internal-git-server/request-parsers.js';
+import { isKnownGitOpsPath, dispatchGitOpsRequest } from './internal-git-server/dispatch.js';
 import type {
   GitStatusRequest,
   StageChangesRequest,
@@ -53,6 +35,16 @@ import type {
   AmendRequest,
   PreviewRequest,
 } from './internal-git-server/request-parsers.js';
+import type {
+  ConnectRepositoryWireResult,
+  CompleteMergeWireResult,
+  UndoPullWireResult,
+  ListConflictsWireResult,
+  GetHistoryWireResult,
+  PreviewPullWireResult,
+  PreviewPushWireResult,
+  GetBlameWireResult,
+} from './internal-git-wire.js';
 
 // Re-exported so the API's internal client, the composition root, and this app's tests keep a single
 // import site for the request parsers and their raw request shapes even though they now live beside
@@ -89,74 +81,48 @@ export type {
   PreviewRequest,
 } from './internal-git-server/request-parsers.js';
 
-/** Path of the internal endpoint the API calls to read a project's working-tree git status. */
-export const GIT_STATUS_PATH = '/internal/git/status';
+// Re-exported so every existing import site (the composition root, `git-wire-mappers.ts`, and this
+// app's tests) can keep resolving these wire-DTO shapes from this module, even though the type
+// definitions themselves now live in the co-located `internal-git-wire.ts`.
+export type {
+  GitRepositoryWireData,
+  ConnectRepositoryWireResult,
+  CompleteMergeWireResult,
+  UndoPullWireResult,
+  ListConflictsWireResult,
+  HistoryWireCommit,
+  GetHistoryWireResult,
+  PreviewPullWireResult,
+  PreviewPushWireResult,
+  BlameWireLine,
+  GetBlameWireResult,
+} from './internal-git-wire.js';
 
-/** Path of the internal endpoint the API calls to compare the current branch to its remote. */
-export const GIT_BEHIND_AHEAD_PATH = '/internal/git/behind-ahead';
-
-/** Path of the internal endpoint the API calls to stage files for the next commit. */
-export const GIT_STAGE_PATH = '/internal/git/stage';
-
-/** Path of the internal endpoint the API calls to unstage files. */
-export const GIT_UNSTAGE_PATH = '/internal/git/unstage';
-
-/** Path of the internal endpoint the API calls to commit the currently staged changes. */
-export const GIT_COMMIT_PATH = '/internal/git/commit';
-
-/**
- * Path of the internal endpoint the API calls to attach an existing project to an already-existing
- * remote: a connectivity/authentication preflight against the remote, then the encrypted credential
- * and the project's `GitRepository` link are saved. Synchronous — like `commit`/`status` — because
- * it must run where the real `GitCommandRunner` lives.
- */
-export const GIT_CONNECT_PATH = '/internal/git/connect';
-
-/** Path of the internal endpoint the API calls to list a project's local branches. */
-export const GIT_BRANCHES_PATH = '/internal/git/branches';
-
-/** Path of the internal endpoint the API calls to create a new local branch. */
-export const GIT_BRANCH_CREATE_PATH = '/internal/git/branch-create';
-
-/**
- * Path of the internal endpoint the API calls to complete a project's currently conflicted
- * operation — a re-run merge with a resolving commit for a `PULL`, or a resolved-changes landing
- * with no commit for a `BRANCH_SWITCH`.
- */
-export const GIT_PULL_COMPLETE_PATH = '/internal/git/pull/complete';
-
-/** Path of the internal endpoint the API calls to undo a project's most recent pull. */
-export const GIT_UNDO_PULL_PATH = '/internal/git/undo-pull';
-
-/** Path of the internal endpoint the API calls to list a project's currently conflicting files. */
-export const GIT_CONFLICTS_PATH = '/internal/git/conflicts';
-
-/** Path of the internal endpoint the API calls to read one conflicting file's three-way stages. */
-export const GIT_CONFLICT_STAGES_PATH = '/internal/git/conflicts/stages';
-
-/** Path of the internal endpoint the API calls to record one file's conflict resolution. */
-export const GIT_CONFLICT_RESOLVE_PATH = '/internal/git/conflicts/resolve';
-
-/** Path of the internal endpoint the API calls to read a project's (or a single file's) commit history. */
-export const GIT_HISTORY_PATH = '/internal/git/history';
-
-/** Path of the internal endpoint the API calls to produce a unified diff. */
-export const GIT_DIFF_PATH = '/internal/git/diff';
-
-/** Path of the internal endpoint the API calls to read a single file's per-line authorship (blame). */
-export const GIT_BLAME_PATH = '/internal/git/blame';
-
-/** Path of the internal endpoint the API calls to discard uncommitted changes, or restore a file from a commit. */
-export const GIT_DISCARD_PATH = '/internal/git/discard';
-
-/** Path of the internal endpoint the API calls to amend the project's most-recent commit. */
-export const GIT_AMEND_PATH = '/internal/git/amend';
-
-/** Path of the internal endpoint the API calls to preview what a pull would bring in, without applying it. */
-export const GIT_PREVIEW_PULL_PATH = '/internal/git/preview-pull';
-
-/** Path of the internal endpoint the API calls to preview what a push would send out, without applying it. */
-export const GIT_PREVIEW_PUSH_PATH = '/internal/git/preview-push';
+// Re-exported so every existing import site (this app's tests, and any future caller) can keep
+// resolving these path constants from this module, even though they now live beside the dispatch
+// table that maps each one to its parser/op/label — see `internal-git-server/dispatch.ts`.
+export {
+  GIT_STATUS_PATH,
+  GIT_BEHIND_AHEAD_PATH,
+  GIT_STAGE_PATH,
+  GIT_UNSTAGE_PATH,
+  GIT_COMMIT_PATH,
+  GIT_CONNECT_PATH,
+  GIT_BRANCHES_PATH,
+  GIT_BRANCH_CREATE_PATH,
+  GIT_PULL_COMPLETE_PATH,
+  GIT_UNDO_PULL_PATH,
+  GIT_CONFLICTS_PATH,
+  GIT_CONFLICT_STAGES_PATH,
+  GIT_CONFLICT_RESOLVE_PATH,
+  GIT_HISTORY_PATH,
+  GIT_DIFF_PATH,
+  GIT_BLAME_PATH,
+  GIT_DISCARD_PATH,
+  GIT_AMEND_PATH,
+  GIT_PREVIEW_PULL_PATH,
+  GIT_PREVIEW_PUSH_PATH,
+} from './internal-git-server/paths.js';
 
 /**
  * Hard cap on the request body. These bodies carry only a project/actor id, a commit message, or a
@@ -165,122 +131,6 @@ export const GIT_PREVIEW_PUSH_PATH = '/internal/git/preview-push';
  * very large changeset's list of paths while still refusing an unbounded upload.
  */
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
-
-/**
- * Wire-shaped mirror of a connected `GitRepository`, every value object mapped to its plain
- * string/primitive form (no `{"_value": "..."}` leakage) and every `Date` to an ISO-8601 string.
- */
-export interface GitRepositoryWireData {
-  /** Unique identifier of the repository link. */
-  readonly id: string;
-  /** ID of the project this repository is connected to. */
-  readonly projectId: string;
-  /** The git hosting provider. */
-  readonly provider: string;
-  /** The full remote URL of the git repository. */
-  readonly remoteUrl: string;
-  /** The currently checked-out branch. */
-  readonly currentBranch: string;
-  /** The remote's default branch, or null if not yet determined. */
-  readonly defaultBranch: string | null;
-  /** How the current branch compares to its remote counterpart. */
-  readonly syncStatus: string;
-  /** ISO-8601 timestamp of the last successful sync, or null if never synced. */
-  readonly lastSyncAt: string | null;
-  /** ID of the user who connected this repository, or null if unknown. */
-  readonly connectedByUserId: string | null;
-  /** ISO-8601 timestamp of when the repository link was created. */
-  readonly createdAt: string;
-}
-
-/** Wire-shaped mirror of `ConnectRepositoryResult`, `repository` mapped to {@link GitRepositoryWireData}. */
-export interface ConnectRepositoryWireResult {
-  /** The newly connected repository link. */
-  readonly repository: GitRepositoryWireData;
-}
-
-/**
- * Wire-shaped mirror of {@link CompleteMergeResult} with `operationId` mapped to a plain string.
- * `GitOperationId` (a `Uuid` subclass) defines no `toJSON`, so a bare `JSON.stringify` of the
- * domain result would otherwise serialize `operationId` as `{"_value": "<uuid>"}` instead of a
- * string — `composition-root.ts`'s `completePull` binding maps to this shape before handing its
- * result to this server.
- */
-export type CompleteMergeWireResult = Omit<CompleteMergeResult, 'operationId'> & { readonly operationId: string };
-
-/** Wire-shaped mirror of {@link UndoPullResult}, `operationId` mapped to a plain string. See {@link CompleteMergeWireResult}. */
-export type UndoPullWireResult = Omit<UndoPullResult, 'operationId'> & { readonly operationId: string };
-
-/** Wire-shaped mirror of {@link ListConflictsResult}, `operationId` mapped to a plain string. See {@link CompleteMergeWireResult}. */
-export type ListConflictsWireResult = Omit<ListConflictsResult, 'operationId'> & { readonly operationId: string };
-
-/**
- * One commit in the history endpoint's wire-shaped result, mirroring the domain's `HistoryCommit`
- * with `authorUserId` mapped to a plain string and `authoredAt` to an ISO-8601 string.
- * `composition-root.ts`'s `getHistory` binding maps to this shape before handing its result to this
- * server. See {@link GitRepositoryWireData} for why this mapping exists.
- */
-export interface HistoryWireCommit {
-  /** The commit hash. */
-  readonly hash: string;
-  /** The commit message. */
-  readonly message: string;
-  /** ID of the authoring user, when the commit's author maps to one; absent for unmapped authors. */
-  readonly authorUserId?: string;
-  /** ISO-8601 timestamp of when the commit was authored. */
-  readonly authoredAt: string;
-}
-
-/** Wire-shaped mirror of the domain's `GetHistoryResult`, its commits mapped via {@link HistoryWireCommit}. */
-export interface GetHistoryWireResult {
-  /** The matching commits, newest first. */
-  readonly commits: readonly HistoryWireCommit[];
-}
-
-/**
- * Wire-shaped mirror of the domain's `PreviewPullResult`, its commits mapped via
- * {@link HistoryWireCommit} — `PreviewPullResult.incomingCommits` reuses `HistoryCommit`'s exact
- * shape, so the same wire mapping applies unchanged.
- */
-export interface PreviewPullWireResult {
-  /** Commits that would land locally, newest first, if the pull actually ran. */
-  readonly incomingCommits: readonly HistoryWireCommit[];
-  /** Every path those commits touch. */
-  readonly changedPaths: readonly string[];
-}
-
-/** Wire-shaped mirror of the domain's `PreviewPushResult`, its commits mapped via {@link HistoryWireCommit}. See {@link PreviewPullWireResult}. */
-export interface PreviewPushWireResult {
-  /** Commits that would land on the remote, newest first, if the push actually ran. */
-  readonly outgoingCommits: readonly HistoryWireCommit[];
-  /** Every path those commits touch. */
-  readonly changedPaths: readonly string[];
-}
-
-/**
- * One line in the blame endpoint's wire-shaped result, mirroring the domain's `BlameLine` with
- * `authorUserId` mapped to a plain string and `authoredAt` to an ISO-8601 string.
- * `composition-root.ts`'s `getBlame` binding maps to this shape before handing its result to this
- * server. See {@link GitRepositoryWireData} for why this mapping exists.
- */
-export interface BlameWireLine {
-  /** 1-based line number in the blamed file. */
-  readonly lineNumber: number;
-  /** The full hash of the commit that last modified this line. */
-  readonly hash: string;
-  /** ID of the authoring user, when the line's commit author maps to one; absent for unmapped authors. */
-  readonly authorUserId?: string;
-  /** ISO-8601 timestamp of when the line's commit was authored. */
-  readonly authoredAt: string;
-  /** The line's text content. */
-  readonly content: string;
-}
-
-/** Wire-shaped mirror of the domain's `GetBlameResult`, its lines mapped via {@link BlameWireLine}. */
-export interface GetBlameWireResult {
-  /** Every line's authorship, in file order. */
-  readonly lines: readonly BlameWireLine[];
-}
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -480,29 +330,7 @@ export function createGitOpsRequestHandler(
       response.writeHead(401).end();
       return;
     }
-    if (
-      request.method !== 'POST' ||
-      (path !== GIT_STATUS_PATH &&
-        path !== GIT_BEHIND_AHEAD_PATH &&
-        path !== GIT_STAGE_PATH &&
-        path !== GIT_UNSTAGE_PATH &&
-        path !== GIT_COMMIT_PATH &&
-        path !== GIT_CONNECT_PATH &&
-        path !== GIT_BRANCHES_PATH &&
-        path !== GIT_BRANCH_CREATE_PATH &&
-        path !== GIT_PULL_COMPLETE_PATH &&
-        path !== GIT_UNDO_PULL_PATH &&
-        path !== GIT_CONFLICTS_PATH &&
-        path !== GIT_CONFLICT_STAGES_PATH &&
-        path !== GIT_CONFLICT_RESOLVE_PATH &&
-        path !== GIT_HISTORY_PATH &&
-        path !== GIT_DIFF_PATH &&
-        path !== GIT_BLAME_PATH &&
-        path !== GIT_DISCARD_PATH &&
-        path !== GIT_AMEND_PATH &&
-        path !== GIT_PREVIEW_PULL_PATH &&
-        path !== GIT_PREVIEW_PUSH_PATH)
-    ) {
+    if (request.method !== 'POST' || !isKnownGitOpsPath(path)) {
       request.resume(); // drain any body so the keep-alive connection stays healthy
       response.writeHead(404).end();
       return;
@@ -520,219 +348,15 @@ export function createGitOpsRequestHandler(
       return;
     }
 
-    let call: () => Promise<Result<unknown, DomainError>>;
-    let label: string;
-    switch (path) {
-    case GIT_STATUS_PATH: {
-      const parsed = parseGitStatusBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.getStatus(parsed);
-      label = 'status';
-
-    break;
+    // The dispatch table (`internal-git-server/dispatch.ts`) parses `raw` with the matched
+    // endpoint's own parser and, on success, wires it to the matching `deps` op fn — the one shared
+    // driver a 20-arm switch used to duplicate per endpoint.
+    const outcome = dispatchGitOpsRequest(path, raw, deps);
+    if (outcome === null) {
+      response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
+      return;
     }
-    case GIT_BEHIND_AHEAD_PATH: {
-      const parsed = parseGitStatusBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.getBehindAhead(parsed);
-      label = 'behind-ahead';
-
-    break;
-    }
-    case GIT_STAGE_PATH:
-    case GIT_UNSTAGE_PATH: {
-      const parsed = parseStageChangesBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      const isStage = path === GIT_STAGE_PATH;
-      call = () => (isStage ? deps.stage(parsed) : deps.unstage(parsed));
-      label = isStage ? 'stage' : 'unstage';
-
-    break;
-    }
-    case GIT_COMMIT_PATH: {
-      const parsed = parseCommitChangesBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.commit(parsed);
-      label = 'commit';
-
-    break;
-    }
-    case GIT_CONNECT_PATH: {
-      const parsed = parseConnectBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.connect(parsed);
-      label = 'connect';
-
-    break;
-    }
-    case GIT_BRANCHES_PATH: {
-      const parsed = parseGitStatusBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.getBranches(parsed);
-      label = 'branches';
-
-    break;
-    }
-    case GIT_BRANCH_CREATE_PATH: {
-      const parsed = parseCreateBranchBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.createBranch(parsed);
-      label = 'branch-create';
-
-    break;
-    }
-    case GIT_PULL_COMPLETE_PATH: {
-      const parsed = parseGitStatusBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.completePull(parsed);
-      label = 'pull-complete';
-
-    break;
-    }
-    case GIT_UNDO_PULL_PATH: {
-      const parsed = parseGitStatusBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.undoPull(parsed);
-      label = 'undo-pull';
-
-    break;
-    }
-    case GIT_CONFLICTS_PATH: {
-      const parsed = parseGitStatusBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.listConflicts(parsed);
-      label = 'conflicts';
-
-    break;
-    }
-    case GIT_CONFLICT_STAGES_PATH: {
-      const parsed = parseConflictPathBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.getConflictStages(parsed);
-      label = 'conflict-stages';
-
-    break;
-    }
-    case GIT_CONFLICT_RESOLVE_PATH: {
-      const parsed = parseResolveConflictBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.resolveConflict(parsed);
-      label = 'conflict-resolve';
-
-    break;
-    }
-    case GIT_HISTORY_PATH: {
-      const parsed = parseHistoryBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.getHistory(parsed);
-      label = 'history';
-
-    break;
-    }
-    case GIT_DIFF_PATH: {
-      const parsed = parseDiffBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.getDiff(parsed);
-      label = 'diff';
-
-    break;
-    }
-    case GIT_BLAME_PATH: {
-      const parsed = parseBlameBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.getBlame(parsed);
-      label = 'blame';
-
-    break;
-    }
-    case GIT_DISCARD_PATH: {
-      const parsed = parseDiscardBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.discard(parsed);
-      label = 'discard';
-
-    break;
-    }
-    case GIT_AMEND_PATH: {
-      const parsed = parseAmendBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.amend(parsed);
-      label = 'amend';
-
-    break;
-    }
-    case GIT_PREVIEW_PULL_PATH: {
-      const parsed = parsePreviewPullBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.previewPull(parsed);
-      label = 'preview-pull';
-
-    break;
-    }
-    default: {
-      const parsed = parsePreviewPushBody(raw);
-      if (!parsed) {
-        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Invalid body' }));
-        return;
-      }
-      call = () => deps.previewPush(parsed);
-      label = 'preview-push';
-    }
-    }
+    const { call, label } = outcome;
 
     try {
       const result = await call();

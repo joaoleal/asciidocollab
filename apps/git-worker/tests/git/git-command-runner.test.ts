@@ -1081,6 +1081,15 @@ describe('RealGitCommandRunner.assertRemoteAllowed', () => {
 });
 
 describe('RealGitCommandRunner.clone', () => {
+  let cloneStorageRoot: string;
+  const cloneProjectId = ProjectId.create('c10e0000-0000-4000-8000-000000000001');
+  beforeEach(async () => {
+    cloneStorageRoot = await mkdtemp(path.join(tmpdir(), 'git-worker-test-storage-'));
+  });
+  afterEach(async () => {
+    await rm(cloneStorageRoot, { recursive: true, force: true });
+  });
+
   it('clones the remote default branch, materializing nested folders, a text file, and a binary file', async () => {
     const workingTree = await createTemporaryWorkingTree();
     await mkdir(path.join(workingTree, 'chapters', 'nested'), { recursive: true });
@@ -1097,8 +1106,8 @@ describe('RealGitCommandRunner.clone', () => {
 
     const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
     try {
-      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver);
-      const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token: 'unused' });
 
       expect(result.success).toBe(true);
       if (!result.success) throw new Error('expected success');
@@ -1122,6 +1131,44 @@ describe('RealGitCommandRunner.clone', () => {
     }
   });
 
+  it('adopts the clone as the project\'s own git working tree, with the remote-tracking ref at HEAD', async () => {
+    // Regression: an imported project must end up with a REAL git working tree — `.git`, the cloned
+    // HEAD, and `refs/remotes/origin/<branch>` — so its commit/push/pull/status all operate on its
+    // own repository (not, in a shared storage root, silently on a parent one). Before the fix the
+    // clone materialized only file bytes and left no `.git`, so the project could never be committed.
+    const workingTree = await createTemporaryWorkingTree();
+    await writeFile(path.join(workingTree, 'doc.adoc'), '= Doc\n\nBody.\n');
+    await commitAll(workingTree, 'init');
+    const expectedHeadCommit = await readHeadCommit(workingTree);
+
+    const remotePath = await createTemporaryBareRemote();
+    await pushToOrigin(workingTree, remotePath);
+
+    const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
+    try {
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+      expect(result.success).toBe(true);
+
+      const projectTree = path.join(cloneStorageRoot, cloneProjectId.value);
+      // A real repository now lives at the project's working-tree path.
+      const gitDirectoryStats = await stat(path.join(projectTree, '.git'));
+      expect(gitDirectoryStats.isDirectory()).toBe(true);
+
+      const headResult = await execFile('git', ['rev-parse', 'HEAD'], { cwd: projectTree });
+      const head = headResult.stdout.trim();
+      expect(head).toBe(expectedHeadCommit);
+
+      // `git clone` set the remote-tracking ref up for free, so the behind-ahead read the UI shows
+      // resolves immediately — origin/main is exactly HEAD, i.e. neither ahead nor behind.
+      const trackingResult = await execFile('git', ['rev-parse', 'refs/remotes/origin/main'], { cwd: projectTree });
+      const trackingReference = trackingResult.stdout.trim();
+      expect(trackingReference).toBe(head);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('honors a requested non-default branch, while defaultBranch still reports the remote\'s actual default', async () => {
     const workingTree = await createTemporaryWorkingTree();
     await writeFile(path.join(workingTree, 'main-only.adoc'), 'on main\n');
@@ -1139,9 +1186,9 @@ describe('RealGitCommandRunner.clone', () => {
 
     const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
     try {
-      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver);
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver);
 
-      const defaultResult = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+      const defaultResult = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token: 'unused' });
       expect(defaultResult.success).toBe(true);
       if (!defaultResult.success) throw new Error('expected success');
       expect(defaultResult.value.defaultBranch).toBe('main');
@@ -1149,6 +1196,7 @@ describe('RealGitCommandRunner.clone', () => {
       expect(defaultResult.value.entries.map((entry) => entry.path)).not.toContain('branch-only.adoc');
 
       const featureBranchResult = await runner.clone({
+        projectId: cloneProjectId,
         remoteUrl: `${server.url}/repo.git`,
         token: 'unused',
         branch: 'feature-branch',
@@ -1167,10 +1215,10 @@ describe('RealGitCommandRunner.clone', () => {
   });
 
   it('rejects a clone to a non-allowlisted host before attempting any network operation', async () => {
-    const runner = new RealGitCommandRunner('/unused', ['git.example.com']);
+    const runner = new RealGitCommandRunner(cloneStorageRoot, ['git.example.com']);
 
     const capture = await withArgvCapturingGit(async (getCalls) => {
-      const result = await runner.clone({ remoteUrl: 'https://not-allowed.example.com/org/repo.git', token: 'x' });
+      const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: 'https://not-allowed.example.com/org/repo.git', token: 'x' });
       return { result, calls: await getCalls() };
     });
 
@@ -1183,9 +1231,9 @@ describe('RealGitCommandRunner.clone', () => {
 
   it('returns RepositoryUnreachableError when the remote cannot be reached', async () => {
     const port = await unusedLoopbackPort();
-    const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver);
+    const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver);
 
-    const result = await runner.clone({ remoteUrl: `http://127.0.0.1:${port}/repo.git`, token: 'unused' });
+    const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `http://127.0.0.1:${port}/repo.git`, token: 'unused' });
 
     expect(result.success).toBe(false);
     if (result.success) throw new Error('expected failure');
@@ -1200,8 +1248,8 @@ describe('RealGitCommandRunner.clone', () => {
     });
 
     try {
-      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver);
-      const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'wrong-token' });
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token: 'wrong-token' });
 
       expect(result.success).toBe(false);
       if (result.success) throw new Error('expected failure');
@@ -1220,10 +1268,10 @@ describe('RealGitCommandRunner.clone', () => {
     });
 
     try {
-      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver);
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver);
 
       const capture = await withArgvCapturingGit(async (getCalls) => {
-        const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token });
+        const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token });
         return { result, calls: await getCalls() };
       });
 
@@ -1265,8 +1313,8 @@ describe('RealGitCommandRunner.clone', () => {
 
     const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
     try {
-      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver);
-      const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver);
+      const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token: 'unused' });
 
       expect(result.success).toBe(false);
       if (result.success) throw new Error('expected failure');
@@ -1344,8 +1392,8 @@ describe('RealGitCommandRunner.clone', () => {
 
       // A tiny fractional MB ceiling — well below the ~200 KB fixture above — so the clone is
       // rejected regardless of any other content this fixture happens to carry.
-      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver, undefined, 0.001);
-      const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver, undefined, 0.001);
+      const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token: 'unused' });
 
       expect(result.success).toBe(false);
       if (result.success) throw new Error('expected failure');
@@ -1369,8 +1417,8 @@ describe('RealGitCommandRunner.clone', () => {
 
     const server = await startGitHttpServer({ projectRoot: path.join(remotePath, '..') });
     try {
-      const runner = new RealGitCommandRunner('/unused', ['127.0.0.1'], fakePublicResolver, undefined, 500);
-      const result = await runner.clone({ remoteUrl: `${server.url}/repo.git`, token: 'unused' });
+      const runner = new RealGitCommandRunner(cloneStorageRoot, ['127.0.0.1'], fakePublicResolver, undefined, 500);
+      const result = await runner.clone({ projectId: cloneProjectId, remoteUrl: `${server.url}/repo.git`, token: 'unused' });
 
       expect(result.success).toBe(true);
     } finally {
@@ -2445,11 +2493,12 @@ describe('RealGitCommandRunner.blame', () => {
     expect(result.success).toBe(true);
     if (!result.success) throw new Error('expected success');
     expect(result.value).toEqual([
-      { lineNumber: 1, hash: firstHash, authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'line one' },
-      { lineNumber: 2, hash: firstHash, authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'line two' },
+      { lineNumber: 1, hash: firstHash, message: 'first commit', authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'line one' },
+      { lineNumber: 2, hash: firstHash, message: 'first commit', authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'line two' },
       {
         lineNumber: 3,
         hash: secondHash,
+        message: 'second commit',
         authorEmail: 'second-author@example.com',
         authoredAt: expect.any(Date),
         content: 'line three',
@@ -2470,7 +2519,7 @@ describe('RealGitCommandRunner.blame', () => {
 
     expect(result).toEqual({
       success: true,
-      value: [{ lineNumber: 1, hash, authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'only line' }],
+      value: [{ lineNumber: 1, hash, message: 'only commit', authorEmail: 'test@example.com', authoredAt: expect.any(Date), content: 'only line' }],
     });
   });
 
@@ -2941,7 +2990,11 @@ describe('RealGitCommandRunner network failure mapping', () => {
 
     try {
       const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
-      const result = await runner.clone({ remoteUrl: `${server.url}/no-such-repo.git`, token: 'unused' });
+      const result = await runner.clone({
+        projectId: ProjectId.create('c10e0000-0000-4000-8000-000000000002'),
+        remoteUrl: `${server.url}/no-such-repo.git`,
+        token: 'unused',
+      });
 
       expect(result.success).toBe(false);
       if (result.success) throw new Error('expected failure');
@@ -2961,7 +3014,11 @@ describe('RealGitCommandRunner network failure mapping', () => {
 
     try {
       const runner = new RealGitCommandRunner(storageRoot, ['127.0.0.1'], fakePublicResolver);
-      const result = await runner.clone({ remoteUrl: repositoryUrl, token: 'unused' });
+      const result = await runner.clone({
+        projectId: ProjectId.create('c10e0000-0000-4000-8000-000000000003'),
+        remoteUrl: repositoryUrl,
+        token: 'unused',
+      });
 
       expect(result.success).toBe(false);
       if (result.success) throw new Error('expected failure');

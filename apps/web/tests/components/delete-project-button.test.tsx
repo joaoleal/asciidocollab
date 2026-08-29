@@ -155,7 +155,7 @@ describe('DeleteProjectButton', () => {
   });
 
   test('refuses an outside pointer-down as a way of dismissing the confirmation', () => {
-    capturedPointerDownOutside = undefined;
+    capturedPointerDownOutside = undefined as ((event: DismissEvent) => void) | undefined;
     render(<DeleteProjectButton projectId="p1" projectName="Docs" onDeleted={jest.fn()} />);
     openDialog();
     const preventDefault = jest.fn();

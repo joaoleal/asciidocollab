@@ -12,6 +12,10 @@ export function toBlameDto(data: GitWorkerBlameData): BlameDto {
     lines: data.lines.map((line) => ({
       lineNumber: line.lineNumber,
       hash: line.hash,
+      // `message` is a required string on BlameLineDto, but it arrives over the wire from the
+      // git-worker: a producer that omitted the field (undefined at runtime, despite the `string`
+      // type) would otherwise silently emit a DTO that violates its own contract. Default to ''.
+      message: line.message ?? '',
       ...(line.authorUserId === undefined ? {} : { authorUserId: line.authorUserId }),
       authoredAt: line.authoredAt,
       content: line.content,

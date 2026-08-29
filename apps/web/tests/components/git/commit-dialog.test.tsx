@@ -33,9 +33,20 @@ const STATUS_WITH_STAGED = {
   conflicted: [],
 };
 
-const STATUS_WITH_NOTHING_STAGED = {
+const STATUS_WITH_NOTHING_PENDING = {
   ...STATUS_WITH_STAGED,
   staged: [],
+  unstaged: [],
+  untracked: [],
+  conflicted: [],
+};
+
+const STATUS_WITH_UNSTAGED_AND_UNTRACKED = {
+  ...STATUS_WITH_STAGED,
+  staged: [],
+  unstaged: [{ path: 'chapter-2.adoc', changeType: 'modified' }],
+  untracked: [{ path: 'notes.adoc', changeType: 'added' }],
+  conflicted: [{ path: 'conflicted.adoc', changeType: 'modified' }],
 };
 
 function renderDialog(overrides: Partial<{ onOpenChange: (open: boolean) => void; onCommitted: () => void }> = {}) {
@@ -68,18 +79,28 @@ beforeEach(() => {
   });
 });
 
-describe('CommitDialog staged list', () => {
-  test('fetches and lists the staged changes on open', async () => {
+describe('CommitDialog changes list', () => {
+  test('fetches and lists the pending changes on open', async () => {
     renderDialog();
     expect(await screen.findByText('chapter-1.adoc')).toBeInTheDocument();
     expect(screen.getByText('images/diagram.png')).toBeInTheDocument();
     expect(mockGetGitStatus).toHaveBeenCalledWith('proj1');
   });
 
-  test('shows a muted hint and disables the Commit button when nothing is staged', async () => {
-    mockGetGitStatus.mockResolvedValue(STATUS_WITH_NOTHING_STAGED);
+  test('lists unstaged and untracked changes but excludes conflicted ones', async () => {
+    mockGetGitStatus.mockResolvedValue(STATUS_WITH_UNSTAGED_AND_UNTRACKED);
     renderDialog();
-    expect(await screen.findByText(/nothing staged to commit/i)).toBeInTheDocument();
+    expect(await screen.findByText('chapter-2.adoc')).toBeInTheDocument();
+    expect(screen.getByText('notes.adoc')).toBeInTheDocument();
+    expect(screen.queryByText('conflicted.adoc')).not.toBeInTheDocument();
+    fireEvent.change(messageField(), { target: { value: 'Commit my edits' } });
+    expect(submitButton()).toBeEnabled();
+  });
+
+  test('shows a muted hint and disables the Commit button when nothing is pending', async () => {
+    mockGetGitStatus.mockResolvedValue(STATUS_WITH_NOTHING_PENDING);
+    renderDialog();
+    expect(await screen.findByText(/nothing to commit/i)).toBeInTheDocument();
     fireEvent.change(messageField(), { target: { value: 'Some message' } });
     expect(submitButton()).toBeDisabled();
   });
@@ -208,29 +229,29 @@ describe('CommitDialog submission', () => {
   });
 });
 
-describe('CommitDialog staged-change loading failures', () => {
-  test('reports a refused staged-changes load without leaving the dialog on loading', async () => {
+describe('CommitDialog change loading failures', () => {
+  test('reports a refused changes load without leaving the dialog on loading', async () => {
     mockGetGitStatus.mockRejectedValue(new ApiError(500, 'internal_error', 'boom'));
     renderDialog();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load staged changes.');
-    expect(screen.queryByText(/loading staged changes/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/nothing staged to commit/i)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load changes.');
+    expect(screen.queryByText(/loading changes/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/nothing to commit/i)).toBeInTheDocument();
   });
 
-  test('reports a staged-changes load that never reaches the server', async () => {
+  test('reports a changes load that never reaches the server', async () => {
     mockGetGitStatus.mockRejectedValue(new TypeError('Failed to fetch'));
     renderDialog();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load staged changes.');
-    expect(screen.queryByText(/loading staged changes/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load changes.');
+    expect(screen.queryByText(/loading changes/i)).not.toBeInTheDocument();
   });
 
-  test('drops a staged-changes result that arrives after dismissal', async () => {
+  test('drops a changes result that arrives after dismissal', async () => {
     const pending = deferred();
     mockGetGitStatus.mockReturnValue(pending.promise);
     const { unmount } = renderDialog();
-    expect(screen.getByText(/loading staged changes/i)).toBeInTheDocument();
+    expect(screen.getByText(/loading changes/i)).toBeInTheDocument();
 
     unmount();
     await act(async () => {

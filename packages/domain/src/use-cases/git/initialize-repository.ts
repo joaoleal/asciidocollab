@@ -1,5 +1,6 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
+import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitProvider } from '../../value-objects/project/git-provider';
 import { GitRepository } from '../../entities/git-repository';
 import { GitRepositoryRepository } from '../../ports/project/git-repository.repository';
@@ -43,6 +44,13 @@ export interface InitializeRepositoryInput {
   readonly actorId: UserId;
   /** The project to publish. Must not already have a `GitRepository` link. */
   readonly projectId: ProjectId;
+  /**
+   * The id of the `GitOperation` row the worker claimed to run this execution — already `RUNNING`
+   * by the time `execute` is called. Passed straight through to `withGuard`'s `excludeOperationId`
+   * so the single-flight check does not treat this execution's own claimed row as a conflicting
+   * active operation.
+   */
+  readonly operationId: GitOperationId;
   /** The git hosting provider, e.g. `'github'`, `'gitlab'`, or `'bitbucket'`. */
   readonly provider: string;
   /** The remote repository's URL. Must be empty (no commits) — a non-empty remote is refused. */
@@ -170,8 +178,10 @@ export class InitializeRepositoryUseCase {
       };
     }
 
-    const guarded = await this.gitOperationRepo.withGuard(input.projectId, () =>
-      this.publishWhileGuarded(input, provider, existing),
+    const guarded = await this.gitOperationRepo.withGuard(
+      input.projectId,
+      () => this.publishWhileGuarded(input, provider, existing),
+      input.operationId,
     );
     // `withGuard` wraps the inner Result in its own Result (its failure is
     // `GitOperationInProgressError`, a peer of the inner step's own refusals) — unwrap so callers

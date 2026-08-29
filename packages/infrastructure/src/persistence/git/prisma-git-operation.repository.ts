@@ -87,23 +87,41 @@ class GitOperationAlreadyActiveSignal extends Error {}
  * values are bound parameters (`$queryRaw` tagged-template interpolation); nothing is ever
  * string-concatenated into the SQL text.
  *
- * ## `withGuard` — defensive concurrency without the (not yet existing) partial-unique index
+ * ## `withGuard` — a hybrid guard: index-backed for async queued ops, SERIALIZABLE-touch for everyone else
  * `data-model.md` calls for a partial-UNIQUE index on `GitOperation(projectId) WHERE state IN
  * (QUEUED, RUNNING, AWAITING_CONFLICT)` to make single-flight a one-line `INSERT` conflict check.
- * Prisma 7.9's schema DSL cannot express a partial unique index, so that constraint does not exist
- * in the database today (see the comment on `GitOperation` in `packages/db/prisma/schema.prisma`,
- * and the captured index SQL this adapter ships in
- * `git-operation-active-op-unique-index.sql`, alongside this file, for the future migration).
+ * That index now exists (`GitOperation_one_active_per_project`, added by the
+ * `20260828120000_git_operation_active_op_unique_index` migration; see the comment on `GitOperation`
+ * in `packages/db/prisma/schema.prisma` and the captured statement this adapter also ships at
+ * `git-operation-active-op-unique-index.sql`, alongside this file). `withGuard` uses it for exactly
+ * one of its two call shapes:
  *
- * Without that index, `withGuard` cannot rely on a DB-level uniqueness violation, and — per
- * Architecture Constitution 2.6.0 — is not permitted to reach for raw SQL either (the raw-SQL
- * exemption is scoped to `claimNextQueued` alone). So this method instead:
+ * **`excludeOperationId` given (every async, queue-claimed caller — currently only
+ * `InitializeRepositoryUseCase`).** The caller already holds the project's one-and-only active
+ * `GitOperation` row (claimed into `RUNNING` by `claimNextQueued` before `withGuard` is ever
+ * called), and the partial-unique index guarantees no *other* active row can exist for the project
+ * alongside it. Single-flight is therefore already established at the DB level before `withGuard`
+ * runs at all — so this path skips the SERIALIZABLE transaction and the `GitRepository` self-touch
+ * entirely and simply runs `action` outside of any transaction, returning
+ * `{ success: true, value: await action() }` (or letting `action`'s own throw propagate, exactly as
+ * the transactional path does). This is deliberate, not just an optimization: the prior version ran
+ * `action` *inside* the guard transaction even here, and `InitializeRepositoryUseCase`'s `action`
+ * both takes ~1-2s for the initial git publish over the network AND writes the very `GitRepository`
+ * row the transaction had just locked with its self-touch — a lock the action's own write then
+ * waited on for the rest of the transaction's 30s timeout, deadlocking itself. Running outside a
+ * transaction removes both the lock and the long-held connection.
+ *
+ * **`excludeOperationId` omitted (every synchronous caller — stage/commit/discard/amend/connect/
+ * disconnect/undo-pull).** None of these callers hold a `GitOperation` row of their own — the index
+ * has nothing to key single-flight off before they exist — so this path is unchanged from before the
+ * index existed:
  *
  * 1. Runs entirely inside one `SERIALIZABLE` Prisma interactive transaction, with `action` called
  *    directly inside that transaction — deliberately, so the guard covers the whole action, not
  *    just the instant of the check (a check-then-release-then-run design would let a second `withGuard` call
  *    slip in and run concurrently with the first's `action`, which is exactly the bug this exists to
- *    prevent).
+ *    prevent). Every current synchronous caller's `action` is a short, local mutation — never a
+ *    slow network call — so holding the transaction open around it is safe.
  * 2. Checks for an existing active `GitOperation` (`QUEUED`/`RUNNING`/`AWAITING_CONFLICT`) for the
  *    project — the guard also respects a long-running queued/running op, not just other `withGuard`
  *    callers.
@@ -116,16 +134,15 @@ class GitOperationAlreadyActiveSignal extends Error {}
  *    (Prisma surfaces this as `PrismaClientKnownRequestError` code `P2034`) — which this method
  *    treats exactly like finding an active operation: refuse with `GitOperationInProgressError`
  *    without running `action` twice. This requires no schema change and no raw SQL; it is a plain,
- *    typed `update()` call.
+ *    typed `update()` call. The index also backstops this path: a stray `gitOperation.create` that
+ *    bypasses `withGuard` altogether (a bug, not a supported path) would still fail at the DB with a
+ *    unique-violation rather than silently creating a second active operation.
  *
- * This mechanism assumes the project already has a `GitRepository` row, true for every currently
- * specified `withGuard` caller (stage/commit/discard/amend all require an already-connected repo —
- * see data-model.md §8's authorization matrix). If no such row exists, the touch step is skipped
+ * This mechanism assumes the project already has a `GitRepository` row, true for every synchronous
+ * `withGuard` caller (stage/commit/discard/amend all require an already-connected repo — see
+ * data-model.md §8's authorization matrix). If no such row exists, the touch step is skipped
  * (nothing to lock) and only the active-operation check applies — a narrower guarantee that does not
  * matter for any current caller, documented here rather than silently assumed.
- *
- * Once the partial-unique index lands (a future migration), `withGuard` could rely on it as a
- * backstop too, but the SERIALIZABLE-touch mechanism above remains correct and sufficient on its own.
  */
 export class PrismaGitOperationRepository implements GitOperationRepository {
   private readonly guardMaxWaitMs: number;
@@ -143,17 +160,30 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
     this.guardTimeoutMs = options.guardTimeoutMs ?? 30_000;
   }
 
-  /** Enqueues a new operation in the QUEUED state (the schema column default). */
+  /**
+   * Enqueues a new operation in the QUEUED state (the schema column default). A concurrent enqueue
+   * for a project that already has an active operation violates the `GitOperation_one_active_per_project`
+   * partial-unique index and surfaces from Prisma as a P2002 unique-constraint violation; this maps
+   * that specific violation to the same `GitOperationInProgressError` `withGuard` reports for an
+   * in-progress operation, rather than letting the raw Prisma error escape.
+   */
   async enqueue(input: EnqueueGitOperationInput): Promise<GitOperation> {
-    const record = await this.prisma.gitOperation.create({
-      data: {
-        projectId: input.projectId.value,
-        kind: input.kind,
-        triggeredByUserId: input.triggeredByUserId.value,
-        branch: input.branch ?? null,
-      },
-    });
-    return toDomainGitOperation(record);
+    try {
+      const record = await this.prisma.gitOperation.create({
+        data: {
+          projectId: input.projectId.value,
+          kind: input.kind,
+          triggeredByUserId: input.triggeredByUserId.value,
+          branch: input.branch ?? null,
+        },
+      });
+      return toDomainGitOperation(record);
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        throw new GitOperationInProgressError();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -253,18 +283,35 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
 
   /**
    * Runs `action` only if the project has no active operation. See the class docs for the full
-   * concurrency design (SERIALIZABLE transaction + a self-touch of the project's `GitRepository`
-   * row standing in for the not-yet-existing partial-unique index).
+   * hybrid concurrency design: an async, queue-claimed caller (`excludeOperationId` given) already
+   * holds the project's one active `GitOperation` row, so the partial-unique index alone guarantees
+   * single-flight and `action` runs outside any transaction; every other (synchronous) caller keeps
+   * the SERIALIZABLE transaction with a self-touch of the project's `GitRepository` row.
    */
   async withGuard<T>(
     projectId: ProjectId,
     action: () => Promise<T>,
+    excludeOperationId?: GitOperationId,
   ): Promise<Result<T, GitOperationInProgressError>> {
+    if (excludeOperationId) {
+      // The caller already holds this project's one-and-only active operation row (claimed into
+      // RUNNING by claimNextQueued before withGuard is ever called), and the
+      // GitOperation_one_active_per_project partial-unique index guarantees no other active row can
+      // exist alongside it — single-flight is already established at the DB level. Running `action`
+      // outside a transaction here (rather than inside a SERIALIZABLE self-touch, as the synchronous
+      // path below does) is what avoids the self-deadlock a long-running action that also writes the
+      // project's GitRepository row would otherwise hit against its own guard's lock.
+      return { success: true, value: await action() };
+    }
+
     try {
       const value = await this.prisma.$transaction(
         async (tx) => {
           const active = await tx.gitOperation.findFirst({
-            where: { projectId: projectId.value, state: { in: [...ACTIVE_GIT_OPERATION_STATES] } },
+            where: {
+              projectId: projectId.value,
+              state: { in: [...ACTIVE_GIT_OPERATION_STATES] },
+            },
             select: { id: true },
           });
           if (active) {
@@ -393,6 +440,11 @@ function legalSourceStatesFor(toState: GitOperationTransitionTarget): GitOperati
 /** True when `error` is Postgres's "could not serialize access due to concurrent update" surfaced by Prisma as P2034. */
 function isSerializationFailure(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
+}
+
+/** True when `error` is a Postgres unique-constraint violation surfaced by Prisma as P2002 — what a concurrent `enqueue` racing the `GitOperation_one_active_per_project` partial-unique index fails with. */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
 
 /**

@@ -144,7 +144,7 @@ describe('createImportHandler', () => {
     const paths = nodes.map((node) => node.path.value).toSorted();
     expect(paths).toEqual(['/', '/index.adoc']);
 
-    expect(harness.commandRunner.cloneCalls).toEqual([{ remoteUrl: REMOTE_URL, token: TOKEN, branch: undefined }]);
+    expect(harness.commandRunner.cloneCalls).toEqual([{ projectId, remoteUrl: REMOTE_URL, token: TOKEN, branch: undefined }]);
   });
 
   test('clone failure (repository unreachable) fails with the mapped safe code and grants no membership', async () => {
@@ -244,6 +244,6 @@ describe('createImportHandler', () => {
 
     await harness.handler(buildImportOperation(projectId, 'develop'));
 
-    expect(harness.commandRunner.cloneCalls).toEqual([{ remoteUrl: REMOTE_URL, token: TOKEN, branch: 'develop' }]);
+    expect(harness.commandRunner.cloneCalls).toEqual([{ projectId, remoteUrl: REMOTE_URL, token: TOKEN, branch: 'develop' }]);
   });
 });

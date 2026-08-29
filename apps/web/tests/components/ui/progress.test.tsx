@@ -33,8 +33,10 @@ describe('Progress', () => {
   test('draws an empty bar when the value arrives as null', () => {
     // A null slips past the destructuring default (which only fires for undefined), so the bar
     // itself has to fall back rather than compute a NaN offset. Untyped callers do send null.
-    const element: React.ReactElement = <Progress value={25} />;
-    render(React.cloneElement(element, { value: null }));
+    const element = <Progress value={25} />;
+    // Deliberately inject a null past the type: this reproduces an untyped caller and exercises the
+    // component's runtime null fallback, which the compile-time prop type would otherwise forbid.
+    render(React.cloneElement(element, { value: null as unknown as number }));
     const bar = screen.getByRole('progressbar');
     expect(bar).not.toHaveAttribute('aria-valuenow');
     expect(bar.firstElementChild).toHaveStyle({ transform: 'translateX(-100%)' });

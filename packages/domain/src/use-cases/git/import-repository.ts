@@ -217,6 +217,7 @@ export class ImportRepositoryUseCase {
       );
 
       const cloneResult = await this.commandRunner.clone({
+        projectId: input.projectId,
         remoteUrl: input.remoteUrl,
         token: input.token,
         branch: input.branch,

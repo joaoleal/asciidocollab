@@ -233,6 +233,24 @@ describe('createInitializeHandler', () => {
     }
   });
 
+  test('regression: a claimed operation (already RUNNING in the repository, as the run loop leaves it before dispatch) does not self-conflict with its own withGuard call', async () => {
+    const harness = buildHarness();
+    const projectId = ProjectId.create(randomUUID());
+    await seedPendingInitialize(harness, projectId);
+    harness.commandRunner.seedInitializeAndPublish(projectId, PUBLISH_OUTCOME);
+
+    // Mirrors the real run loop: enqueue, then claim into RUNNING, so the operation the handler
+    // receives is the SAME row `withGuard`'s active-operation check would otherwise find and treat
+    // as a conflicting in-flight action.
+    await harness.gitOperationRepository.enqueue({ projectId, kind: 'INITIALIZE', triggeredByUserId: OWNER_ID });
+    const claimed = await harness.gitOperationRepository.claimNextQueued(30_000);
+    expect(claimed?.state).toBe('RUNNING'); // sanity
+
+    const outcome = await harness.handler(claimed!);
+
+    expect(outcome).toEqual({ kind: 'succeeded' });
+  });
+
   test('passes the operation branch through to the publish call', async () => {
     const harness = buildHarness();
     const projectId = ProjectId.create(randomUUID());

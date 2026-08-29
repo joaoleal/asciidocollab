@@ -14,6 +14,8 @@ import {
   flashReviewEffect,
   type ReviewAnchorRange,
 } from '@/lib/codemirror/review-decorations';
+import { setBlameLinesEffect } from '@/lib/codemirror/blame-gutter';
+import { useBlame } from '@/hooks/use-blame';
 import { captureAnchor } from '@/lib/review/anchor';
 import { renameSuggestion } from '@/lib/codemirror/rename-suggestion/rename-suggestion-state';
 import { findSymbolUsages, renameSymbol } from '@/lib/api/projects';
@@ -178,6 +180,16 @@ interface AsciiDocEditorProperties {
   /** When true, shows the document text-preview (minimap). Defaults to the user preference (off). */
   minimapEnabled?: boolean;
   /**
+   * The open file's project-relative path, used to fetch its per-line blame. Null/omitted when
+   * nothing blameable is open, which (together with {@link gitConnected}) hides the blame toggle.
+   */
+  openPath?: string | null;
+  /**
+   * Whether the project has a connected Git repository. Gates the inline blame toggle — with no
+   * connected repository (or no open file) there is nothing to blame, so the toggle is hidden.
+   */
+  gitConnected?: boolean;
+  /**
    * Project document language (ISO 639-1) driving the spellchecker, or null when the project has
    * none configured (the editor then falls back to its default). Spellcheck language is a
    * project-level setting; whether spellcheck runs at all stays a per-user preference.
@@ -325,6 +337,8 @@ export function AsciiDocEditor({
   isAsciiDoc = true,
   softWrap: softWrapProperty,
   minimapEnabled: minimapEnabledProperty,
+  openPath,
+  gitConnected = false,
   spellcheckLanguage,
   getProjectIndex,
   onChange,
@@ -378,6 +392,21 @@ export function AsciiDocEditor({
   const { fontSize, theme, softWrap: prefsSoftWrap, minimapEnabled: prefsMinimapEnabled, spellIgnore, spellcheckEnabled, setFontSize, setTheme, setSoftWrap, setMinimapEnabled } = useEditorPreferences();
   const softWrap = softWrapProperty === undefined ? prefsSoftWrap : softWrapProperty;
   const minimapEnabled = minimapEnabledProperty === undefined ? prefsMinimapEnabled : minimapEnabledProperty;
+
+  // Inline per-line blame: a per-file view toggle (not a persisted preference), driven from the
+  // editor toolbar. Available only with a connected Git repository AND an open file — there is
+  // otherwise nothing to blame — and forced off whenever that availability drops (e.g. switching to
+  // a non-git file), so a stale gutter never lingers.
+  const blameAvailable = Boolean(gitConnected && openPath);
+  const [blameEnabled, setBlameEnabled] = useState(false);
+  useEffect(() => {
+    if (!blameAvailable && blameEnabled) setBlameEnabled(false);
+  }, [blameAvailable, blameEnabled]);
+  const { blameLines, error: blameError } = useBlame({
+    projectId,
+    path: openPath,
+    enabled: blameEnabled && blameAvailable,
+  });
   // Spellcheck language comes from the project; fall back to English when the project leaves it unset.
   const effectiveSpellcheckLanguage = spellcheckLanguage ?? 'en';
   // On-device grammar checking: gated on a real project (its render-config supplies the enable flag)
@@ -525,6 +554,7 @@ export function AsciiDocEditor({
     canEdit: effectiveCanEdit,
     softWrap,
     minimapEnabled,
+    blameEnabled: blameEnabled && blameAvailable,
     foldStorageKey: projectId && fileNodeId ? `asciidocollab:folds:${projectId}:${fileNodeId}` : undefined,
     spellIgnore,
     spellcheckLanguage: effectiveSpellcheckLanguage,
@@ -591,6 +621,13 @@ export function AsciiDocEditor({
   useEffect(() => {
     viewReference.current?.dispatch({ effects: setReviewRangesEffect.of(reviewRanges ?? []) });
   }, [reviewRanges, viewReference]);
+
+  // Push the resolved per-line blame map into the gutter's backing field whenever it changes — a
+  // fresh fetch when blame is toggled on, a refetch on a file switch, or null when toggled off (which
+  // clears the gutter). The gutter itself is mounted/unmounted by the blame compartment (mount hook).
+  useEffect(() => {
+    viewReference.current?.dispatch({ effects: setBlameLinesEffect.of(blameLines) });
+  }, [blameLines, viewReference]);
 
   // Emphasise the active review passage (hover ∪ selection). This is a transient view cue only —
   // it never scrolls, so hovering a rail card can't yank the editor around.
@@ -832,10 +869,14 @@ export function AsciiDocEditor({
         theme={theme}
         softWrap={softWrap}
         minimapEnabled={minimapEnabled}
+        blameEnabled={blameEnabled && blameAvailable}
         setFontSize={setFontSize}
         setTheme={setTheme}
         setSoftWrap={setSoftWrap}
         setMinimapEnabled={setMinimapEnabled}
+        // Only offered when there is something to blame (connected repo + open file); otherwise the
+        // toggle is hidden rather than shown disabled.
+        setBlameEnabled={blameAvailable ? setBlameEnabled : undefined}
         tableContext={tableContext}
         awareness={collab?.awareness}
         onGoToSymbol={onGoToSymbol}
@@ -850,6 +891,7 @@ export function AsciiDocEditor({
         connectionState={effectiveConnectionState}
         readOnly={collab?.role === 'observer'}
         collabUnavailable={collabUnavailable}
+        blameError={blameEnabled ? blameError : null}
       />
       <div className="flex flex-1 overflow-hidden">
         <div ref={containerReference} className="flex-1 overflow-auto" />

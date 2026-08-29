@@ -11,17 +11,22 @@ import { GitRepositoryId } from '../../../src/value-objects/ids/git-repository-i
 import { GitProvider } from '../../../src/value-objects/project/git-provider';
 import { ProjectId } from '../../../src/value-objects/ids/project-id';
 import { UserId } from '../../../src/value-objects/ids/user-id';
+import { GitOperationId } from '../../../src/value-objects/ids/git-operation-id';
+import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
 import { Role } from '../../../src/value-objects/identity/role';
 import { InMemoryProjectMemberRepository } from '../../ports/project/in-memory-project-member.repository';
 import { InMemoryAuditLogRepository } from '../../ports/admin/in-memory-audit-log.repository';
 import { InMemoryGitRepositoryRepository } from '../../ports/project/in-memory-git-repository.repository';
 import { InMemoryGitCommandRunner } from '../../ports/git/in-memory-git-command-runner';
 import { InMemoryGitOperationRepository } from '../../ports/git/in-memory-git-operation-repository';
-import { GitOperationInProgressError } from '../../../src/errors/git/git-operation-in-progress';
 
 const PROJECT_ID = ProjectId.create('550e8400-e29b-41d4-a716-446655440010');
 const OWNER_ID = UserId.create('550e8400-e29b-41d4-a716-446655440011');
 const PLACEHOLDER_REPOSITORY_ID = GitRepositoryId.create('550e8400-e29b-41d4-a716-446655440012');
+// A stand-in for the `GitOperation` id a worker would have claimed before running this execution.
+// Never actually enqueued in most tests below — `withGuard`'s exclusion only matters when a
+// matching active row exists, which none of them seed, so any well-formed id is a faithful stand-in.
+const OPERATION_ID = GitOperationId.create('550e8400-e29b-41d4-a716-446655440013');
 const REMOTE_URL = 'https://github.com/example/existing-project.git';
 const TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890';
 const HEAD_COMMIT = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
@@ -103,6 +108,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -142,6 +148,7 @@ describe('InitializeRepositoryUseCase', () => {
     await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -164,6 +171,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -188,6 +196,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -205,6 +214,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -222,6 +232,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'not-a-real-provider',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -239,6 +250,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: 'not a url; rm -rf /',
       token: TOKEN,
@@ -256,6 +268,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -275,6 +288,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -299,6 +313,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -320,6 +335,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -341,6 +357,7 @@ describe('InitializeRepositoryUseCase', () => {
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -362,6 +379,7 @@ describe('InitializeRepositoryUseCase', () => {
     await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -371,19 +389,52 @@ describe('InitializeRepositoryUseCase', () => {
     expect(entries.some((entry) => entry.action === 'git.repository_connected')).toBe(true);
   });
 
-  test('another operation already active for the project refuses with GitOperationInProgressError and publishes nothing', async () => {
+  test('regression: does not self-conflict when its own operation row is already RUNNING (the worker already claimed it before calling execute)', async () => {
     const harness = await buildHarness('owner');
     await seedPlaceholderRepository(harness.gitRepositoryRepo);
     seedSuccess(harness.commandRunner);
+
+    // Mirrors what the worker run loop does before ever calling this use case: enqueue, then claim
+    // into RUNNING. A plain active-operation check (with no exclusion) would find this exact row and
+    // report the operation as conflicting with itself.
+    const enqueued = await harness.gitOperationRepo.enqueue({
+      projectId: PROJECT_ID,
+      kind: 'INITIALIZE',
+      triggeredByUserId: OWNER_ID,
+    });
+    const claimed = await harness.gitOperationRepo.claimNextQueued(30_000);
+    expect(claimed?.id.value).toBe(enqueued.id.value);
+    expect(claimed?.state).toBe('RUNNING');
+
+    const result = await harness.useCase.execute({
+      actorId: OWNER_ID,
+      projectId: PROJECT_ID,
+      operationId: claimed!.id,
+      provider: 'github',
+      remoteUrl: REMOTE_URL,
+      token: TOKEN,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('regression: a DIFFERENT active operation for the same project still fails with GitOperationInProgressError', async () => {
+    const harness = await buildHarness('owner');
+    await seedPlaceholderRepository(harness.gitRepositoryRepo);
+    seedSuccess(harness.commandRunner);
+
+    // A genuinely different in-flight operation for the same project — excluding OPERATION_ID (this
+    // execution's own claimed id) must not also excuse this unrelated one.
     await harness.gitOperationRepo.enqueue({
       projectId: PROJECT_ID,
-      kind: 'PULL',
+      kind: 'PUSH',
       triggeredByUserId: OWNER_ID,
     });
 
     const result = await harness.useCase.execute({
       actorId: OWNER_ID,
       projectId: PROJECT_ID,
+      operationId: OPERATION_ID,
       provider: 'github',
       remoteUrl: REMOTE_URL,
       token: TOKEN,
@@ -392,6 +443,7 @@ describe('InitializeRepositoryUseCase', () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toBeInstanceOf(GitOperationInProgressError);
     expect(harness.commandRunner.initializeAndPublishCalls).toHaveLength(0);
+    // The refusal must also leave the placeholder untouched, not half-connect the repository.
     const stored = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
     expect(stored?.syncStatus).toBe('DISCONNECTED');
   });

@@ -1,7 +1,7 @@
 'use client';
-import { useLayoutEffect, useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useLayoutEffect, useState, useCallback, useMemo, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, History, Settings, Trash2, Users, UserRoundSearch } from 'lucide-react';
+import { ChevronLeft, Settings, Users } from 'lucide-react';
 import type { CreateAnchorInput, ReviewItemDto } from '@asciidocollab/shared';
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels';
 import { Button } from '@/components/ui/button';
@@ -9,72 +9,28 @@ import { ResizeHandle } from '@/components/ui/resize-handle';
 import { BackButton } from '@/components/back-button';
 import { LogoMark } from '@/components/logo';
 import { FileTree } from '@/components/file-tree/file-tree';
-import { AsciiDocEditor, type EditorGrammarState } from '@/components/editor/asciidoc-editor';
+import { type EditorGrammarState } from '@/components/editor/asciidoc-editor';
 import { useProjectSymbolIndex } from '@/hooks/use-project-symbol-index';
 import { useFileTreeEvents } from '@/hooks/use-file-tree-events';
-import { useGitTreeStatus } from '@/hooks/use-git-tree-status';
-import { useGitStatus } from '@/hooks/use-git-status';
-import { useBehindAhead } from '@/hooks/use-behind-ahead';
-import { useGitActivity } from '@/hooks/use-git-activity';
-import { usePull } from '@/hooks/use-pull';
-import { usePush } from '@/hooks/use-push';
-import { useBranches } from '@/hooks/use-branches';
-import { useConflicts } from '@/hooks/use-conflicts';
-import { CommitDialog } from '@/components/git/commit-dialog';
-import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
-import { GitActivityIndicator } from '@/components/git/git-activity-indicator';
-import { PullDialog } from '@/components/git/pull-dialog';
-import { PushPreviewDialog } from '@/components/git/push-preview-dialog';
-import { BranchSwitcher } from '@/components/git/branch-switcher';
-import { BranchSwitchDialog } from '@/components/git/branch-switch-dialog';
-import { ConflictPanel } from '@/components/git/conflict-panel';
-import { HistoryPanelWithDiff } from '@/components/git/history-panel-with-diff';
-import { BlameView } from '@/components/git/blame-view';
-import { DiscardDialog } from '@/components/git/discard-dialog';
-import type { ProjectSymbolIndex } from '@/lib/codemirror/asciidoc-symbol-index';
 import { AsciiDocPreview, isAsciiDocFile } from '@/components/asciidoc-preview';
-import { resolveProjectTheme, type ProjectTheme } from '@/lib/print-preview/resolve-project-theme';
-import { ImagePreview } from '@/components/image-preview';
-import { isImageFile } from '@/lib/codemirror/asciidoc-image-extensions';
-import { isThemeFilePath } from '@asciidocollab/shared';
-import { ThemeEditor } from '@/components/theme-editor/theme-editor';
-import { useThemeSettings } from '@/hooks/use-theme-settings';
 import { useFileSelection } from '@/hooks/use-file-selection';
 import { useFileHistory } from '@/hooks/use-file-history';
 import { useEditorPreferences } from '@/hooks/use-editor-preferences';
-import { type ConnectionState } from '@/hooks/use-collab-document';
-
 import { LeftPanel } from '@/components/editor/left-panel';
 import { RightPanel } from '@/components/editor/right-panel';
 import { RightPanelRail } from '@/components/editor/right-panel-rail';
 import { OutlineView } from '@/components/editor/outline-view';
 import { CommentsPanelView, type CommentsSubView } from '@/components/editor/comments-panel-view';
 import { WritingPanelView, type WritingSubView } from '@/components/editor/writing-panel-view';
-import { SearchView, type SearchResultTarget } from '@/components/editor/search-view';
+import { SearchView } from '@/components/editor/search-view';
 import { NonLiveIndicator } from '@/components/editor/non-live-indicator';
 import type { SectionOutlineEntry } from '@/lib/codemirror/asciidoc-outline';
-import { assembleOutline, mapOutlinePresence } from '@/lib/outline';
-import {
-  buildAssembledLineToSource,
-  buildAssembledScrollContext,
-  buildOpenFileLineToSource,
-  liftSourceMapToBlockStarts,
-  openLineToAssembledLine,
-} from '@/lib/pdf/scroll-sync-map';
-import { isOpenFileOutsideMainTree, resolvePreviewRoot } from '@/lib/pdf/preview-root';
-import { sameOutlineEntries } from '@/lib/outline/stable-entries';
-import type { OutlinePeer } from '@/lib/outline';
-import type { SelectedFile, FileContentState } from '@/hooks/use-file-selection';
-import type { CollabBinding } from '@/components/editor/asciidoc-editor';
 import { ReviewViewStateProvider } from '@/components/review';
 import type { TaskMember } from '@/components/review';
 import { useReviewItems } from '@/hooks/use-review-items';
 import { sortThreadsByDocumentOrder } from '@/lib/review/order';
 import { reanchorReviewItem } from '@/lib/api/review';
 import { membersApi } from '@/lib/api/members';
-import type { ReviewAnchorRange } from '@/lib/codemirror/review-decorations';
-import type { XrefTarget } from '@/lib/codemirror/asciidoc-link-handler';
-import type { CursorSymbol } from '@/lib/codemirror/asciidoc-symbol-at-cursor';
 import { EditorGoToSymbol } from '@/components/editor/editor-go-to-symbol';
 import { EditorSymbolRefactor } from '@/components/editor/editor-symbol-refactor';
 import { findSymbolUsages, renameSymbol } from '@/lib/api/projects';
@@ -85,300 +41,14 @@ import { useEditorRestoration } from '@/app/(dashboard)/dashboard/projects/[id]/
 import { readLastSelection } from '@/hooks/use-last-selection';
 import { PdfExportButton } from '@/components/pdf-export-button';
 import { HtmlExportButton } from '@/components/html-export-button';
-import { useHtmlExport } from '@/hooks/use-html-export';
-import { PdfDiagnostics } from '@/components/pdf-diagnostics';
 import { PdfPreviewPanel } from '@/components/pdf-preview-panel';
-import { usePdfExport } from '@/hooks/use-pdf-export';
-import { usePdfPreview } from '@/hooks/use-pdf-preview';
-import { buildProjectSnapshot, type SnapshotFile } from '@/lib/pdf/build-project-snapshot';
-import { withAppRenderDefaults } from '@/lib/asciidoc/render-app-defaults';
-import { collectReferencedAssetPaths } from '@/lib/pdf/collect-referenced-assets';
-import { useProjectAssetCache, type ProjectAssetCache } from '@/hooks/use-project-asset-cache';
-import { useProjectAuxiliaryTextCache } from '@/hooks/use-auxiliary-text-cache';
-import { useProjectRenderConfig } from '@/hooks/use-project-render-config';
-import { usePdfExtensionBundle } from '@/hooks/use-pdf-extension-bundle';
+import { ContentArea } from './content-area';
+import { useProjectGit } from './use-project-git';
+import { useEditorRenderPipeline } from './use-editor-render-pipeline';
+import { GitToolbar } from './git-toolbar';
+import { GitDialogs } from './git-dialogs';
+import { EditorStatusBanners } from './editor-status-banners';
 
-/** No extensions enabled. Shared so the memo keeps a stable identity across renders. */
-const NO_EXTENSION_IDS: readonly string[] = [];
-import {
-  resolveRenderAttributes,
-  SOFT_DEFAULT_SUFFIX,
-  stripSoftDefault,
-  DEFAULT_HTML_EXPORT_PACKAGING,
-  DEFAULT_HTML_EXPORT_THEME,
-  htmlExportStyleFor,
-} from '@asciidocollab/shared';
-import type { ProjectSnapshot, RenderDiagnostic } from '@asciidocollab/asciidoc-pdf';
-
-/** A diagnostic source location the editor can reveal. */
-type DiagnosticLocation = NonNullable<RenderDiagnostic['location']>;
-
-/** Stable empty attribute seed used when no render root is resolved yet (keeps identity stable). */
-const NO_EXPORT_ATTRIBUTES: ReadonlyMap<string, string> = new Map();
-
-/** How long the export waits for a transiently-absent render root to (re)load before giving up. */
-const EXPORT_ROOT_WAIT_TIMEOUT_MS = 10_000;
-/** Poll cadence while waiting for the render root's content to arrive. */
-const EXPORT_ROOT_WAIT_INTERVAL_MS = 100;
-
-/**
- * Poll `predicate` until it is true or the timeout elapses. Used to wait for the render root's content
- * to land in the symbol index before an export dispatches. Returns the final predicate result.
- */
-async function waitUntil(
-  predicate: () => boolean,
-  { timeoutMs, intervalMs }: { timeoutMs: number; intervalMs: number },
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate() && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  return predicate();
-}
-
-interface ContentAreaProperties {
-  selectedFile: SelectedFile | null;
-  contentState: FileContentState;
-  canEdit: boolean;
-  /** Project-role permission for the shared dictionary (no admin bypass). See the layout's prop. */
-  canManageDictionary: boolean;
-  /**
-   * The reader's UN-NARROWED edit permission, for the view-local rule config only. `canEdit` above is
-   * `editorCanEdit`, which already folds in `offline`/`collabUnavailable`; those must not disable a
-   * control that writes nothing. See the editor's prop.
-   */
-  canConfigureRules: boolean;
-  projectId: string;
-  /**
-   * Surfaces the editor's live grammar-panel state so the layout can render the Grammar rail.
-   *
-   * @param state - The current grammar issues plus the navigate/apply actions, or null when no
-   * AsciiDoc editor is mounted to check anything.
-   */
-  onGrammarStateChange?: (state: EditorGrammarState | null) => void;
-  /**
-   * The project's binary-asset cache, forwarded to the theme editor so a theme's fonts are fetched
-   * and embedded in its preview. The SAME instance the document preview and the export use, so a
-   * font is fetched once per project however many renders reference it.
-   */
-  assetCache: ProjectAssetCache;
-  /** Project document language (ISO 639-1) driving the spellchecker, or null when unset. */
-  projectLanguage: string | null;
-  onScrollLine?: (line: number) => void;
-  onSelectionLine?: (line: number) => void;
-  onLineClick?: (line: number) => void;
-  // Ctrl+click on an include/image path — reveals and selects the target file in the tree.
-  onNavigateToFile?: (path: string) => void;
-  // Ctrl+click on a cross-reference — reveals its definition (same file or another).
-  onNavigateToXref?: (target: XrefTarget) => void;
-  // Include-path level offset inherited by the open file from its ancestors.
-  inheritedOffset?: number;
-  // Attributes the open file inherits from the documents that include it.
-  inheritedAttributes?: ReadonlyMap<string, string>;
-  // The open file's resolved cross-document scope (inherited + own), for `{name}` known highlighting.
-  resolvedScope?: ReadonlyMap<string, string>;
-  // Bumped when a collaborator changes any project file, so a visible rename offer re-queries.
-  renameRefreshNonce?: number;
-  // Live request to reveal a line in the open editor (same-file go-to-definition).
-  revealRequest?: { line: number; nonce: number } | null;
-  // Ctrl+click on a link or URL — opens it in a new tab.
-  onOpenUrl?: (url: string) => void;
-  onChange?: (value: string) => void;
-  /** 1-based line to restore the cursor to on mount (only for the restored file). */
-  initialLine?: number;
-  /**
-   * Reports the 1-based cursor line up for debounced persistence.
-   *
-   * @param line - The 1-based line the cursor is on.
-   */
-  onCursorLineChange?: (line: number) => void;
-  /**
-   * Reports the live section outline up so the left-panel Outline view can render it (028).
-   *
-   * @param entries - The current section outline entries, including the level-0 title.
-   */
-  onOutlineChange?: (entries: SectionOutlineEntry[]) => void;
-  /** Live collaboration binding for the selected file, or null on the legacy path. */
-  collab?: CollabBinding | null;
-  /** True when the file is collaborative but the provider/Y.Doc is not ready yet. */
-  collabPending?: boolean;
-  /** Collaboration connection state, for the editor's status banner. */
-  connectionState?: ConnectionState;
-  /** Content to render instead of contentState.content (offline read-only fallback). */
-  contentOverride?: string | null;
-  /** True when the file is editable text with no collaborative document — read-only, no autosave. */
-  collabUnavailable?: boolean;
-  /** Live accessor for the cross-file symbol index; powers cross-file diagnostics + completion. */
-  getProjectIndex?: () => ProjectSymbolIndex | null;
-  /** Opens the Go to Symbol palette from the editor toolbar. */
-  onGoToSymbol?: () => void;
-  // Opens the refactor dialog from the editor toolbar, seeded with the cursor symbol.
-  onRefactor?: (initial: CursorSymbol | null) => void;
-  /** Review anchor ranges (feature 038) painted as editor highlights + gutter markers. */
-  reviewRanges?: ReviewAnchorRange[];
-  /** The emphasised review item id (hover ∪ selection); its highlight is strengthened, no scroll. */
-  activeReviewId?: string | null;
-  /** The review item just navigated to; scrolls it into view and flashes it once. */
-  scrollToReviewId?: string | null;
-  /**
-   * Called when a review highlight/gutter marker is clicked (feature 038).
-   *
-   * @param id - The clicked review item id.
-   */
-  onReviewMarkerClick?: (id: string) => void;
-  /**
-   * Called as the pointer moves over (or off) a review marker (feature 038); highlights the rail card.
-   *
-   * @param id - The hovered review item id, or null.
-   */
-  onReviewMarkerHover?: (id: string | null) => void;
-  /**
-   * Called when a comment is started from the editor selection (feature 038).
-   *
-   * @param anchor - The captured anchor for the selected passage.
-   */
-  onCreateCommentFromSelection?: (anchor: CreateAnchorInput) => void;
-}
-
-function ContentArea({
-  selectedFile,
-  contentState,
-  canEdit,
-  canManageDictionary,
-  canConfigureRules,
-  projectId,
-  assetCache,
-  projectLanguage,
-  onScrollLine,
-  onSelectionLine,
-  onLineClick,
-  onNavigateToFile,
-  onNavigateToXref,
-  inheritedOffset,
-  inheritedAttributes,
-  resolvedScope,
-  renameRefreshNonce,
-  revealRequest,
-  onOpenUrl,
-  onChange,
-  initialLine,
-  onCursorLineChange,
-  onOutlineChange,
-  collab,
-  collabPending,
-  connectionState,
-  contentOverride,
-  collabUnavailable,
-  getProjectIndex,
-  onGoToSymbol,
-  onRefactor,
-  reviewRanges,
-  activeReviewId,
-  scrollToReviewId,
-  onReviewMarkerClick,
-  onReviewMarkerHover,
-  onCreateCommentFromSelection,
-  onGrammarStateChange,
-}: ContentAreaProperties) {
-  // Called before the early returns below, because a hook cannot be conditional. The result is only
-  // consumed on the theme-file branch, but computing it here keeps the branch a plain render.
-  const { settings: themeSettings, enabledExtensions } = useThemeSettings(projectId);
-
-  if (selectedFile === null) {
-    return <p className="text-muted-foreground text-sm p-4">Select a file from the tree to view its content.</p>;
-  }
-  if (contentState.isLoading || collabPending) {
-    return (
-      <div className="p-4 space-y-2">
-        <div className="h-4 w-3/4 bg-muted animate-pulse rounded" />
-        <div className="h-4 w-1/2 bg-muted animate-pulse rounded" />
-      </div>
-    );
-  }
-  if (contentState.isBinary) {
-    if (isImageFile(selectedFile.nodeName)) {
-      return (
-        <ImagePreview
-          key={selectedFile.nodeId}
-          projectId={projectId}
-          fileNodeId={selectedFile.nodeId}
-          fileName={selectedFile.nodeName}
-        />
-      );
-    }
-    return <p className="text-muted-foreground text-sm p-4">Preview not available for binary files.</p>;
-  }
-  if (contentState.error) {
-    return <p className="text-destructive text-sm p-4">{contentState.error}</p>;
-  }
-  // A theme is YAML, and opened on the AsciiDoc path it got AsciiDoc highlighting, AsciiDoc
-  // completions and AsciiDoc diagnostics — the last of which reported a valid theme as broken
-  // prose. Routing it to its own editor is as much a bug fix as a feature (FR-009, FR-009a). The
-  // recognition rule is the SHARED one, so the editor and the renderer cannot disagree about which
-  // files are themes.
-  if (isThemeFilePath(selectedFile.nodeName)) {
-    return (
-      <ThemeEditor
-        key={selectedFile.nodeId}
-        themeSettings={themeSettings}
-        enabledExtensions={enabledExtensions}
-        assetCache={assetCache}
-        content={contentOverride ?? contentState.content ?? ''}
-        canEdit={canEdit}
-        path={selectedFile.path}
-        projectId={projectId}
-        fileNodeId={selectedFile.nodeId}
-        initialEtag={contentState.etag}
-        collab={collab ? { doc: collab.doc, awareness: collab.awareness } : null}
-        connectionState={connectionState}
-        collabUnavailable={collabUnavailable}
-        onChange={onChange}
-      />
-    );
-  }
-  return (
-    <AsciiDocEditor
-      key={selectedFile.nodeId}
-      content={contentOverride ?? contentState.content ?? ''}
-      canEdit={canEdit}
-      canManageDictionary={canManageDictionary}
-      canConfigureRules={canConfigureRules}
-      projectId={projectId}
-      fileNodeId={selectedFile.nodeId}
-      onGrammarStateChange={onGrammarStateChange}
-      initialEtag={contentState.etag}
-      isAsciiDoc={isAsciiDocFile(selectedFile.nodeName)}
-      spellcheckLanguage={projectLanguage}
-      onScrollLine={onScrollLine}
-      onSelectionLine={onSelectionLine}
-      onLineClick={onLineClick}
-      onNavigateToFile={onNavigateToFile}
-      onNavigateToXref={onNavigateToXref}
-      inheritedOffset={inheritedOffset}
-      inheritedAttributes={inheritedAttributes}
-      resolvedScope={resolvedScope}
-      renameRefreshNonce={renameRefreshNonce}
-      revealRequest={revealRequest}
-      onOpenUrl={onOpenUrl}
-      onChange={onChange}
-      initialLine={initialLine}
-      onCursorLineChange={onCursorLineChange}
-      onOutlineChange={onOutlineChange}
-      collab={collab}
-      connectionState={connectionState}
-      collabUnavailable={collabUnavailable}
-      getProjectIndex={getProjectIndex}
-      onGoToSymbol={onGoToSymbol}
-      onRefactor={onRefactor}
-      reviewRanges={reviewRanges}
-      activeReviewId={activeReviewId}
-      onReviewMarkerHover={onReviewMarkerHover}
-      scrollToReviewId={scrollToReviewId}
-      onReviewMarkerClick={onReviewMarkerClick}
-      onCreateCommentFromSelection={onCreateCommentFromSelection}
-    />
-  );
-}
 
 interface ProjectEditorLayoutProperties {
   projectId: string;
@@ -506,93 +176,9 @@ export function ProjectEditorLayout({
     editorPending,
   } = useManagedCollab({ projectId, selectedFile, contentState, canEdit, cursorLine: currentLine });
 
-  // Per-file git status for the file tree's badges (a read-only display enhancement — see the hook
-  // for why a project with no connected git repository resolves to an empty map rather than an error).
-  // `refetch` is reused as the commit dialog's onCommitted callback below, so a commit's badges update
-  // from the SAME hook instance rather than adding a second status subscription.
-  const { statusByFileNodeId, refetch: refetchGitTreeStatus } = useGitTreeStatus(projectId);
-  // Branch/sync/last-sync readout for the header's connection status bar. Same not-connected
-  // convention as the tree-status hook above: a 404 means `connected:false`, not an error.
-  const { status: gitStatus, connected: gitConnected, refetch: refetchGitStatus } = useGitStatus(projectId);
-  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
-
-  // Real ahead/behind commit counts for the status bar's "Pull available" affordance — distinct from
-  // `gitStatus.ahead`/`.behind`, which are a fixed-`0` placeholder never rendered for this. Gated on
-  // `gitConnected` so a project with no connected repository never polls (and never 404s every 4s).
-  const { behindAhead, refetch: refetchBehindAhead } = useBehindAhead(projectId, gitConnected);
-  // Tracks the latest `push.clear` so `handlePullSucceeded` (defined below, before `push` exists)
-  // can dismiss a lingering push error whenever a pull/commit/branch-switch/discard lands, without
-  // a circular dependency between the two hooks (`push` itself is constructed with
-  // `handlePullSucceeded` as its own success callback — see below).
-  const pushClearReference = useRef<() => void>(() => {});
-  // A pull refetches the same three git read models a commit does, so its badges/counts/status all
-  // move together once it lands. It also dismisses a lingering push error (e.g. a stale
-  // `non_fast_forward` "pull first" alert) now that the condition it warned about may be gone.
-  const handlePullSucceeded = useCallback(() => {
-    refetchGitTreeStatus();
-    refetchGitStatus();
-    void refetchBehindAhead();
-    pushClearReference.current();
-  }, [refetchGitTreeStatus, refetchGitStatus, refetchBehindAhead]);
-  const pull = usePull(projectId, handlePullSucceeded);
-  // Pulling requires the same editor capability as committing (see the route's requirement).
-  const canPull = canEdit;
-
-  // Push preview: read-only, so it needs no permission gate of its own beyond the status bar only
-  // showing the trigger once there is something ahead to preview.
-  const [pushPreviewOpen, setPushPreviewOpen] = useState(false);
-
-  // A push refetches the same three git read models a pull does, so the ahead count (and the
-  // Push button it gates) drops away once it lands.
-  const push = usePush(projectId, handlePullSucceeded);
-  // Keep the ref pointing at the latest `push.clear` as a committed effect rather than mutating it
-  // during render (a render-time side effect). `handlePullSucceeded` reads it through the ref, so it
-  // still sees the current `push.clear` without a circular dependency between the two hooks.
-  useEffect(() => {
-    pushClearReference.current = push.clear;
-  }, [push.clear]);
-  // Pushing requires the same editor capability as committing/pulling (see the route's requirement).
-  const canPush = canEdit;
-
-  // Branch switching changes the working tree exactly like a pull does, so it refetches the same
-  // three git read models on success — reusing the pull handler rather than duplicating it.
-  const branches = useBranches(projectId, handlePullSucceeded);
-  // Creating/switching branches requires the same editor capability as committing/pulling; reading
-  // the list does not (the route allows any project member), but the switcher is editor-only here.
-  const canSwitchBranches = canEdit;
-
-  // Conflict resolution panel: shown once a pull/branch-switch pauses in AWAITING_CONFLICT (surfaced
-  // as the status bar's CONFLICTED sync status). Completing or undoing changes the working tree the
-  // same way a pull does, so it reuses the same refresh callback — and additionally closes the panel,
-  // since there is nothing left to resolve once it succeeds.
-  const [conflictPanelOpen, setConflictPanelOpen] = useState(false);
-  const handleConflictsResolved = useCallback(() => {
-    handlePullSucceeded();
-    setConflictPanelOpen(false);
-  }, [handlePullSucceeded]);
-  const conflicts = useConflicts(projectId, handleConflictsResolved);
-
-  // History panel: read-only, so it needs no permission gate beyond having a connected repository
-  // to read history from. `HistoryPanel` only fetches while it is open, so mounting it here
-  // unconditionally never fires a request until the viewer actually opens it.
-  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
-
-  // Blame view: read-only, scoped to whichever file is currently open in the editor. Same
-  // fetch-only-while-open shape as the history panel.
-  const [blameViewOpen, setBlameViewOpen] = useState(false);
-
-  // Discard dialog: every unstaged/untracked path is discardable in one action. Reuses the same
-  // `gitStatus` this header already reads, rather than a separate fetch.
-  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
-  const discardablePaths = useMemo(
-    () => [...(gitStatus?.unstaged ?? []), ...(gitStatus?.untracked ?? [])].map((change) => change.path),
-    [gitStatus],
-  );
-
-  // Collaboration-facing "git activity" signal: lets a member notice that ANOTHER member's (or the
-  // system's) whole-project git operation is running, purely from polling the same `GitOperation`
-  // row the progress read uses — no separate awareness channel.
-  const { activeOperation: activeGitOperation } = useGitActivity(projectId, gitConnected);
+  // All git-sync wiring: read-model subscriptions, mutation hooks and dialog state.
+  const git = useProjectGit({ projectId, canEdit });
+  const { statusByFileNodeId } = git;
 
   // ── Review comments & tasks (feature 038) ──────────────────────────────────────────────────
   // Comments are available only for a collaborative .adoc (a live Y.Doc + document id). The review
@@ -767,618 +353,88 @@ export function ProjectEditorLayout({
     setPendingReviewFocus((previous) => (previous && previous.fileNodeId === selectedFile?.nodeId ? previous : null));
   }, [selectedFile?.nodeId, resetScroll]);
 
-  // Level offset the open file inherits from its include ancestors; 0 until the index
-  // resolves it or when the file is the tree root. Re-evaluates heading levels on main-file change.
-  const editorInheritedOffset = projectIndex && selectedFile ? projectIndex.inheritedOffset(selectedFile.nodeId) : 0;
-  // Attributes the open file inherits from the documents that include it; empty until the
-  // index resolves them or when the file is the tree root. Seeds the `{attr}` collapse-to-value
-  // display so cross-document references render their value.
-  const editorInheritedAttributes =
-    projectIndex && selectedFile ? projectIndex.inheritedAttributes(selectedFile.nodeId) : undefined;
-  // The open file's RESOLVED cross-document scope (inherited + own definitions): drives the editor's
-  // known-vs-unknown `{name}` highlighting so a reference resolving in a parent/included file marks
-  // as known. Recomputed when the index rebuilds (live).
-  const editorResolvedScope =
-    projectIndex && selectedFile ? resolvedScopeOf(selectedFile.nodeId) : undefined;
-  // Render the assembled main document (includes inlined) only while the open file IS the
-  // configured main file. Editing an included child still previews that child standalone with exact
-  // source-line scroll-sync. (When the main file itself has content after an include, scroll-sync to
-  // those later lines is approximate — an inherent limit of an assembled multi-file preview; lines
-  // before the first include still map exactly.)
-  const previewMainPath = mainFile && selectedFile?.nodeId === mainFile && projectIndex
-    ? (projectIndex.pathOf(mainFile) ?? undefined)
-    : undefined;
-
-  // Cross-document attribute resolution: when a main file is configured and the open
-  // file is NOT it, the preview resolves the open file's `{name}` references against the scope it
-  // inherits under the main-file root. Paths key the worker's resolution model (matching getFiles).
-  const previewRootPath = mainFile && projectIndex ? (projectIndex.pathOf(mainFile) ?? undefined) : undefined;
-  const previewOpenPath =
-    selectedFile && projectIndex ? (projectIndex.pathOf(selectedFile.nodeId) ?? undefined) : undefined;
-
-  // Whether the open file is OUTSIDE the configured main document's include tree (not the main file and
-  // not reachable through its includes). Only meaningful when a main file is configured; false otherwise
-  // (with no main, the open file IS its own document). Assembled from the main root the same way the
-  // outline/scroll-sync bridges are, so the three agree on reachability. When true, the on-screen preview
-  // renders the open file on its own (as its own main document) rather than the unrelated main document,
-  // and both previews surface a short "not part of the main document" notice. The export/download stays
-  // rooted at the main document regardless (see handleExportPdf).
-  const openFileOutsideMainTree = useMemo(() => {
-    // Only the open preview consumes this (its root + the not-part-of-main notice), and assembling the
-    // include tree is O(document size); skip the whole walk while the preview is closed so a closed panel
-    // never taxes typing. Read the file map lazily (cached to one call): the helper also short-circuits
-    // before any file read when no main file is configured or the open file IS the main file, so
-    // getProjectFiles() is only invoked when reachability actually has to be assembled.
-    if (!previewOpen) return false;
-    let files: Record<string, string> | null = null;
-    return isOpenFileOutsideMainTree(previewRootPath, previewOpenPath, (path: string) => {
-      files ??= getProjectFiles();
-      return files[path] ?? null;
-    });
-    // liveOverlayContent + reachableDocVersion are the same edit/content signals that refresh the render,
-    // so a newly-added (or removed) include that changes reachability re-evaluates this.
-  }, [previewOpen, previewRootPath, previewOpenPath, getProjectFiles, liveOverlayContent, reachableDocVersion]);
-
-  // ── Export to PDF ──────────────────────────────────────────────────────────────────────────
-  // Fully client-side one-click export. The render root mirrors the symbol-index root: the
-  // configured main file, else the open file. Both are resolved to project-relative paths; the
-  // control is disabled until a root path is known.
-  const { config: renderConfig, loading: renderConfigLoading } = useProjectRenderConfig(projectId);
-  // The extensions this project renders with, and the Ruby that implements them. Both the preview and
-  // the export read the SAME two values, so a document exported from here matches what was previewed.
-  const projectExtensionIds = useMemo(
-    () => renderConfig.extensions?.enabled ?? NO_EXTENSION_IDS,
-    [renderConfig.extensions?.enabled],
-  );
-  const { bundle: projectExtensionBundle, ready: projectExtensionsReady } = usePdfExtensionBundle(
+  // The whole render pipeline for the open document: resolved editor scopes, PDF/HTML export, the
+  // live HTML/PDF preview, click-to-source navigation and the assembled outline.
+  const pipeline = useEditorRenderPipeline({
     projectId,
-    projectExtensionIds,
-  );
-  /**
-   * Whether an export would render the project's ACTUAL configuration.
-   *
-   * Both halves start empty and fill in asynchronously, and neither failure is visible in the
-   * result: an export taken before the render config arrives silently drops the project's theme,
-   * page size and extension selection, and one taken before the extension sources arrive drops the
-   * extensions alone. The document renders perfectly either way, which is what makes gating the
-   * control the only honest fix — there is nothing to detect afterwards.
-   *
-   * The live preview needs no such gate: it re-renders when these settle.
-   */
-  const exportConfigurationReady = !renderConfigLoading && projectExtensionsReady;
-
-  const { exportPdf, isExporting: isExportingPdf, phase: exportPhase, error: exportError, diagnostics: exportDiagnostics } =
-    usePdfExport({ extensions: projectExtensionBundle, projectName });
-  const exportRootFileId = mainFile ?? selectedFile?.nodeId ?? null;
-  const exportMainPath = mainFile && projectIndex ? projectIndex.pathOf(mainFile) : null;
-  const exportOpenPath =
-    (selectedFile && projectIndex ? projectIndex.pathOf(selectedFile.nodeId) : null) ?? exportMainPath;
-  // Project-level render configuration: the options a project applies to every render. Resolved to an
-  // attribute map (soft-defaults, so a document header still wins) plus the extra project-relative font
-  // directories to append to the PDF font search path.
-  const projectRenderAttributes = useMemo(() => {
-    const resolved = resolveRenderAttributes(renderConfig);
-    // The project's own "Language" setting (which drives the editor spell checker) is ALSO the render
-    // `lang` here, so the PDF/HTML output localizes to it — one language control, not two. Soft-
-    // defaulted (`@`) and seeded first so a document `:lang:` header still overrides it.
-    const configured =
-      projectLanguage === null || projectLanguage === ''
-        ? resolved.attributes
-        : { lang: `${projectLanguage}${SOFT_DEFAULT_SUFFIX}`, ...resolved.attributes };
-    // Then the app's own render defaults UNDERNEATH all of it (`icons=font`, so admonitions get icons
-    // in every project and not just in one whose header declares `:icons:`). This is the single seam
-    // every real render passes through — the HTML preview and export take this map as
-    // `projectAttributes`, the PDF preview and export take it as the snapshot's attribute seed — so
-    // the four of them cannot disagree about it. See render-app-defaults.ts for why it lives here.
-    return { ...resolved, attributes: withAppRenderDefaults(configured) };
-  }, [renderConfig, projectLanguage]);
-
-  // The render root's own resolved attributes (it inherits none), layered OVER the project render-config
-  // defaults so the exported PDF and the on-screen preview share one seed and a document header still
-  // overrides a project default. The empty-map shortcut below preserves the base map identity when
-  // there is nothing to layer; it no longer fires in practice, since the app render defaults
-  // (`withAppRenderDefaults`) always contribute at least one entry.
-  const baseExportAttributes =
-    exportRootFileId && projectIndex ? resolvedScopeOf(exportRootFileId) : NO_EXPORT_ATTRIBUTES;
-  const exportAttributes = useMemo<ReadonlyMap<string, string>>(() => {
-    const projectAttributes = projectRenderAttributes.attributes;
-    if (Object.keys(projectAttributes).length === 0) return baseExportAttributes;
-    const merged = new Map<string, string>(Object.entries(projectAttributes));
-    for (const [name, value] of baseExportAttributes) merged.set(name, value);
-    return merged;
-  }, [projectRenderAttributes, baseExportAttributes]);
-
-  // The live PREVIEW's render root diverges from the export root ONLY when the open file is outside the
-  // main document's tree: then it is previewed as its own main document (root + attribute scope = the open
-  // file), so the panel shows what is being edited instead of an unrelated document. Otherwise it mirrors
-  // the export root (the configured main document). The export always uses the main root — never this.
-  const { mainPath: previewSnapshotMainPath, rootFileId: previewRootFileId } = resolvePreviewRoot({
-    outsideMainTree: openFileOutsideMainTree,
-    mainPath: exportMainPath,
-    mainRootFileId: exportRootFileId,
-    openFileId: selectedFile?.nodeId ?? null,
-  });
-  const basePreviewAttributes =
-    previewRootFileId && projectIndex ? resolvedScopeOf(previewRootFileId) : NO_EXPORT_ATTRIBUTES;
-  const previewAttributes = useMemo<ReadonlyMap<string, string>>(() => {
-    const projectAttributes = projectRenderAttributes.attributes;
-    if (Object.keys(projectAttributes).length === 0) return basePreviewAttributes;
-    const merged = new Map<string, string>(Object.entries(projectAttributes));
-    for (const [name, value] of basePreviewAttributes) merged.set(name, value);
-    return merged;
-  }, [projectRenderAttributes, basePreviewAttributes]);
-
-  // Per-project cache of fetched binary asset (image / custom-font) bytes. Images and fonts live
-  // server-side and are reached over the authenticated image endpoint; their bytes are not in the
-  // editor's text cache. The cache fetches them once each and feeds them into the render snapshot as
-  // `kind: 'binary'` files so the engine embeds the picture instead of its not-found placeholder.
-  const assetCache = useProjectAssetCache(projectId);
-  const { getAssets, getAssetBytes, ensureAssets, loadAssets, assetsSettled, assetVersion } = assetCache;
-
-  // The theme and `.bib` contents, which the include-graph cache above can never reach. Without this
-  // the snapshot has no theme content, and theme DISCOVERY — which filters the snapshot's own text
-  // paths — cannot even see the theme's path, so the export renders unthemed.
-  const { getAuxiliaryFiles, auxiliaryVersion } = useProjectAuxiliaryTextCache(
-    projectId,
+    projectName,
+    projectLanguage,
+    mainFile,
+    selectedFile,
+    contentState,
+    projectIndex,
+    getProjectFiles,
+    resolvedScopeOf,
+    refreshProjectIndex,
+    fileIdForPath,
+    reachableDocVersion,
+    liveContent,
+    liveOverlayContent,
+    previewOpen,
+    previewStyle,
+    showIncludedFiles,
+    scrollSyncEnabled,
+    outlineScope,
     renameRefreshNonce,
     changedFileNodeId,
-  );
-
-  // The theme document the Print preview dresses its page in: the export's own choice, resolved by
-  // the export's own function from the same merged file snapshot the export builds from. Computed
-  // only while that style is selected — the other two ignore it, and reading the file maps for
-  // nothing on every render of a document being typed is exactly the cost this feature must not add.
-  //
-  // The version counters are what make this live: the maps are mutable behind stable callbacks, so a
-  // collaborator's theme edit (auxiliaryVersion, driven by the UNFILTERED content-changed stream — a
-  // theme is never include-reachable) and the author's own edit to an open theme (liveOverlayContent)
-  // each have to be named here or the page would keep the theme it first saw.
-  const printTheme = useMemo<ProjectTheme>(
-    () =>
-      previewStyle === 'print'
-        ? resolveProjectTheme({
-            files: { ...getAuxiliaryFiles(), ...getProjectFiles() },
-            // Stripped of its soft-default marker, exactly as the export's snapshot builder strips
-            // it: every project attribute carries `@` so a document header can override it, and the
-            // marker is not part of the path.
-            declaredThemePath: stripSoftDefault(projectRenderAttributes.attributes['pdf-theme'] ?? ''),
-          })
-        : {},
-    [
-      previewStyle,
-      getAuxiliaryFiles,
-      getProjectFiles,
-      auxiliaryVersion,
-      reachableDocVersion,
-      liveOverlayContent,
-      projectRenderAttributes,
-    ],
-  );
-
-  // Shared snapshot builder: the single seam that captures the editor's project state into an
-  // immutable render snapshot. Both the one-click export and the live preview build from it so the
-  // exported PDF and the on-screen preview render exactly the same document, given the same binary
-  // records. Returns null until a render root path is known. This is light main-thread work (a map
-  // over the text cache plus the sandbox guard); all heavy rendering happens off-thread in the worker.
-  const buildSnapshot = useCallback(
-    (
-      binaryFiles: readonly SnapshotFile[],
-      snapshotMainPath: string | null,
-      snapshotAttributes: ReadonlyMap<string, string>,
-    ): ProjectSnapshot | null => {
-      if (exportOpenPath === null) return null;
-      // Text project files (AsciiDoc, YAML theme, .bib) from the symbol index's content cache, plus the
-      // fetched binary assets keyed by the SAME project-relative path the engine resolves them to (so
-      // `image::` targets — including paths with spaces, e.g. `New Folder/x.png` — find their bytes).
-      // Auxiliary files first so a path the editor is also holding live (an open theme) wins — the
-      // preview must show what is on screen, not the last-fetched copy.
-      const textFiles: SnapshotFile[] = Object.entries({
-        ...getAuxiliaryFiles(),
-        ...getProjectFiles(),
-      }).map(([path, content]): SnapshotFile => ({ path, kind: 'text', content }));
-      const { snapshot } = buildProjectSnapshot({
-        files: [...textFiles, ...binaryFiles],
-        mainPath: snapshotMainPath,
-        openPath: exportOpenPath,
-        attributes: snapshotAttributes,
-        extraFontDirs: projectRenderAttributes.extraFontDirs,
-        enabledExtensions: projectExtensionIds,
-      });
-      return snapshot;
-    },
-    [
-      exportOpenPath,
-      projectRenderAttributes,
-      projectExtensionIds,
-      getProjectFiles,
-      getAuxiliaryFiles,
-      auxiliaryVersion,
-    ],
-  );
-
-  /**
-   * Guarantee the render root's content is present before an export dispatches.
-   *
-   * Every export names the main document as its root, and every engine fails outright if that path
-   * carries no content: the PDF engine reports "root document is missing from the project snapshot",
-   * and the HTML render has nothing to assemble includes from. The symbol index fetches file content
-   * asynchronously, so the root can be transiently absent even while `exportMainPath` is already known
-   * and the button is enabled: at first load, or for a frame after a file-tree / content-changed SSE
-   * event invalidates and refetches it (exactly the shape the E2E export test hit — a fresh project
-   * whose main file was just created/configured). A memo-based button gate cannot close the SSE window
-   * (the invalidation does not change `projectIndex`'s identity), so the click handler is
-   * authoritative: if the root content is missing, force a rebuild and wait for it.
-   *
-   * If it still has not arrived the caller falls through deliberately: the engine then surfaces its
-   * own specific, user-visible error rather than the click silently doing nothing.
-   */
-  const ensureRootLoaded = useCallback(async () => {
-    const rootLoaded = (): boolean =>
-      exportMainPath === null ||
-      Object.prototype.hasOwnProperty.call(getProjectFiles(), exportMainPath);
-    if (rootLoaded()) return;
-    await refreshProjectIndex();
-    await waitUntil(rootLoaded, {
-      timeoutMs: EXPORT_ROOT_WAIT_TIMEOUT_MS,
-      intervalMs: EXPORT_ROOT_WAIT_INTERVAL_MS,
-    });
-  }, [exportMainPath, getProjectFiles, refreshProjectIndex]);
-
-  // One-click export: enumerate the referenced assets, AWAIT their bytes (so nothing renders as a
-  // placeholder in the downloaded file), then build the snapshot with them and render.
-  const handleExportPdf = useCallback(async () => {
-    if (exportOpenPath === null) return;
-    await ensureRootLoaded();
-
-    const assetPaths = collectReferencedAssetPaths({ files: getProjectFiles(), attributes: exportAttributes });
-    const binaryFiles = await loadAssets(assetPaths);
-    // The export/download ALWAYS renders from the configured main document (root = exportMainPath, or the
-    // open file when no main is configured) — never the preview's per-open-file root.
-    const snapshot = buildSnapshot(binaryFiles, exportMainPath, exportAttributes);
-    if (snapshot === null) return;
-    exportPdf(snapshot);
-  }, [exportOpenPath, getProjectFiles, exportAttributes, exportMainPath, loadAssets, buildSnapshot, exportPdf, ensureRootLoaded]);
-
-  // ── Export to HTML ──────────────────────────────────────────────────────────────────────────
-  // The same whole-document scope as the PDF export, rendered by the engine that already draws the
-  // preview and saved as a real standalone page. Packaging, stylesheet and palette are project
-  // settings so a team's exports are consistent; the stylesheet falls back to whichever one the
-  // reader currently has the preview in, so an export with nothing configured matches what they see.
-  const {
-    exportHtml,
-    isExporting: isExportingHtml,
-    phase: htmlExportPhase,
-    error: htmlExportError,
-    failures: htmlExportFailures,
-  } = useHtmlExport({ projectId });
-
-  const handleExportHtml = useCallback(async () => {
-    if (exportOpenPath === null) return;
-    await ensureRootLoaded();
-    const htmlExport = renderConfig.htmlExport;
-    exportHtml({
-      // The export always renders the configured main document — never the preview's per-open-file
-      // root — so what is downloaded is the whole document, exactly as the PDF export does it.
-      rootPath: exportMainPath ?? exportOpenPath,
-      // The download is named after the project, not the root — see `exportFileName`.
-      projectName,
-      files: getProjectFiles(),
-      projectAttributes: projectRenderAttributes.attributes,
-      packaging: htmlExport?.packaging ?? DEFAULT_HTML_EXPORT_PACKAGING,
-      style: htmlExport?.style ?? htmlExportStyleFor(previewStyle),
-      theme: htmlExport?.theme ?? DEFAULT_HTML_EXPORT_THEME,
-    });
-  }, [
-    exportOpenPath,
-    exportMainPath,
-    ensureRootLoaded,
-    getProjectFiles,
-    projectName,
-    projectRenderAttributes,
-    renderConfig.htmlExport,
-    previewStyle,
-    exportHtml,
-  ]);
-
-  // ── Live PDF preview ─────────────────────────────────────────────────────────────────────────
-  // The single preview panel switches between its HTML and PDF renderings via the header's segmented
-  // control; the PDF is fed by the SAME snapshot builder as the export. Building the snapshot is gated
-  // on the panel being open AND in PDF mode so no work is done otherwise, and recomputes on the same
-  // signals that drive the outline: the open file's live edits (`liveOverlayContent`) and reachable-doc
-  // changes (`reachableDocVersion`). A fresh snapshot identity is the hook's sole render trigger, and
-  // the hook debounces + renders entirely in a worker, so the editor thread is never blocked.
-  // `changedPaths` is intentionally omitted — the layout tracks no per-render path delta — so each
-  // render repopulates the whole VFS.
-  const [previewMode, setPreviewMode] = useState<'html' | 'pdf'>('html');
-  // Whether the OPEN FILE is something the document preview can render.
-  //
-  // A theme is not: it is YAML, it has its own preview inside the theme editor, and rendering it as a
-  // document produces a PDF of raw YAML text. Leaving the document preview active for it did exactly
-  // that — and because the last successful render is retained, that page of YAML was then shown for a
-  // few seconds the moment the author opened a real document, until the first real render landed.
-  const openFilePreviewable = selectedFile !== null && isAsciiDocFile(selectedFile.nodeName);
-
-  const pdfPreviewActive = previewOpen && previewMode === 'pdf' && openFilePreviewable;
-  // Capture the project for a page-formatted render — deliberately as a FUNCTION the preview hook
-  // calls when a render is actually due, not as a value computed here.
-  //
-  // The identity of this callback still changes on every edit signal, which is what schedules the
-  // render; what it no longer does is DO the work on every edit signal. Capturing the snapshot copies
-  // every project file and re-runs the sandbox guard over every path, and enumerating the referenced
-  // assets scans all of them for image macros — both proportional to the size of the project, both
-  // synchronous, and both previously recomputed on each keystroke to feed a render that happens at
-  // most once a second. Behind the debounce they run once per render instead.
-  //
-  // The asset enumeration lives here rather than in its own effect for the same reason and for one
-  // more: warming the cache from the state that is being captured keeps the two describing the same
-  // document. Each arriving image bumps `assetVersion`, which re-schedules a render that then includes
-  // the picture. The preview roots at previewSnapshotMainPath (the main document, or the open file
-  // when it is outside the main tree) with the matching attribute scope — distinct from the export's
-  // always-main root.
-  const capturePreviewSnapshot = useCallback((): ProjectSnapshot | null => {
-    const referencedAssets = collectReferencedAssetPaths({
-      files: getProjectFiles(),
-      attributes: previewAttributes,
-    });
-    ensureAssets(referencedAssets);
-    // Nothing is rendered until the pictures this document asks for have been answered. Rendered
-    // without them, the engine reports each one as "image to embed not found or not readable" — an
-    // alarming warning about a file that is present and already on its way — and the whole
-    // page-formatted render, seconds of it, is then done again the moment the bytes land. The fetch is
-    // the cheaper of the two waits by a wide margin.
-    //
-    // This holds only the renders that reference an asset nobody has fetched yet, which in practice
-    // means the first one after the panel opens. A cached asset settles instantly, so typing is
-    // untouched. Every settlement — bytes or an empty answer — bumps `assetVersion`, which is what
-    // brings the held render back.
-    if (!assetsSettled(referencedAssets)) return null;
-    return buildSnapshot(getAssets(), previewSnapshotMainPath, previewAttributes);
-    // liveOverlayContent + reachableDocVersion are edit/content signals, and assetVersion is the
-    // binary-arrival signal, that must refresh this callback's identity even though the functions it
-    // calls are referentially stable across them (see the outline memo for the same repopulate
-    // pattern) — the identity change is what schedules the next render.
-  }, [buildSnapshot, getAssets, ensureAssets, assetsSettled, getProjectFiles, previewSnapshotMainPath, previewAttributes, liveOverlayContent, reachableDocVersion, assetVersion]);
-  const {
-    pdf: previewPdf,
-    isRendering: isPreviewRendering,
-    phase: previewPhase,
-    diagnostics: previewDiagnostics,
-    // The whole-render failure, as opposed to the per-resource diagnostics beside it. The panel is the
-    // only place an author can learn that the live preview stopped and why — a refusal the engine
-    // explains (a document past the supported size, say) is worth nothing if it is dropped here.
-    error: previewError,
-    sourceMap: previewSourceMap,
-    stats: previewStats,
-    // The snapshot the PDF on screen was rendered from. Everything derived from that render is keyed
-    // to it rather than to the live buffer, which has moved on — see the scroll-sync memo below.
-    renderedSnapshot: previewRenderedSnapshot,
-  } = usePdfPreview({
-    snapshot: pdfPreviewActive ? capturePreviewSnapshot : null,
-    isEnabled: pdfPreviewActive,
-    extensions: projectExtensionBundle,
+    cmOutlineEntries,
+    presenceByFile,
+    editorPending,
+    editorCollab,
+    editorConnectionState,
+    scrollRequest,
+    revealLine,
+    handleNavigateToFile,
+    handleLineClick,
+    pendingXrefLine,
   });
-
-  // Source-line count of the live buffer, driving the PDF preview's proportional scroll-sync fallback
-  // (used whenever the engine emitted no source map — the editor's line maps onto the same fraction of
-  // the page stack).
-  const liveContentLineCount = useMemo(() => liveContent.split('\n').length, [liveContent]);
-
-  /**
-   * Whether the open file's content is still on its way, so the preview can tell an empty buffer that
-   * means "not here yet" from one that means "this file is empty".
-   *
-   * "Pending" is only ever a statement that something is STILL COMING, so each clause names the thing
-   * that will deliver it. An earlier version asked the opposite question — "do we have content yet?" —
-   * and answered yes-still-pending whenever we did not. That is indistinguishable from a load that
-   * FAILED: on a content fetch that rejects, `useFileSelection` leaves `content: null` with an error
-   * and no collab, so the answer stayed pending forever and the preview went on showing the previous
-   * file's document, marked as catching up, beside an editor pane displaying the error. Permanently
-   * wrong beats briefly blank, so a settled-with-no-content file must render as the empty document it
-   * has turned out to be.
-   *
-   * Clause 1 — the REST path, pending exactly while its fetch is in flight.
-   * Clause 2 — collaboration, whose document never comes through `content` at all: a collab file
-   * arrives by the editor's own seeding, so it is pending until the session says it is synced (and
-   * `editorPending` covers both the discovery hop before a binding exists and the offline fallback's
-   * own fetch). Both end in a bounded time, which is what makes them safe to wait on.
-   * Clause 3 — the same-commit guard. `liveOverlayContent` is computed DURING RENDER from the fetched
-   * content, while the buffer handed to the preview (`liveContent`) is applied by an effect on that
-   * same content — one commit later. Without it there is an in-between commit reporting "settled"
-   * about a buffer that is still the reset-to-empty one, and the preview believes the file it just
-   * opened is genuinely empty: it publishes a blank render and drops the flag that would have flushed
-   * the real content on arrival. That commit and nothing else — once the user types the overlay IS
-   * the buffer, and while the overlay is null the earlier clauses already answer.
-   */
-  const previewContentPending =
-    (liveOverlayContent === null &&
-      (contentState.isLoading ||
-        editorPending ||
-        (editorCollab !== null && editorConnectionState !== 'synced'))) ||
-    (liveOverlayContent !== null && liveOverlayContent !== liveContent);
-
-  // Accurate scroll-sync bridge: the engine's source map is keyed to the ASSEMBLED (include-expanded)
-  // document the worker converts, but the editor's cursor line is in the OPEN file. Build the same
-  // provenance map the include-resolve stage would (via the shared helper), gated on the PDF preview
-  // being active with scroll-sync on and a source map present so no assembly cost is paid otherwise.
-  //
-  // Built from the snapshot the preview was RENDERED from, which is the only document the source map
-  // beside it describes — and which changes once per completed render rather than once per keystroke.
-  // Assembling the live buffer instead lined a fresh assembly up against an older render's
-  // coordinates, and did the whole include expansion, plus a split of the assembled text into one
-  // string per line, on every character typed.
-  const assembledScrollContext = useMemo(() => {
-    if (!pdfPreviewActive || !scrollSyncEnabled || previewRenderedSnapshot === undefined) return null;
-    if (previewSourceMap === undefined || previewSourceMap.length === 0) return null;
-    return buildAssembledScrollContext(previewRenderedSnapshot);
-  }, [pdfPreviewActive, scrollSyncEnabled, previewRenderedSnapshot, previewSourceMap]);
-  const assembledLineToSource = assembledScrollContext?.lineToSource ?? null;
-
-  // Lift the engine source map to block visual-start lines (title/attribute lines above each delimiter),
-  // the PDF-side twin of the HTML preview's data-source-line adjustment, so a click on a block's title
-  // scrolls to that block instead of the previous one. Falls back to the raw map when no assembly context
-  // is available (e.g. scroll-sync off) — the panel then uses the untouched engine coordinates.
-  const adjustedSourceMap = useMemo(() => {
-    if (previewSourceMap === undefined) return undefined;
-    if (assembledScrollContext === null) return previewSourceMap;
-    return liftSourceMapToBlockStarts(previewSourceMap, assembledScrollContext.assembledLines);
-  }, [previewSourceMap, assembledScrollContext]);
-
-  // Translate the editor's current scroll request (an open-file line) into the assembled-document line
-  // the source map is keyed in. A fresh scrollRequest object recomputes this so the panel scrolls to the
-  // exact rendered block; undefined when no mapping is available (the panel falls back to proportional).
-  const assembledScrollLine = useMemo<number | undefined>(() => {
-    if (assembledLineToSource === null || scrollRequest === null || previewOpenPath === undefined) {
-      return undefined;
-    }
-    return openLineToAssembledLine(assembledLineToSource, previewOpenPath, scrollRequest.line);
-  }, [assembledLineToSource, scrollRequest, previewOpenPath]);
-
-  // Reveal a diagnostic's source location, reusing the file/line navigation seam: in-place when it
-  // is the open file, otherwise switch to its file and reveal the line once the new editor mounts.
-  const handleDiagnosticLocation = useCallback(
-    (location: DiagnosticLocation) => {
-      if (previewOpenPath === location.path) {
-        revealLine(location.line ?? 1);
-        return;
-      }
-      pendingXrefLine.current = location.line ?? null;
-      handleNavigateToFile(location.path);
-    },
-    [previewOpenPath, revealLine, handleNavigateToFile, pendingXrefLine],
-  );
-
-  // Reveal the editor source of a block clicked in the HTML preview. The click carries the block's line in
-  // the preview's OPEN-FILE-rooted assembled coordinates. With include bodies hidden every line is the open
-  // file's own, so the line is used directly; with bodies shown, reverse-map through the open-file-rooted
-  // provenance map so a click inside an included body jumps to that file. Reuses the diagnostic seam.
-  const handlePreviewSourceNavigate = useCallback(
-    (assembledLine: number) => {
-      if (previewOpenPath === undefined) return;
-      let target: DiagnosticLocation = { path: previewOpenPath, line: assembledLine };
-      if (showIncludedFiles) {
-        const files = getProjectFiles();
-        const map = buildOpenFileLineToSource(previewOpenPath, (path: string) => files[path] ?? null, true);
-        const entry = map?.[assembledLine - 1];
-        if (entry) target = { path: entry.path, line: entry.sourceLine };
-      }
-      handleDiagnosticLocation(target);
-    },
-    [previewOpenPath, showIncludedFiles, getProjectFiles, handleDiagnosticLocation],
-  );
-
-  // Reveal the editor source of a block clicked in the PDF preview. The click resolves (best-effort) to a
-  // line in the MAIN-rooted assembled document; reverse-map it through the same provenance map the PDF
-  // scroll-sync uses to a source {file, line}. Built lazily here since clicks are rare, and from the
-  // snapshot the page on screen was rendered from — the coordinate space the click is expressed in.
-  const handlePdfSourceNavigate = useCallback(
-    (assembledLine: number) => {
-      if (previewRenderedSnapshot === undefined) return;
-      const map = buildAssembledLineToSource(previewRenderedSnapshot);
-      const entry = map?.[assembledLine - 1];
-      if (entry) handleDiagnosticLocation({ path: entry.path, line: entry.sourceLine });
-    },
-    [previewRenderedSnapshot, handleDiagnosticLocation],
-  );
-
-  // Exact PDF click-to-source: the block carried its render-time origin, so jump straight to it — no
-  // reverse mapping through the (possibly newer) buffer, so it can't drift to the wrong file/section.
-  const handlePdfExactSourceNavigate = useCallback(
-    (path: string, line: number) => {
-      handleDiagnosticLocation({ path, line });
-    },
-    [handleDiagnosticLocation],
-  );
-
-  // Full-document outline (feature 032): assemble across include directives when a main file is
-  // configured and the open file is reachable. `getProjectFiles()` overlays the open file's live
-  // content (once its editor has produced it — see `liveOverlayContent`) so in-progress edits are
-  // reflected. Depends on liveOverlayContent (open-file edit), previewOpenPath (open-file change),
-  // and previewRootPath (main-file change).
-  const assembledOutlineResult = useMemo(() => {
-    if (!previewRootPath || !previewOpenPath || !selectedFile) return null;
-    if (outlineScope === 'current') return null; // skip assembly when user wants current-file only
-    // Skip assembly until the file tree is loaded enough to resolve file IDs. Without this guard,
-    // fileIdForPath falls back to the path string, making isOpenFile comparisons always false and
-    // routing every outline heading click through handleNavigateToFile instead of revealLine.
-    if (!fileIdForPath(previewOpenPath)) return null;
-    const files = getProjectFiles();
-    return assembleOutline({
-      rootPath: previewRootPath,
-      openFilePath: previewOpenPath,
-      openFileId: selectedFile.nodeId,
-      readFile: (path: string) => files[path] ?? null,
-      fileIdForPath: (path: string) => fileIdForPath(path) ?? path,
-      scopePreference: 'full',
-    });
-    // `projectIndex` is included so a rebuild that asynchronously fetches a reachable file's content
-    // (e.g. The included file's text arrives after a reload, or a collaborator's live edit lands)
-    // re-runs this memo against the now-populated `getProjectFiles()` snapshot. Without it the memo
-    // would keep the stale assembly because `getProjectFiles` is referentially stable.
-  }, [previewRootPath, previewOpenPath, selectedFile, liveOverlayContent, getProjectFiles, fileIdForPath, projectIndex, reachableDocVersion, outlineScope]);
-
-  // Resolve outline entries and effective scope: prefer the assembled full outline when available
-  // (scope='full'), otherwise use the CM6 single-file entries (current scope).
-  const outlineEntriesRaw: SectionOutlineEntry[] =
-    assembledOutlineResult?.scope === 'full' ? assembledOutlineResult.entries : cmOutlineEntries;
-  const outlineEffectiveScope: 'full' | 'current' =
-    assembledOutlineResult?.scope === 'full' ? 'full' : 'current';
-
-  // Keep the outline array identity STABLE when a rebuild produces a value-equal result. The assembled
-  // outline is recomputed on every symbol-index rebuild (keystrokes, reachable-doc changes, a file
-  // switch that doesn't alter the full document), each time yielding a fresh array; reusing the prior
-  // reference when nothing changed stops the outline panel from re-rendering needlessly.
-  const stableOutlineReference = useRef<SectionOutlineEntry[]>(outlineEntriesRaw);
-  if (!sameOutlineEntries(stableOutlineReference.current, outlineEntriesRaw)) {
-    stableOutlineReference.current = outlineEntriesRaw;
-  }
-  const outlineEntries = stableOutlineReference.current;
-
-  // Peer cursor positions mapped to outline headings (feature 032).
-  // Only peers with a numeric cursorLine contribute; others are ignored.
-  const outlinePresence = useMemo(() => {
-    const peersWithCursor = new Map<string, OutlinePeer[]>();
-    for (const [fileId, peers] of presenceByFile) {
-      const filtered = peers.filter((p): p is OutlinePeer => typeof p.cursorLine === 'number');
-      if (filtered.length > 0) peersWithCursor.set(fileId, filtered);
-    }
-    return mapOutlinePresence(outlineEntries, peersWithCursor);
-  }, [outlineEntries, presenceByFile]);
-
-  // Outline navigation (feature 032): route by provenance.
-  // - Open-file entries (no provenance OR isOpenFile=true) → reveal in the open editor.
-  // - Foreign-file entries (isOpenFile=false with a sourcePath) → switch to that file and reveal
-  //   the source line once the new editor mounts (reuses the xref pending-line seam).
-  const handleOutlineHeadingClick = useCallback(
-    (entry: SectionOutlineEntry) => {
-      if (entry.isOpenFile === false && entry.sourcePath) {
-        pendingXrefLine.current = entry.sourceLine ?? null;
-        handleNavigateToFile(entry.sourcePath);
-        return;
-      }
-      const targetLine = entry.sourceLine ?? entry.line;
-      revealLine(targetLine);
-      if (previewOpen && !scrollSyncEnabled) handleLineClick(targetLine);
-    },
-    [revealLine, handleLineClick, handleNavigateToFile, pendingXrefLine, previewOpen, scrollSyncEnabled],
-  );
-
-  // Project-wide search result activation: reveal in place when the match is in the open file,
-  // otherwise switch to its file and reveal the match line once the new editor mounts (reuses the
-  // same pending-line seam as xref/outline navigation).
-  const handleSearchResultNavigate = useCallback(
-    (target: SearchResultTarget) => {
-      if (selectedFile?.nodeId === target.fileNodeId) {
-        revealLine(target.line);
-        if (previewOpen && !scrollSyncEnabled) handleLineClick(target.line);
-        return;
-      }
-      pendingXrefLine.current = target.line;
-      handleNavigateToFile(target.path);
-    },
-    [selectedFile, revealLine, handleLineClick, handleNavigateToFile, pendingXrefLine, previewOpen, scrollSyncEnabled],
-  );
-
-  const showPreview = openFilePreviewable;
+  const {
+    editorInheritedOffset,
+    editorInheritedAttributes,
+    editorResolvedScope,
+    previewMainPath,
+    previewRootPath,
+    previewOpenPath,
+    openFileOutsideMainTree,
+    assetCache,
+    ensureAssets,
+    getAssetBytes,
+    assetsSettled,
+    assetVersion,
+    projectRenderAttributes,
+    printTheme,
+    renderConfigLoading,
+    exportConfigurationReady,
+    exportOpenPath,
+    isExportingPdf,
+    exportPhase,
+    handleExportPdf,
+    isExportingHtml,
+    htmlExportPhase,
+    handleExportHtml,
+    previewMode,
+    setPreviewMode,
+    showPreview,
+    previewPdf,
+    isPreviewRendering,
+    previewPhase,
+    previewDiagnostics,
+    previewError,
+    previewStats,
+    liveContentLineCount,
+    previewContentPending,
+    adjustedSourceMap,
+    assembledScrollLine,
+    handleDiagnosticLocation,
+    handlePreviewSourceNavigate,
+    handlePdfSourceNavigate,
+    handlePdfExactSourceNavigate,
+    outlineEntries,
+    outlineEffectiveScope,
+    outlinePresence,
+    handleOutlineHeadingClick,
+    handleSearchResultNavigate,
+  } = pipeline;
 
   return (
     // The editor is full-bleed: it cancels the dashboard <main>'s `p-6` with a negative margin and adds
@@ -1396,72 +452,29 @@ export function ProjectEditorLayout({
             <span className="text-xs text-muted-foreground truncate">{projectDescription}</span>
           )}
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <NonLiveIndicator active={nonLive} />
-          <GitActivityIndicator activeOperation={activeGitOperation} />
-          {canSwitchBranches && (
-            <BranchSwitcher
-              current={branches.current}
-              branches={branches.branches}
-              loading={branches.loading}
-              switchPending={branches.switchPending}
-              onSwitch={branches.switchBranch}
-              onCreate={branches.createBranch}
+        <div className="ml-auto flex items-center gap-2 overflow-x-auto">
+          <div className="flex items-center gap-2 shrink-0">
+            <NonLiveIndicator active={nonLive} />
+            <GitToolbar git={git} canEdit={canEdit} />
+          </div>
+          <div className="flex items-center gap-2 shrink-0 border-l pl-2">
+            <PdfExportButton
+              onExport={handleExportPdf}
+              isExporting={isExportingPdf}
+              phase={exportPhase}
+              disabled={exportOpenPath === null || !exportConfigurationReady}
             />
-          )}
-          <GitConnectionStatusBar
-            status={gitStatus}
-            connected={gitConnected}
-            canCommit={canEdit}
-            onCommitClick={() => setCommitDialogOpen(true)}
-            behindAhead={behindAhead}
-            canPull={canPull}
-            onPullClick={pull.openPreview}
-            pullPending={pull.pending}
-            onPreviewPushClick={() => setPushPreviewOpen(true)}
-            canPush={canPush}
-            onPushClick={push.start}
-            pushPending={push.pending}
-          />
-          {gitStatus?.syncStatus === 'CONFLICTED' && (
-            <Button variant="destructive" size="sm" onClick={() => setConflictPanelOpen(true)}>
-              Resolve conflicts
-            </Button>
-          )}
-          {gitConnected && (
-            <Button variant="outline" size="sm" onClick={() => setHistoryPanelOpen(true)}>
-              <History className="mr-2 h-4 w-4" aria-hidden="true" />
-              History
-            </Button>
-          )}
-          {gitConnected && exportOpenPath !== null && (
-            <Button variant="outline" size="sm" onClick={() => setBlameViewOpen(true)}>
-              <UserRoundSearch className="mr-2 h-4 w-4" aria-hidden="true" />
-              Blame
-            </Button>
-          )}
-          {canEdit && discardablePaths.length > 0 && (
-            <Button variant="outline" size="sm" onClick={() => setDiscardDialogOpen(true)}>
-              <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
-              Discard changes
-            </Button>
-          )}
-          <PdfExportButton
-            onExport={handleExportPdf}
-            isExporting={isExportingPdf}
-            phase={exportPhase}
-            disabled={exportOpenPath === null || !exportConfigurationReady}
-          />
-          {/* The HTML export needs the render config (its packaging/style/theme live there) but not the
-              PDF extension bundle, which only the PDF engine runs — so it unlocks a beat earlier. */}
-          <HtmlExportButton
-            onExport={handleExportHtml}
-            isExporting={isExportingHtml}
-            phase={htmlExportPhase}
-            disabled={exportOpenPath === null || renderConfigLoading}
-          />
+            {/* The HTML export needs the render config (its packaging/style/theme live there) but not the
+                PDF extension bundle, which only the PDF engine runs — so it unlocks a beat earlier. */}
+            <HtmlExportButton
+              onExport={handleExportHtml}
+              isExporting={isExportingHtml}
+              phase={htmlExportPhase}
+              disabled={exportOpenPath === null || renderConfigLoading}
+            />
+          </div>
           {canManage && (
-            <>
+            <div className="flex items-center gap-2 shrink-0 border-l pl-2">
               <Button asChild variant="ghost" size="sm">
                 <Link href={`/dashboard/projects/${projectId}/settings`}>
                   <Settings className="mr-2 h-4 w-4" />
@@ -1474,7 +487,7 @@ export function ProjectEditorLayout({
                   Members
                 </Link>
               </Button>
-            </>
+            </div>
           )}
         </div>
       </div>
@@ -1493,69 +506,7 @@ export function ProjectEditorLayout({
         </div>
       )}
 
-      {/* Pull outcome: a synchronous start failure, or the polled operation settling into something
-          other than success. AWAITING_CONFLICT is deliberately neutral (`role="status"`), not an
-          error — resolving conflicts is a separate flow this task does not build. */}
-      {pull.message && pull.message.tone === 'error' && (
-        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {pull.message.text}
-        </div>
-      )}
-      {pull.message && pull.message.tone === 'neutral' && (
-        <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
-          {pull.message.text}
-        </div>
-      )}
-
-      {/* Push outcome: a synchronous start failure, or the polled operation settling into something
-          other than success (including a non-fast-forward refusal) — a push has no neutral outcome. */}
-      {push.message && (
-        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {push.message.text}
-        </div>
-      )}
-
-      {/* Branch switch outcome: a synchronous start failure, or the polled operation settling into
-          something other than success. AWAITING_CONFLICT is deliberately neutral, same as pull's. */}
-      {branches.switchMessage && branches.switchMessage.tone === 'error' && (
-        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {branches.switchMessage.text}
-        </div>
-      )}
-      {branches.switchMessage && branches.switchMessage.tone === 'neutral' && (
-        <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
-          {branches.switchMessage.text}
-        </div>
-      )}
-
-      {/* PDF export outcome: a fatal failure alert and/or the non-fatal per-resource diagnostics
-          (the export still succeeded). Both surface below the header and clear on the next export. */}
-      {exportError && (
-        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {`Export to PDF failed: ${exportError.message}`}
-        </div>
-      )}
-      {exportDiagnostics.length > 0 && (
-        <div className="shrink-0 border-b px-3 py-2">
-          <PdfDiagnostics diagnostics={exportDiagnostics} onSelectLocation={handleDiagnosticLocation} />
-        </div>
-      )}
-
-      {/* HTML export outcome, on the same terms: a fatal failure, and — separately — the images that
-          could not be retrieved. The second is not a failure: the file downloaded, but those pictures
-          are missing from it, which the author can only know if we say so. */}
-      {htmlExportError && (
-        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {`Export to HTML failed: ${htmlExportError}`}
-        </div>
-      )}
-      {htmlExportFailures.length > 0 && (
-        <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
-          {`${htmlExportFailures.length} image${htmlExportFailures.length === 1 ? '' : 's'} could not be included in the exported HTML: ${htmlExportFailures
-            .map((failure) => failure.source)
-            .join(', ')}`}
-        </div>
-      )}
+      <EditorStatusBanners git={git} pipeline={pipeline} />
 
       {/* Body: sidebar + content + preview */}
       <div className="flex flex-1 overflow-hidden">
@@ -1632,6 +583,12 @@ export function ProjectEditorLayout({
               canManageDictionary={canManageDictionary}
               canConfigureRules={canEdit}
               projectId={projectId}
+              // Blame keys on the OPEN file's own path, never the export root: `exportOpenPath`
+              // falls back to the configured main file's path while the open file's own path is
+              // still resolving, which would render the main file's authorship against the wrong
+              // document. `selectedFile.path` is always the open file's own path.
+              openPath={selectedFile?.path ?? null}
+              gitConnected={git.gitConnected}
               onGrammarStateChange={setGrammarState}
               assetCache={assetCache}
               projectLanguage={projectLanguage}
@@ -1864,66 +821,7 @@ export function ProjectEditorLayout({
         onRenamed={handleSymbolRenamed}
         onClose={() => setRefactorOpen(false)}
       />
-      <CommitDialog
-        projectId={projectId}
-        open={commitDialogOpen}
-        onOpenChange={setCommitDialogOpen}
-        onCommitted={() => {
-          refetchGitTreeStatus();
-          refetchGitStatus();
-          void refetchBehindAhead();
-          push.clear();
-        }}
-      />
-      <PullDialog
-        projectId={projectId}
-        open={pull.confirmOpen}
-        onOpenChange={pull.closeConfirm}
-        onConfirmed={pull.handleConfirmed}
-      />
-      <PushPreviewDialog projectId={projectId} open={pushPreviewOpen} onOpenChange={setPushPreviewOpen} />
-      <BranchSwitchDialog
-        projectId={projectId}
-        open={branches.confirmOpen}
-        branchName={branches.confirmBranchName}
-        code={branches.confirmCode}
-        onOpenChange={branches.closeConfirm}
-        onConfirmed={branches.handleConfirmed}
-      />
-      <HistoryPanelWithDiff
-        projectId={projectId}
-        open={historyPanelOpen}
-        onOpenChange={setHistoryPanelOpen}
-      />
-      {exportOpenPath !== null && (
-        <BlameView
-          projectId={projectId}
-          open={blameViewOpen}
-          onOpenChange={setBlameViewOpen}
-          path={exportOpenPath}
-        />
-      )}
-      <DiscardDialog
-        projectId={projectId}
-        open={discardDialogOpen}
-        onOpenChange={setDiscardDialogOpen}
-        paths={discardablePaths}
-        onDone={handlePullSucceeded}
-      />
-      <ConflictPanel
-        projectId={projectId}
-        open={conflictPanelOpen}
-        onOpenChange={setConflictPanelOpen}
-        files={conflicts.files}
-        loading={conflicts.loading}
-        error={conflicts.error}
-        allResolved={conflicts.allResolved}
-        resolve={conflicts.resolve}
-        complete={conflicts.complete}
-        undo={conflicts.undo}
-        completing={conflicts.completing}
-        message={conflicts.message}
-      />
+      <GitDialogs git={git} projectId={projectId} />
     </div>
   );
 }

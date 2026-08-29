@@ -14,6 +14,8 @@ interface EditorBannersProperties {
   readOnly?: boolean;
   /** True when this text document has no collaborative backing and is therefore read-only. */
   collabUnavailable?: boolean;
+  /** A display message when the inline blame gutter's load was refused, or null/undefined for none. */
+  blameError?: string | null;
 }
 
 const INFO_CLASS =
@@ -72,10 +74,16 @@ export function EditorBanners({
   connectionState,
   readOnly,
   collabUnavailable,
+  blameError,
 }: EditorBannersProperties) {
   return (
     <>
       <ConnectionBanner connectionState={connectionState} readOnly={readOnly} collabUnavailable={collabUnavailable} />
+      {blameError && (
+        <div role="status" data-testid="blame-error-banner" className={WARNING_CLASS}>
+          <span>{blameError}</span>
+        </div>
+      )}
       {externalChange && (
         <div role="status" className={WARNING_CLASS}>
           <span>This file was updated externally.</span>

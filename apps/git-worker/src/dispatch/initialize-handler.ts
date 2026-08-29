@@ -143,6 +143,7 @@ export function createInitializeHandler(
     const result = await initializeRepository.execute({
       actorId: operation.triggeredByUserId,
       projectId: operation.projectId,
+      operationId: operation.id,
       provider: gitRepository.provider.value,
       remoteUrl: gitRepository.remoteUrl,
       token: credential.token,

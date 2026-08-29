@@ -313,7 +313,7 @@ describe('ProjectEditorLayout — page-formatted preview', () => {
   test('captures a snapshot rooted at the main document once the page rendering is showing', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
     switchToPdfPreview();
-    let snapshot: ProjectSnapshot | null = null;
+    let snapshot: ProjectSnapshot | null = null as ProjectSnapshot | null;
     act(() => { snapshot = capturedSnapshotCapture?.() ?? null; });
     expect(snapshot).not.toBeNull();
     expect(snapshot?.rootPath).toBe('main.adoc');
@@ -324,7 +324,7 @@ describe('ProjectEditorLayout — page-formatted preview', () => {
     mockIndexPresent = false;
     render(<ProjectEditorLayout {...defaultProps} mainFileNodeId={null} />);
     switchToPdfPreview();
-    let snapshot: ProjectSnapshot | null = null;
+    let snapshot: ProjectSnapshot | null = null as ProjectSnapshot | null;
     act(() => { snapshot = capturedSnapshotCapture?.() ?? null; });
     expect(snapshot).toBeNull();
   });

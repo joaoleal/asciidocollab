@@ -151,11 +151,6 @@ jest.mock('@/components/git/branch-switch-dialog', () => ({ BranchSwitchDialog: 
 jest.mock('@/components/git/history-panel-with-diff', () => ({
   HistoryPanelWithDiff: ({ open }: { open: boolean }) => (open ? <div data-testid="history-panel" /> : null),
 }));
-jest.mock('@/components/git/blame-view', () => ({
-  BlameView: ({ open, path }: { open: boolean; path: string }) => (
-    open ? <div data-testid="blame-view">{path}</div> : null
-  ),
-}));
 jest.mock('@/components/git/discard-dialog', () => ({
   DiscardDialog: ({ open, paths, onDone }: {
     open: boolean; paths: readonly string[]; onDone: () => void;
@@ -273,11 +268,17 @@ beforeEach(() => {
 });
 
 describe('ProjectEditorLayout — repository chrome', () => {
-  test('hides the history, blame and discard controls for a project with no repository', () => {
+  test('hides the history and discard controls for a project with no repository', () => {
     render(<ProjectEditorLayout {...defaultProps} />);
     expect(screen.queryByRole('button', { name: /history/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /blame/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /discard changes/i })).not.toBeInTheDocument();
+  });
+
+  test('the git header carries no Blame control (blame is now an inline editor-toolbar toggle)', () => {
+    mockGitConnected = true;
+    render(<ProjectEditorLayout {...defaultProps} />);
+    // The Blame toggle moved to the editor toolbar's settings; it is never a git-sync header button.
+    expect(screen.queryByRole('button', { name: /blame/i })).not.toBeInTheDocument();
   });
 
   test('opens the history panel from the header once a repository is connected', () => {
@@ -286,13 +287,6 @@ describe('ProjectEditorLayout — repository chrome', () => {
     expect(screen.queryByTestId('history-panel')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /history/i }));
     expect(screen.getByTestId('history-panel')).toBeInTheDocument();
-  });
-
-  test('opens the blame view for the open file once a repository is connected', () => {
-    mockGitConnected = true;
-    render(<ProjectEditorLayout {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /blame/i }));
-    expect(screen.getByTestId('blame-view')).toBeInTheDocument();
   });
 
   test('offers a conflict resolution control only while the working tree is conflicted', () => {
@@ -351,10 +345,17 @@ describe('ProjectEditorLayout — repository chrome', () => {
     expect(screen.getByTestId('push-preview')).toBeInTheDocument();
   });
 
-  test('shows the branch switcher only to a reader who may edit', () => {
+  test('shows the branch switcher only to a reader who may edit a connected repository', () => {
+    mockGitConnected = true;
     const { rerender } = render(<ProjectEditorLayout {...defaultProps} />);
     expect(screen.getByTestId('branch-switcher')).toHaveTextContent('main');
     rerender(<ProjectEditorLayout {...defaultProps} canEdit={false} />);
+    expect(screen.queryByTestId('branch-switcher')).not.toBeInTheDocument();
+  });
+
+  test('hides the branch switcher for a project with no connected repository', () => {
+    // A repository-only control: without a connected repo there are no branches to switch between.
+    render(<ProjectEditorLayout {...defaultProps} />);
     expect(screen.queryByTestId('branch-switcher')).not.toBeInTheDocument();
   });
 

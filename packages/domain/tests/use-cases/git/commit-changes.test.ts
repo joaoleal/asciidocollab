@@ -48,6 +48,7 @@ const ROOT_NODE_ID = FileNodeId.create('550e8400-e29b-41d4-a716-446655440010');
 const STAGED_LIVE_PATH = 'chapters/intro.adoc';
 const STAGED_DORMANT_PATH = 'chapters/appendix.adoc';
 const UNSTAGED_LIVE_PATH = 'chapters/draft.adoc';
+const UNSTAGED_DORMANT_PATH = 'chapters/legacy.adoc';
 const MESSAGE = 'Revise the introduction';
 const LIVE_TEXT = '= Introduction\nEdited live moments ago — héllo wörld';
 const COMMIT_HASH = 'abc123def4567890';
@@ -79,6 +80,7 @@ function makeFile(gitPath: string, suffix: string): SeededFile {
 const stagedLive = makeFile(STAGED_LIVE_PATH, '5001');
 const stagedDormant = makeFile(STAGED_DORMANT_PATH, '5002');
 const unstagedLive = makeFile(UNSTAGED_LIVE_PATH, '5003');
+const unstagedDormant = makeFile(UNSTAGED_DORMANT_PATH, '5004');
 
 function makeReader(
   result: { success: true; value: string | null } | { success: false; error: Error },
@@ -129,15 +131,16 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
   const userRepo = new InMemoryUserRepository();
   const editorPreferencesRepo = new InMemoryEditorPreferencesRepository();
 
-  for (const { node, document } of [stagedLive, stagedDormant, unstagedLive]) {
+  for (const { node, document } of [stagedLive, stagedDormant, unstagedLive, unstagedDormant]) {
     await fileNodeRepo.save(node);
     await documentRepo.save(document);
   }
-  // Live sessions for the staged-live file AND the unstaged-live file: an active session on an
-  // unstaged file must still not flush it.
+  // Live sessions for the staged-live file AND the unstaged-live file: both are flushed with their
+  // current collaborative text.
   await collaborationSessionRepo.open(PROJECT_ID, stagedLive.document.id);
   await collaborationSessionRepo.open(PROJECT_ID, unstagedLive.document.id);
-  // The staged-dormant file has a document but no session → stored, never flushed.
+  // The staged-dormant and unstaged-dormant files have a document but no session → stored: the
+  // staged one keeps its indexed bytes, the unstaged one is staged from disk before committing.
 
   if (withUser) {
     await userRepo.save(
@@ -204,7 +207,7 @@ const MIXED_STATUS: GitWorkingTreeStatus = {
 };
 
 describe('CommitChangesUseCase', () => {
-  test('commits staged files with live content: only the staged live file is flushed, author is the user', async () => {
+  test('commits every pending file with live content: both live files are flushed, author is the user', async () => {
     const harness = await buildHarness();
     harness.commandRunner.seedStatus(PROJECT_ID, MIXED_STATUS);
     harness.commandRunner.seedCommitResult(PROJECT_ID, {
@@ -225,11 +228,115 @@ describe('CommitChangesUseCase', () => {
 
     expect(harness.commandRunner.commitCalls).toHaveLength(1);
     const call = harness.commandRunner.commitCalls[0];
-    // Only the staged file with an active live session is flushed. The dormant staged file keeps
-    // its staged bytes, and the unstaged file — live session and all — is not flushed.
-    expect(call.input.flush).toEqual([{ path: STAGED_LIVE_PATH, content: LIVE_TEXT }]);
+    // Both files with an active live session are flushed — the staged one and, now, the unstaged
+    // one. The dormant staged file keeps its already-indexed bytes (no flush entry), and nothing
+    // needs a separate `git add` because both dormant/binary cases here are already staged.
+    expect(call.input.flush).toEqual([
+      { path: STAGED_LIVE_PATH, content: LIVE_TEXT },
+      { path: UNSTAGED_LIVE_PATH, content: LIVE_TEXT },
+    ]);
+    expect(harness.commandRunner.stageCalls).toHaveLength(0);
     expect(call.input.message).toBe(MESSAGE);
     expect(call.input.author).toEqual({ name: 'Ada Editor', email: 'ada@example.com' });
+  });
+
+  test('stages a dormant unstaged file from disk, then commits it (no flush entry for it)', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatus(PROJECT_ID, {
+      currentBranch: 'main',
+      changes: [{ path: UNSTAGED_DORMANT_PATH, changeType: 'modified', state: 'unstaged' }],
+    });
+    harness.commandRunner.seedCommitResult(PROJECT_ID, {
+      hash: COMMIT_HASH,
+      message: MESSAGE,
+      authoredAt: new Date('2024-06-01T12:00:00.000Z'),
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(true);
+    // Its authoritative bytes are already on disk, so it is `git add`ed rather than flushed.
+    expect(harness.commandRunner.stageCalls).toHaveLength(1);
+    expect(harness.commandRunner.stageCalls[0].paths).toEqual([UNSTAGED_DORMANT_PATH]);
+    expect(harness.commandRunner.commitCalls).toHaveLength(1);
+    expect(harness.commandRunner.commitCalls[0].input.flush).toEqual([]);
+  });
+
+  test('a failing stage command propagates its GitCommandFailedError without committing', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatus(PROJECT_ID, {
+      currentBranch: 'main',
+      changes: [{ path: UNSTAGED_DORMANT_PATH, changeType: 'modified', state: 'unstaged' }],
+    });
+    harness.commandRunner.seedStageFailure(PROJECT_ID, new GitCommandFailedError('git add failed'));
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(GitCommandFailedError);
+    expect(harness.commandRunner.commitCalls).toHaveLength(0);
+  });
+
+  test('a conflicted file is excluded from the committable set and never staged or committed', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatus(PROJECT_ID, {
+      currentBranch: 'main',
+      changes: [
+        { path: STAGED_LIVE_PATH, changeType: 'modified', state: 'staged' },
+        { path: UNSTAGED_DORMANT_PATH, changeType: 'modified', state: 'conflicted' },
+      ],
+    });
+    harness.commandRunner.seedCommitResult(PROJECT_ID, {
+      hash: COMMIT_HASH,
+      message: MESSAGE,
+      authoredAt: new Date('2024-06-01T12:00:00.000Z'),
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(true);
+    // The conflicted file is neither staged nor flushed; only the staged live file is committed.
+    expect(harness.commandRunner.stageCalls).toHaveLength(0);
+    expect(harness.commandRunner.commitCalls[0].input.flush).toEqual([
+      { path: STAGED_LIVE_PATH, content: LIVE_TEXT },
+    ]);
+  });
+
+  test('an already-staged dormant file with no other pending change still commits (back-compat)', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatus(PROJECT_ID, {
+      currentBranch: 'main',
+      changes: [{ path: STAGED_DORMANT_PATH, changeType: 'modified', state: 'staged' }],
+    });
+    harness.commandRunner.seedCommitResult(PROJECT_ID, {
+      hash: COMMIT_HASH,
+      message: MESSAGE,
+      authoredAt: new Date('2024-06-01T12:00:00.000Z'),
+    });
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(true);
+    // Nothing to flush and nothing new to stage — the already-indexed bytes commit as-is.
+    expect(harness.commandRunner.stageCalls).toHaveLength(0);
+    expect(harness.commandRunner.commitCalls).toHaveLength(1);
+    expect(harness.commandRunner.commitCalls[0].input.flush).toEqual([]);
   });
 
   test('uses a privacy-preserving commit email when the author has opted in, keeping their display name', async () => {
@@ -270,14 +377,26 @@ describe('CommitChangesUseCase', () => {
     expect(harness.commandRunner.commitCalls).toHaveLength(0);
   });
 
-  test('nothing staged refuses with NothingStagedError and commit is never called', async () => {
+  test('no pending changes refuses with NothingStagedError and commit is never called', async () => {
+    const harness = await buildHarness();
+    harness.commandRunner.seedStatus(PROJECT_ID, { currentBranch: 'main', changes: [] });
+
+    const result = await harness.useCase.execute({
+      actorId: ACTOR_ID,
+      projectId: PROJECT_ID,
+      message: MESSAGE,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toBeInstanceOf(NothingStagedError);
+    expect(harness.commandRunner.commitCalls).toHaveLength(0);
+  });
+
+  test('only conflicted changes pending refuses with NothingStagedError (conflicts are not committable)', async () => {
     const harness = await buildHarness();
     harness.commandRunner.seedStatus(PROJECT_ID, {
       currentBranch: 'main',
-      changes: [
-        { path: UNSTAGED_LIVE_PATH, changeType: 'modified', state: 'unstaged' },
-        { path: 'chapters/new.adoc', changeType: 'added', state: 'untracked' },
-      ],
+      changes: [{ path: UNSTAGED_DORMANT_PATH, changeType: 'modified', state: 'conflicted' }],
     });
 
     const result = await harness.useCase.execute({

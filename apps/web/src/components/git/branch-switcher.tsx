@@ -191,13 +191,15 @@ export function BranchSwitcher({
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm" disabled={switchPending} aria-label="Switch branch">
+          <Button variant="outline" size="sm" disabled={switchPending} aria-label="Switch branch" className="shrink-0">
             {switchPending ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
             ) : (
               <GitBranch className="mr-2 h-4 w-4" aria-hidden="true" />
             )}
-            {current ?? (loading ? 'Loading…' : 'Branch')}
+            <span className="max-w-[10rem] truncate" title={current ?? undefined}>
+              {current ?? (loading ? 'Loading…' : 'Branch')}
+            </span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">

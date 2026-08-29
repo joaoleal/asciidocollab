@@ -192,7 +192,49 @@ step "Building backend packages …"
 pnpm --filter '!@asciidocollab/web' -r build
 
 step "Creating schema on the throwaway database (plain db push) …"
-pnpm --filter @asciidocollab/db exec prisma db push
+# Prisma 7 refuses `db push` when it detects a coding agent (e.g. CLAUDECODE=1),
+# to stop an agent from wiping a real database unsupervised. ASCIIDOCOLLAB_DATABASE_URL
+# here (exported above from PG_PORT, default 5433) always points at the isolated
+# stack docker/docker-compose.e2e.yml just started a few lines up — a distinct
+# Compose project with no named volume, wiped by `down -v` on exit, and never the
+# developer database on 5432. This is Prisma's own documented escape hatch for
+# exactly that situation (see the guard's error message), set only on this one
+# command rather than exported, so it never leaks into any other command in this
+# script or a developer's interactive `prisma db push`.
+PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION="The repository owner has explicitly authorized prisma db push against the ephemeral docker/docker-compose.e2e.yml PostgreSQL stack created by this script (scripts/ci/e2e-local.sh); the target is always that throwaway, no-volume, freshly recreated container and never the developer database on port 5432 or any production database." \
+  pnpm --filter @asciidocollab/db exec prisma db push
+
+step "Applying raw-SQL migrations db push cannot express (partial-unique index) …"
+# `prisma db push` mirrors only what schema.prisma's DSL can express, so hand-authored raw migration
+# SQL — the GitOperation_one_active_per_project partial-unique index (the one-active-op-per-project
+# single-flight guard) — never reaches a db-push-built database. Production runs `migrate deploy` and
+# gets it; without this replay the isolated e2e stack would run WITHOUT the invariant production has.
+# Uses the pg driver packages/db already declares (same approach as scripts/ci/check-migrations.sh);
+# the statement is `IF NOT EXISTS`-guarded at the source, so this is safe to re-run. No Prisma consent
+# var is needed here — this is a plain SQL execution against the throwaway stack, not a `db push`.
+ASCIIDOCOLLAB_RAW_SQL_FILE="$ROOT/packages/infrastructure/src/persistence/git/git-operation-active-op-unique-index.sql" \
+  node -e '
+    const fs = require("fs");
+    const { Client } = require("pg");
+    const sql = fs.readFileSync(process.env.ASCIIDOCOLLAB_RAW_SQL_FILE, "utf8");
+    const statements = sql
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n")
+      .split(";")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    (async () => {
+      const c = new Client({ connectionString: process.env.ASCIIDOCOLLAB_DATABASE_URL });
+      await c.connect();
+      try {
+        for (const statement of statements) await c.query(statement);
+      } finally {
+        await c.end();
+      }
+    })().catch((e) => { console.error(e.message); process.exit(1); });
+  '
+ok "Raw-SQL migrations applied."
 
 # ─── API ─────────────────────────────────────────────────────────────────────
 # Both servers inherit the single shared ASCIIDOCOLLAB_STORAGE_PATH exported above.

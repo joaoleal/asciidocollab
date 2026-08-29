@@ -7,3 +7,5 @@ asciidoctor-pdf.wasm
 /build/
 /rubies/
 /.wasm-build/
+# Local bundler config written by `bundle config` (holds a machine-absolute BUNDLE_PATH).
+/.bundle/

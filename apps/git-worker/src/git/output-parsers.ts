@@ -65,6 +65,8 @@ const BLAME_HEADER_LINE = /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ (\d+)(?: \d+)?$/;
 const AUTHOR_MAIL_PREFIX = 'author-mail ';
 /** Prefix of the `--line-porcelain` header line carrying the commit's author time (unix seconds). */
 const AUTHOR_TIME_PREFIX = 'author-time ';
+/** Prefix of the `--line-porcelain` header line carrying the commit's subject/summary. */
+const SUMMARY_PREFIX = 'summary ';
 
 /**
  * Parses `git blame --line-porcelain` output into this port's domain type. `--line-porcelain`
@@ -83,6 +85,7 @@ export function parseBlameOutput(stdout: string): GitBlameLine[] {
   let currentFinalLine: number | null = null;
   let currentAuthorEmail: string | null = null;
   let currentAuthorTime: number | null = null;
+  let currentSummary: string | null = null;
 
   for (const line of stdout.split('\n')) {
     const header = BLAME_HEADER_LINE.exec(line);
@@ -102,6 +105,11 @@ export function parseBlameOutput(stdout: string): GitBlameLine[] {
       continue;
     }
 
+    if (line.startsWith(SUMMARY_PREFIX)) {
+      currentSummary = line.slice(SUMMARY_PREFIX.length);
+      continue;
+    }
+
     if (line.startsWith('\t')) {
       // Emit one entry per content line without exception: a caller reconstructs the file by joining
       // these entries' `content` in array order, so dropping a line would shift every line below it
@@ -113,6 +121,7 @@ export function parseBlameOutput(stdout: string): GitBlameLine[] {
         entries.push({
           lineNumber: currentFinalLine,
           hash: currentHash,
+          message: currentSummary ?? '',
           authorEmail: currentAuthorEmail ?? '',
           authoredAt: currentAuthorTime === null ? new Date(0) : new Date(currentAuthorTime * 1000),
           content: line.slice(1),
@@ -121,8 +130,7 @@ export function parseBlameOutput(stdout: string): GitBlameLine[] {
       continue;
     }
     // Every other header line (author, committer, committer-mail, committer-time, committer-tz,
-    // author-tz, summary, filename, boundary, previous) carries nothing this port's
-    // `GitBlameLine` needs.
+    // author-tz, filename, boundary, previous) carries nothing this port's `GitBlameLine` needs.
   }
 
   return entries;

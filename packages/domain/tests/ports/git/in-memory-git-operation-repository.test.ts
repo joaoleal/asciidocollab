@@ -196,6 +196,31 @@ describe('InMemoryGitOperationRepository', () => {
       expect(!result.success && result.error).toBeInstanceOf(GitOperationInProgressError);
       expect(action).not.toHaveBeenCalled();
     });
+
+    it('runs the action when excludeOperationId matches the project’s only active (RUNNING) operation — a claimed operation does not conflict with itself', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      await repo.enqueue({ projectId: projectA, kind: 'INITIALIZE', triggeredByUserId: user });
+      const claimed = await repo.claimNextQueued(30_000);
+      expect(claimed?.state).toBe('RUNNING'); // sanity
+
+      const result = await repo.withGuard(projectA, async () => 'done', claimed!.id);
+
+      expect(result).toEqual({ success: true, value: 'done' });
+    });
+
+    it('still fails with GitOperationInProgressError when excludeOperationId is set but a DIFFERENT operation is active', async () => {
+      const repo = new InMemoryGitOperationRepository();
+      const other = await repo.enqueue({ projectId: projectA, kind: 'PUSH', triggeredByUserId: user });
+      const unrelatedId = GitOperationId.create(randomUUID());
+      const action = jest.fn(async () => 'should not run');
+
+      const result = await repo.withGuard(projectA, action, unrelatedId);
+
+      expect(other.state).toBe('QUEUED'); // sanity: a real, distinct active operation
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toBeInstanceOf(GitOperationInProgressError);
+      expect(action).not.toHaveBeenCalled();
+    });
   });
 
   describe('findActiveOperation', () => {

@@ -63,6 +63,61 @@ function isTransientStartFailure(error: unknown): boolean {
 }
 
 /**
+ * Raw-SQL statements that `prisma db push` does NOT apply, keyed by their source `.sql` file
+ * (relative to the repository root). `db push` mirrors only what `schema.prisma`'s DSL can express;
+ * anything hand-authored as raw migration SQL — a partial UNIQUE index, a trigger — never reaches a
+ * `db push`-built database (testcontainers here, e2e-local) and only exists in a `migrate deploy`
+ * database. That divergence is invisible until a test relies on the constraint, so we replay the
+ * captured statements here after the push, giving these throwaway databases the same DB-level
+ * invariants production has.
+ *
+ * The one entry today is the `GitOperation_one_active_per_project` partial-unique index (the
+ * one-active-op-per-project single-flight guard); see the file's own header and the migration at
+ * packages/db/prisma/migrations/20260828120000_git_operation_active_op_unique_index/.
+ */
+const RAW_SQL_MIGRATION_FILES: readonly string[] = [
+  'packages/infrastructure/src/persistence/git/git-operation-active-op-unique-index.sql',
+];
+
+/**
+ * Splits a `.sql` file into individual executable statements, tolerant of the captured files' exact
+ * shape: `-- …` line comments (which the files lead with) are stripped, statements are separated on
+ * `;`, and blank fragments are dropped. `$executeRawUnsafe` runs one statement per call, so a file
+ * with several statements is handled by returning several.
+ *
+ * @param sql - The raw contents of a `.sql` file.
+ * @returns The non-empty SQL statements, comments removed, in file order.
+ */
+function parseSqlStatements(sql: string): string[] {
+  const withoutComments = sql
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('--'))
+    .join('\n');
+  return withoutComments
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
+}
+
+/**
+ * Replays the raw-SQL migrations `prisma db push` cannot apply against the freshly pushed container
+ * database, so a `db push`-built test database enforces the same DB-level invariants a
+ * `migrate deploy` production database does. Statements are `IF NOT EXISTS`-guarded at the source, so
+ * this is safe to run against an already-migrated database too.
+ *
+ * @param client - A Prisma client connected to the container database.
+ * @param rootDirectory - The repository root, used to resolve each captured `.sql` file.
+ */
+async function applyRawSqlMigrations(client: PrismaClient, rootDirectory: string): Promise<void> {
+  for (const relativePath of RAW_SQL_MIGRATION_FILES) {
+    const sql = fs.readFileSync(path.join(rootDirectory, relativePath), 'utf8');
+    for (const statement of parseSqlStatements(sql)) {
+      await client.$executeRawUnsafe(statement);
+    }
+  }
+}
+
+/**
  * Starts a PostgreSQL test container and pushes the Prisma schema.
  *
  * The start is retried on transient registry failures. Every one of these suites pulls its image
@@ -105,13 +160,34 @@ export async function startTestContainer(): Promise<TestContainer> {
   const schemaPath = path.join(rootDirectory, 'packages', 'db', 'prisma', 'schema.prisma');
 
   execSync(`npx prisma db push --schema="${schemaPath}" --accept-data-loss`, {
-    env: { ...process.env, ASCIIDOCOLLAB_DATABASE_URL: databaseUrl },
+    env: {
+      ...process.env,
+      ASCIIDOCOLLAB_DATABASE_URL: databaseUrl,
+      // Prisma 7 refuses `db push` when it detects it was invoked by a coding
+      // agent (e.g. CLAUDECODE=1), to stop an agent from wiping a real database
+      // unsupervised. `databaseUrl` above is never that: it is built two lines up
+      // from `container.getMappedPort(5432)` on a Testcontainers Postgres that
+      // this same function just started and that only this test run can name —
+      // there is no way for it to resolve to the developer's Postgres (5432) or
+      // any deployed database. This is Prisma's own documented escape hatch for
+      // exactly that situation (see the guard's error message), scoped to this
+      // one execSync call rather than exported for the process, so it can never
+      // leak into an interactive `prisma db push` a developer runs by hand.
+      PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION:
+        'The repository owner has explicitly authorized prisma db push against ' +
+        'ephemeral Testcontainers PostgreSQL databases created by startTestContainer ' +
+        'for the packages/infrastructure and apps/api integration test suites; the ' +
+        'target is always a freshly started, randomly-ported, throwaway container ' +
+        'and never the developer database on port 5432 or any production database.',
+    },
     cwd: path.join(rootDirectory, 'packages', 'db'),
     stdio: 'pipe',
   });
 
   const adapter = new PrismaPg(databaseUrl);
   const client = new PrismaClient({ adapter });
+
+  await applyRawSqlMigrations(client, rootDirectory);
 
   return { container, client };
 }

@@ -15,7 +15,7 @@ const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 function blameData(overrides: Partial<GitWorkerBlameData> = {}): GitWorkerBlameData {
   return {
     lines: [
-      { lineNumber: 1, hash: 'abc123', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
+      { lineNumber: 1, hash: 'abc123', message: 'Initial commit', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
     ],
     ...overrides,
   };
@@ -63,7 +63,7 @@ describe('GET /projects/:projectId/git/blame', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       lines: [
-        { lineNumber: 1, hash: 'abc123', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
+        { lineNumber: 1, hash: 'abc123', message: 'Initial commit', authorUserId: ACTOR_ID, authoredAt: '2026-01-01T00:00:00.000Z', content: '= Title' },
       ],
     });
 
@@ -78,7 +78,7 @@ describe('GET /projects/:projectId/git/blame', () => {
           getBlame: mockGetBlame({
             ok: true,
             data: blameData({
-              lines: [{ lineNumber: 1, hash: 'e4f5a6b', authoredAt: '2026-01-02T00:00:00.000Z', content: 'text' }],
+              lines: [{ lineNumber: 1, hash: 'e4f5a6b', message: 'Add text', authoredAt: '2026-01-02T00:00:00.000Z', content: 'text' }],
             }),
           }),
         },

@@ -91,9 +91,20 @@ describe('PrismaGitOperationRepository', () => {
     });
 
     it('two concurrent claimers never receive the same queued operation (SKIP LOCKED)', async () => {
-      const { project, owner } = await setupProjectAndUser();
+      const { owner } = await setupProjectAndUser();
+      // One project per operation: the GitOperation_one_active_per_project partial-unique index caps a
+      // project at a single active operation, so five simultaneously-queued ops must live on five
+      // distinct projects. SKIP LOCKED concurrency is a property of the queue table, not of any one
+      // project, so this exercises it exactly as well as five ops on one project would have.
+      const projects = await Promise.all(
+        Array.from({ length: 5 }, async () => {
+          const project = createTestProject();
+          await projectRepo.save(project);
+          return project;
+        }),
+      );
       const enqueued = await Promise.all(
-        Array.from({ length: 5 }, (_, index) =>
+        projects.map((project, index) =>
           repo.enqueue({ projectId: project.id, kind: index % 2 === 0 ? 'PUSH' : 'PULL', triggeredByUserId: owner.id }),
         ),
       );
@@ -157,6 +168,59 @@ describe('PrismaGitOperationRepository', () => {
       // With the QUEUED one now claimed, the next call reclaims the stale RUNNING one.
       const reclaimed = await repo.claimNextQueued(30_000);
       expect(reclaimed?.id.value).toBe(running.id.value);
+    });
+  });
+
+  describe('one active operation per project (GitOperation_one_active_per_project partial-unique index)', () => {
+    it('rejects enqueuing a second active operation for a project that already has one, mapping P2002 to GitOperationInProgressError', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      await repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id });
+
+      // The first enqueue leaves a QUEUED (active) row; the partial-unique index makes a second active
+      // INSERT for the same project a Postgres unique violation (P2002), which the adapter maps to the
+      // same GitOperationInProgressError withGuard reports — the raw Prisma error must not escape.
+      await expect(
+        repo.enqueue({ projectId: project.id, kind: 'PULL', triggeredByUserId: owner.id }),
+      ).rejects.toBeInstanceOf(GitOperationInProgressError);
+    });
+
+    it('still rejects when the existing active operation is RUNNING or AWAITING_CONFLICT, not only QUEUED', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const enqueued = await repo.enqueue({ projectId: project.id, kind: 'PULL', triggeredByUserId: owner.id });
+      await repo.claimNextQueued(30_000); // → RUNNING (still an active state under the index predicate)
+
+      await expect(
+        repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id }),
+      ).rejects.toBeInstanceOf(GitOperationInProgressError);
+
+      await repo.transition(enqueued.id, 'AWAITING_CONFLICT'); // still active under the index predicate
+      await expect(
+        repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id }),
+      ).rejects.toBeInstanceOf(GitOperationInProgressError);
+    });
+
+    it('allows a new enqueue once the prior operation has reached a terminal state (SUCCEEDED does not block)', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const first = await repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id });
+      await repo.claimNextQueued(30_000);
+      const terminal = await repo.transition(first.id, 'SUCCEEDED');
+      expect(terminal.success).toBe(true);
+
+      // A terminal (SUCCEEDED) row is outside the index's partial predicate, so it no longer occupies
+      // the project's single active slot — a fresh enqueue must succeed rather than conflict.
+      const second = await repo.enqueue({ projectId: project.id, kind: 'PULL', triggeredByUserId: owner.id });
+      expect(second.state).toBe('QUEUED');
+      expect(second.id.value).not.toBe(first.id.value);
+    });
+
+    it('allows a new enqueue after a FAILED operation too', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const first = await repo.enqueue({ projectId: project.id, kind: 'PUSH', triggeredByUserId: owner.id });
+      await repo.claimNextQueued(30_000);
+      await repo.transition(first.id, 'FAILED', { errorCode: 'REPOSITORY_UNREACHABLE' });
+
+      const second = await repo.enqueue({ projectId: project.id, kind: 'PULL', triggeredByUserId: owner.id });
+      expect(second.state).toBe('QUEUED');
     });
   });
 
@@ -317,6 +381,66 @@ describe('PrismaGitOperationRepository', () => {
         repo.withGuard(project.id, async () => {
           throw boom;
         }),
+      ).rejects.toBe(boom);
+    });
+
+    it('regression: with excludeOperationId given (a worker-claimed operation running its own use case), does not self-conflict and runs action to completion', async () => {
+      const { project, owner } = await setupConnectedProject();
+      const enqueued = await repo.enqueue({ projectId: project.id, kind: 'INITIALIZE', triggeredByUserId: owner.id });
+      const claimed = await repo.claimNextQueued(30_000);
+      expect(claimed?.id.value).toBe(enqueued.id.value);
+      expect(claimed?.state).toBe('RUNNING'); // sanity: genuinely active, not still QUEUED
+
+      const result = await repo.withGuard(project.id, async () => 'done', claimed!.id);
+
+      expect(result).toEqual({ success: true, value: 'done' });
+    });
+
+    it('regression: with excludeOperationId given, an action that itself writes the project’s GitRepository row does not deadlock against the guard (the async-INITIALIZE self-deadlock this fix closes)', async () => {
+      // Before the fix, withGuard always ran `action` INSIDE a SERIALIZABLE transaction that had
+      // already self-touched (locked) this same GitRepository row; an action writing that row via
+      // the global client would then block on its own enclosing transaction's lock until the
+      // transaction's timeout. Now, when excludeOperationId is given, `action` runs outside any
+      // transaction, so this write is a normal, fast, uncontended UPDATE.
+      const { project, owner } = await setupConnectedProject();
+      await repo.enqueue({ projectId: project.id, kind: 'INITIALIZE', triggeredByUserId: owner.id });
+      const claimed = await repo.claimNextQueued(30_000);
+      const existing = await gitRepositoryRepo.findByProjectId(project.id);
+
+      const result = await repo.withGuard(
+        project.id,
+        async () => {
+          await gitRepositoryRepo.save(
+            createTestGitRepository(project.id, {
+              id: existing!.id,
+              syncStatus: 'AHEAD',
+              currentBranch: existing!.currentBranch,
+            }),
+          );
+          return 'published';
+        },
+        claimed!.id,
+      );
+
+      expect(result).toEqual({ success: true, value: 'published' });
+      const row = await client.gitRepository.findUniqueOrThrow({ where: { projectId: project.id.value } });
+      expect(row.syncStatus).toBe('AHEAD');
+    });
+
+    it('regression: on the excludeOperationId (async) path, propagates the action’s own error unchanged rather than turning it into a Result', async () => {
+      const { project, owner } = await setupConnectedProject();
+      await repo.enqueue({ projectId: project.id, kind: 'INITIALIZE', triggeredByUserId: owner.id });
+      const claimed = await repo.claimNextQueued(30_000);
+      const boom = new Error('publish failed');
+
+      await expect(
+        repo.withGuard(
+          project.id,
+          async () => {
+            throw boom;
+          },
+          claimed!.id,
+        ),
       ).rejects.toBe(boom);
     });
   });

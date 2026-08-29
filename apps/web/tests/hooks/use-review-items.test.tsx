@@ -134,7 +134,7 @@ describe('useReviewItems', () => {
 
     const { result, rerender } = renderHook(
       ({ doc }: { doc: Y.Doc | null }) => useReviewItems({ projectId: 'p1', documentId: 'd1', ydoc: doc }),
-      { initialProps: { doc: ydoc } },
+      { initialProps: { doc: ydoc } as { doc: Y.Doc | null } },
     );
     await waitFor(() => expect(result.current.ranges).toHaveLength(1));
 

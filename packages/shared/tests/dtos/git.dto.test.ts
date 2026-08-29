@@ -228,6 +228,7 @@ describe('BlameLineDto / BlameDto', () => {
     const mapped: BlameLineDto = {
       lineNumber: 1,
       hash: 'a1b2c3d',
+      message: 'Add title heading',
       authorUserId: '550e8400-e29b-41d4-a716-446655440004',
       authoredAt: '2026-08-20T12:00:00.000Z',
       content: '= Title',
@@ -235,11 +236,15 @@ describe('BlameLineDto / BlameDto', () => {
     const unmapped: BlameLineDto = {
       lineNumber: 2,
       hash: 'e4f5a6b',
+      // The commit subject may be empty (e.g. a commit with no summary line).
+      message: '',
       authoredAt: '2026-08-19T12:00:00.000Z',
       content: '',
     };
     expect(mapped.authorUserId).toBeDefined();
     expect(unmapped.authorUserId).toBeUndefined();
+    expect(mapped.message).toBe('Add title heading');
+    expect(unmapped.message).toBe('');
 
     const dto: BlameDto = { lines: [mapped, unmapped] };
     expect(dto.lines).toHaveLength(2);

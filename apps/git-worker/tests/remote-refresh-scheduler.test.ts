@@ -247,6 +247,41 @@ describe('remote-refresh scheduler', () => {
     expect(harness.logger.lines.some((line) => line.level === 'error')).toBe(true);
   });
 
+  it('swallows the race backstop when a user op is enqueued between the single-flight check and the sweep\'s own enqueue', async () => {
+    const harness = buildScheduler();
+    const repo = makeRepo();
+    await harness.connect(repo);
+
+    // Simulate the race documented on enqueueRefresh: findActiveOperation observes no active
+    // operation for this sweep, but a user op lands (via the real one-active-per-project invariant)
+    // before this sweep's own enqueue() call is made — so that enqueue() call itself now hits the
+    // repository's GitOperationInProgressError, which the sweep must catch and swallow.
+    const originalFindActive = harness.gitOperationRepository.findActiveOperation.bind(
+      harness.gitOperationRepository,
+    );
+    let raceWindowOpen = true;
+    harness.gitOperationRepository.findActiveOperation = async (projectId) => {
+      if (raceWindowOpen && projectId.value === repo.projectId.value) {
+        raceWindowOpen = false;
+        return null;
+      }
+      return originalFindActive(projectId);
+    };
+    await harness.gitOperationRepository.enqueue({ projectId: repo.projectId, kind: 'PULL', triggeredByUserId: USER });
+
+    harness.scheduler.start();
+    try {
+      await waitUntil(() => harness.logger.lines.some((line) => line.level === 'error'));
+    } finally {
+      await harness.scheduler.stop();
+    }
+
+    // The sweep's own FETCH enqueue was rejected by the real invariant and swallowed — the user's
+    // PULL remains the project's sole active operation, and no FETCH was ever recorded.
+    expect(await activeKind(harness.gitOperationRepository, repo.projectId)).toBe('PULL');
+    expect(await harness.gitOperationRepository.findMostRecentByKind(repo.projectId, 'FETCH')).toBeNull();
+  });
+
   it('does nothing when disabled, but still starts and stops cleanly', async () => {
     const harness = buildScheduler({ enabled: false });
     const repo = makeRepo();

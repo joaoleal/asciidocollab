@@ -1,17 +1,5 @@
-import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, lstat, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { promisify } from 'node:util';
 import {
-  AuthenticationFailedError,
-  CommitAlreadyPushedError,
-  GitCommandFailedError,
-  NonFastForwardError,
-  RemoteAlreadyInitializedError,
-  RepositoryTooLargeError,
-  RepositoryUnreachableError,
-  type ClonedFileEntry,
+  type AuthenticationFailedError,
   type ClonedRepository,
   type ConflictStageStore,
   type GitAmendError,
@@ -22,6 +10,7 @@ import {
   type GitCheckoutInput,
   type GitCheckoutOutcome,
   type GitCloneInput,
+  type GitCommandFailedError,
   type GitCommandRunner,
   type GitCommitInput,
   type GitCommitResult,
@@ -36,11 +25,9 @@ import {
   type GitInitializeInput,
   type GitInitializeOutcome,
   type GitLogEntry,
-  type GitMergeConflictPath,
   type GitMergeFileChange,
   type GitMergeInput,
   type GitMergeOutcome,
-  type GitOperationId,
   type GitPreviewPullInput,
   type GitPreviewPullResult,
   type GitPreviewPushInput,
@@ -55,594 +42,18 @@ import {
   type GitRestoreToSnapshotInput,
   type GitWorkingTreeStatus,
   type ProjectId,
+  type RepositoryTooLargeError,
+  type RepositoryUnreachableError,
   type Result,
 } from '@asciidocollab/domain';
-import { assertRemoteHostAllowed, type HostAddressResolver } from './egress-allowlist.js';
-import { guessMimeType } from './guess-mime-type.js';
-import { declaresLfsFilter, shouldTrackWithLfs } from './lfs-pointer.js';
-import { buildManagedGitattributes, isPathAlreadyLfsTracked, writeManagedGitattributes } from './managed-gitattributes.js';
-import { writeManagedGitignore } from './managed-gitignore.js';
-import {
-  LOG_FORMAT,
-  parseBlameOutput,
-  parseLogOutput,
-  parseNameOnlyOutput,
-  parsePorcelainStatus,
-} from './output-parsers.js';
-import { measureWorkingTreeSizeBytes, repoSizeExceedsLimit } from './repo-size.js';
-import { GitProcessError, runGitCommand, runGitCommandForBytes } from './run-git-command.js';
-import { ensureCleanWorkingTree, resolveWorkingTreePath } from './working-tree.js';
+import { BranchOps } from './branch-ops.js';
+import { type HostAddressResolver } from './egress-allowlist.js';
+import { LocalReadOps } from './local-read-ops.js';
+import { MergeConflictOps } from './merge-conflict-ops.js';
+import { RemoteOps } from './remote-ops.js';
+import { StagingOps } from './staging-ops.js';
 
-/**
- * The username presented alongside every access token this runner supplies over HTTP Basic auth.
- * A git hosting provider authenticating a personal/installation access token accepts (and mostly
- * ignores) any non-empty username in this slot — this fixed placeholder is never itself a secret.
- */
-const CREDENTIAL_USERNAME = 'x-access-token';
-
-/**
- * The commit message recorded when {@link RealGitCommandRunner.merge} snapshots the live local
- * edits into a commit before running the three-way merge.
- */
-const FLUSH_COMMIT_MESSAGE = 'Flush live edits before pull';
-
-/**
- * The commit message recorded for {@link RealGitCommandRunner.initializeAndPublish}'s initial
- * commit — the first commit an existing, previously non-git project ever gets.
- */
-const INITIAL_COMMIT_MESSAGE = 'Initial commit';
-
-/** The branch {@link RealGitCommandRunner.initializeAndPublish} publishes under when `input.branch` is omitted. */
-const DEFAULT_INITIALIZE_BRANCH = 'main';
-
-/**
- * The fixed, non-personal identity attributed to the automated commits {@link RealGitCommandRunner.merge}
- * records (the pre-merge flush snapshot and any merge commit a non-fast-forward merge produces). A
- * merge carries no triggering author the way a user-initiated commit does, so a stable service
- * identity is used rather than any real person's name/email — flagged for review.
- */
-const SERVICE_COMMIT_IDENTITY = { name: 'AsciiDoc Collab', email: 'noreply@asciidocollab.invalid' } as const;
-
-/**
- * Maps a failure from the network-facing steps of {@link RealGitCommandRunner.clone} to this
- * port's typed clone error union, using {@link GitProcessError.networkFailureKind} when the
- * failure was classified as a reachability or credential problem, and a generic
- * `GitCommandFailedError` for everything else (a missing branch, an oversized remote once a size
- * limit is enforced, and so on).
- */
-function toCloneFailure(
-  error: unknown,
-): RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError {
-  if (error instanceof GitProcessError) {
-    if (error.networkFailureKind === 'unreachable') return new RepositoryUnreachableError();
-    if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
-  }
-  return new GitCommandFailedError('The repository could not be cloned.');
-}
-
-/**
- * Maps a failure from the single network step of {@link RealGitCommandRunner.fetch} to this port's
- * typed fetch error union — the same reachability/credential classification {@link toCloneFailure}
- * performs, with a generic `GitCommandFailedError` fallback. There is no non-fast-forward case: a
- * fetch only ever updates a remote-tracking ref, never a branch, so it can never be rejected the
- * way a push can.
- */
-function toFetchFailure(
-  error: unknown,
-): RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError {
-  if (error instanceof GitProcessError) {
-    if (error.networkFailureKind === 'unreachable') return new RepositoryUnreachableError();
-    if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
-  }
-  return new GitCommandFailedError('The repository could not be fetched.');
-}
-
-/**
- * Maps a failure from {@link RealGitCommandRunner.checkRemoteAccess}'s `ls-remote` probe to this
- * port's narrower error union (no `GitCommandFailedError` case exists here). A failure this
- * runner cannot positively classify as a rejected credential is treated as the remote being
- * unreachable — the conservative default, since an unclassified failure gives no evidence the
- * credential was ever actually evaluated.
- */
-function toRemoteAccessFailure(error: unknown): RepositoryUnreachableError | AuthenticationFailedError {
-  if (error instanceof GitProcessError && error.networkFailureKind === 'authentication-failed') {
-    return new AuthenticationFailedError();
-  }
-  return new RepositoryUnreachableError();
-}
-
-/**
- * Maps a failure from {@link RealGitCommandRunner.push}'s `git push` invocation to this port's
- * typed push error union, using {@link GitProcessError.networkFailureKind} — a rejected
- * non-fast-forward push is distinguished from the remote being unreachable or rejecting the
- * credential, and anything unclassified falls back to a generic `GitCommandFailedError`.
- */
-function toPushFailure(
-  error: unknown,
-): NonFastForwardError | RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError {
-  if (error instanceof GitProcessError) {
-    if (error.networkFailureKind === 'non-fast-forward') return new NonFastForwardError();
-    if (error.networkFailureKind === 'unreachable') return new RepositoryUnreachableError();
-    if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
-  }
-  return new GitCommandFailedError('The push could not be completed.');
-}
-
-/**
- * Maps a failure from {@link RealGitCommandRunner.initializeAndPublish}'s init→remote-add→
- * commit→push sequence to this port's typed initialize error union (excluding
- * {@link RemoteAlreadyInitializedError}, which is only ever returned by the earlier, separate
- * remote-empty check) — the same reachability/credential classification {@link toCloneFailure}
- * performs, with a generic `GitCommandFailedError` fallback for a local failure (for example, the
- * initial commit itself failing) or an unclassified network failure.
- */
-function toInitializeFailure(
-  error: unknown,
-): RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError {
-  if (error instanceof GitProcessError) {
-    if (error.networkFailureKind === 'unreachable') return new RepositoryUnreachableError();
-    if (error.networkFailureKind === 'authentication-failed') return new AuthenticationFailedError();
-  }
-  return new GitCommandFailedError('The project could not be initialized and published.');
-}
-
-/**
- * Reports whether `relativePath` resolves to a location inside `workingDirectory` once joined to
- * it — mirrors the symlink-escape check {@link materializeEntries} performs on a clone's tracked
- * files, applied here to a commit flush entry's caller-supplied path instead, and checked BEFORE
- * any byte of that entry is written (fail closed: an absolute path is rejected outright, and a
- * relative path that walks out via `..` is caught by resolving it and checking whether the result
- * still lives under `workingDirectory`).
- */
-function staysInsideWorkingTree(workingDirectory: string, relativePath: string): boolean {
-  if (path.isAbsolute(relativePath)) return false;
-  const resolved = path.resolve(workingDirectory, relativePath);
-  const relativeToRoot = path.relative(workingDirectory, resolved);
-  return !escapesWorkingRoot(relativeToRoot);
-}
-
-/**
- * Whether a path already made relative to the working root walks OUT of it. A leading `..` must be a
- * whole path SEGMENT (`..` itself, or `../…`): a bare `startsWith('..')` also rejects an innocent
- * root-level filename that merely begins with two dots (e.g. `..config.adoc`), which resolves safely
- * inside the tree. An absolute result escapes too.
- */
-function escapesWorkingRoot(relativeToRoot: string): boolean {
-  return relativeToRoot === '..' || relativeToRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToRoot);
-}
-
-/**
- * Reports whether a cloned working tree's `.gitattributes` (if any) declares a Large File Storage
- * filter, the signal {@link RealGitCommandRunner.clone} uses to decide whether it needs to invoke
- * `git lfs` at all — a repository that never uses LFS never requires the `git-lfs` extension to be
- * installed.
- */
-async function workingTreeUsesLfs(workingDirectory: string): Promise<boolean> {
-  const content = await readFile(path.join(workingDirectory, '.gitattributes'), 'utf8').catch(() => '');
-  return declaresLfsFilter(content);
-}
-
-/**
- * Derives the Large File Storage transfer endpoint from the ALREADY egress-validated origin remote
- * URL, replicating `git-lfs`'s own default for an https/http remote: the repository URL (given a
- * `.git` suffix if it lacks one) plus `/info/lfs`. Pinning this value with a highest-precedence
- * command-line `-c lfs.url=<endpoint>` on every networked `git lfs` call is what stops a cloned
- * repo's attacker-controlled `.lfsconfig` (or an `lfs.url` smuggled into `.git/config`) from
- * redirecting the transfer — and the out-of-band credential — to an internal or otherwise
- * disallowed host. Because it reproduces git-lfs's default endpoint, an honest repository's LFS
- * transfer is unchanged; only a repo trying to override the endpoint is neutralized.
- *
- * @param remoteUrl - The origin remote URL, already checked against the egress allowlist.
- * @returns The LFS endpoint URL to pin, always on the same host as `remoteUrl`.
- */
-export function deriveLfsEndpoint(remoteUrl: string): string {
-  let trailingSlashesEnd = remoteUrl.length;
-  while (trailingSlashesEnd > 0 && remoteUrl[trailingSlashesEnd - 1] === '/') trailingSlashesEnd -= 1;
-  const withoutTrailingSlashes = remoteUrl.slice(0, trailingSlashesEnd);
-  const base = withoutTrailingSlashes.endsWith('.git')
-    ? withoutTrailingSlashes
-    : `${withoutTrailingSlashes}.git`;
-  return `${base}/info/lfs`;
-}
-
-/**
- * Extracts `git rev-parse`'s answer from its stdout, discarding the literal `--end-of-options`
- * line it echoes back verbatim as an unrecognized argument.
- *
- * Unlike most subcommands, `rev-parse` does not consume `runGitCommand`'s always-appended
- * `--end-of-options` disambiguator as pure option-parsing punctuation — it treats it as just
- * another argument it cannot resolve as a revision, and (by design, since `rev-parse` is meant to
- * echo back whatever a caller hands it) prints it back on its own line, in whatever position it
- * held in argv relative to the actual revision. Filtering out that one known literal, rather than
- * relying on its position, is robust to either ordering.
- *
- * @param stdout - The raw stdout of a single-revision `git rev-parse` invocation.
- * @returns The resolved revision, or an empty string if nothing else was printed.
- */
-function readRevParseAnswer(stdout: string): string {
-  const answer = stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .find((line) => line.length > 0 && line !== '--end-of-options');
-  return answer ?? '';
-}
-
-/**
- * Reads every file `git ls-files` reports as tracked in `workingDirectory` (the clone's default,
- * or requested, branch) into this port's `ClonedFileEntry` shape. `.git/` is never among them —
- * `ls-files` only ever lists tracked blobs, never the repository's own metadata directory.
- *
- * A tracked path that is a symbolic link resolving outside `workingDirectory` is skipped outright:
- * `readFile` follows symlinks, so an untrusted clone containing one pointed at an arbitrary host
- * path (`/etc/passwd`, another project's storage, ...) must never be allowed to smuggle that
- * file's bytes into the imported project under an innocuous-looking name.
- *
- * A running total of every materialized file's size is checked against `maxRepoSizeMB` on every
- * iteration — defense-in-depth against unbounded memory growth: {@link RealGitCommandRunner.clone}
- * already rejects an oversized working tree before this ever runs, but this second, cheaper-to-miss
- * check means a race, or any future caller that skips that pre-check, still cannot read an unbounded
- * number of bytes into memory before failing. The same {@link repoSizeExceedsLimit} comparison
- * enforces both checks, so there is exactly one limit.
- *
- * @param workingDirectory - The clone's working tree root.
- * @param maxRepoSizeMB - The configured maximum repository size, in megabytes.
- * @returns Every safely-readable tracked file, as a `ClonedFileEntry`.
- * @throws {RepositoryTooLargeError} If the running total of materialized bytes exceeds `maxRepoSizeMB`.
- */
-async function materializeEntries(workingDirectory: string, maxRepoSizeMB: number): Promise<ClonedFileEntry[]> {
-  const { stdout } = await runGitCommand(workingDirectory, { command: 'ls-files', flags: ['-z'] });
-  const relativePaths = stdout.split('\0').filter((entry) => entry.length > 0);
-
-  const entries: ClonedFileEntry[] = [];
-  let totalBytes = 0;
-  for (const relativePath of relativePaths) {
-    const absolutePath = path.join(workingDirectory, relativePath);
-
-    const stats = await lstat(absolutePath);
-    if (stats.isSymbolicLink()) {
-      const target = await realpath(absolutePath).catch(() => null);
-      const relativeToRoot = target ? path.relative(workingDirectory, target) : null;
-      const escapesWorkingTree = relativeToRoot === null || escapesWorkingRoot(relativeToRoot);
-      if (escapesWorkingTree) continue;
-    }
-
-    // `readFile` follows a symlink, so the bytes it reads are the TARGET's, not the link's. Count the
-    // followed (`stat`) size for a symlink so the running total reflects what is actually read into
-    // memory; `lstat`'s own size (the link path's length) would undercount against the repo-size cap.
-    let readableBytes = stats.size;
-    if (stats.isSymbolicLink()) {
-      const targetStats = await stat(absolutePath);
-      readableBytes = targetStats.size;
-    }
-    totalBytes += readableBytes;
-    if (repoSizeExceedsLimit(totalBytes, maxRepoSizeMB)) {
-      throw new RepositoryTooLargeError();
-    }
-
-    const content = await readFile(absolutePath);
-    entries.push({ path: relativePath, content, mimeType: guessMimeType(relativePath) });
-  }
-  return entries;
-}
-
-/**
- * Reports whether `workingDirectory`'s index holds any staged change (`git diff --cached --quiet`
- * exits 1 when it does, 0 when it does not), used by {@link RealGitCommandRunner.merge} to decide
- * whether the pre-merge flush actually produced anything worth committing. Any exit code other than
- * the expected 0/1 is a real failure and is rethrown, never silently read as "nothing staged".
- *
- * @param workingDirectory - The working tree whose index to inspect.
- * @returns True when there are staged changes, false when the index matches `HEAD`.
- */
-async function hasStagedChanges(workingDirectory: string): Promise<boolean> {
-  try {
-    await runGitCommand(workingDirectory, { command: 'diff', flags: ['--cached', '--quiet'] });
-    return false;
-  } catch (error) {
-    if (error instanceof GitProcessError && error.exitCode === 1) return true;
-    throw error;
-  }
-}
-
-/**
- * Reads the set of paths git reports as binary between the two sides of a merge in progress, by
- * scanning `git diff --numstat -z HEAD MERGE_HEAD` output for the rows git marks binary (both its
- * added and deleted counts rendered as a dash rather than a number). Used only to classify the
- * {@link GitMergeConflictPath.isBinary} flag on conflicted files.
- *
- * The comparison is deliberately the two-tree `HEAD` (ours) vs `theirsReference` (theirs) diff, NOT a
- * plain `git diff` of the conflicted working tree: during a conflict, `git diff`'s combined output
- * reports a binary file as `0\t0` rather than `-\t-`, so it cannot distinguish binary from text —
- * whereas an ordinary two-tree diff reliably emits `-\t-` for a binary blob. Both refs exist for
- * the whole conflicted state, before the conflict is cleaned up. Extra (non-conflicted) paths in the
- * result are harmless: the caller only looks up the paths it already knows are conflicted.
- *
- * `theirsReference` is the incoming side of the conflict: `MERGE_HEAD` for a three-way merge conflict, or
- * the stash commit (`stash@{0}`) for a branch-switch conflict where re-applying the shelved live
- * edits onto the target branch did not apply cleanly. Both name the same kind of "theirs" tree.
- *
- * The `-z` numstat stream is NUL-delimited: a normal file is one record `added\tdeleted\tpath`; a
- * rename is a record `added\tdeleted\t` (empty path field) immediately followed by two further
- * NUL-separated tokens (old path, then new path). Both shapes are handled so the scan never
- * misaligns on a renamed entry.
- *
- * @param workingDirectory - The working tree whose in-progress conflict to inspect.
- * @param theirsReference - The incoming side to compare `HEAD` against (`MERGE_HEAD` by default).
- * @returns Every path git reports as a binary change between the two conflict sides.
- */
-async function readBinaryDiffPaths(workingDirectory: string, theirsReference = 'MERGE_HEAD'): Promise<Set<string>> {
-  const { stdout } = await runGitCommand(workingDirectory, {
-    command: 'diff',
-    flags: ['--numstat', '-z'],
-    positionals: ['HEAD', theirsReference],
-  });
-  const tokens = stdout.split('\0');
-  const binaryPaths = new Set<string>();
-
-  let index = 0;
-  while (index < tokens.length) {
-    const record = tokens[index];
-    if (record.length === 0) {
-      index += 1;
-      continue;
-    }
-
-    const firstTab = record.indexOf('\t');
-    const secondTab = record.indexOf('\t', firstTab + 1);
-    if (firstTab === -1 || secondTab === -1) {
-      index += 1;
-      continue;
-    }
-
-    const added = record.slice(0, firstTab);
-    const deleted = record.slice(firstTab + 1, secondTab);
-    const inlinePath = record.slice(secondTab + 1);
-    const isBinary = added === '-' && deleted === '-';
-
-    if (inlinePath.length > 0) {
-      if (isBinary) binaryPaths.add(inlinePath);
-      index += 1;
-    } else {
-      // Rename record: the two following tokens are the old and new paths.
-      const newPath = tokens[index + 2];
-      if (isBinary && newPath) binaryPaths.add(newPath);
-      index += 3;
-    }
-  }
-  return binaryPaths;
-}
-
-/**
- * Lists the files a conflict in progress left unmerged (`git diff --name-only --diff-filter=U -z`)
- * and pairs each with its {@link GitMergeConflictPath.isBinary} flag. An empty result means the
- * operation failed for a reason other than a content conflict (its caller treats that as a genuine
- * failure). Serves both a three-way merge conflict and a branch-switch stash-pop conflict — only the
- * `theirsReference` used for the binary classification differs (see {@link readBinaryDiffPaths}).
- *
- * @param workingDirectory - The working tree whose in-progress conflict to inspect.
- * @param theirsReference - The incoming side to classify binary paths against (`MERGE_HEAD` by default).
- * @returns One {@link GitMergeConflictPath} per unmerged file.
- */
-async function readMergeConflicts(workingDirectory: string, theirsReference = 'MERGE_HEAD'): Promise<GitMergeConflictPath[]> {
-  const { stdout } = await runGitCommand(workingDirectory, {
-    command: 'diff',
-    flags: ['--name-only', '--diff-filter=U', '-z'],
-  });
-  const conflictedPaths = stdout.split('\0').filter((entry) => entry.length > 0);
-  if (conflictedPaths.length === 0) return [];
-
-  const binaryPaths = await readBinaryDiffPaths(workingDirectory, theirsReference);
-  return conflictedPaths.map((conflictedPath) => ({
-    path: conflictedPath,
-    isBinary: binaryPaths.has(conflictedPath),
-  }));
-}
-
-/**
- * Reads one conflicting file's optional merge-base stage (`git show :1:<path>`), while the
- * unmerged index entries left by a conflicted merge/stash-pop still exist. A non-zero exit is
- * EXPECTED and not an error here: it means the file had no common ancestor (an add/add conflict),
- * which this returns as `null` rather than surfacing any failure. `filePath` is passed as a
- * positional AFTER `--end-of-options` ({@link runGitCommandForBytes}'s option-injection guard),
- * and the returned bytes are the object's raw content — safe for a binary file.
- *
- * @param workingDirectory - The working tree whose in-progress conflict to read from.
- * @param filePath - The conflicting file's workspace-relative path.
- * @returns The base stage's raw bytes, or null when the file had no merge base.
- */
-async function readOptionalBaseStage(workingDirectory: string, filePath: string): Promise<Buffer | null> {
-  try {
-    return await runGitCommandForBytes(workingDirectory, { command: 'show', positionals: [`:1:${filePath}`] });
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Reads one conflicting file's "ours" (`:2:`) or "theirs" (`:3:`) index stage that
- * {@link readUnmergedStages} has already confirmed EXISTS. A read failure here is therefore a real
- * error (I/O, an unexpected git failure), never "that side deleted the file", so it propagates —
- * whether a side is genuinely absent (a modify/delete deletion) is decided by the ls-files stage
- * listing, NOT by swallowing this read's failure, which would misrecord a transient failure on a
- * real content conflict as a deletion. Same positional/option-injection posture as
- * {@link readOptionalBaseStage}.
- *
- * @param workingDirectory - The working tree whose in-progress conflict to read from.
- * @param stage - `2` for "ours", `3` for "theirs".
- * @param filePath - The conflicting file's workspace-relative path.
- * @returns The stage's raw bytes.
- * @throws {GitProcessError} If the underlying `git show` fails.
- */
-async function readStageBytes(workingDirectory: string, stage: 2 | 3, filePath: string): Promise<Buffer> {
-  return runGitCommandForBytes(workingDirectory, { command: 'show', positionals: [`:${stage}:${filePath}`] });
-}
-
-/**
- * Reads which unmerged index stages (`2` = "ours", `3` = "theirs") currently exist for one
- * conflicting path, by parsing `git ls-files -u -- <path>`: each output line is
- * `<mode> <sha> <stage>\t<path>`, so the whitespace-separated field before the tab (index 2) is the
- * stage number. A modify/delete conflict reports only one of the two, which is how
- * {@link RealGitCommandRunner.applyResolutionsOrAbort} learns the chosen side was the DELETED side
- * (its stage absent) and must accept the deletion rather than `git checkout` a stage that is not
- * there. `filePath` rides as a positional AFTER `--end-of-options` (the option-injection guard).
- *
- * @param workingDirectory - The working tree whose in-progress conflict to inspect.
- * @param filePath - The conflicting file's workspace-relative path.
- * @returns The set of unmerged stage numbers present for the path (`2` and/or `3`).
- */
-async function readUnmergedStages(workingDirectory: string, filePath: string): Promise<Set<2 | 3>> {
-  const { stdout } = await runGitCommand(workingDirectory, {
-    command: 'ls-files',
-    flags: ['-u'],
-    positionals: [filePath],
-  });
-  const stages = new Set<2 | 3>();
-  for (const line of stdout.split('\n')) {
-    const tabIndex = line.indexOf('\t');
-    if (tabIndex === -1) continue;
-    const fields = line.slice(0, tabIndex).trim().split(/\s+/);
-    const stage = fields[2];
-    if (stage === '2') stages.add(2);
-    else if (stage === '3') stages.add(3);
-  }
-  return stages;
-}
-
-/**
- * Computes the file-level change-set landed against `fromCommit`, as `git diff --name-status -M -z
- * <fromCommit> [<toCommit>]`.
- *
- * A clean merge passes both commits (`fromCommit` = post-flush pre-merge `HEAD`, `toCommit` =
- * post-merge `HEAD`), so the result is exactly the REMOTE's contribution, excluding the live local
- * edits the domain already holds. A clean branch switch passes ONLY `fromCommit` (the pre-switch
- * `HEAD`), diffing it against the CURRENT working tree instead of a second commit, so the re-applied
- * live edits — which sit uncommitted in the working tree after the stash-pop — are INCLUDED in the
- * result alongside the target branch's own content. Either way, the added/modified/renamed bytes are
- * read from the working tree on disk, which the domain's own `ProjectFileStore` cannot see.
- *
- * The `-z` name-status stream is NUL-delimited: each record is `status` then its path(s) as
- * separate tokens — `A`/`M`/`D` take one path, `R<score>` takes two (old, then new). `-M` enables
- * rename detection; copy detection is not requested, so no `C` record can appear. `core.quotePath`
- * is globally disabled, so every path token is already raw bytes needing no unescaping.
- *
- * @param workingDirectory - The working tree the changed bytes are read from.
- * @param fromCommit - The base commit to diff from.
- * @param toCommit - The commit to diff to, or omitted to diff `fromCommit` against the working tree.
- * @returns One {@link GitMergeFileChange} per changed file.
- */
-async function computeMergeChanges(
-  workingDirectory: string,
-  fromCommit: string,
-  toCommit?: string,
-): Promise<GitMergeFileChange[]> {
-  const { stdout } = await runGitCommand(workingDirectory, {
-    command: 'diff',
-    flags: ['--name-status', '-M', '-z'],
-    positionals: toCommit === undefined ? [fromCommit] : [fromCommit, toCommit],
-  });
-  const tokens = stdout.split('\0');
-  const changes: GitMergeFileChange[] = [];
-
-  let index = 0;
-  while (index < tokens.length) {
-    const status = tokens[index];
-    if (status.length === 0) {
-      index += 1;
-      continue;
-    }
-
-    const code = status[0];
-    switch (code) {
-      // A `T` (type change, e.g. a path switching between a regular file and a symlink) records the
-      // same thing the reconciler needs as an `M`: the path still exists and its content is now
-      // whatever the merge wrote. Landing it as `modified` keeps the file model in step with the tree.
-      case 'A':
-      case 'M':
-      case 'T': {
-        const changedPath = tokens[index + 1];
-        const content = await readFile(path.join(workingDirectory, changedPath));
-        changes.push({
-          type: code === 'A' ? 'added' : 'modified',
-          path: changedPath,
-          content,
-          mimeType: guessMimeType(changedPath),
-        });
-        index += 2;
-        break;
-      }
-      case 'D': {
-        changes.push({ type: 'removed', path: tokens[index + 1] });
-        index += 2;
-        break;
-      }
-      case 'R': {
-        const fromPath = tokens[index + 1];
-        const toPath = tokens[index + 2];
-        const content = await readFile(path.join(workingDirectory, toPath));
-        changes.push({ type: 'renamed', fromPath, toPath, content, mimeType: guessMimeType(toPath) });
-        index += 3;
-        break;
-      }
-      default: {
-        // A/M/D/R/T are the only statuses these flags can emit (copy detection is off; `-z` never
-        // emits the octal-escape case core.quotePath would). Advance past status + one path
-        // defensively rather than looping on anything unforeseen.
-        index += 2;
-      }
-    }
-  }
-  return changes;
-}
-
-const execFile = promisify(execFileCallback);
-
-/** Generous ceiling on {@link runNoIndexDiff}'s captured stdout — mirrors `run-git-command`'s own. */
-const NO_INDEX_DIFF_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
-
-/** Narrows an unknown value to one carrying a numeric child-process exit `code`. */
-function hasNumericExitCode(value: unknown): value is { code: number } {
-  if (typeof value !== 'object' || value === null || !('code' in value)) return false;
-  return typeof value.code === 'number';
-}
-
-/** Narrows an unknown value to one carrying the string `stdout` a failed `execFile` attaches to its rejection. */
-function hasStdoutText(value: unknown): value is { stdout: string } {
-  if (typeof value !== 'object' || value === null || !('stdout' in value)) return false;
-  return typeof value.stdout === 'string';
-}
-
-/**
- * Runs `git diff --no-index <left> <right>` directly via `execFile`, bypassing
- * {@link runGitCommand}'s throw-on-nonzero-exit contract: `--no-index` EXITS 1 when the two files
- * DIFFER — the normal "there is a diff" outcome, never a failure — and the unified diff text IS
- * that invocation's stdout, which `runGitCommand` discards on any nonzero exit. Only a spawn
- * failure, or an exit code of 2 or greater (a genuine `--no-index` failure — for example, a missing
- * input file), is treated as an error here; exit 0 (identical) and exit 1 (a diff) both resolve with
- * the captured stdout.
- *
- * `left`/`right` are always this adapter's own scratch temp-file paths (never a caller-supplied
- * string), so — unlike every other call site in this file — no `--end-of-options` positional guard
- * is required for them; it is still passed for defense in depth, at no cost.
- *
- * @param left - Absolute path to the base file (HEAD's blob content, or empty if absent at HEAD).
- * @param right - Absolute path to the file to compare it against (the live override text).
- * @returns The unified diff text (empty when the two files are identical).
- * @throws {Error} If `git` cannot be spawned, or exits with a code of 2 or greater.
- */
-async function runNoIndexDiff(left: string, right: string): Promise<string> {
-  try {
-    const { stdout } = await execFile('git', ['diff', '--no-index', '--end-of-options', left, right], {
-      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', LC_ALL: 'C' },
-      maxBuffer: NO_INDEX_DIFF_MAX_BUFFER_BYTES,
-    });
-    return stdout;
-  } catch (error) {
-    if (hasNumericExitCode(error) && error.code === 1 && hasStdoutText(error)) {
-      return error.stdout;
-    }
-    throw error;
-  }
-}
+export { deriveLfsEndpoint } from './git-command-helpers.js';
 
 /**
  * Real `GitCommandRunner` adapter: runs the actual `git` CLI, through {@link runGitCommand}'s
@@ -650,18 +61,27 @@ async function runNoIndexDiff(left: string, right: string): Promise<string> {
  * `<storageRoot>/<projectId>/`, mapping raw git output to this port's domain-owned types.
  * Git-library types never cross this boundary — this class is the only place in git-worker that
  * shells out to `git` for the operations it implements.
+ *
+ * The implementation is split across cohesive, single-responsibility collaborators
+ * ({@link RemoteOps}, {@link StagingOps}, {@link MergeConflictOps}, {@link BranchOps},
+ * {@link LocalReadOps}); this class is the thin facade that constructs them and delegates each port
+ * method to the right one, so the rest of the app depends only on the {@link GitCommandRunner} port.
  */
 export class RealGitCommandRunner implements GitCommandRunner {
+  private readonly remoteOps: RemoteOps;
+  private readonly stagingOps: StagingOps;
+  private readonly mergeConflictOps: MergeConflictOps;
+  private readonly branchOps: BranchOps;
+  private readonly localReadOps: LocalReadOps;
+
   /**
-   * @param storageRoot - Root directory for per-project storage (see {@link resolveWorkingTreePath}).
+   * @param storageRoot - Root directory for per-project storage.
    * @param allowedHosts - The configured git network egress allowlist (`git.egress.allowedHosts`).
    *   Defaults to empty (deny-by-default) so a caller that omits it can never reach a remote.
-   *   Every method that reaches a remote (clone, fetch, push, ...) must call
-   *   {@link RealGitCommandRunner.assertRemoteAllowed} with that remote's URL before running any
-   *   network `git` command.
-   * @param resolveHost - Overrides the DNS resolution `assertRemoteAllowed` validates a remote
-   *   host's address against. Defaults to real DNS resolution; only ever overridden by tests, the
-   *   same seam `assertRemoteHostAllowed` itself already exposes for the same reason.
+   *   Every method that reaches a remote (clone, fetch, push, ...) validates that remote's URL
+   *   against this allowlist before running any network `git` command.
+   * @param resolveHost - Overrides the DNS resolution the egress check validates a remote host's
+   *   address against. Defaults to real DNS resolution; only ever overridden by tests.
    * @param conflictStageStore - Off-working-tree store {@link merge}/{@link checkout} write the
    *   pre-operation undo snapshot and captured three-way conflict stages to. Optional so a test
    *   exercising unrelated behavior need not construct one; the composition root always supplies a
@@ -675,157 +95,47 @@ export class RealGitCommandRunner implements GitCommandRunner {
    *   as `apps/api`'s schema.
    */
   constructor(
-    private readonly storageRoot: string,
-    private readonly allowedHosts: readonly string[] = [],
-    private readonly resolveHost?: HostAddressResolver,
-    private readonly conflictStageStore?: ConflictStageStore,
-    private readonly maxRepoSizeMB: number = 500,
-    private readonly lfsThresholdBytes: number = 10_485_760,
-  ) {}
-
-  /**
-   * Records the pre-operation undo snapshot, when a {@link conflictStageStore} was configured.
-   * Called by {@link merge}/{@link checkout} before any working-tree mutation, on BOTH the clean
-   * and conflicted paths, so every pull/switch leaves an undo target.
-   *
-   * @param operationId - The operation this snapshot belongs to.
-   * @param preOpHead - The local `HEAD` captured before the flush commit / any working-tree change.
-   * @param branch - The branch the operation is running on.
-   * @returns Success (a no-op) when no store is configured, or once recorded; a
-   *   `GitCommandFailedError` when the store's write fails.
-   */
-  private async writeUndoSnapshot(
-    operationId: GitOperationId,
-    preOpHead: string,
-    branch: string,
-  ): Promise<Result<void, GitCommandFailedError>> {
-    if (!this.conflictStageStore) return { success: true, value: undefined };
-
-    const written = await this.conflictStageStore.writeSnapshot(operationId, { preOpHead, branch });
-    if (!written.success) {
-      return { success: false, error: new GitCommandFailedError('The pre-operation snapshot could not be recorded.') };
-    }
-    return { success: true, value: undefined };
+    storageRoot: string,
+    allowedHosts: readonly string[] = [],
+    resolveHost?: HostAddressResolver,
+    conflictStageStore?: ConflictStageStore,
+    maxRepoSizeMB: number = 500,
+    lfsThresholdBytes: number = 10_485_760,
+  ) {
+    this.remoteOps = new RemoteOps(storageRoot, allowedHosts, resolveHost, maxRepoSizeMB);
+    this.stagingOps = new StagingOps(storageRoot, lfsThresholdBytes);
+    this.mergeConflictOps = new MergeConflictOps(storageRoot, conflictStageStore);
+    this.branchOps = new BranchOps(storageRoot);
+    this.localReadOps = new LocalReadOps(storageRoot, allowedHosts, resolveHost);
   }
 
   /**
-   * Captures every conflicting path's three-way stages (base/ours/theirs) into
-   * {@link conflictStageStore}, when one is configured — called by {@link merge}/{@link checkout}
-   * AFTER the conflict is detected but BEFORE the caller aborts it, while the unmerged index
-   * entries `git show :1:/:2:/:3:<path>` reads from still exist.
-   *
-   * Each side's `:2:`/`:3:` stage is read optionally: a modify/delete (or rename/delete) conflict
-   * has only ONE of them, and the absent side is captured as `null` (meaning "that side deleted the
-   * file") rather than hard-failing the whole operation. Never throws: every failure (a stage read,
-   * or the store's own write) is caught and turned into a `GitCommandFailedError` result, so the
-   * caller can always run its abort in a `finally` around this call and still learn whether the
-   * capture succeeded.
-   *
-   * @param workingDirectory - The working tree whose in-progress conflict to capture.
-   * @param operationId - The conflicted operation these stages belong to.
-   * @param conflicts - Every path left in conflict, with its binary classification.
-   * @returns Success (a no-op) when no store is configured, or once every path is captured; a
-   *   `GitCommandFailedError` on the first read or write failure.
-   */
-  private async captureConflictStages(
-    workingDirectory: string,
-    operationId: GitOperationId,
-    conflicts: readonly GitMergeConflictPath[],
-  ): Promise<Result<void, GitCommandFailedError>> {
-    if (!this.conflictStageStore) return { success: true, value: undefined };
-
-    try {
-      for (const conflict of conflicts) {
-        // `git ls-files -u` authoritatively lists which stages exist for the path, so a genuinely
-        // absent stage (that side deleted the file) is distinguished from a stage that exists but
-        // fails to read. A present stage is read with a propagating read whose failure surfaces via
-        // the catch below; only a truly absent stage becomes null. Swallowing every read failure as
-        // null would misrecord a transient failure on a real content conflict as a deletion, and the
-        // later resolution would drop the file the user meant to keep.
-        const unmergedStages = await readUnmergedStages(workingDirectory, conflict.path);
-        const base = await readOptionalBaseStage(workingDirectory, conflict.path);
-        const ours = unmergedStages.has(2) ? await readStageBytes(workingDirectory, 2, conflict.path) : null;
-        const theirs = unmergedStages.has(3) ? await readStageBytes(workingDirectory, 3, conflict.path) : null;
-
-        const written = await this.conflictStageStore.writeStages(operationId, conflict.path, {
-          base,
-          ours,
-          theirs,
-          isBinary: conflict.isBinary,
-        });
-        if (!written.success) {
-          return { success: false, error: new GitCommandFailedError('The conflict could not be recorded.') };
-        }
-      }
-      return { success: true, value: undefined };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The conflict could not be recorded.') };
-    }
-  }
-
-  /**
-   * Gates a git network operation on the configured egress allowlist, resolving `remoteUrl`'s
-   * host and rejecting before any `git` process is spawned when that host is not allowed, or
-   * resolves to a private/link-local address (closing a DNS-rebinding path around an otherwise
-   * allowlisted hostname).
-   *
-   * This validates the resolved address at check time only — it does not pin the connection
-   * `git` itself makes moments later to that exact address (see `assertRemoteHostAllowed`'s own
-   * documentation of this residual, accepted TOCTOU window). Every call site below invokes this
-   * immediately before its first network `git` command, which minimizes — but, short of forcing
-   * `git`'s own connection to the validated address, cannot close — that window.
+   * Gates a git network operation on the configured egress allowlist, rejecting before any `git`
+   * process is spawned when the remote host is not allowed or resolves to a private/link-local
+   * address. Delegates to {@link RemoteOps.assertRemoteAllowed}.
    *
    * @param remoteUrl - The remote URL the caller is about to contact.
    * @returns Resolves if the remote is allowed to be contacted; otherwise rejects.
-   * @throws {RemoteHostNotAllowedError} If the remote host is not allowlisted, or resolves to a
-   *   private/link-local address.
    */
   async assertRemoteAllowed(remoteUrl: string): Promise<void> {
-    await assertRemoteHostAllowed(remoteUrl, this.allowedHosts, this.resolveHost);
+    return this.remoteOps.assertRemoteAllowed(remoteUrl);
   }
 
   /**
-   * Reads the working tree's current branch and its pending (uncommitted) changes via
-   * `git status --porcelain=v2 --branch --find-renames`.
+   * Reads the working tree's current branch and its pending (uncommitted) changes. Delegates to
+   * {@link LocalReadOps.getStatus}.
    *
    * @param projectId - The project whose working tree to inspect.
-   * @returns The current branch and pending changes, or a `GitCommandFailedError` when the
-   *   working tree cannot be read (for example, it has not been initialized yet).
+   * @returns The current branch and pending changes, or a `GitCommandFailedError` when the working
+   *   tree cannot be read.
    */
   async getStatus(projectId: ProjectId): Promise<Result<GitWorkingTreeStatus, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    let stdout: string;
-    try {
-      const result = await runGitCommand(cwd, {
-        command: 'status',
-        flags: ['--porcelain=v2', '--branch', '--find-renames'],
-      });
-      stdout = result.stdout;
-    } catch {
-      // runGitCommand's only failure mode is a GitProcessError (spawn failure or non-zero exit,
-      // e.g. the working tree does not exist yet) — never surfaced with raw process output, per
-      // the domain error's contract.
-      return {
-        success: false,
-        error: new GitCommandFailedError('Could not read the project working tree status.'),
-      };
-    }
-
-    const status = parsePorcelainStatus(stdout);
-    if (!status) {
-      return {
-        success: false,
-        error: new GitCommandFailedError('Could not read the project working tree status.'),
-      };
-    }
-    return { success: true, value: status };
+    return this.localReadOps.getStatus(projectId);
   }
 
   /**
-   * Verifies a remote can be reached and that `check.token` authenticates against it, without
-   * cloning or otherwise materializing any working tree — a cheap `git ls-remote` probe run in a
-   * throwaway scratch directory, gated on {@link assertRemoteAllowed} exactly as {@link clone} is.
+   * Verifies a remote can be reached and that `check.token` authenticates against it. Delegates to
+   * {@link RemoteOps.checkRemoteAccess}.
    *
    * @param check - The remote URL and the plaintext token to check it with.
    * @returns Success once the remote is reachable and the token was accepted; a
@@ -834,50 +144,18 @@ export class RealGitCommandRunner implements GitCommandRunner {
   async checkRemoteAccess(
     check: GitRemoteAccessCheck,
   ): Promise<Result<void, RepositoryUnreachableError | AuthenticationFailedError>> {
-    try {
-      await this.assertRemoteAllowed(check.remoteUrl);
-    } catch {
-      return { success: false, error: new RepositoryUnreachableError() };
-    }
-
-    const scratchDirectory = await mkdtemp(path.join(tmpdir(), 'git-worker-remote-check-'));
-    try {
-      await runGitCommand(scratchDirectory, {
-        command: 'ls-remote',
-        positionals: [check.remoteUrl],
-        credential: { username: CREDENTIAL_USERNAME, token: check.token },
-      });
-      return { success: true, value: undefined };
-    } catch (error) {
-      return { success: false, error: toRemoteAccessFailure(error) };
-    } finally {
-      await rm(scratchDirectory, { recursive: true, force: true });
-    }
+    return this.remoteOps.checkRemoteAccess(check);
   }
 
   /**
-   * Clones a remote's branch (its default when `input.branch` is omitted) into a temporary
-   * scratch working tree — never a project's own storage, which does not exist yet at import
-   * time — and returns every tracked file it contains, then removes the scratch tree regardless
-   * of outcome.
-   *
-   * Order of operations: {@link assertRemoteAllowed} gates the whole call before any network
-   * attempt; a plain `clone` fetches every branch and checks out the remote's default; the default
-   * branch's name is read off that checkout before anything might switch away from it (so the
-   * returned `defaultBranch` always names the remote's actual default, never whatever branch ends
-   * up checked out); a requested non-default branch is then checked out over it; an LFS pull runs
-   * only if the working tree's `.gitattributes` actually declares one (see
-   * {@link workingTreeUsesLfs}), so a repository that never uses LFS never requires the
-   * `git-lfs` extension — and that LFS transfer's endpoint is pinned to the validated origin (see
-   * {@link deriveLfsEndpoint}) so a repo-supplied `.lfsconfig` cannot redirect it off-host; and
-   * finally `headCommit` and the tracked file set are read off whatever ended up checked out.
+   * Clones a remote's branch into a temporary scratch tree and returns every tracked file it
+   * contains. Delegates to {@link RemoteOps.clone}.
    *
    * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
    *   clone (defaults to the remote's default branch).
    * @returns The cloned repository's files and the branch/commit they were cloned at; a
-   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as
-   *   {@link checkRemoteAccess}, a `RepositoryTooLargeError` when the cloned working tree exceeds
-   *   `maxRepoSizeMB`, or a `GitCommandFailedError` for any other failure.
+   *   `RepositoryUnreachableError`/`AuthenticationFailedError`, a `RepositoryTooLargeError`, or a
+   *   `GitCommandFailedError` on failure.
    */
   async clone(
     input: GitCloneInput,
@@ -887,612 +165,127 @@ export class RealGitCommandRunner implements GitCommandRunner {
       RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError | RepositoryTooLargeError
     >
   > {
-    try {
-      await this.assertRemoteAllowed(input.remoteUrl);
-    } catch {
-      return { success: false, error: new RepositoryUnreachableError() };
-    }
-
-    const scratchParent = await mkdtemp(path.join(tmpdir(), 'git-worker-clone-'));
-    const workingDirectory = path.join(scratchParent, 'clone');
-
-    try {
-      try {
-        await runGitCommand(scratchParent, {
-          command: 'clone',
-          flags: ['--quiet'],
-          positionals: [input.remoteUrl, workingDirectory],
-          credential: { username: CREDENTIAL_USERNAME, token: input.token },
-        });
-      } catch (error) {
-        return { success: false, error: toCloneFailure(error) };
-      }
-
-      const defaultBranchOutput = await runGitCommand(workingDirectory, {
-        command: 'rev-parse',
-        flags: ['--abbrev-ref', 'HEAD'],
-      });
-      const defaultBranch = readRevParseAnswer(defaultBranchOutput.stdout);
-
-      if (input.branch && input.branch !== defaultBranch) {
-        try {
-          await runGitCommand(workingDirectory, { command: 'checkout', positionals: [input.branch] });
-        } catch {
-          return {
-            success: false,
-            error: new GitCommandFailedError('The requested branch could not be checked out.'),
-          };
-        }
-      }
-
-      if (await workingTreeUsesLfs(workingDirectory)) {
-        try {
-          await runGitCommand(workingDirectory, { command: 'lfs', flags: ['install', '--local'] });
-          await runGitCommand(workingDirectory, {
-            command: 'lfs',
-            flags: ['pull'],
-            // Pin the transfer endpoint to the already-egress-validated origin, at git's
-            // highest-precedence command-line config level, so a cloned repo's attacker-controlled
-            // `.lfsconfig` (or an `lfs.url` in `.git/config`) can never redirect this transfer — and
-            // the credential below — to an internal or otherwise disallowed host.
-            config: [`lfs.url=${deriveLfsEndpoint(input.remoteUrl)}`],
-            credential: { username: CREDENTIAL_USERNAME, token: input.token },
-          });
-        } catch {
-          return {
-            success: false,
-            error: new GitCommandFailedError('Large file storage objects for this repository could not be retrieved.'),
-          };
-        }
-      }
-
-      const headCommitOutput = await runGitCommand(workingDirectory, { command: 'rev-parse', flags: ['HEAD'] });
-      const headCommit = readRevParseAnswer(headCommitOutput.stdout);
-
-      // Measured BEFORE materializeEntries reads a single byte of tracked-file content into
-      // memory — a clone that already exceeds the ceiling fails here, rather than after paying the
-      // cost (and OOM risk) of reading every file first. Measures the checked-out working tree
-      // (post `git lfs pull`), so a smudged LFS object's real size is counted, not just what git's
-      // own object store holds.
-      const totalSizeBytes = await measureWorkingTreeSizeBytes(workingDirectory);
-      if (repoSizeExceedsLimit(totalSizeBytes, this.maxRepoSizeMB)) {
-        return { success: false, error: new RepositoryTooLargeError() };
-      }
-
-      const entries = await materializeEntries(workingDirectory, this.maxRepoSizeMB);
-
-      return { success: true, value: { defaultBranch, headCommit, entries } };
-    } catch (error) {
-      if (error instanceof RepositoryTooLargeError) return { success: false, error };
-      return { success: false, error: new GitCommandFailedError('The repository could not be cloned.') };
-    } finally {
-      await rm(scratchParent, { recursive: true, force: true });
-    }
+    return this.remoteOps.clone(input);
   }
 
   /**
-   * Stages the given files for the next commit (`git add <paths>`), first routing any path at or
-   * over {@link lfsThresholdBytes} through Git LFS (see {@link trackLargeFilesWithLfs}) rather than
-   * letting it land inline in pack history.
-   *
-   * The paths are passed as plain positionals, with no extra leading `--` separator: unlike `git
-   * reset`, a real `git add` invoked after `--end-of-options` (which already disables all option
-   * parsing) treats a subsequent bare `--` as a literal, nonexistent pathspec rather than as a
-   * separator, and fails outright — confirmed against real `git` here, not merely inferred.
+   * Stages the given files for the next commit, routing any large file through Git LFS first.
+   * Delegates to {@link StagingOps.stage}.
    *
    * @param projectId - The project whose working tree to stage files in.
    * @param paths - Workspace-relative POSIX paths of the files to stage.
-   * @returns Success once staged; a `GitCommandFailedError` when the underlying git command fails
-   *   (including a `git-lfs` invocation this required but could not run).
+   * @returns Success once staged; a `GitCommandFailedError` when the underlying git command fails.
    */
   async stage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-    try {
-      const gitattributesTouched = await this.trackLargeFilesWithLfs(cwd, paths);
-      const pathsToAdd =
-        gitattributesTouched && !paths.includes('.gitattributes') ? [...paths, '.gitattributes'] : [...paths];
-      await runGitCommand(cwd, { command: 'add', positionals: pathsToAdd });
-      return { success: true, value: undefined };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The files could not be staged.') };
-    }
+    return this.stagingOps.stage(projectId, paths);
   }
 
   /**
-   * Ensures every path in `paths` that is at or over {@link lfsThresholdBytes} — and not already
-   * declared `filter=lfs` for that exact path — is tracked with Git LFS before `stage` runs `git
-   * add`: writes the managed `.gitattributes` entry for it ({@link writeManagedGitattributes}),
-   * installs the local `git lfs` filter once per call (mirroring how {@link clone} installs it), and
-   * runs `git lfs track <path>`. A path that does not exist (staging a deletion) or is not a regular
-   * file is left untouched — there is nothing to size-check or track.
-   *
-   * Scoped to `stage` only: `unstage` and the commit flush-write path never call this — live
-   * documents are text/AsciiDoc, and the binary/asset case always arrives via a stage.
-   *
-   * @param cwd - The project's working tree.
-   * @param paths - The workspace-relative paths about to be staged.
-   * @returns True if `.gitattributes` was written to (so the caller also stages it).
-   */
-  private async trackLargeFilesWithLfs(cwd: string, paths: readonly string[]): Promise<boolean> {
-    let gitattributesTouched = false;
-    let lfsInstalled = false;
-
-    // `.gitattributes` changes only when this loop writes it (via `writeManagedGitattributes`)
-    // below, so read it from disk exactly once here and keep the current contents in memory. Every
-    // later iteration consults `gitattributesContent` instead of re-reading the file this loop just
-    // wrote, removing an O(N) redundant read on the hot stage path.
-    let gitattributesContent = await readFile(path.join(cwd, '.gitattributes'), 'utf8').catch(() => '');
-
-    for (const relativePath of paths) {
-      const stats = await stat(path.join(cwd, relativePath)).catch(() => null);
-      if (!stats || !stats.isFile()) continue;
-
-      const alreadyTracked = isPathAlreadyLfsTracked(gitattributesContent, relativePath);
-
-      if (!shouldTrackWithLfs(stats.size, this.lfsThresholdBytes, alreadyTracked)) continue;
-
-      await writeManagedGitattributes(cwd, [relativePath]);
-      // Mirror in memory exactly what `writeManagedGitattributes` just persisted — it derives the
-      // written bytes from the same contents tracked here — so the next iteration's
-      // `isPathAlreadyLfsTracked` observes this pattern without a fresh disk read.
-      gitattributesContent = buildManagedGitattributes(gitattributesContent, [relativePath]);
-      gitattributesTouched = true;
-
-      if (!lfsInstalled) {
-        await runGitCommand(cwd, { command: 'lfs', flags: ['install', '--local'] });
-        lfsInstalled = true;
-      }
-      // `git lfs track` is run by the separate `git-lfs` binary (a Go/Cobra CLI), not `git` itself
-      // — unlike every other call in this file, it does NOT understand `git`'s own
-      // `--end-of-options` disambiguator (it exits nonzero: "unknown flag: --end-of-options").
-      // Cobra DOES understand the conventional `--` terminator, so this overrides
-      // `optionsTerminator` to keep the same injection-safe guarantee (a path starting with `-` can
-      // never be reparsed as a flag) without relying on a `git`-specific convention the external
-      // binary never promised to honor.
-      await runGitCommand(cwd, {
-        command: 'lfs',
-        flags: ['track'],
-        positionals: [relativePath],
-        optionsTerminator: '--',
-      });
-    }
-
-    return gitattributesTouched;
-  }
-
-  /**
-   * Unstages the given files, leaving their working-tree contents untouched (`git reset -- <paths>`).
+   * Unstages the given files, leaving their working-tree contents untouched. Delegates to
+   * {@link StagingOps.unstage}.
    *
    * @param projectId - The project whose working tree to unstage files in.
    * @param paths - Workspace-relative POSIX paths of the files to unstage.
-   * @returns Success once unstaged; a `GitCommandFailedError` when the underlying git command fails
-   *   (for example, unstaging in a repository with no `HEAD` commit yet).
+   * @returns Success once unstaged; a `GitCommandFailedError` when the underlying git command fails.
    */
   async unstage(projectId: ProjectId, paths: readonly string[]): Promise<Result<void, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-    try {
-      await runGitCommand(cwd, { command: 'reset', positionals: ['--', ...paths] });
-      return { success: true, value: undefined };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The files could not be unstaged.') };
-    }
+    return this.stagingOps.unstage(projectId, paths);
   }
 
   /**
-   * Records a commit of the currently staged index, first overwriting and re-staging every
-   * `input.flush` entry so the commit captures live collaborative content rather than stale staged
-   * bytes (see the port's JSDoc for the full write→add→commit contract).
-   *
-   * Every flush entry's path is validated with {@link staysInsideWorkingTree} BEFORE any entry is
-   * written — an absolute path, or one that escapes the working tree via `..`, fails the whole
-   * commit closed, with no partial write.
+   * Records a commit of the currently staged index, first flushing live collaborative content into
+   * the working tree. Delegates to {@link StagingOps.commit}.
    *
    * @param projectId - The project whose staged index to commit.
    * @param input - The message, author, and live-content flush list.
-   * @returns The new commit on success; a `GitCommandFailedError` when a flush path is unsafe, or
-   *   when the underlying write/add/commit git command fails.
+   * @returns The new commit on success; a `GitCommandFailedError` when a flush path is unsafe or the
+   *   underlying git command fails.
    */
   async commit(projectId: ProjectId, input: GitCommitInput): Promise<Result<GitCommitResult, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    for (const entry of input.flush) {
-      if (!staysInsideWorkingTree(cwd, entry.path)) {
-        return {
-          success: false,
-          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
-        };
-      }
-    }
-
-    try {
-      for (const entry of input.flush) {
-        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
-        // No leading `--` here either — see `stage`'s docs for why a bare `git add` rejects one.
-        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
-      }
-
-      // `-m` takes its value from the very next argv element regardless of what it contains (no
-      // shell is ever involved), so this is safe even though `input.message` is caller-supplied —
-      // unlike a bare positional, it can never be misread as a new option. The author/committer
-      // identity rides out-of-band via `identity` (mirrors `credential`), never as a `--author`
-      // flag built from caller text.
-      await runGitCommand(cwd, {
-        command: 'commit',
-        flags: ['-m', input.message],
-        identity: { name: input.author.name, email: input.author.email },
-      });
-
-      const hashOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const hash = readRevParseAnswer(hashOutput.stdout);
-
-      let authoredAt = new Date();
-      try {
-        const dateOutput = await runGitCommand(cwd, { command: 'log', flags: ['-1', '--format=%aI', 'HEAD'] });
-        const parsed = new Date(dateOutput.stdout.trim());
-        if (!Number.isNaN(parsed.getTime())) authoredAt = parsed;
-      } catch {
-        // Falls back to the `new Date()` set above — the commit itself already succeeded.
-      }
-
-      return { success: true, value: { hash, message: input.message, authoredAt } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The commit could not be recorded.') };
-    }
+    return this.stagingOps.commit(projectId, input);
   }
 
   /**
-   * Amends the most-recent commit — folding the currently-staged changes (with any live text
-   * supplied via `input.flush`) into it and, when `input.message` is given, replacing its message.
-   * Touches no network — a purely LOCAL operation.
-   *
-   * Ordering (all in the project's own working tree):
-   * 1. **Pushed-detection FIRST, before any mutation.** The current branch is read
-   *    (`git rev-parse --abbrev-ref HEAD`), then `git merge-base --is-ancestor HEAD
-   *    refs/remotes/origin/<branch>` is run: a CLEAN exit (0) means `HEAD` is already an ancestor of
-   *    (or equal to) the remote tip — the most-recent commit is already published — and this returns
-   *    {@link CommitAlreadyPushedError} making NO change at all (no flush write, no `git add`, no
-   *    amend). Any throw from that check — exit 1 (`HEAD` is ahead, genuinely unpushed) OR the
-   *    ancestor check erroring outright because `refs/remotes/origin/<branch>` does not exist (the
-   *    branch was never pushed) — is treated identically as "not (yet) pushed": proceed. Only a
-   *    successful (exit-0) ancestor check refuses; every other outcome proceeds, so a project that
-   *    has never been connected to a remote (no tracking ref at all) is never wrongly refused.
-   * 2. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
-   *    write — an unsafe path fails the whole amend closed, with no partial write. (This guard runs
-   *    before step 1's network-free but still meaningfully ordered check, so an unsafe path is
-   *    rejected without ever inspecting push state.)
-   * 3. Each flush entry is written then `git add`-ed, exactly as {@link commit} does — write the
-   *    live content, then re-stage it, so the amend captures current collaborative text rather than
-   *    stale staged bytes.
-   * 4. `git commit --amend` runs under `identity: input.author` (never a `--author` flag): with
-   *    `input.message` (`-m <message>`, taking its value from the very next argv element, shell-safe)
-   *    when a replacement message was supplied, or `--no-edit` (keeping the existing message) when it
-   *    was not.
-   * 5. `rev-parse HEAD` reads the amended commit's new hash; `git log -1 --format=%aI HEAD` reads its
-   *    authored date (falling back to `new Date()`, mirroring {@link commit}, if that secondary read
-   *    fails — the amend itself already succeeded). The result's `message` is `input.message` when
-   *    supplied, or, when it was not, the amended commit's now-kept subject
-   *    (`git log -1 --format=%s HEAD`), so a message-less amend still reports the message it landed
-   *    with rather than `undefined`.
+   * Amends the most-recent commit, refusing when it is already present on the remote-tracking
+   * branch. Delegates to {@link StagingOps.amendCommit}.
    *
    * @param projectId - The project whose most-recent commit to amend.
    * @param input - The optional replacement message, the author, and the live-content flush list.
-   * @returns The amended commit on success; a {@link CommitAlreadyPushedError} (making no change)
-   *   when the current commit is already present on the remote-tracking branch, or a
-   *   `GitCommandFailedError` when a flush path is unsafe or the underlying git command fails.
+   * @returns The amended commit on success; a `CommitAlreadyPushedError` or a `GitCommandFailedError`
+   *   on failure.
    */
   async amendCommit(projectId: ProjectId, input: GitAmendInput): Promise<Result<GitCommitResult, GitAmendError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    for (const entry of input.flush) {
-      if (!staysInsideWorkingTree(cwd, entry.path)) {
-        return {
-          success: false,
-          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
-        };
-      }
-    }
-
-    try {
-      const branchOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--abbrev-ref', 'HEAD'] });
-      const branch = readRevParseAnswer(branchOutput.stdout);
-
-      // A clean (exit-0) ancestor check is the ONLY refusal signal — any throw (exit 1, meaning HEAD
-      // is ahead and genuinely unpushed, OR the remote-tracking ref not existing at all) means
-      // "proceed", never "refuse".
-      const alreadyPushed = await runGitCommand(cwd, {
-        command: 'merge-base',
-        flags: ['--is-ancestor'],
-        positionals: ['HEAD', `refs/remotes/origin/${branch}`],
-      })
-        .then(() => true)
-        .catch(() => false);
-
-      if (alreadyPushed) {
-        return { success: false, error: new CommitAlreadyPushedError() };
-      }
-
-      for (const entry of input.flush) {
-        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
-        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
-      }
-
-      // `--reset-author` is required for the amended commit's AUTHOR (not just its committer) to
-      // pick up `identity`: `git commit --amend` otherwise keeps the ORIGINAL commit's author
-      // unconditionally, ignoring `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` entirely unless this flag (or
-      // an explicit `--author`) is given — confirmed against real `git`, not merely inferred.
-      await runGitCommand(cwd, {
-        command: 'commit',
-        flags:
-          input.message === undefined
-            ? ['--amend', '--reset-author', '--no-edit']
-            : ['--amend', '--reset-author', '-m', input.message],
-        identity: { name: input.author.name, email: input.author.email },
-      });
-
-      const hashOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const hash = readRevParseAnswer(hashOutput.stdout);
-
-      let authoredAt = new Date();
-      try {
-        const dateOutput = await runGitCommand(cwd, { command: 'log', flags: ['-1', '--format=%aI', 'HEAD'] });
-        const parsed = new Date(dateOutput.stdout.trim());
-        if (!Number.isNaN(parsed.getTime())) authoredAt = parsed;
-      } catch {
-        // Falls back to the `new Date()` set above — the amend itself already succeeded.
-      }
-
-      let message = input.message;
-      if (message === undefined) {
-        const subjectOutput = await runGitCommand(cwd, { command: 'log', flags: ['-1', '--format=%s', 'HEAD'] });
-        message = subjectOutput.stdout.trim();
-      }
-
-      return { success: true, value: { hash, message, authoredAt } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The commit could not be amended.') };
-    }
+    return this.stagingOps.amendCommit(projectId, input);
   }
 
   /**
-   * Pushes the project's current branch to its remote, authenticating out-of-band with
-   * `input.token` exactly as {@link clone} does — the token rides `GIT_ASKPASS`, never argv.
+   * Pushes the project's current branch to its remote, authenticating out-of-band. Delegates to
+   * {@link RemoteOps.push}.
    *
    * @param projectId - The project whose working tree to push from.
    * @param input - The remote URL, the plaintext token to authenticate with, and the branch to push.
-   * @returns The remote branch's new tip commit on success; a {@link NonFastForwardError} when the
-   *   remote has commits this branch does not, a {@link RepositoryUnreachableError}/
-   *   {@link AuthenticationFailedError} on the same terms as {@link checkRemoteAccess}, or a
-   *   {@link GitCommandFailedError} for any other failure.
+   * @returns The remote branch's new tip commit on success; a `NonFastForwardError`,
+   *   `RepositoryUnreachableError`, `AuthenticationFailedError`, or `GitCommandFailedError` on failure.
    */
   async push(projectId: ProjectId, input: GitPushInput): Promise<Result<GitPushResult, GitPushError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      await this.assertRemoteAllowed(input.remoteUrl);
-    } catch {
-      return { success: false, error: new RepositoryUnreachableError() };
-    }
-
-    try {
-      await runGitCommand(cwd, {
-        command: 'push',
-        positionals: [input.remoteUrl, input.branch],
-        credential: { username: CREDENTIAL_USERNAME, token: input.token },
-      });
-    } catch (error) {
-      return { success: false, error: toPushFailure(error) };
-    }
-
-    const headCommitOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-    return { success: true, value: { headCommit: readRevParseAnswer(headCommitOutput.stdout) } };
+    return this.remoteOps.push(projectId, input);
   }
 
   /**
-   * Initializes git on an existing, previously non-git project's real working tree and publishes
-   * it to a fresh, empty remote. This is the atomic init → remote-add → initial-commit → push
-   * sequence this port's JSDoc documents.
-   *
-   * Ordering (all against `resolveWorkingTreePath(this.storageRoot, projectId)` — the project's
-   * OWN working tree, never a scratch directory: its files already exist, having never been
-   * git-managed before this call):
-   * 1. {@link assertRemoteAllowed} Gates the whole call before any network attempt.
-   * 2. `git ls-remote <input.remoteUrl>`, authenticated out-of-band exactly like {@link clone},
-   *    checks whether the remote already has any ref/commit. Any output at all means the remote is
-   *    non-empty: this returns {@link RemoteAlreadyInitializedError} immediately, WITHOUT running
-   *    `git init` or touching the working tree in any way — a non-empty remote is never overwritten.
-   * 3. `git init -b <branch>` (`input.branch`, defaulting to `'main'`) creates the local repository
-   *    with the published branch already checked out, so the branch this call returns as
-   *    `defaultBranch` is exactly the one `git init` created — no separate rename/symbolic-ref step
-   *    is needed.
-   * 4. `git remote add origin <input.remoteUrl>` wires the remote — the URL as a positional after
-   *    `--end-of-options`, with NO credential in this step (mirrors the port's documented contract).
-   * 5. {@link writeManagedGitignore} Writes the working tree's managed `.gitignore` (with no project
-   *    user patterns — see the method body's inline note) so internal platform paths such as
-   *    `.collab/` are excluded BEFORE anything is staged: this call is the only thing that
-   *    provisions that file, since nothing else runs before it on a previously non-git project.
-   * 6. `git add -A` stages every file currently in the working tree. `git add -A` never stages an
-   *    ignored path, so the `.gitignore` just written is what keeps `.collab/` and `*.tmp` out of
-   *    the initial commit, with no additional pathspec exclusion needed here.
-   * 7. `git commit` records the initial commit under {@link SERVICE_COMMIT_IDENTITY} (the port's
-   *    input carries no per-user author — this is a platform bootstrap action, not an edit
-   *    attributable to one collaborator).
-   * 8. `git push` publishes that commit to `origin`/`input.branch`, authenticated out-of-band
-   *    exactly like {@link push}.
-   *
-   * All-or-nothing: any failure from step 3 onward removes the working tree's `.git` directory
-   * (never its actual files) before returning, so a failed publish leaves the project exactly as
-   * non-git as it was before this call, ready for a clean retry. A failure in step 2 needs no such
-   * cleanup — nothing was created yet.
+   * Initializes git on a previously non-git project's working tree and publishes it to a fresh,
+   * empty remote. Delegates to {@link RemoteOps.initializeAndPublish}.
    *
    * @param projectId - The project whose working tree to initialize and publish.
    * @param input - The remote URL, the plaintext token to authenticate with, and the branch to
    *   publish under (defaults to `'main'`).
    * @returns The initial commit's hash and the branch it was published under; a
-   *   {@link RemoteAlreadyInitializedError} when the remote already has commits, a
-   *   {@link RepositoryUnreachableError}/{@link AuthenticationFailedError} on the same terms as
-   *   {@link checkRemoteAccess}, or a {@link GitCommandFailedError} for any other failure.
+   *   `RemoteAlreadyInitializedError`, `RepositoryUnreachableError`, `AuthenticationFailedError`, or
+   *   `GitCommandFailedError` on failure.
    */
   async initializeAndPublish(
     projectId: ProjectId,
     input: GitInitializeInput,
   ): Promise<Result<GitInitializeOutcome, GitInitializeError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      await this.assertRemoteAllowed(input.remoteUrl);
-    } catch {
-      return { success: false, error: new RepositoryUnreachableError() };
-    }
-
-    try {
-      const { stdout } = await runGitCommand(cwd, {
-        command: 'ls-remote',
-        positionals: [input.remoteUrl],
-        credential: { username: CREDENTIAL_USERNAME, token: input.token },
-      });
-      if (stdout.trim().length > 0) {
-        return { success: false, error: new RemoteAlreadyInitializedError() };
-      }
-    } catch (error) {
-      return { success: false, error: toRemoteAccessFailure(error) };
-    }
-
-    const branch = input.branch ?? DEFAULT_INITIALIZE_BRANCH;
-
-    try {
-      await runGitCommand(cwd, { command: 'init', flags: ['-b', branch] });
-      await runGitCommand(cwd, {
-        command: 'remote',
-        flags: ['add', 'origin'],
-        positionals: [input.remoteUrl],
-      });
-      // `userPatterns` is `null`: this port's input carries no project-level ignore patterns, and
-      // the security-critical job here is excluding the internal `.collab/`/`*.tmp` entries before
-      // the very first `git add -A` ever runs on this tree — the maintainer-editable user patterns
-      // are a separate concern a future write-on-every-job step will merge in.
-      await writeManagedGitignore(cwd, null);
-      await runGitCommand(cwd, { command: 'add', flags: ['-A'] });
-      await runGitCommand(cwd, {
-        command: 'commit',
-        flags: ['-m', INITIAL_COMMIT_MESSAGE],
-        identity: SERVICE_COMMIT_IDENTITY,
-      });
-      await runGitCommand(cwd, {
-        command: 'push',
-        positionals: [input.remoteUrl, branch],
-        credential: { username: CREDENTIAL_USERNAME, token: input.token },
-      });
-
-      const headCommitOutput = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      return {
-        success: true,
-        value: { headCommit: readRevParseAnswer(headCommitOutput.stdout), defaultBranch: branch },
-      };
-    } catch (error) {
-      await rm(path.join(cwd, '.git'), { recursive: true, force: true });
-      return { success: false, error: toInitializeFailure(error) };
-    }
+    return this.remoteOps.initializeAndPublish(projectId, input);
   }
 
   /**
-   * Fetches `input.branch` from the remote into the project's remote-tracking ref, authenticating
-   * out-of-band with `input.token` exactly as {@link clone}/{@link push} do — the token rides
-   * `GIT_ASKPASS`, never argv. Gated on {@link assertRemoteAllowed} before any network spawn.
-   *
-   * An explicit refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) is used rather than a
-   * bare `git fetch <url> <branch>`, so `refs/remotes/origin/<branch>` is always created/advanced —
-   * the tracking ref that {@link getBehindAhead} and {@link merge} then read locally. The leading
-   * `+` allows a non-fast-forward remote history to still update the tracking ref.
+   * Fetches `input.branch` from the remote into the project's remote-tracking ref. Delegates to
+   * {@link RemoteOps.fetch}.
    *
    * @param projectId - The project whose working tree's remote-tracking ref to update.
    * @param input - The remote URL, the plaintext token to authenticate with, and the branch to fetch.
-   * @returns The remote-tracking ref's new tip on success; a `RepositoryUnreachableError`/
-   *   `AuthenticationFailedError` on the same terms as {@link clone}, or a `GitCommandFailedError`
-   *   for any other failure.
+   * @returns The remote-tracking ref's new tip on success; a `RepositoryUnreachableError`,
+   *   `AuthenticationFailedError`, or `GitCommandFailedError` on failure.
    */
   async fetch(
     projectId: ProjectId,
     input: GitFetchInput,
   ): Promise<Result<GitFetchResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      await this.assertRemoteAllowed(input.remoteUrl);
-    } catch {
-      return { success: false, error: new RepositoryUnreachableError() };
-    }
-
-    try {
-      await runGitCommand(cwd, {
-        command: 'fetch',
-        positionals: [input.remoteUrl, `+refs/heads/${input.branch}:refs/remotes/origin/${input.branch}`],
-        credential: { username: CREDENTIAL_USERNAME, token: input.token },
-      });
-    } catch (error) {
-      return { success: false, error: toFetchFailure(error) };
-    }
-
-    const remoteHeadOutput = await runGitCommand(cwd, {
-      command: 'rev-parse',
-      positionals: [`refs/remotes/origin/${input.branch}`],
-    });
-    return { success: true, value: { remoteHead: readRevParseAnswer(remoteHeadOutput.stdout) } };
+    return this.remoteOps.fetch(projectId, input);
   }
 
   /**
-   * Compares a local branch against its already-fetched remote-tracking ref with a single
-   * `git rev-list --count --left-right <branch>...refs/remotes/origin/<branch>` — a purely local
-   * comparison, no network. The `<local>...<remote>` order makes the left count the commits the
-   * local branch has that the remote lacks (`ahead`) and the right count the reverse (`behind`).
-   * The explicit `refs/remotes/origin/<branch>` ref is used rather than `@{u}`, so no configured
-   * upstream is required.
+   * Compares a local branch against its already-fetched remote-tracking ref. Delegates to
+   * {@link LocalReadOps.getBehindAhead}.
    *
    * @param projectId - The project whose working tree to compare.
    * @param branch - The local branch to compare against its remote-tracking ref.
    * @returns The `{ behind, ahead }` counts; a `GitCommandFailedError` when the underlying command
-   *   fails (for example, the branch has no remote-tracking ref yet) or its output is unparseable.
+   *   fails or its output is unparseable.
    */
   async getBehindAhead(projectId: ProjectId, branch: string): Promise<Result<GitBehindAhead, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      const { stdout } = await runGitCommand(cwd, {
-        command: 'rev-list',
-        flags: ['--count', '--left-right'],
-        positionals: [`${branch}...refs/remotes/origin/${branch}`],
-      });
-      const [leftText, rightText] = stdout.trim().split(/\s+/);
-      const ahead = Number.parseInt(leftText, 10);
-      const behind = Number.parseInt(rightText, 10);
-      if (Number.isNaN(ahead) || Number.isNaN(behind)) {
-        return {
-          success: false,
-          error: new GitCommandFailedError('The branch divergence from its remote could not be determined.'),
-        };
-      }
-      return { success: true, value: { behind, ahead } };
-    } catch {
-      return {
-        success: false,
-        error: new GitCommandFailedError('The branch divergence from its remote could not be determined.'),
-      };
-    }
+    return this.localReadOps.getBehindAhead(projectId, branch);
   }
 
   /**
-   * Previews what a {@link fetch}-then-{@link merge} pull would bring in, without changing anything
-   * beyond the remote-tracking ref {@link fetch} itself already updates: runs the identical fetch
-   * {@link fetch} performs (same explicit refspec, same out-of-band `GIT_ASKPASS` credential), then
-   * reads the commits and touched paths between the local branch and that freshly-fetched ref via
-   * `git log -z --format=<LOG_FORMAT> HEAD..refs/remotes/origin/<branch>` and
-   * `git diff --name-only -z HEAD..refs/remotes/origin/<branch>`. Never merges, commits, or flushes
-   * anything — a LIVE network read, not a mutation.
+   * Previews what a fetch-then-merge pull would bring in, without changing anything beyond the
+   * remote-tracking ref. Delegates to {@link LocalReadOps.previewPull}.
    *
    * @param projectId - The project whose incoming changes to preview.
    * @param input - The remote URL, the plaintext token to authenticate with, and the branch to preview.
    * @returns The incoming commits (newest first) and the paths they touch; a
-   *   `RepositoryUnreachableError`/`AuthenticationFailedError` on the same terms as {@link fetch}, or
-   *   a `GitCommandFailedError` for any other failure.
+   *   `RepositoryUnreachableError`, `AuthenticationFailedError`, or `GitCommandFailedError` on failure.
    */
   async previewPull(
     projectId: ProjectId,
@@ -1500,55 +293,12 @@ export class RealGitCommandRunner implements GitCommandRunner {
   ): Promise<
     Result<GitPreviewPullResult, RepositoryUnreachableError | AuthenticationFailedError | GitCommandFailedError>
   > {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      await this.assertRemoteAllowed(input.remoteUrl);
-    } catch {
-      return { success: false, error: new RepositoryUnreachableError() };
-    }
-
-    try {
-      await runGitCommand(cwd, {
-        command: 'fetch',
-        positionals: [input.remoteUrl, `+refs/heads/${input.branch}:refs/remotes/origin/${input.branch}`],
-        credential: { username: CREDENTIAL_USERNAME, token: input.token },
-      });
-    } catch (error) {
-      return { success: false, error: toFetchFailure(error) };
-    }
-
-    const range = `HEAD..refs/remotes/origin/${input.branch}`;
-    try {
-      const { stdout: logStdout } = await runGitCommand(cwd, {
-        command: 'log',
-        flags: ['-z', `--format=${LOG_FORMAT}`],
-        positionals: [range],
-      });
-      const { stdout: diffStdout } = await runGitCommand(cwd, {
-        command: 'diff',
-        flags: ['--name-only', '-z'],
-        positionals: [range],
-      });
-      return {
-        success: true,
-        value: { incoming: parseLogOutput(logStdout), changedPaths: parseNameOnlyOutput(diffStdout) },
-      };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The incoming changes could not be previewed.') };
-    }
+    return this.localReadOps.previewPull(projectId, input);
   }
 
   /**
-   * Previews what a push would send out, without changing anything: reads the commits and touched
-   * paths between the already-fetched `refs/remotes/origin/<branch>` and the local branch via
-   * `git log -z --format=<LOG_FORMAT> refs/remotes/origin/<branch>..HEAD` and
-   * `git diff --name-only -z refs/remotes/origin/<branch>..HEAD`. Purely local — no network, no
-   * credential; a caller wanting a fresh comparison against the remote should {@link fetch} first.
-   *
-   * When the branch has no remote-tracking ref yet (never fetched or pushed), this degrades
-   * gracefully to an empty preview (`{outgoing: [], changedPaths: []}`) rather than failing — there
-   * is nothing yet to compare against, which is not itself an error.
+   * Previews what a push would send out, without changing anything. Delegates to
+   * {@link LocalReadOps.previewPush}.
    *
    * @param projectId - The project whose outgoing changes to preview.
    * @param input - The branch to preview.
@@ -1559,730 +309,149 @@ export class RealGitCommandRunner implements GitCommandRunner {
     projectId: ProjectId,
     input: GitPreviewPushInput,
   ): Promise<Result<GitPreviewPushResult, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-    const remoteReference = `refs/remotes/origin/${input.branch}`;
-
-    const hasRemoteTrackingReference = await runGitCommand(cwd, {
-      command: 'rev-parse',
-      flags: ['--verify', '-q'],
-      positionals: [remoteReference],
-    })
-      .then(() => true)
-      .catch(() => false);
-    if (!hasRemoteTrackingReference) {
-      return { success: true, value: { outgoing: [], changedPaths: [] } };
-    }
-
-    const range = `${remoteReference}..HEAD`;
-    try {
-      const { stdout: logStdout } = await runGitCommand(cwd, {
-        command: 'log',
-        flags: ['-z', `--format=${LOG_FORMAT}`],
-        positionals: [range],
-      });
-      const { stdout: diffStdout } = await runGitCommand(cwd, {
-        command: 'diff',
-        flags: ['--name-only', '-z'],
-        positionals: [range],
-      });
-      return {
-        success: true,
-        value: { outgoing: parseLogOutput(logStdout), changedPaths: parseNameOnlyOutput(diffStdout) },
-      };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The outgoing changes could not be previewed.') };
-    }
+    return this.localReadOps.previewPush(projectId, input);
   }
 
   /**
-   * Runs a local three-way merge of the already-fetched `refs/remotes/origin/<branch>` into
-   * `input.branch`. Touches no network.
-   *
-   * Ordering (all in the project's own working tree):
-   * 1. `preOpHead` (`rev-parse HEAD`, BEFORE the flush commit) is recorded as the operation's undo
-   *    snapshot via {@link writeUndoSnapshot} — on BOTH the clean and conflicted paths below, so
-   *    every pull leaves an undo target.
-   * 2. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
-   *    write — an unsafe path fails the whole merge closed, with no partial write.
-   * 3. Each flush entry is written then `git add`-ed, exactly as {@link commit} does, forming the
-   *    live local side of the merge.
-   * 4. That local side is committed — but only when {@link hasStagedChanges} confirms something is
-   *    staged — under {@link SERVICE_COMMIT_IDENTITY} (a merge carries no author) with
-   *    {@link FLUSH_COMMIT_MESSAGE}, so the merge is a clean commit-vs-commit three-way.
-   * 5. `preMergeHead` is captured AFTER that commit, so the computed change-set is the REMOTE's
-   *    contribution only, excluding the live local edits the domain already holds.
-   * 6. `git merge --no-edit refs/remotes/origin/<branch>` runs. A non-zero exit is EXPECTED when the
-   *    merge conflicts and is NOT immediately an error: unmerged paths are inspected
-   *    ({@link readMergeConflicts}) — if there are none the exit was a genuine failure
-   *    (`GitCommandFailedError`); if there are, each conflicting path's three-way stages are
-   *    captured via {@link captureConflictStages} BEFORE `git merge --abort` runs (in a `finally`,
-   *    so a capture failure can never leave `MERGE_HEAD` behind) and the `conflicted` outcome is
-   *    returned — UNLESS the capture itself failed, in which case a `GitCommandFailedError` is
-   *    returned instead, after the abort has already restored a clean tree.
-   * 7. On a clean merge, the change-set is computed from `preMergeHead` to the post-merge `HEAD`
-   *    ({@link computeMergeChanges}); an unchanged `HEAD` (already up to date) yields empty changes.
+   * Runs a local three-way merge of the already-fetched remote-tracking ref into `input.branch`.
+   * Delegates to {@link MergeConflictOps.merge}.
    *
    * @param projectId - The project whose working tree to merge into.
    * @param input - The branch to merge into, the live-content flush list, and the operation id the
    *   undo snapshot and any captured conflict stages are keyed by.
-   * @returns A {@link GitMergeOutcome} — `merged` (with the remote's change-set) or `conflicted`
-   *   (with the files left in conflict); a `GitCommandFailedError` only when a git command itself
-   *   fails, a flush path is unsafe, or the stage-store capture fails. A conflict is an expected
-   *   outcome, never an error.
+   * @returns A `GitMergeOutcome` — `merged` or `conflicted`; a `GitCommandFailedError` only when a
+   *   git command itself fails, a flush path is unsafe, or the stage-store capture fails.
    */
   async merge(projectId: ProjectId, input: GitMergeInput): Promise<Result<GitMergeOutcome, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    for (const entry of input.flush) {
-      if (!staysInsideWorkingTree(cwd, entry.path)) {
-        return {
-          success: false,
-          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
-        };
-      }
-    }
-
-    try {
-      const preOpHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const preOpHead = readRevParseAnswer(preOpHeadResult.stdout);
-      const snapshotWritten = await this.writeUndoSnapshot(input.operationId, preOpHead, input.branch);
-      if (!snapshotWritten.success) return snapshotWritten;
-
-      for (const entry of input.flush) {
-        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
-        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
-      }
-
-      if (await hasStagedChanges(cwd)) {
-        await runGitCommand(cwd, {
-          command: 'commit',
-          flags: ['-m', FLUSH_COMMIT_MESSAGE],
-          identity: SERVICE_COMMIT_IDENTITY,
-        });
-      }
-
-      const preMergeHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const preMergeHead = readRevParseAnswer(preMergeHeadResult.stdout);
-
-      const remoteReference = `refs/remotes/origin/${input.branch}`;
-      try {
-        // A non-fast-forward merge records a merge commit, which needs a committer identity — the
-        // same service identity the flush commit uses, since a merge carries no author.
-        await runGitCommand(cwd, {
-          command: 'merge',
-          flags: ['--no-edit'],
-          positionals: [remoteReference],
-          identity: SERVICE_COMMIT_IDENTITY,
-        });
-      } catch (error) {
-        const conflicts = await readMergeConflicts(cwd);
-        if (conflicts.length === 0) {
-          // No unmerged paths → this was a genuine command failure (e.g. the ref does not exist),
-          // not a content conflict.
-          throw error;
-        }
-
-        // Capture every conflicting path's three-way stages BEFORE the abort — the abort runs in
-        // a `finally` so a capture failure can never leave `MERGE_HEAD` behind.
-        let captured: Result<void, GitCommandFailedError> = { success: true, value: undefined };
-        try {
-          captured = await this.captureConflictStages(cwd, input.operationId, conflicts);
-        } finally {
-          await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] });
-        }
-        if (!captured.success) return captured;
-
-        return { success: true, value: { status: 'conflicted', conflicts } };
-      }
-
-      const postMergeHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const postMergeHead = readRevParseAnswer(postMergeHeadResult.stdout);
-      if (preMergeHead === postMergeHead) {
-        return { success: true, value: { status: 'merged', headCommit: postMergeHead, changes: [] } };
-      }
-
-      const changes = await computeMergeChanges(cwd, preMergeHead, postMergeHead);
-      return { success: true, value: { status: 'merged', headCommit: postMergeHead, changes } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The merge could not be completed.') };
-    }
+    return this.mergeConflictOps.merge(projectId, input);
   }
 
   /**
-   * Lists the project's local branches and which one is currently checked out. Touches no network.
-   *
-   * `git for-each-ref --format=%(refname:short) refs/heads` yields one local branch name per line;
-   * `git rev-parse --abbrev-ref HEAD` names the checked-out branch. `refs/heads` is a fixed,
-   * code-authored ref pattern, never caller input.
+   * Lists the project's local branches and which one is currently checked out. Delegates to
+   * {@link BranchOps.listBranches}.
    *
    * @param projectId - The project whose working tree to list branches for.
-   * @returns The current branch and every local branch name; a `GitCommandFailedError` (generic
-   *   message) when the underlying git command fails.
+   * @returns The current branch and every local branch name; a `GitCommandFailedError` when the
+   *   underlying git command fails.
    */
   async listBranches(projectId: ProjectId): Promise<Result<GitBranchList, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      const currentResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--abbrev-ref', 'HEAD'] });
-      const current = readRevParseAnswer(currentResult.stdout);
-
-      const listResult = await runGitCommand(cwd, {
-        command: 'for-each-ref',
-        flags: ['--format=%(refname:short)', 'refs/heads'],
-      });
-      const branches = listResult.stdout
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-
-      return { success: true, value: { current, branches } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The project branches could not be listed.') };
-    }
+    return this.branchOps.listBranches(projectId);
   }
 
   /**
-   * Creates a new local branch from the current branch tip WITHOUT switching to it (HEAD unchanged).
-   * Touches no network.
-   *
-   * `git branch <name>` with `name` as a positional AFTER `--end-of-options` (the option-injection
-   * guard `runGitCommand` applies to every positional), so a name beginning with `-` can never be
-   * reparsed as a flag. The name is not validated here: a duplicate name, or one git rejects as an
-   * invalid ref name, exits non-zero and becomes a generic `GitCommandFailedError`.
+   * Creates a new local branch from the current branch tip without switching to it. Delegates to
+   * {@link BranchOps.createBranch}.
    *
    * @param projectId - The project whose working tree to create the branch in.
    * @param input - The new branch's name.
-   * @returns The created branch on success; a `GitCommandFailedError` (generic message) when the
-   *   underlying git command fails (a duplicate or invalid name).
+   * @returns The created branch on success; a `GitCommandFailedError` when the underlying git
+   *   command fails.
    */
   async createBranch(
     projectId: ProjectId,
     input: GitCreateBranchInput,
   ): Promise<Result<GitCreatedBranch, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      await runGitCommand(cwd, { command: 'branch', positionals: [input.name] });
-      return { success: true, value: { name: input.name } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The branch could not be created.') };
-    }
+    return this.branchOps.createBranch(projectId, input);
   }
 
   /**
    * Switches the project's working tree to another local branch, carrying in-progress live edits
-   * across the switch. Touches no network — a purely LOCAL operation, like {@link merge}: no egress,
-   * no credential. Follows the port's `checkout` adapter contract exactly, atomically:
-   *
-   * 1. Every `input.flush` entry's path is validated with {@link staysInsideWorkingTree} BEFORE any
-   *    write — an unsafe path fails the whole switch closed, with no partial write.
-   * 2. `preSwitchHead` (the source branch tip) is captured. It is NOT a flush commit: unlike
-   *    {@link merge}, the flushed edits are carried across by a stash, never committed on the source
-   *    branch. It doubles as the operation's pre-operation undo snapshot ({@link writeUndoSnapshot}),
-   *    recorded on BOTH the clean and conflicted paths below, so every switch leaves an undo target.
-   * 3. Each flush entry is written then `git add`-ed, exactly as {@link commit}/{@link merge} do,
-   *    materializing the live edits as staged working-tree state on the source branch.
-   * 4. When `input.stashLocal` is true AND that flush actually staged something
-   *    ({@link hasStagedChanges}), `git stash push` shelves it so the switch can carry it across; a
-   *    clean tree shelves nothing, and the later pop is skipped.
-   * 5. `git checkout <input.branch>` switches to the target branch (the branch is a positional after
-   *    `--end-of-options`). A failure here — for example an unknown target branch — throws and
-   *    becomes a generic `GitCommandFailedError`.
-   * 6. When step 4 stashed, `git stash pop` re-applies the shelved edits. A non-zero exit is EXPECTED
-   *    when the edits collide with the target branch and is NOT immediately an error: unmerged paths
-   *    are inspected ({@link readMergeConflicts}, classifying binary against the stash commit) — if
-   *    there are none the exit was a genuine failure; if there are, every conflicting path's
-   *    three-way stages are captured via {@link captureConflictStages} — the unmerged index entries
-   *    still exist at this point — BEFORE the working tree is restored to a clean checkout of the
-   *    target branch (`git reset --hard`) and the now-unneeded stash is dropped (both run in a
-   *    `finally`, so a capture failure can never leave the stash undropped), leaving a defined,
-   *    clean tree exactly as {@link merge}'s `--abort` does. The live edits are not lost — they
-   *    remain live in each collaborator's editor, which the later conflict-resolution flow
-   *    reconciles against the reported paths. The `conflicted` outcome is returned — UNLESS the
-   *    capture itself failed, in which case a `GitCommandFailedError` is returned instead, after the
-   *    reset/drop have already restored a clean tree.
-   * 7. On a clean switch, `git add -A` stages the re-applied edits (so a flushed edit to a file absent
-   *    from the target branch is captured as an addition), and `changes` is the delta from
-   *    `preSwitchHead` to the post-switch working tree ({@link computeMergeChanges} with no second
-   *    commit) — the target branch's own content AND the re-applied live edits, per the port contract.
-   *    An identical tree yields empty `changes`.
+   * across the switch. Delegates to {@link MergeConflictOps.checkout}.
    *
    * @param projectId - The project whose working tree to switch.
    * @param input - The target branch, the live-content flush list, whether to carry local edits,
    *   and the operation id the undo snapshot and any captured conflict stages are keyed by.
-   * @returns A {@link GitCheckoutOutcome} — `switched` with the resulting changes (empty when the
-   *   tree is unchanged) or `conflicted` with the files the stash-pop left in conflict; a conflict is
-   *   an expected outcome, never an error. Returns a `GitCommandFailedError` (generic message) only
-   *   when the underlying git command itself fails, a flush path is unsafe, or the stage-store
-   *   capture fails.
+   * @returns A `GitCheckoutOutcome` — `switched` or `conflicted`; a `GitCommandFailedError` only
+   *   when the underlying git command fails, a flush path is unsafe, or the stage-store capture fails.
    */
   async checkout(
     projectId: ProjectId,
     input: GitCheckoutInput,
   ): Promise<Result<GitCheckoutOutcome, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    for (const entry of input.flush) {
-      if (!staysInsideWorkingTree(cwd, entry.path)) {
-        return {
-          success: false,
-          error: new GitCommandFailedError('A flush entry path escapes the project working tree.'),
-        };
-      }
-    }
-
-    try {
-      const preSwitchHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const preSwitchHead = readRevParseAnswer(preSwitchHeadResult.stdout);
-      // preSwitchHead IS the pre-operation head (a switch never takes a flush commit on the source
-      // branch — the flushed edits are carried across by a stash instead), so it doubles as the
-      // undo snapshot's `preOpHead`, recorded on BOTH the clean and conflicted paths below.
-      const snapshotWritten = await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch);
-      if (!snapshotWritten.success) return snapshotWritten;
-
-      for (const entry of input.flush) {
-        await writeFile(path.join(cwd, entry.path), entry.content, 'utf8');
-        await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
-      }
-
-      const stashed = input.stashLocal && (await hasStagedChanges(cwd));
-      if (stashed) {
-        await runGitCommand(cwd, { command: 'stash', flags: ['push'] });
-      }
-
-      await runGitCommand(cwd, { command: 'checkout', positionals: [input.branch] });
-
-      if (stashed) {
-        try {
-          await runGitCommand(cwd, { command: 'stash', flags: ['pop'] });
-        } catch (error) {
-          // A failed pop is a content conflict only if it left unmerged paths; otherwise it is a
-          // genuine command failure. The stash commit (`stash@{0}`, kept by the failed pop) is the
-          // "theirs" side for the binary classification, mirroring how a merge uses `MERGE_HEAD`.
-          const conflicts = await readMergeConflicts(cwd, 'stash@{0}');
-          if (conflicts.length === 0) {
-            throw error;
-          }
-
-          // Capture every conflicting path's three-way stages BEFORE the reset/drop — both run in
-          // a `finally` so a capture failure can never leave the stash undropped or the tree dirty.
-          let captured: Result<void, GitCommandFailedError> = { success: true, value: undefined };
-          try {
-            captured = await this.captureConflictStages(cwd, input.operationId, conflicts);
-          } finally {
-            // Restore a clean checkout of the target branch and drop the shelved edits, exactly as
-            // `merge --abort` leaves a clean tree. The edits are not lost: they stay live in each
-            // collaborator's editor, which the later conflict-resolution flow reconciles.
-            await runGitCommand(cwd, { command: 'reset', flags: ['--hard'] });
-            await runGitCommand(cwd, { command: 'stash', flags: ['drop'] });
-          }
-          if (!captured.success) return captured;
-
-          return { success: true, value: { status: 'conflicted', conflicts } };
-        }
-      }
-
-      // Stage the re-applied edits so a flushed file absent from the target branch is captured as an
-      // addition in the change-set (a plain commit-to-worktree diff omits still-untracked files).
-      await runGitCommand(cwd, { command: 'add', flags: ['-A'] });
-
-      const postSwitchHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const postSwitchHead = readRevParseAnswer(postSwitchHeadResult.stdout);
-
-      const changes = await computeMergeChanges(cwd, preSwitchHead);
-      return { success: true, value: { status: 'switched', headCommit: postSwitchHead, changes } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The branch switch could not be completed.') };
-    }
+    return this.mergeConflictOps.checkout(projectId, input);
   }
 
   /**
-   * Completes a previously-aborted conflicted `PULL` by RE-RUNNING `git merge --no-edit
-   * refs/remotes/origin/<branch>` (recreating `MERGE_HEAD`), dropping each `input.resolutions`
-   * entry onto its conflicted path, and taking a genuine resolving merge commit. Re-running the
-   * merge (rather than committing only the files that were in conflict) also recovers whatever the
-   * remote changed in files that were NOT conflicted, which the original abort discarded. Touches
-   * no network.
-   *
-   * Ordering: `ensureCleanWorkingTree` (belt-and-braces — the tree should already be clean, per
-   * `AWAITING_CONFLICT`'s own invariant) → capture `preHead` → re-run the merge (a non-zero exit
-   * with no unmerged paths is a genuine failure, e.g. The tracking ref no longer exists; a CLEAN
-   * merge here — the remote resolved itself since detection — is also fine, nothing to apply) → for
-   * each resolution, `ours`/`theirs` via `git checkout --ours/--theirs` + `git add` (or, when the
-   * chosen side DELETED the file in a modify/delete conflict — its stage absent — `git rm` to accept
-   * that deletion), or `merged` via the bytes {@link ConflictStageStore.readMerged} recorded, written then `git add`-ed
-   * → verify no unmerged path remains (`git diff --name-only --diff-filter=U`); if one does, abort
-   * and return `stillConflicted` with the still-unmerged paths (classified exactly as
-   * {@link merge} classifies its own) → `git commit --no-edit` (reusing the merge's own prepared
-   * message) under {@link SERVICE_COMMIT_IDENTITY} → compute the change-set from `preHead` to the
-   * new `HEAD` via {@link computeMergeChanges}.
-   *
-   * Any throw while applying resolutions (or reading the still-unmerged set) runs `git merge
-   * --abort` before propagating, so a partial failure never leaves `MERGE_HEAD` or a half-resolved
-   * index behind — the awaiting operation stays untouched and retryable.
+   * Completes a previously-aborted conflicted pull by re-running the merge, applying each
+   * resolution, and taking a resolving merge commit. Delegates to {@link MergeConflictOps.resolveMerge}.
    *
    * @param projectId - The project whose working tree to complete the merge in.
-   * @param input - The branch, the operation id (keys the conflict-stage-store reads for a
-   *   `merged` resolution), and every conflicting file's chosen resolution.
-   * @returns A {@link GitResolveMergeOutcome}; a `GitCommandFailedError` (generic message) when the
-   *   underlying git command fails, no conflict-stage store is configured for a `merged`
-   *   resolution, or its recorded bytes are missing.
+   * @param input - The branch, the operation id, and every conflicting file's chosen resolution.
+   * @returns A `GitResolveMergeOutcome`; a `GitCommandFailedError` when the underlying git command
+   *   fails, no conflict-stage store is configured for a `merged` resolution, or its bytes are missing.
    */
   async resolveMerge(
     projectId: ProjectId,
     input: GitResolveMergeInput,
   ): Promise<Result<GitResolveMergeOutcome, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      await ensureCleanWorkingTree(cwd);
-
-      const preHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const preHead = readRevParseAnswer(preHeadResult.stdout);
-
-      const remoteReference = `refs/remotes/origin/${input.branch}`;
-      let reproducedConflict = false;
-      try {
-        await runGitCommand(cwd, {
-          command: 'merge',
-          flags: ['--no-edit'],
-          positionals: [remoteReference],
-          identity: SERVICE_COMMIT_IDENTITY,
-        });
-      } catch (error) {
-        const conflicts = await readMergeConflicts(cwd);
-        if (conflicts.length === 0) {
-          // No unmerged paths → a genuine command failure (e.g. the tracking ref no longer
-          // exists), not a reproduction of the original conflict.
-          throw error;
-        }
-        reproducedConflict = true;
-      }
-
-      if (reproducedConflict) {
-        const stillConflicted = await this.applyResolutionsOrAbort(cwd, input);
-        if (stillConflicted) {
-          return { success: true, value: stillConflicted };
-        }
-
-        await runGitCommand(cwd, { command: 'commit', flags: ['--no-edit'], identity: SERVICE_COMMIT_IDENTITY });
-      }
-
-      const headCommitResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const headCommit = readRevParseAnswer(headCommitResult.stdout);
-      const changes = await computeMergeChanges(cwd, preHead, headCommit);
-      return { success: true, value: { status: 'resolved', headCommit, changes } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The merge could not be completed.') };
-    }
+    return this.mergeConflictOps.resolveMerge(projectId, input);
   }
 
   /**
-   * Applies every resolution onto the just-reproduced conflicted merge, then verifies no unmerged
-   * path remains. Returns the `stillConflicted` outcome (after aborting) when one does; returns
-   * null — meaning the caller should proceed straight to `git commit` — when every path is clean.
-   *
-   * Any throw while applying a resolution (or checking the remaining unmerged set) runs `git merge
-   * --abort` before rethrowing, so {@link resolveMerge}'s own `catch` always finds a clean tree.
-   */
-  private async applyResolutionsOrAbort(
-    cwd: string,
-    input: GitResolveMergeInput,
-  ): Promise<GitResolveMergeOutcome | null> {
-    try {
-      for (const resolution of input.resolutions) {
-        // Guard the caller-supplied path before any write, exactly as the sibling write methods
-        // (commit/amend/merge/checkout/discardChanges) do: the `merged` branch writes bytes to
-        // `cwd/<path>` directly, so a `..` segment must never reach the filesystem. A throw here runs
-        // the method's `git merge --abort` and surfaces as resolveMerge's generic failure.
-        if (!staysInsideWorkingTree(cwd, resolution.path)) {
-          throw new Error('A resolution path escapes the project working tree.');
-        }
-        if (resolution.resolution === 'merged') {
-          if (!this.conflictStageStore) {
-            throw new Error('No conflict stage store is configured to read the merged content from.');
-          }
-          const merged = await this.conflictStageStore.readMerged(input.operationId, resolution.path);
-          if (!merged.success || merged.value === null) {
-            throw new Error(`No merged content was recorded for '${resolution.path}'.`);
-          }
-          await writeFile(path.join(cwd, resolution.path), merged.value);
-          await runGitCommand(cwd, { command: 'add', positionals: [resolution.path] });
-        } else {
-          // The chosen side may be the one that DELETED the file (a modify/delete conflict), whose
-          // stage is absent from the reproduced index — `git checkout --ours/--theirs` would fail
-          // outright. Read which unmerged stages exist for the path and, when the chosen side's is
-          // absent, honor the resolution as "accept the deletion" via `git rm` instead of a
-          // checkout+add of a stage that is not there.
-          const unmergedStages = await readUnmergedStages(cwd, resolution.path);
-          const chosenStage = resolution.resolution === 'ours' ? 2 : 3;
-          if (unmergedStages.has(chosenStage)) {
-            await runGitCommand(cwd, {
-              command: 'checkout',
-              flags: [`--${resolution.resolution}`],
-              positionals: [resolution.path],
-            });
-            await runGitCommand(cwd, { command: 'add', positionals: [resolution.path] });
-          } else {
-            await runGitCommand(cwd, { command: 'rm', positionals: [resolution.path] });
-          }
-        }
-      }
-
-      const remaining = await readMergeConflicts(cwd);
-      if (remaining.length > 0) {
-        await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] });
-        return { status: 'stillConflicted', conflicts: remaining };
-      }
-      return null;
-    } catch (error) {
-      await runGitCommand(cwd, { command: 'merge', flags: ['--abort'] }).catch(() => undefined);
-      throw error;
-    }
-  }
-
-  /**
-   * Restores the working tree to an operation's pre-operation undo snapshot, undoing a pull or
-   * switch — whether it left the project `AWAITING_CONFLICT` or already landed cleanly. Touches no
-   * network.
-   *
-   * Reads the snapshot from the configured conflict-stage store by `input.operationId`; captures
-   * the pre-reset `HEAD`; `git reset --hard <preOpHead>`; computes the reversal change-set as the
-   * delta from the pre-reset `HEAD` to the now-reset working tree via the single-argument form of
-   * {@link computeMergeChanges} (mirrors how {@link checkout} computes its own change-set) — the
-   * exact set the caller needs to revert docs/live editors.
+   * Restores the working tree to an operation's pre-operation undo snapshot. Delegates to
+   * {@link MergeConflictOps.restoreToSnapshot}.
    *
    * @param projectId - The project whose working tree to restore.
    * @param input - The operation whose snapshot to restore to.
-   * @returns A {@link GitRestoreOutcome}; a `GitCommandFailedError` (generic message) when no
-   *   conflict-stage store is configured, no snapshot is recorded for the operation, its recorded
-   *   commit is no longer resolvable, or the underlying git command fails.
+   * @returns A `GitRestoreOutcome`; a `GitCommandFailedError` when no store/snapshot is available,
+   *   the recorded commit is unresolvable, or the underlying git command fails.
    */
   async restoreToSnapshot(
     projectId: ProjectId,
     input: GitRestoreToSnapshotInput,
   ): Promise<Result<GitRestoreOutcome, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    if (!this.conflictStageStore) {
-      return { success: false, error: new GitCommandFailedError('No conflict stage store is configured.') };
-    }
-
-    try {
-      const snapshot = await this.conflictStageStore.readSnapshot(input.operationId);
-      if (!snapshot.success) return snapshot;
-      if (snapshot.value === null) {
-        return {
-          success: false,
-          error: new GitCommandFailedError('No pre-operation snapshot is recorded for this operation.'),
-        };
-      }
-
-      const preResetHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
-      const preResetHead = readRevParseAnswer(preResetHeadResult.stdout);
-
-      await runGitCommand(cwd, { command: 'reset', flags: ['--hard'], positionals: [snapshot.value.preOpHead] });
-
-      const changes = await computeMergeChanges(cwd, preResetHead);
-      return { success: true, value: { headCommit: snapshot.value.preOpHead, changes } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The working tree could not be restored.') };
-    }
+    return this.mergeConflictOps.restoreToSnapshot(projectId, input);
   }
 
   /**
-   * Reads a project's commit history via `git log -z --format=<LOG_FORMAT> [--max-count=<limit>]
-   * [-- <path>]`, newest first (git's own default order). Touches no network — a purely local read.
-   *
-   * `git log` itself FAILS (rather than printing empty output) on a repository with no commits
-   * yet ("does not have any commits yet"), so a thrown failure is first checked against two local
-   * probes before it is treated as a real error: `git rev-parse --is-inside-work-tree` confirms the
-   * working tree is a valid git repository at all (false here means the working tree does not exist
-   * or was never initialized — a genuine failure), and, only once that holds, `git rev-parse
-   * --verify -q HEAD` confirms whether any commit exists yet (false here is the empty-history case,
-   * `{ success: true, value: [] }`, NOT an error). A path that no commit ever touched needs none of
-   * this: `git log` itself exits 0 with empty output, which {@link parseLogOutput} already turns
-   * into an empty array.
+   * Reads a project's commit history, newest first. Delegates to {@link LocalReadOps.log}.
    *
    * @param projectId - The project whose history to read.
    * @param options - `path` restricts to a single project-relative file's history; `limit` caps the
    *   number of commits returned.
-   * @returns Every matching commit, newest first; a `GitCommandFailedError` (generic message) when
-   *   the underlying git command fails for a reason other than an as-yet-commit-less repository.
+   * @returns Every matching commit, newest first; a `GitCommandFailedError` when the underlying git
+   *   command fails for a reason other than an as-yet-commit-less repository.
    */
   async log(
     projectId: ProjectId,
     options: { readonly path?: string; readonly limit?: number },
   ): Promise<Result<GitLogEntry[], GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    const flags = ['-z', `--format=${LOG_FORMAT}`];
-    if (options.limit !== undefined) flags.push(`--max-count=${options.limit}`);
-
-    try {
-      const { stdout } = await runGitCommand(cwd, {
-        command: 'log',
-        flags,
-        positionals: options.path ? ['--', options.path] : [],
-      });
-      return { success: true, value: parseLogOutput(stdout) };
-    } catch {
-      const isValidRepository = await runGitCommand(cwd, {
-        command: 'rev-parse',
-        flags: ['--is-inside-work-tree'],
-      })
-        .then(() => true)
-        .catch(() => false);
-      if (!isValidRepository) {
-        return { success: false, error: new GitCommandFailedError('The project history could not be read.') };
-      }
-
-      const hasAnyCommit = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--verify', '-q', 'HEAD'] })
-        .then(() => true)
-        .catch(() => false);
-      if (!hasAnyCommit) {
-        return { success: true, value: [] };
-      }
-
-      return { success: false, error: new GitCommandFailedError('The project history could not be read.') };
-    }
+    return this.localReadOps.log(projectId, options);
   }
 
   /**
-   * Produces a unified diff. Touches no network — a purely local read.
-   *
-   * - **Commit-vs-commit** (`input.from` and `input.to` both set): `git diff <from> <to> [-- <path>]`.
-   * - **Uncommitted, no live override**: `git diff HEAD [-- <path>]`.
-   * - **Uncommitted with `input.currentContent`** (the working-tree copy is stale — an open editor's
-   *   live text is authoritative instead): {@link diffLiveContentOverride} diffs HEAD's blob of that
-   *   one path against the supplied live text directly, never reading the stale on-disk copy.
-   *
-   * `from`/`to`/`path` are always POSITIONALS after `--end-of-options` (never interpolated into a
-   * flag).
+   * Produces a unified diff — between two commits, of the uncommitted working changes, or of a live
+   * editor override. Delegates to {@link LocalReadOps.diff}.
    *
    * @param projectId - The project whose working tree (and/or history) to diff.
-   * @param input - What to diff — two commits, or the uncommitted working changes, optionally
-   *   scoped to one file, optionally overriding that file's content with live text.
+   * @param input - What to diff — two commits, or the uncommitted working changes, optionally scoped
+   *   to one file, optionally overriding that file's content with live text.
    * @returns The unified diff text (empty when there is no difference); a `GitCommandFailedError`
-   *   (generic message) when the underlying git command fails.
+   *   when the underlying git command fails.
    */
   async diff(projectId: ProjectId, input: GitDiffInput): Promise<Result<GitDiffResult, GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      if (input.currentContent) {
-        return await this.diffLiveContentOverride(cwd, input.currentContent);
-      }
-
-      if (input.from !== undefined && input.to !== undefined) {
-        const positionals = input.path ? [input.from, input.to, '--', input.path] : [input.from, input.to];
-        const { stdout } = await runGitCommand(cwd, { command: 'diff', positionals });
-        return { success: true, value: { unified: stdout } };
-      }
-
-      const positionals = input.path ? ['HEAD', '--', input.path] : ['HEAD'];
-      const { stdout } = await runGitCommand(cwd, { command: 'diff', positionals });
-      return { success: true, value: { unified: stdout } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The diff could not be produced.') };
-    }
+    return this.localReadOps.diff(projectId, input);
   }
 
   /**
-   * Diffs HEAD's blob of `currentContent.path` against the supplied live text — the live-editor
-   * override an open editor's stale working-tree copy must never leak into: HEAD's blob is written
-   * to one scratch temp file, the live text to a second, and `git diff --no-index` compares the two
-   * (see {@link runNoIndexDiff} for why that call bypasses `runGitCommand`). `git show
-   * HEAD:<path>` failing (the path did not exist at HEAD yet) is tolerated — the base is treated as
-   * empty, so a brand-new file's live content still diffs cleanly against nothing.
-   *
-   * Both scratch files live under `tmpdir()` (never inside the working tree) and are always removed
-   * in a `finally`, regardless of outcome.
-   *
-   * @param cwd - The project's working tree (read only for HEAD's blob; never written to).
-   * @param currentContent - The live override: the project-relative path and its current live text.
-   * @returns The unified diff between HEAD's blob and the live text; a `GitCommandFailedError`
-   *   (generic message) on any other failure.
-   */
-  private async diffLiveContentOverride(
-    cwd: string,
-    currentContent: { readonly path: string; readonly content: string },
-  ): Promise<Result<GitDiffResult, GitCommandFailedError>> {
-    const scratchDirectory = await mkdtemp(path.join(tmpdir(), 'git-worker-diff-live-'));
-    try {
-      const headBytes = await runGitCommandForBytes(cwd, {
-        command: 'show',
-        positionals: [`HEAD:${currentContent.path}`],
-      }).catch(() => Buffer.alloc(0));
-
-      const baseName = path.basename(currentContent.path) || 'file';
-      const headTemporary = path.join(scratchDirectory, `head-${baseName}`);
-      const liveTemporary = path.join(scratchDirectory, `live-${baseName}`);
-      await writeFile(headTemporary, headBytes);
-      await writeFile(liveTemporary, currentContent.content, 'utf8');
-
-      const unified = await runNoIndexDiff(headTemporary, liveTemporary);
-      return { success: true, value: { unified } };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The diff could not be produced.') };
-    } finally {
-      await rm(scratchDirectory, { recursive: true, force: true });
-    }
-  }
-
-  /**
-   * Reads per-line authorship for a single project-relative file via `git blame --line-porcelain
-   * [<ref>] -- <path>`, parsed by {@link parseBlameOutput}. Touches no network — a purely local read.
-   *
-   * `ref` (when set) and `path` are always POSITIONALS after `--end-of-options`.
+   * Reads per-line authorship for a single project-relative file. Delegates to
+   * {@link LocalReadOps.blame}.
    *
    * @param projectId - The project whose file to blame.
    * @param input - The project-relative file path, and the optional commit to blame it as of.
-   * @returns Every line's authorship, in file order; a `GitCommandFailedError` (generic message)
-   *   when the underlying git command fails (for example, the path does not exist at the given
-   *   ref).
+   * @returns Every line's authorship, in file order; a `GitCommandFailedError` when the underlying
+   *   git command fails.
    */
   async blame(
     projectId: ProjectId,
     input: { readonly path: string; readonly ref?: string },
   ): Promise<Result<GitBlameLine[], GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    try {
-      const { stdout } = await runGitCommand(cwd, {
-        command: 'blame',
-        flags: ['--line-porcelain'],
-        positionals: input.ref ? [input.ref, '--', input.path] : ['--', input.path],
-      });
-      return { success: true, value: parseBlameOutput(stdout) };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The file could not be blamed.') };
-    }
+    return this.localReadOps.blame(projectId, input);
   }
 
   /**
-   * Restores the given files in the working tree — dropping their uncommitted changes back to
-   * `HEAD`, or, with `input.fromCommit`, to their content at that commit — and returns the resulting
-   * change-set. Touches no network — a purely local operation.
-   *
-   * Every requested path is validated with {@link staysInsideWorkingTree} BEFORE anything else runs
-   * — an unsafe path fails the whole discard closed, with nothing touched.
-   *
-   * The restore target is `input.fromCommit` when given, `HEAD` otherwise. Rather than classifying
-   * paths as "tracked"/"untracked" (which a staged-but-never-committed file would answer
-   * ambiguously — tracked in the index, yet absent from `HEAD`), each requested path is checked
-   * directly against the TARGET ref with `git cat-file -e <target>:<path>`: a path that exists there
-   * is restored; one that does not (a newly-added untracked file when discarding to `HEAD`, or any
-   * path absent at `fromCommit`) is instead unstaged (`git reset -- <path>`, a no-op for an already-
-   * untracked path) and deleted from disk, so "restoring" a path to a state where it never existed
-   * actually removes it. Every existing path is restored in ONE `git checkout <target> -- <paths>`
-   * invocation, so git applies them atomically; the deletions run after, one path at a time (each on
-   * its own already-known-absent-at-target path, so there is nothing left for git to fail atomically
-   * on).
-   *
-   * The change-set is built directly from each requested path's POST-restore on-disk state — never by
-   * diffing commits: a path that now has bytes on disk is a `modified` entry carrying them (and their
-   * guessed MIME type); a path that is now absent is a `removed` entry.
+   * Restores the given files in the working tree, dropping their uncommitted changes, and returns
+   * the resulting change-set. Delegates to {@link LocalReadOps.discardChanges}.
    *
    * @param projectId - The project whose working tree to restore.
    * @param input - The paths to restore, and, optionally, the commit to restore them from.
@@ -2293,50 +462,6 @@ export class RealGitCommandRunner implements GitCommandRunner {
     projectId: ProjectId,
     input: GitDiscardInput,
   ): Promise<Result<GitMergeFileChange[], GitCommandFailedError>> {
-    const cwd = resolveWorkingTreePath(this.storageRoot, projectId);
-
-    for (const requestedPath of input.paths) {
-      if (!staysInsideWorkingTree(cwd, requestedPath)) {
-        return { success: false, error: new GitCommandFailedError('A path escapes the project working tree.') };
-      }
-    }
-
-    const targetReference = input.fromCommit ?? 'HEAD';
-
-    try {
-      const toRestore: string[] = [];
-      const toRemove: string[] = [];
-      for (const requestedPath of input.paths) {
-        const existsAtTarget = await runGitCommand(cwd, {
-          command: 'cat-file',
-          flags: ['-e'],
-          positionals: [`${targetReference}:${requestedPath}`],
-        })
-          .then(() => true)
-          .catch(() => false);
-        (existsAtTarget ? toRestore : toRemove).push(requestedPath);
-      }
-
-      if (toRestore.length > 0) {
-        await runGitCommand(cwd, { command: 'checkout', positionals: [targetReference, '--', ...toRestore] });
-      }
-      for (const removedPath of toRemove) {
-        await runGitCommand(cwd, { command: 'reset', positionals: ['--', removedPath] });
-        await rm(path.join(cwd, removedPath), { force: true });
-      }
-
-      const changes: GitMergeFileChange[] = [];
-      for (const requestedPath of input.paths) {
-        try {
-          const content = await readFile(path.join(cwd, requestedPath));
-          changes.push({ type: 'modified', path: requestedPath, content, mimeType: guessMimeType(requestedPath) });
-        } catch {
-          changes.push({ type: 'removed', path: requestedPath });
-        }
-      }
-      return { success: true, value: changes };
-    } catch {
-      return { success: false, error: new GitCommandFailedError('The changes could not be discarded.') };
-    }
+    return this.localReadOps.discardChanges(projectId, input);
   }
 }

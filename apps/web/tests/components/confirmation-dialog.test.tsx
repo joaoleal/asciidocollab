@@ -139,7 +139,7 @@ describe('ConfirmationDialog', () => {
   });
 
   test('refuses an outside pointer-down as a way of dismissing the decision', () => {
-    capturedPointerDownOutside = undefined;
+    capturedPointerDownOutside = undefined as ((event: DismissEvent) => void) | undefined;
     render(
       <ConfirmationDialog
         open={true}

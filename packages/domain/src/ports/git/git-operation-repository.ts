@@ -145,10 +145,21 @@ export interface GitOperationRepository {
    *
    * @param projectId - The project to guard.
    * @param action - The action to run while holding the guard.
+   * @param excludeOperationId - The id of the operation currently running `action`, when there is
+   *   one. A queued operation (e.g. `INITIALIZE`) is claimed into `RUNNING` before its use case
+   *   ever calls `withGuard`, so the plain active-operation check would find that very row and
+   *   report the operation as conflicting with itself. Passing the operation's own id here excludes
+   *   it from the check so it only fails on a genuinely different active operation. Omitted by every
+   *   synchronous caller (stage/commit/discard/amend/disconnect/undo-pull/connect), which never
+   *   holds a claimed operation row of its own.
    * @returns `action`'s result on success, or `GitOperationInProgressError`
    *   when another operation is already active for the project.
    */
-  withGuard<T>(projectId: ProjectId, action: () => Promise<T>): Promise<Result<T, GitOperationInProgressError>>;
+  withGuard<T>(
+    projectId: ProjectId,
+    action: () => Promise<T>,
+    excludeOperationId?: GitOperationId,
+  ): Promise<Result<T, GitOperationInProgressError>>;
 
   /**
    * Finds the project's current active operation — the one in `QUEUED`, `RUNNING`, or

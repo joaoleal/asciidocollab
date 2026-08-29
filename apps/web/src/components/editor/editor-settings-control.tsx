@@ -29,6 +29,8 @@ export interface EditorSettingsControlProperties {
   softWrap?: boolean;
   /** Whether the document text-preview (minimap) is shown. */
   minimapEnabled?: boolean;
+  /** Whether the inline per-line blame gutter is shown. */
+  blameEnabled?: boolean;
   /**
    * Sets the editor font size.
    *
@@ -53,6 +55,13 @@ export interface EditorSettingsControlProperties {
    * @param enabled - Whether the minimap is shown.
    */
   setMinimapEnabled?: (enabled: boolean) => void;
+  /**
+   * Toggles the inline blame gutter. Optional; omitted when blame is unavailable (no connected repo
+   * or no open file), which hides the toggle.
+   *
+   * @param enabled - Whether the blame gutter is shown.
+   */
+  setBlameEnabled?: (enabled: boolean) => void;
 }
 
 /** Properties of the standalone control: the settings, plus optional content for the row's left. */

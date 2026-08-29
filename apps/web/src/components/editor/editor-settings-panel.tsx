@@ -1,5 +1,5 @@
 import * as Select from '@radix-ui/react-select';
-import { ALargeSmall, Palette, WrapText, Map as MapIcon } from 'lucide-react';
+import { ALargeSmall, Palette, WrapText, Map as MapIcon, UserRoundSearch } from 'lucide-react';
 import type { EditorThemeValue } from '@/hooks/use-editor-preferences';
 import { isEditorThemeValue } from '@/hooks/use-editor-preferences';
 import { FONT_SIZE_MIN, FONT_SIZE_MAX } from '@/lib/editor-config';
@@ -9,10 +9,12 @@ interface EditorSettingsPanelProperties {
   theme: EditorThemeValue;
   softWrap?: boolean;
   minimapEnabled?: boolean;
+  blameEnabled?: boolean;
   setFontSize: (size: number) => void;
   setTheme: (theme: EditorThemeValue) => void;
   setSoftWrap?: (enabled: boolean) => void;
   setMinimapEnabled?: (enabled: boolean) => void;
+  setBlameEnabled?: (enabled: boolean) => void;
 }
 
 const THEME_OPTIONS: { value: EditorThemeValue; label: string }[] = [
@@ -33,10 +35,12 @@ export function EditorSettingsPanel({
   theme,
   softWrap = true,
   minimapEnabled = false,
+  blameEnabled = false,
   setFontSize,
   setTheme,
   setSoftWrap,
   setMinimapEnabled,
+  setBlameEnabled,
 }: EditorSettingsPanelProperties) {
   return (
     <div className="flex flex-col gap-2 p-2.5">
@@ -111,7 +115,7 @@ export function EditorSettingsPanel({
         </Select.Root>
       </div>
 
-      {(setSoftWrap !== undefined || setMinimapEnabled !== undefined) && (
+      {(setSoftWrap !== undefined || setMinimapEnabled !== undefined || setBlameEnabled !== undefined) && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
           {setSoftWrap !== undefined && (
             <label className="flex items-center gap-1.5 cursor-pointer">
@@ -136,6 +140,19 @@ export function EditorSettingsPanel({
               <MapIcon className="h-3.5 w-3.5" aria-hidden="true" />
               Text preview
             </label>
+          )}
+          {setBlameEnabled !== undefined && (
+            <button
+              type="button"
+              aria-pressed={blameEnabled}
+              onClick={() => setBlameEnabled(!blameEnabled)}
+              className={`flex items-center gap-1.5 rounded border px-1.5 py-0.5 cursor-pointer ${
+                blameEnabled ? 'border-primary bg-primary/10 text-foreground' : 'hover:bg-muted'
+              }`}
+            >
+              <UserRoundSearch className="h-3.5 w-3.5" aria-hidden="true" />
+              Blame
+            </button>
           )}
         </div>
       )}

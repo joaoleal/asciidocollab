@@ -23,10 +23,14 @@ interface EditorToolbarProperties {
   theme?: EditorThemeValue;
   softWrap?: boolean;
   minimapEnabled?: boolean;
+  /** Whether the inline blame gutter is shown. */
+  blameEnabled?: boolean;
   setFontSize?: (size: number) => void;
   setTheme?: (theme: EditorThemeValue) => void;
   setSoftWrap?: (enabled: boolean) => void;
   setMinimapEnabled?: (enabled: boolean) => void;
+  // Toggles the inline blame gutter; omitted when blame is unavailable (no repo / no open file).
+  setBlameEnabled?: (enabled: boolean) => void;
   /** Opens the Go to Symbol palette; omitted hides the button. */
   onGoToSymbol?: () => void;
   // Opens the refactor dialog, seeded with the symbol under the cursor (or null when the
@@ -194,10 +198,12 @@ export function EditorToolbar({
   theme = 'default',
   softWrap,
   minimapEnabled,
+  blameEnabled,
   setFontSize = () => {},
   setTheme = () => {},
   setSoftWrap,
   setMinimapEnabled,
+  setBlameEnabled,
   onGoToSymbol,
   onRefactor,
 }: EditorToolbarProperties) {
@@ -247,10 +253,12 @@ export function EditorToolbar({
           theme={theme}
           softWrap={softWrap}
           minimapEnabled={minimapEnabled}
+          blameEnabled={blameEnabled}
           setFontSize={setFontSize}
           setTheme={setTheme}
           setSoftWrap={setSoftWrap}
           setMinimapEnabled={setMinimapEnabled}
+          setBlameEnabled={setBlameEnabled}
         />
       )}
     </Tooltip.Provider>

@@ -30,6 +30,8 @@ export interface BlameLine {
   readonly lineNumber: number;
   /** The full hash of the commit that last modified this line. */
   readonly hash: string;
+  /** The subject/summary line of that commit (may be empty). */
+  readonly message: string;
   /** The platform user the line's author email resolved to, or undefined when unmapped. */
   readonly authorUserId?: UserId;
   /** When the line's commit was authored. */
@@ -94,6 +96,7 @@ export class GetBlameUseCase {
     const lines: BlameLine[] = blameResult.value.map((line) => ({
       lineNumber: line.lineNumber,
       hash: line.hash,
+      message: line.message,
       authorUserId: authorUserIdByEmail.get(line.authorEmail),
       authoredAt: line.authoredAt,
       content: line.content,

@@ -165,7 +165,7 @@ export class RenameSuggestionWidget extends WidgetType {
   }
 
   /** Buttons manage their own clicks; keep other DOM events from bubbling into the editor. */
-  ignoreEvent(): boolean {
+  ignoreEvent(_event: Event): boolean {
     return true;
   }
 }

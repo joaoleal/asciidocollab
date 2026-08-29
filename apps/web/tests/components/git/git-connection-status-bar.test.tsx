@@ -94,9 +94,10 @@ describe('GitConnectionStatusBar', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  test('shows the branch name and sync label when connected', () => {
+  test('shows the sync label when connected', () => {
+    // The branch name itself is shown by BranchSwitcher (the toolbar's single source of truth for
+    // it) — this bar no longer duplicates it.
     render(<GitConnectionStatusBar {...barProperties()} />);
-    expect(screen.getByText('main')).toBeInTheDocument();
     expect(screen.getByText('Up to date')).toBeInTheDocument();
   });
 

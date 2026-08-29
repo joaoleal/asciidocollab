@@ -217,4 +217,42 @@ describe('EditorSettingsPanel', () => {
     fireEvent.click(screen.getByLabelText(/text preview/i));
     expect(mockSetMinimapEnabled).toHaveBeenCalledWith(true);
   });
+
+  // Blame toggle (aria-pressed button, shown only when blame is available)
+  test('blame toggle is absent without a setter and reflects the pressed state when present', () => {
+    const { rerender } = render(
+      <EditorSettingsPanel fontSize={14} theme="default" setFontSize={mockSetFontSize} setTheme={mockSetTheme} />
+    );
+    expect(screen.queryByRole('button', { name: /blame/i })).not.toBeInTheDocument();
+
+    rerender(
+      <EditorSettingsPanel
+        fontSize={14}
+        theme="default"
+        setFontSize={mockSetFontSize}
+        setTheme={mockSetTheme}
+        blameEnabled
+        setBlameEnabled={jest.fn()}
+      />
+    );
+    expect(screen.getByRole('button', { name: /blame/i })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('clicking the blame toggle fires setBlameEnabled with the negated value', () => {
+    const mockSetBlameEnabled = jest.fn();
+    render(
+      <EditorSettingsPanel
+        fontSize={14}
+        theme="default"
+        setFontSize={mockSetFontSize}
+        setTheme={mockSetTheme}
+        blameEnabled={false}
+        setBlameEnabled={mockSetBlameEnabled}
+      />
+    );
+    const toggle = screen.getByRole('button', { name: /blame/i });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+    expect(mockSetBlameEnabled).toHaveBeenCalledWith(true);
+  });
 });

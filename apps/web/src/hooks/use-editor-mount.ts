@@ -13,6 +13,7 @@ import { createLinkHandler, type XrefTarget } from '@/lib/codemirror/asciidoc-li
 import { outlineField } from '@/lib/codemirror/asciidoc-outline';
 import type { SectionOutlineEntry } from '@/lib/codemirror/asciidoc-outline';
 import { buildEditorExtensions, minimapExtension } from '@/lib/codemirror/editor-extensions';
+import { blameExtension } from '@/lib/codemirror/blame-gutter';
 import { createSpellcheckLinter } from '@/lib/codemirror/editor-spellcheck-linter';
 import { createGrammarLinter, refreshGrammarLints } from '@/lib/codemirror/editor-grammar-linter';
 import { createHarperEngine } from '@/lib/create-harper-worker';
@@ -99,6 +100,8 @@ interface UseEditorMountOptions {
   softWrap?: boolean;
   /** When true, shows the document text-preview (minimap). Defaults to false. */
   minimapEnabled?: boolean;
+  /** When true, shows the per-line blame gutter. Defaults to false. */
+  blameEnabled?: boolean;
   /** Persistence key for per-file fold state; omitted ⇒ folds not persisted. */
   foldStorageKey?: string;
   /** Per-user spell-check ignore list. */
@@ -274,6 +277,7 @@ export function useEditorMount({
   canEdit,
   softWrap = true,
   minimapEnabled = false,
+  blameEnabled = false,
   foldStorageKey,
   spellIgnore,
   spellcheckLanguage = 'en',
@@ -323,6 +327,7 @@ export function useEditorMount({
   const spellcheckCompartment = useRef(new Compartment());
   const grammarCompartment = useRef(new Compartment());
   const minimapCompartment = useRef(new Compartment());
+  const blameCompartment = useRef(new Compartment());
   const shortcutsCompartment = useRef(new Compartment());
   // The author's own key combos for the editor's commands, empty until the server answers — at which
   // point the effect below rebinds. Until then the registry's defaults apply, so nothing is dead.
@@ -493,11 +498,13 @@ export function useEditorMount({
           spellcheck: spellcheckCompartment.current,
           grammar: grammarCompartment.current,
           minimap: minimapCompartment.current,
+          blame: blameCompartment.current,
           shortcuts: shortcutsCompartment.current,
         },
         canEdit,
         softWrap,
         minimapEnabled,
+        blameEnabled,
         foldStorageKey: foldStorageKey ?? null,
         getSpellIgnore: () => spellIgnore ?? [],
         spellcheckLanguage,
@@ -723,6 +730,16 @@ export function useEditorMount({
     // a scroll). Dispatch one empty transaction to drive that first paint immediately.
     if (minimapEnabled) view.dispatch({});
   }, [minimapEnabled]);
+
+  // Sync the blame-gutter toggle live via its Compartment. This only mounts/unmounts the gutter and
+  // its backing field; the blame *data* is pushed in separately (setBlameLinesEffect) by the editor.
+  useEffect(() => {
+    const view = viewReference.current;
+    if (!view) return;
+    view.dispatch({
+      effects: blameCompartment.current.reconfigure(blameEnabled ? blameExtension() : []),
+    });
+  }, [blameEnabled]);
 
   // Bind the author's configurable shortcuts, and rebind them when they change.
   //
