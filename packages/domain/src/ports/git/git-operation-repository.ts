@@ -196,6 +196,22 @@ export interface GitOperationRepository {
   findMostRecentByKind(projectId: ProjectId, kind: GitOperationKind): Promise<GitOperation | null>;
 
   /**
+   * Reads back the most recently created operation whose kind is one of `kinds` for a project, in
+   * whatever state it currently holds — the set-valued sibling of {@link findMostRecentByKind}, with
+   * identical ordering (most-recently-created wins). Used to locate an already-terminal operation
+   * across a family of related kinds that a later action still needs to reference — undoing the most
+   * recent cleanly-succeeded content operation (a pull OR a branch switch) is the first caller.
+   *
+   * @param projectId - The project to search.
+   * @param kinds - The operation kinds to match; an operation qualifies if its kind is any of them.
+   * @returns The most recently created operation whose kind is in `kinds`, or null when none exists.
+   */
+  findMostRecentByKinds(
+    projectId: ProjectId,
+    kinds: readonly GitOperationKind[],
+  ): Promise<GitOperation | null>;
+
+  /**
    * Records a new conflicting file discovered during an operation.
    *
    * @param input - The conflict to record.

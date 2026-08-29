@@ -367,6 +367,18 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
     return record ? toDomainGitOperation(record) : null;
   }
 
+  /** Reads back the most recently created operation whose kind is any of `kinds` for a project, or null. */
+  async findMostRecentByKinds(
+    projectId: ProjectId,
+    kinds: readonly GitOperationKind[],
+  ): Promise<GitOperation | null> {
+    const record = await this.prisma.gitOperation.findFirst({
+      where: { projectId: projectId.value, kind: { in: [...kinds] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return record ? toDomainGitOperation(record) : null;
+  }
+
   /** Records a new, unresolved conflict for an operation. */
   async createConflict(input: CreateGitConflictInput): Promise<GitConflict> {
     const record = await this.prisma.gitConflict.create({

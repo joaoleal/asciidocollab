@@ -502,4 +502,62 @@ describe('PrismaGitOperationRepository', () => {
       expect(await client.gitConflict.count({ where: { operationId: operation.id.value } })).toBe(0);
     });
   });
+
+  describe('findMostRecentByKinds', () => {
+    /**
+     * Enqueues an operation of `kind` for `project` and drives it straight to SUCCEEDED so the
+     * project's single active slot is free for the next one — the partial-unique index rejects a
+     * second active operation otherwise. A short wait between calls keeps `createdAt` strictly
+     * ordered so "most recent" is deterministic.
+     */
+    async function seedSucceeded(project: Project, owner: User, kind: 'PULL' | 'BRANCH_SWITCH' | 'PUSH') {
+      const enqueued = await repo.enqueue({ projectId: project.id, kind, triggeredByUserId: owner.id });
+      await repo.claimNextQueued(30_000);
+      await repo.transition(enqueued.id, 'SUCCEEDED');
+      await wait(5);
+      return enqueued;
+    }
+
+    it('returns the most recently created operation whose kind is in the set, across kinds', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      await seedSucceeded(project, owner, 'PULL');
+      const switchOp = await seedSucceeded(project, owner, 'BRANCH_SWITCH');
+
+      const found = await repo.findMostRecentByKinds(project.id, ['PULL', 'BRANCH_SWITCH']);
+
+      expect(found?.id.value).toBe(switchOp.id.value);
+      expect(found?.kind).toBe('BRANCH_SWITCH');
+    });
+
+    it('respects creation ordering: an older in-set kind wins once the newer op is out of the set', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      const pullOp = await seedSucceeded(project, owner, 'PULL');
+      // A newer PUSH is created but is not in the queried set, so the older PULL is still the answer.
+      await seedSucceeded(project, owner, 'PUSH');
+
+      const found = await repo.findMostRecentByKinds(project.id, ['PULL', 'BRANCH_SWITCH']);
+
+      expect(found?.id.value).toBe(pullOp.id.value);
+      expect(found?.kind).toBe('PULL');
+    });
+
+    it('scopes to the project, ignoring an in-set operation belonging to another project', async () => {
+      const { project: projectA, owner } = await setupProjectAndUser();
+      const projectB = createTestProject();
+      await projectRepo.save(projectB);
+      await seedSucceeded(projectA, owner, 'PULL');
+      const otherPull = await seedSucceeded(projectB, owner, 'PULL');
+
+      const found = await repo.findMostRecentByKinds(projectB.id, ['PULL', 'BRANCH_SWITCH']);
+
+      expect(found?.id.value).toBe(otherPull.id.value);
+    });
+
+    it('returns null when the project has no operation of any queried kind', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      await seedSucceeded(project, owner, 'PUSH');
+
+      expect(await repo.findMostRecentByKinds(project.id, ['PULL', 'BRANCH_SWITCH'])).toBeNull();
+    });
+  });
 });

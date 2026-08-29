@@ -66,11 +66,11 @@ const UNDOABLE_AWAITING_CONFLICT_KINDS: readonly GitOperationKind[] = ['PULL', '
  *
  * - **A conflicted pull or branch switch still `AWAITING_CONFLICT`** — the user abandons resolution
  *   instead of completing it. Undoes the SAME operation, transitioning it to `ABORTED`.
- * - **A clean pull that already `SUCCEEDED`**, with no operation currently active for the project —
- *   the pre-operation snapshot every pull records (clean or conflicted) is still retained, so it can
- *   still be undone. The pull operation itself stays `SUCCEEDED` (already terminal); only the
- *   project's working tree/docs and the audit trail record the undo. No new operation row is
- *   created for this.
+ * - **A clean pull or branch switch that already `SUCCEEDED`**, with no operation currently active
+ *   for the project — the pre-operation snapshot every pull/switch records (clean or conflicted) is
+ *   still retained, so it can still be undone. The operation itself stays `SUCCEEDED` (already
+ *   terminal); only the project's working tree/docs (and, for a switch, the link's `currentBranch`)
+ *   and the audit trail record the undo. No new operation row is created for this.
  *
  * Runs SYNC (over the internal git RPC), not through the worker's poll/claim queue — the same
  * seam `CompleteMergeUseCase` uses. All-or-nothing: the working-tree reset is atomic and
@@ -139,12 +139,12 @@ export class UndoPullUseCase {
     }
 
     // No AWAITING_CONFLICT pull/switch to undo directly: acquire the single-flight guard so this
-    // cannot race a new operation, then look for the most recent clean pull that still has a snapshot.
-    // If another operation IS active (any kind/state other than the case above), `withGuard` itself
-    // refuses with `GitOperationInProgressError` — the correct outcome, since something else really
-    // is in progress.
+    // cannot race a new operation, then look for the most recent clean content op (pull or switch)
+    // that still has a snapshot. If another operation IS active (any kind/state other than the case
+    // above), `withGuard` itself refuses with `GitOperationInProgressError` — the correct outcome,
+    // since something else really is in progress.
     const guarded = await this.gitOperationRepo.withGuard(input.projectId, () =>
-      this.undoMostRecentSucceededPull(input),
+      this.undoMostRecentSucceededContentOp(input),
     );
     return guarded.success ? guarded.value : guarded;
   }
@@ -198,40 +198,53 @@ export class UndoPullUseCase {
   }
 
   /**
-   * Case B: no operation is currently active for the project. Finds the most recent `PULL`
-   * operation (any state, since it must be terminal here — nothing active exists) and, only if it
-   * `SUCCEEDED` and still has a retained snapshot, restores to it. The pull operation itself is left
-   * exactly as it was (already terminal); no new operation row is created.
+   * Case B: no operation is currently active for the project. Finds the most recent cleanly-undoable
+   * content operation — a `PULL` or a `BRANCH_SWITCH` ({@link UNDOABLE_AWAITING_CONFLICT_KINDS}, which
+   * excludes `IMPORT`, in whatever state it currently holds, but it must be terminal here since
+   * nothing active exists) — and, only if it `SUCCEEDED` and still has a retained snapshot, restores
+   * to it. The operation itself is left exactly as it was (already terminal); no new operation row is
+   * created. Like Case A, `restoreToSnapshot` reports the branch `HEAD` ends on, and this walks the
+   * link's `currentBranch` back to it (a no-op for a pull, the source branch for a clean switch)
+   * BEFORE `refreshRowAfterUndo`, so the behind/ahead recompute runs against the corrected branch.
    */
-  private async undoMostRecentSucceededPull(input: UndoPullInput): Promise<Result<UndoPullResult, DomainError>> {
+  private async undoMostRecentSucceededContentOp(input: UndoPullInput): Promise<Result<UndoPullResult, DomainError>> {
     const gitRepository = await this.gitRepositoryRepo.findByProjectId(input.projectId);
     if (gitRepository === null) {
       return { success: false, error: new RepositoryNotConnectedError() };
     }
 
-    const pull = await this.gitOperationRepo.findMostRecentByKind(input.projectId, 'PULL');
-    if (!pull || pull.state !== 'SUCCEEDED') {
+    const operation = await this.gitOperationRepo.findMostRecentByKinds(
+      input.projectId,
+      UNDOABLE_AWAITING_CONFLICT_KINDS,
+    );
+    if (!operation || operation.state !== 'SUCCEEDED') {
       return { success: false, error: new NothingToUndoError() };
     }
 
-    const snapshot = await this.conflictStageStore.readSnapshot(pull.id);
+    const snapshot = await this.conflictStageStore.readSnapshot(operation.id);
     if (!snapshot.success) return snapshot;
     if (snapshot.value === null) {
       return { success: false, error: new NothingToUndoError() };
     }
 
-    const restored = await this.commandRunner.restoreToSnapshot(input.projectId, { operationId: pull.id });
+    const restored = await this.commandRunner.restoreToSnapshot(input.projectId, { operationId: operation.id });
     if (!restored.success) return restored;
 
     const reverted = await this.reconciler.apply(input.projectId, restored.value.changes);
     if (!reverted.success) return reverted;
 
-    await this.refreshRowAfterUndo(gitRepository, input.projectId);
-    await this.conflictStageStore.clear(pull.id);
+    // Undoing a cleanly-succeeded BRANCH_SWITCH returns `HEAD` to the SOURCE branch (the restore
+    // checked it back out), so the link's `currentBranch` must follow — otherwise it would keep
+    // pointing at the target branch the switch advanced to. For a clean pull the restored branch
+    // equals the existing `currentBranch`, so this is a no-op. Done BEFORE `refreshRowAfterUndo` so
+    // its behind/ahead recompute runs against the corrected branch, mirroring Case A.
+    const restoredRepository = this.withCurrentBranch(gitRepository, restored.value.branch);
+    await this.refreshRowAfterUndo(restoredRepository, input.projectId);
+    await this.conflictStageStore.clear(operation.id);
 
-    await this.audit(input, pull.id, 'succeeded_pull', reverted.value.anomalies);
+    await this.audit(input, operation.id, 'succeeded_pull', reverted.value.anomalies);
 
-    return { success: true, value: { operationId: pull.id, headCommit: restored.value.headCommit } };
+    return { success: true, value: { operationId: operation.id, headCommit: restored.value.headCommit } };
   }
 
   private async audit(

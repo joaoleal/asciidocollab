@@ -232,6 +232,17 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     );
   }
 
+  async findMostRecentByKinds(
+    projectId: ProjectId,
+    kinds: readonly GitOperationKind[],
+  ): Promise<GitOperation | null> {
+    return (
+      [...this.operations.values()]
+        .filter((op) => op.projectId.value === projectId.value && kinds.includes(op.kind))
+        .toSorted((a, b) => this.sequenceOf(b) - this.sequenceOf(a))[0] ?? null
+    );
+  }
+
   private oldestFirst(predicate: (op: GitOperation) => boolean): GitOperation | undefined {
     return [...this.operations.values()]
       .filter(predicate)

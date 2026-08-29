@@ -253,6 +253,18 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     );
   }
 
+  /** Reads back the most recently created operation whose kind is any of `kinds` for a project, or null. */
+  async findMostRecentByKinds(
+    projectId: ProjectId,
+    kinds: readonly GitOperationKind[],
+  ): Promise<GitOperation | null> {
+    return (
+      [...this.operations.values()]
+        .filter((op) => op.projectId.value === projectId.value && kinds.includes(op.kind))
+        .toSorted((a, b) => this.sequenceOf(b) - this.sequenceOf(a))[0] ?? null
+    );
+  }
+
   /** Finds the oldest (by enqueue order) stored operation matching `predicate`, or undefined. */
   private oldestFirst(predicate: (op: GitOperation) => boolean): GitOperation | undefined {
     return [...this.operations.values()]

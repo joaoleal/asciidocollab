@@ -186,6 +186,24 @@ async function seedSucceededPull(harness: Harness): Promise<GitOperationId> {
   return enqueued.id;
 }
 
+/**
+ * Enqueues a BRANCH_SWITCH operation, claims and runs it to SUCCEEDED, and seeds its retained
+ * snapshot — a clean switch records the pre-switch source-branch tip under the same `preOpHead`
+ * field a pull uses, so its undo restores exactly like a pull's plus a `currentBranch` walk-back.
+ */
+async function seedSucceededSwitch(harness: Harness): Promise<GitOperationId> {
+  const enqueued = await harness.gitOperationRepo.enqueue({
+    projectId: PROJECT_ID,
+    kind: 'BRANCH_SWITCH',
+    triggeredByUserId: ACTOR_ID,
+    branch: 'feature-x',
+  });
+  await harness.gitOperationRepo.claimNextQueued(30_000);
+  await harness.gitOperationRepo.transition(enqueued.id, 'SUCCEEDED');
+  harness.conflictStageStore.seedSnapshot(enqueued.id, { preOpHead: PRE_OP_HEAD, branch: CURRENT_BRANCH });
+  return enqueued.id;
+}
+
 function undoInput() {
   return { actorId: ACTOR_ID, projectId: PROJECT_ID };
 }
@@ -325,6 +343,42 @@ describe('UndoPullUseCase', () => {
     const operation = await harness.gitOperationRepo.findById(operationId);
     expect(operation?.state).toBe('SUCCEEDED');
     expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(operationId);
+
+    const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
+  });
+
+  test('case B: a SUCCEEDED clean branch switch is restored to its snapshot and walks currentBranch back to the source branch', async () => {
+    // A clean switch already advanced the link to the TARGET branch, so the row starts on it; undoing
+    // it must return currentBranch to the SOURCE branch the restore checked back out — the same
+    // walk-back Case A applies to a conflicted switch, now for a cleanly-succeeded one via Case B.
+    const harness = await buildHarness({ currentBranch: 'feature-x' });
+    const operationId = await seedSucceededSwitch(harness);
+    // The restore returns HEAD to the source branch (the switch was main -> feature-x).
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, {
+      headCommit: PRE_OP_HEAD,
+      branch: CURRENT_BRANCH,
+      changes: REVERT_CHANGES,
+    });
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result).toEqual({ success: true, value: { operationId, headCommit: PRE_OP_HEAD } });
+    expect(harness.commandRunner.restoreToSnapshotCalls).toEqual([
+      { projectId: PROJECT_ID, input: { operationId } },
+    ]);
+    expect(harness.reconciler.apply).toHaveBeenCalledWith(PROJECT_ID, REVERT_CHANGES);
+
+    // No synthetic row is minted; the original switch operation stays SUCCEEDED, its snapshot cleared.
+    const operation = await harness.gitOperationRepo.findById(operationId);
+    expect(operation?.kind).toBe('BRANCH_SWITCH');
+    expect(operation?.state).toBe('SUCCEEDED');
+    expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(operationId);
+
+    // The link is walked back to the source branch, and behind/ahead is recomputed against it.
+    const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    expect(saved?.currentBranch).toBe(CURRENT_BRANCH);
+    expect(harness.commandRunner.behindAheadCalls).toContainEqual({ projectId: PROJECT_ID, branch: CURRENT_BRANCH });
 
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
     expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
