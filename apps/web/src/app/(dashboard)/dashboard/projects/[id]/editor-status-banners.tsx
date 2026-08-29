@@ -13,7 +13,7 @@ interface EditorStatusBannersProperties {
  * and the PDF/HTML export outcomes (fatal failures plus non-fatal per-resource diagnostics).
  */
 export function EditorStatusBanners({ git, pipeline }: EditorStatusBannersProperties) {
-  const { pull, push, branches } = git;
+  const { pull, push, branches, undoMessage } = git;
   const { exportError, exportDiagnostics, htmlExportError, htmlExportFailures, handleDiagnosticLocation } = pipeline;
   return (
     <>
@@ -49,6 +49,15 @@ export function EditorStatusBanners({ git, pipeline }: EditorStatusBannersProper
       {branches.switchMessage && branches.switchMessage.tone === 'neutral' && (
         <div role="status" className="shrink-0 border-b px-3 py-2 text-sm text-muted-foreground">
           {branches.switchMessage.text}
+        </div>
+      )}
+
+      {/* Undo outcome: the status bar's transient "✓ Pulled — Undo" / "✓ Switched to <branch> —
+          Undo" affordance clicked and refused. A `nothing_to_undo` refusal clears the affordance
+          quietly instead of landing here — see `useProjectGit`'s `undoLast`. */}
+      {undoMessage && (
+        <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {undoMessage.text}
         </div>
       )}
 

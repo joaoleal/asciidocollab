@@ -1,5 +1,5 @@
 'use client';
-import { GitBranch, History, Trash2 } from 'lucide-react';
+import { Check, GitBranch, History, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { GitConnectionStatusBar } from '@/components/git/git-connection-status-bar';
 import { GitActivityIndicator } from '@/components/git/git-activity-indicator';
@@ -63,6 +63,32 @@ export function GitToolbar({ git, canEdit }: GitToolbarProperties) {
           onPushClick={git.push.start}
           pushPending={git.push.pending}
         />
+        {canEdit && git.undoable && (
+          <span className="flex items-center gap-1.5 shrink-0 whitespace-nowrap text-sm">
+            <span
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-1 text-[hsl(var(--success))]"
+            >
+              <Check className="h-3.5 w-3.5" aria-hidden="true" />
+              {git.undoable.label}
+            </span>
+            <span className="text-muted-foreground" aria-hidden="true">
+              —
+            </span>
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-sm"
+              onClick={git.undoLast}
+              disabled={git.undoPending}
+              aria-label={`Undo the last ${git.undoable.kind === 'pull' ? 'pull' : 'branch switch'}`}
+            >
+              {git.undoPending ? 'Undoing…' : 'Undo'}
+            </Button>
+          </span>
+        )}
       </div>
       {hasActions && (
         <div className="flex items-center gap-2 shrink-0 border-l pl-2">

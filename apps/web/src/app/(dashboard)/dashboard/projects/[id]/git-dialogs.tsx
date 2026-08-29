@@ -30,6 +30,9 @@ export function GitDialogs({ git, projectId }: GitDialogsProperties) {
           git.refetchGitStatus();
           void git.refetchBehindAhead();
           git.push.clear();
+          // A commit is a new git action superseding whatever pull/switch the affordance offered to
+          // undo — see `use-project-git.ts`'s `undoable` state.
+          git.clearUndoable();
         }}
       />
       <PullDialog
@@ -57,7 +60,12 @@ export function GitDialogs({ git, projectId }: GitDialogsProperties) {
         open={git.discardDialogOpen}
         onOpenChange={git.setDiscardDialogOpen}
         paths={git.discardablePaths}
-        onDone={git.handlePullSucceeded}
+        onDone={() => {
+          git.handlePullSucceeded();
+          // A discard is a new git action superseding whatever pull/switch the affordance offered to
+          // undo — see `use-project-git.ts`'s `undoable` state.
+          git.clearUndoable();
+        }}
       />
       <ConflictPanel
         projectId={projectId}
