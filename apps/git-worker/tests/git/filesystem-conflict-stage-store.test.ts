@@ -64,6 +64,47 @@ describe('FilesystemConflictStageStore', () => {
     expect(read.success).toBe(false);
   });
 
+  it('round-trips a snapshot carrying a sourceBranch (the branch a switch undo returns to)', async () => {
+    const { store } = await createStore();
+    const snapshot = { preOpHead: 'a'.repeat(40), branch: 'feature', wipCommit: 'b'.repeat(40), sourceBranch: 'main' };
+
+    const written = await store.writeSnapshot(OPERATION_A, snapshot);
+    expect(written).toEqual({ success: true, value: undefined });
+
+    expect(await store.readSnapshot(OPERATION_A)).toEqual({ success: true, value: snapshot });
+  });
+
+  it('still deserializes an older snapshot written with no sourceBranch field', async () => {
+    // Snapshots recorded before the source-branch field existed (a pull's, or any pre-field switch's)
+    // carry no sourceBranch. They must remain valid, deserializing with it simply undefined.
+    const { root, store } = await createStore();
+    await mkdir(path.join(root, OPERATION_A.value), { recursive: true });
+    await writeFile(
+      path.join(root, OPERATION_A.value, 'snapshot.json'),
+      JSON.stringify({ preOpHead: 'a'.repeat(40), branch: 'main' }),
+      'utf8',
+    );
+
+    expect(await store.readSnapshot(OPERATION_A)).toEqual({
+      success: true,
+      value: { preOpHead: 'a'.repeat(40), branch: 'main' },
+    });
+  });
+
+  it('rejects a snapshot whose sourceBranch is present but not a string', async () => {
+    const { root, store } = await createStore();
+    await mkdir(path.join(root, OPERATION_A.value), { recursive: true });
+    await writeFile(
+      path.join(root, OPERATION_A.value, 'snapshot.json'),
+      JSON.stringify({ preOpHead: 'a'.repeat(40), branch: 'main', sourceBranch: 42 }),
+      'utf8',
+    );
+
+    const read = await store.readSnapshot(OPERATION_A);
+
+    expect(read.success).toBe(false);
+  });
+
   it('returns null reading a snapshot for an operation with none recorded', async () => {
     const { store } = await createStore();
 

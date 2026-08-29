@@ -482,6 +482,13 @@ export interface GitRestoreToSnapshotInput {
 export interface GitRestoreOutcome {
   /** The commit the working tree was restored to (the snapshot's `preOpHead`). */
   readonly headCommit: string;
+  /**
+   * The branch `HEAD` is on after the restore — the snapshot's `sourceBranch` when reverting a
+   * branch switch returned to it, or the branch that was already current when a pull (or a
+   * same-branch restore) reset in place. The caller updates the repository link's `currentBranch`
+   * to this, so an undone switch leaves the project back on the branch it started from.
+   */
+  readonly branch: string;
   /** The reversal change-set: the tree after the reset compared against the tree before it, so the caller can revert docs/live editors. */
   readonly changes: readonly GitMergeFileChange[];
 }

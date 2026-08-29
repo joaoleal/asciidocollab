@@ -757,8 +757,9 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
   /**
    * Records the call — including the exact operation id, so a test can assert it — and returns the
-   * seeded `GitRestoreOutcome` (defaulting to `{headCommit: '0'.repeat(40), changes: []}` when
-   * unseeded), unless a failure was seeded for this project via `seedRestoreToSnapshotFailure`.
+   * seeded `GitRestoreOutcome` (defaulting to `{headCommit: '0'.repeat(40), branch: 'main', changes:
+   * []}` when unseeded), unless a failure was seeded for this project via
+   * `seedRestoreToSnapshotFailure`.
    */
   async restoreToSnapshot(
     projectId: ProjectId,
@@ -771,6 +772,7 @@ export class InMemoryGitCommandRunner implements GitCommandRunner {
 
     const outcome: GitRestoreOutcome = this.restoreToSnapshotOutcomes.get(projectId.value) ?? {
       headCommit: '0'.repeat(40),
+      branch: 'main',
       changes: [],
     };
 

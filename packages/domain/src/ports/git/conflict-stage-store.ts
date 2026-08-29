@@ -33,6 +33,18 @@ export interface ConflictUndoSnapshot {
    * recorded before this field existed deserialize with it undefined, unchanged.
    */
   readonly wipCommit?: string;
+  /**
+   * The branch `HEAD` was on when a BRANCH_SWITCH began — the source branch to return to when the
+   * switch is reverted. Its presence is what makes an undo revert a switch by checking the source
+   * branch back out (leaving the target branch's ref untouched) rather than resetting the CURRENT
+   * (target) branch's ref, which a switch's conflict leaves `HEAD` sitting on.
+   *
+   * OPTIONAL, and set ONLY by a switch that ran from a named branch: a pull stays on one branch and
+   * never records it (so its undo keeps the reset path), a switch from a detached `HEAD` records
+   * none (there is no branch to return to — the reset path is used), and older snapshots recorded
+   * before this field existed deserialize with it undefined, unchanged.
+   */
+  readonly sourceBranch?: string;
 }
 
 /**

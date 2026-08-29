@@ -333,6 +333,10 @@ export class MergeConflictOps {
    *   Recorded on a SECOND call, once the moved work exists and has been pinned — the initial
    *   pre-mutation call (the irreversibility guard) has no `wipCommit` yet, and overwriting the
    *   snapshot with it later is exactly the port's documented overwrite behavior.
+   * @param sourceBranch - The branch `HEAD` was on when a BRANCH_SWITCH began, so a later undo can
+   *   return to it WITHOUT moving the target branch's ref. Set only by {@link MergeConflictOps.checkout}
+   *   when it ran from a named branch; omitted by a pull (which stays on one branch) and by a switch
+   *   from a detached `HEAD` (no branch to return to), so their undo keeps the in-place reset.
    * @returns Success (a no-op) when no store is configured, or once recorded; a
    *   `GitCommandFailedError` when the store's write fails.
    */
@@ -341,6 +345,7 @@ export class MergeConflictOps {
     preOpHead: string,
     branch: string,
     wipCommit?: string,
+    sourceBranch?: string,
   ): Promise<Result<void, GitCommandFailedError>> {
     if (!this.conflictStageStore) return { success: true, value: undefined };
 
@@ -348,6 +353,7 @@ export class MergeConflictOps {
       preOpHead,
       branch,
       ...(wipCommit !== undefined ? { wipCommit } : {}),
+      ...(sourceBranch !== undefined ? { sourceBranch } : {}),
     });
     if (!written.success) {
       return { success: false, error: new GitCommandFailedError('The pre-operation snapshot could not be recorded.') };
@@ -669,10 +675,29 @@ export class MergeConflictOps {
     try {
       const preSwitchHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
       const preSwitchHead = readRevParseAnswer(preSwitchHeadResult.stdout);
+      // The branch `HEAD` is on BEFORE the checkout — the source branch to return to when this switch
+      // is later undone. `git checkout <input.branch>` below moves `HEAD` to the target branch, so
+      // recording it now is the only chance to know where to go back to; a switch's conflict leaves
+      // `HEAD` sitting on the target, and a plain `reset --hard <preSwitchHead>` there would move the
+      // TARGET branch's ref onto the source tip (corrupting it and orphaning the target's own
+      // commits). A detached `HEAD` reports the literal `HEAD` from `--abbrev-ref`, so none is
+      // recorded; the undo then falls back to the in-place reset. That fallback is safe ONLY because a
+      // switch never runs from a detached HEAD here (the working tree is always on the domain's
+      // current branch) — a genuinely detached source would reintroduce the target-ref corruption
+      // above, so this invariant, not the reset itself, is what makes the fallback correct.
+      const sourceBranchResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--abbrev-ref', 'HEAD'] });
+      const sourceBranchName = readRevParseAnswer(sourceBranchResult.stdout);
+      const sourceBranch = sourceBranchName.length > 0 && sourceBranchName !== 'HEAD' ? sourceBranchName : undefined;
       // preSwitchHead IS the pre-operation head (a switch never takes a flush commit on the source
       // branch — the flushed edits are carried across by a stash instead), so it doubles as the
       // undo snapshot's `preOpHead`, recorded on BOTH the clean and conflicted paths below.
-      const snapshotWritten = await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch);
+      const snapshotWritten = await this.writeUndoSnapshot(
+        input.operationId,
+        preSwitchHead,
+        input.branch,
+        undefined,
+        sourceBranch,
+      );
       if (!snapshotWritten.success) return snapshotWritten;
 
       for (const entry of input.flush) {
@@ -737,9 +762,10 @@ export class MergeConflictOps {
           if (!wipPin.success) return wipPin;
 
           // Record the pinned commit as the snapshot's `wipCommit` so a later undo/recovery has the
-          // handle. Best-effort: the edits are already ref-pinned above, so a snapshot re-write
-          // failure never loses them and must not fail the (correctly conflicted) operation.
-          await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch, wipPin.value);
+          // handle, carrying the `sourceBranch` through so the undo returns to it. Best-effort: the
+          // edits are already ref-pinned above, so a snapshot re-write failure never loses them and
+          // must not fail the (correctly conflicted) operation.
+          await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch, wipPin.value, sourceBranch);
 
           return { success: true, value: { status: 'conflicted', conflicts } };
         }
@@ -754,7 +780,7 @@ export class MergeConflictOps {
       if (stashCommit !== undefined) {
         const pinned = await this.pinBackupRef(cwd, input.operationId, stashCommit);
         if (pinned.success) {
-          await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch, stashCommit);
+          await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch, stashCommit, sourceBranch);
         }
       }
 
@@ -929,10 +955,26 @@ export class MergeConflictOps {
    * network.
    *
    * Reads the snapshot from the configured conflict-stage store by `input.operationId`; captures
-   * the pre-reset `HEAD`; `git reset --hard <preOpHead>`; computes the reversal change-set as the
-   * delta from the pre-reset `HEAD` to the now-reset working tree via the single-argument form of
+   * the pre-reset `HEAD` and the branch it is on; reverts; computes the reversal change-set as the
+   * delta from the pre-reset `HEAD` to the now-reverted working tree via the single-argument form of
    * {@link computeMergeChanges} (mirrors how {@link MergeConflictOps.checkout} computes its own
    * change-set) — the exact set the caller needs to revert docs/live editors.
+   *
+   * The revert is KIND-AWARE, because a branch switch leaves `HEAD` on the TARGET branch (its
+   * checkout succeeded; only the stash-pop conflicted), whereas a pull stays on one branch:
+   * - When the snapshot carries a `sourceBranch` that differs from the branch `HEAD` is currently
+   *   on (a switch being undone), `git checkout --force <sourceBranch>` returns `HEAD` — and the
+   *   working-tree content — to the source branch WITHOUT moving any other branch's ref. A plain
+   *   `reset --hard <preOpHead>` here would instead move the TARGET branch's ref onto the source
+   *   tip, corrupting it and orphaning the target's own commits (data loss). The shelved/live edits
+   *   the force-checkout discards were already durably pinned under `refs/adc/undo/<operationId>`
+   *   when the switch ran, so nothing is lost.
+   * - Otherwise (a pull, or a same-branch case) `git reset --hard <preOpHead>` restores the tree in
+   *   place, exactly as before.
+   *
+   * The returned `branch` is the branch `HEAD` ends on, so the caller can set the repository link's
+   * `currentBranch` back to it — restoring the source branch for an undone switch, and the
+   * already-current branch (a no-op) for a pull.
    *
    * @param projectId - The project whose working tree to restore.
    * @param input - The operation whose snapshot to restore to.
@@ -962,11 +1004,22 @@ export class MergeConflictOps {
 
       const preResetHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
       const preResetHead = readRevParseAnswer(preResetHeadResult.stdout);
+      const currentBranchResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['--abbrev-ref', 'HEAD'] });
+      const currentBranchName = readRevParseAnswer(currentBranchResult.stdout);
 
-      await runGitCommand(cwd, { command: 'reset', flags: ['--hard'], positionals: [snapshot.value.preOpHead] });
+      const { sourceBranch, preOpHead } = snapshot.value;
+      const revertsSwitch = sourceBranch !== undefined && sourceBranch !== currentBranchName;
+      if (revertsSwitch) {
+        // Return to the source branch and its content without touching the target branch's ref. The
+        // moved edits this discards are already pinned under the backup ref, so nothing is lost.
+        await runGitCommand(cwd, { command: 'checkout', flags: ['--force'], positionals: [sourceBranch] });
+      } else {
+        await runGitCommand(cwd, { command: 'reset', flags: ['--hard'], positionals: [preOpHead] });
+      }
 
+      const restoredBranch = revertsSwitch ? sourceBranch : currentBranchName;
       const changes = await computeMergeChanges(cwd, preResetHead);
-      return { success: true, value: { headCommit: snapshot.value.preOpHead, changes } };
+      return { success: true, value: { headCommit: preOpHead, branch: restoredBranch, changes } };
     } catch {
       return { success: false, error: new GitCommandFailedError('The working tree could not be restored.') };
     }

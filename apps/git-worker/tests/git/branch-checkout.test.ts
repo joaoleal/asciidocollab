@@ -137,7 +137,7 @@ describe('RealGitCommandRunner.checkout', () => {
 
     expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
       success: true,
-      value: { preOpHead: preSwitchHead, branch: 'feature' },
+      value: { preOpHead: preSwitchHead, branch: 'feature', sourceBranch: 'main' },
     });
     expect(await conflictStageStore.readStages(OPERATION_ID, 'base.adoc')).toEqual({ success: true, value: null });
   });
@@ -261,10 +261,11 @@ describe('RealGitCommandRunner.checkout', () => {
     expect(stashList.trim()).toBe('');
 
     // Every switch leaves an undo target, captured before any flush/stash/checkout ran, now carrying
-    // the pinned `wipCommit` so a later undo/recovery has the handle to the moved work.
+    // the pinned `wipCommit` so a later undo/recovery has the handle to the moved work, plus the
+    // `sourceBranch` so the undo returns to it without moving the target branch's ref.
     expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
       success: true,
-      value: { preOpHead: preSwitchHead, branch: 'feature', wipCommit },
+      value: { preOpHead: preSwitchHead, branch: 'feature', wipCommit, sourceBranch: 'main' },
     });
   });
 
@@ -303,10 +304,11 @@ describe('RealGitCommandRunner.checkout', () => {
     const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:live.adoc`], { cwd });
     expect(preserved).toBe('live edit\n');
 
-    // The snapshot records the pinned commit as its `wipCommit` handle.
+    // The snapshot records the pinned commit as its `wipCommit` handle and the `sourceBranch` to
+    // return to on undo.
     expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
       success: true,
-      value: { preOpHead: preSwitchHead, branch: 'feature', wipCommit },
+      value: { preOpHead: preSwitchHead, branch: 'feature', wipCommit, sourceBranch: 'main' },
     });
   });
 
@@ -403,5 +405,94 @@ describe('RealGitCommandRunner.checkout', () => {
     if (result.success) throw new Error('expected failure');
     expect(result.error).toBeInstanceOf(GitCommandFailedError);
     expect(await currentBranch(cwd)).toBe('main');
+  });
+});
+
+describe('RealGitCommandRunner.restoreToSnapshot', () => {
+  it('reverts a conflicted branch switch by returning to the source branch WITHOUT moving the target branch ref', async () => {
+    // The critical anti-corruption case: a conflicted switch leaves HEAD on the TARGET branch, so a
+    // naive `reset --hard <sourceTip>` would move the TARGET branch's ref onto the source commit —
+    // corrupting it and orphaning the target branch's own commit. The restore must instead check the
+    // SOURCE branch back out, leaving every other ref untouched.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-4466554400a0');
+    const { storageRoot, cwd } = await setupProjectOnMain(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    // Branch B (`feature`) carries its OWN commit — a tip distinct from `main` (source A) — and its
+    // `base.adoc` differs so the carried live edit collides on the switch.
+    await addLocalBranch(cwd, 'feature', async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'feature version\n');
+    });
+    const sourceTip = await readReference(cwd, 'main');
+    const featureTipBefore = await readReference(cwd, 'feature');
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, conflictStageStore);
+
+    const switched = await runner.checkout(projectId, {
+      branch: 'feature',
+      flush: [{ path: 'base.adoc', content: 'local version\n' }],
+      stashLocal: true,
+      operationId: OPERATION_ID,
+    });
+    expect(switched.success).toBe(true);
+    if (!switched.success) throw new Error('expected success');
+    if (switched.value.status !== 'conflicted') throw new Error('expected conflicted');
+    // The conflicted switch left HEAD on the target branch and recorded the source branch to return to.
+    expect(await currentBranch(cwd)).toBe('feature');
+    expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
+      success: true,
+      value: { preOpHead: sourceTip, branch: 'feature', wipCommit: expect.any(String), sourceBranch: 'main' },
+    });
+
+    const restored = await runner.restoreToSnapshot(projectId, { operationId: OPERATION_ID });
+
+    expect(restored.success).toBe(true);
+    if (!restored.success) throw new Error('expected success');
+    // (a) HEAD is back on the SOURCE branch, and the outcome reports it so the domain can follow.
+    expect(restored.value.branch).toBe('main');
+    expect(await currentBranch(cwd)).toBe('main');
+    // (b) the TARGET branch's ref was NOT moved — no data loss, its own commit still reachable.
+    expect(await readReference(cwd, 'feature')).toBe(featureTipBefore);
+    expect(await readReference(cwd, 'main')).toBe(sourceTip);
+    // (c) the working-tree content matches the source branch.
+    expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('base\n');
+    // (d) the moved edit discarded by the force-checkout is still recoverable from the backup ref.
+    const backupRef = `refs/adc/undo/${OPERATION_ID.value}`;
+    const wipCommit = await readReference(cwd, backupRef);
+    expect(wipCommit).toMatch(/^[0-9a-f]{40}$/);
+    const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:base.adoc`], { cwd });
+    expect(preserved).toBe('local version\n');
+  });
+
+  it('reverts a pull by resetting the same branch to preOpHead (no sourceBranch recorded)', async () => {
+    // A pull stays on one branch and records no `sourceBranch`, so its undo keeps the in-place
+    // `reset --hard <preOpHead>` — moving the CURRENT branch's ref back is exactly right here.
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-4466554400a1');
+    const { storageRoot, cwd } = await setupProjectOnMain(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    const preOpHead = await readReference(cwd, 'HEAD');
+    // Advance `main` past the pre-op tip, as a landed pull's merge commit would.
+    await writeFile(path.join(cwd, 'base.adoc'), 'base v2\n');
+    await commitAll(cwd, 'pulled changes');
+    const advancedTip = await readReference(cwd, 'main');
+    expect(advancedTip).not.toBe(preOpHead);
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    // A pull-shaped snapshot: preOpHead + branch, and deliberately NO sourceBranch.
+    await conflictStageStore.writeSnapshot(OPERATION_ID, { preOpHead, branch: 'main' });
+
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, conflictStageStore);
+    const restored = await runner.restoreToSnapshot(projectId, { operationId: OPERATION_ID });
+
+    expect(restored.success).toBe(true);
+    if (!restored.success) throw new Error('expected success');
+    expect(restored.value.branch).toBe('main');
+    expect(restored.value.headCommit).toBe(preOpHead);
+    // Still on the same branch, and its ref was reset back to the pre-op tip.
+    expect(await currentBranch(cwd)).toBe('main');
+    expect(await readReference(cwd, 'main')).toBe(preOpHead);
+    expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('base\n');
   });
 });

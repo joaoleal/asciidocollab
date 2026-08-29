@@ -34,13 +34,15 @@ function isStoredFileMeta(value: unknown): value is StoredFileMeta {
 
 /**
  * Narrows a parsed `snapshot.json` payload to {@link ConflictUndoSnapshot}, without an unchecked
- * cast. `wipCommit` is OPTIONAL: present as a string on a snapshot written since the never-lose-work
- * backup ref landed, and simply ABSENT on an older snapshot (which stays valid, deserializing with
- * it undefined) — so any present-but-non-string `wipCommit` is the only rejectable shape.
+ * cast. Both `wipCommit` and `sourceBranch` are OPTIONAL: present as a string on a snapshot written
+ * since each field landed, and simply ABSENT on an older snapshot (which stays valid, deserializing
+ * with the field undefined) — so a present-but-non-string value is the only rejectable shape for
+ * either.
  */
 function isConflictUndoSnapshot(value: unknown): value is ConflictUndoSnapshot {
   if (!isRecord(value) || typeof value.preOpHead !== 'string' || typeof value.branch !== 'string') return false;
-  return value.wipCommit === undefined || typeof value.wipCommit === 'string';
+  if (value.wipCommit !== undefined && typeof value.wipCommit !== 'string') return false;
+  return value.sourceBranch === undefined || typeof value.sourceBranch === 'string';
 }
 
 /** A safe, generic failure — carries no path, operation id, or filesystem detail. */
@@ -103,7 +105,7 @@ function staysInside(root: string, relativePath: string): boolean {
  *
  * ```
  * <root>/<operationId>/
- *   snapshot.json                       # { preOpHead, branch, wipCommit? } — undo target
+ *   snapshot.json                       # { preOpHead, branch, wipCommit?, sourceBranch? } — undo target
  *   files/<base64url(path)>/
  *     meta.json                         # { path, isBinary } — path is authoritative for reads
  *     base                              # absent when the file had no merge base (add/add)

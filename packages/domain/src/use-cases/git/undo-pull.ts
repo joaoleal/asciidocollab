@@ -1,6 +1,7 @@
 import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitOperationId } from '../../value-objects/ids/git-operation-id';
+import { GitOperationKind } from '../../types/git-operation-kind';
 import { GitRepository } from '../../entities/git-repository';
 import { GitMutationPort, GitReadPort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
@@ -46,12 +47,25 @@ export interface UndoPullResult {
 }
 
 /**
- * Undoes a project's most recent pull, restoring the working tree (and the docs/live editors it
- * lands into) to the state captured just before that pull began. Covers both entry points
- * the feature describes as "the most recent pull/merge":
+ * The operation kinds whose worker handler can leave a project `AWAITING_CONFLICT`
+ * (`pull-handler.ts` / `switch-branch-handler.ts`, via the `awaitingConflict` outcome the worker
+ * loop turns into that transition). `CONTENT_CHANGING_GIT_OPERATION_KINDS` also includes `IMPORT`,
+ * but an import clones fresh into an empty project — it never merges or stashes onto existing
+ * content, so it can never conflict and never reaches this state. Gating on this narrower set
+ * (rather than trusting `state === 'AWAITING_CONFLICT'` alone) keeps a stray/future kind that
+ * somehow carries that state from being silently undone here; it falls through to the
+ * clean-succeeded path below instead, where it is refused as nothing to undo.
+ */
+const UNDOABLE_AWAITING_CONFLICT_KINDS: readonly GitOperationKind[] = ['PULL', 'BRANCH_SWITCH'];
+
+/**
+ * Undoes a project's most recent conflicted pull/switch, or its most recent cleanly-succeeded
+ * pull, restoring the working tree (and the docs/live editors it lands into) to the state captured
+ * just before that operation began. Covers both entry points the feature describes as "the most
+ * recent pull/merge":
  *
- * - **A conflicted pull still `AWAITING_CONFLICT`** — the user abandons resolution instead of
- *   completing it. Undoes the SAME operation, transitioning it to `ABORTED`.
+ * - **A conflicted pull or branch switch still `AWAITING_CONFLICT`** — the user abandons resolution
+ *   instead of completing it. Undoes the SAME operation, transitioning it to `ABORTED`.
  * - **A clean pull that already `SUCCEEDED`**, with no operation currently active for the project —
  *   the pre-operation snapshot every pull records (clean or conflicted) is still retained, so it can
  *   still be undone. The pull operation itself stays `SUCCEEDED` (already terminal); only the
@@ -87,18 +101,19 @@ export class UndoPullUseCase {
   ) {}
 
   /**
-   * Undoes `input.projectId`'s most recent pull.
+   * Undoes `input.projectId`'s most recent conflicted pull/switch, or most recent cleanly-succeeded
+   * pull.
    *
    * @param input - The acting user and the project.
    * @returns The undone operation's id and the commit the tree was restored to on success; a typed
    *   refusal otherwise —
    *   {@link InsufficientRoleError} when the actor is not at least an EDITOR,
    *   {@link RepositoryNotConnectedError} when the project has no connected repository,
-   *   {@link NothingToUndoError} when no pull is `AWAITING_CONFLICT` and no prior pull's
+   *   {@link NothingToUndoError} when no pull/switch is `AWAITING_CONFLICT` and no prior pull's
    *   pre-operation snapshot is still retained,
    *   {@link GitOperationInProgressError} when another operation is active and is not the
-   *   `AWAITING_CONFLICT` pull this undoes, or a {@link GitCommandFailedError} when restoring the
-   *   snapshot or reverting the change-set fails.
+   *   `AWAITING_CONFLICT` pull/switch this undoes, or a {@link GitCommandFailedError} when restoring
+   *   the snapshot or reverting the change-set fails.
    */
   async execute(input: UndoPullInput): Promise<Result<UndoPullResult, DomainError>> {
     const roleCheck = await requireGitRole(
@@ -115,12 +130,16 @@ export class UndoPullUseCase {
     if (!roleCheck.success) return roleCheck;
 
     const activeOperation = await this.gitOperationRepo.findActiveOperation(input.projectId);
-    if (activeOperation && activeOperation.kind === 'PULL' && activeOperation.state === 'AWAITING_CONFLICT') {
+    if (
+      activeOperation &&
+      activeOperation.state === 'AWAITING_CONFLICT' &&
+      UNDOABLE_AWAITING_CONFLICT_KINDS.includes(activeOperation.kind)
+    ) {
       return this.undoAwaitingConflict(input, activeOperation.id);
     }
 
-    // No AWAITING_CONFLICT pull to undo directly: acquire the single-flight guard so this cannot
-    // race a new operation, then look for the most recent clean pull that still has a snapshot.
+    // No AWAITING_CONFLICT pull/switch to undo directly: acquire the single-flight guard so this
+    // cannot race a new operation, then look for the most recent clean pull that still has a snapshot.
     // If another operation IS active (any kind/state other than the case above), `withGuard` itself
     // refuses with `GitOperationInProgressError` — the correct outcome, since something else really
     // is in progress.
@@ -130,7 +149,14 @@ export class UndoPullUseCase {
     return guarded.success ? guarded.value : guarded;
   }
 
-  /** Case A: undoes the pull currently `AWAITING_CONFLICT`, transitioning it to `ABORTED`. */
+  /**
+   * Case A: undoes the pull or branch switch currently `AWAITING_CONFLICT`, transitioning it to
+   * `ABORTED`. `restoreToSnapshot` is itself kind-aware — a pull resets its branch to the snapshot's
+   * `preOpHead` in place, while a switch checks the source branch back out without moving the target
+   * branch's ref — and reports the branch `HEAD` ends on. This case walks the link's `currentBranch`
+   * back to that reported branch (a no-op for a pull, the source branch for a switch) BEFORE
+   * `refreshRowAfterUndo`, so the behind/ahead recompute runs against the corrected branch.
+   */
   private async undoAwaitingConflict(
     input: UndoPullInput,
     operationId: GitOperationId,
@@ -155,7 +181,13 @@ export class UndoPullUseCase {
       return reverted;
     }
 
-    await this.refreshRowAfterUndo(gitRepository, input.projectId);
+    // Undoing a conflicted BRANCH_SWITCH returns `HEAD` to the SOURCE branch (the restore checked it
+    // back out), so the link's `currentBranch` must follow — otherwise it would keep pointing at the
+    // target branch the switch was advanced to. Done BEFORE `refreshRowAfterUndo` so its behind/ahead
+    // recompute runs against the corrected branch. For a pull abort the restored branch equals the
+    // existing `currentBranch`, so this is a no-op.
+    const restoredRepository = this.withCurrentBranch(gitRepository, restored.value.branch);
+    await this.refreshRowAfterUndo(restoredRepository, input.projectId);
     await this.gitOperationRepo.clearConflicts(operationId);
     await this.conflictStageStore.clear(operationId);
     await this.gitOperationRepo.transition(operationId, 'ABORTED');
@@ -222,6 +254,30 @@ export class UndoPullUseCase {
         context: input.context,
       },
       this.logger,
+    );
+  }
+
+  /**
+   * Rebuilds the loaded repository link with `currentBranch` set to `branch`, carrying every other
+   * field over unchanged — the immutable-entity move `switch-branch.ts` makes when it advances the
+   * current branch, applied here in reverse to walk it back to a switch's restored source branch.
+   * Nothing is saved here; the returned row is handed to {@link refreshRowAfterUndo}, which persists
+   * it (and recomputes behind/ahead against the corrected `currentBranch`).
+   */
+  private withCurrentBranch(loaded: GitRepository, branch: string): GitRepository {
+    return new GitRepository(
+      loaded.id,
+      loaded.projectId,
+      loaded.provider,
+      loaded.remoteUrl,
+      loaded.credentialReference,
+      branch,
+      loaded.syncStatus,
+      loaded.defaultBranch,
+      loaded.lastKnownRemoteHead,
+      loaded.lastSyncAt,
+      loaded.createdAt,
+      loaded.connectedByUserId,
     );
   }
 

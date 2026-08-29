@@ -83,6 +83,8 @@ interface HarnessOptions {
   conflictStageStore?: InMemoryConflictStageStore;
   /** Substitute operation repository, for exercising a refused transition. */
   gitOperationRepo?: InMemoryGitOperationRepository;
+  /** The branch the stored repository link starts on — the target branch, for a switch-abort test. */
+  currentBranch?: string;
 }
 
 async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -92,6 +94,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
     syncStatus = 'UP_TO_DATE',
     conflictStageStore = new InMemoryConflictStageStore(),
     gitOperationRepo = new InMemoryGitOperationRepository(),
+    currentBranch = CURRENT_BRANCH,
   } = options;
 
   const memberRepo = new InMemoryProjectMemberRepository();
@@ -111,7 +114,7 @@ async function buildHarness(options: HarnessOptions = {}): Promise<Harness> {
         GitProvider.create('github'),
         REMOTE_URL,
         PROJECT_ID.value,
-        CURRENT_BRANCH,
+        currentBranch,
         syncStatus,
         'main',
         'remote-head-commit-hash',
@@ -151,6 +154,25 @@ async function seedAwaitingConflictPull(harness: Harness): Promise<GitOperationI
   return enqueued.id;
 }
 
+/**
+ * Enqueues a BRANCH_SWITCH operation, claims it, transitions to AWAITING_CONFLICT, and seeds its
+ * snapshot — a switch's snapshot records the source branch's pre-switch tip under the same
+ * `preOpHead` field a pull uses.
+ */
+async function seedAwaitingConflictSwitch(harness: Harness): Promise<GitOperationId> {
+  const enqueued = await harness.gitOperationRepo.enqueue({
+    projectId: PROJECT_ID,
+    kind: 'BRANCH_SWITCH',
+    triggeredByUserId: ACTOR_ID,
+    branch: 'feature-x',
+  });
+  await harness.gitOperationRepo.claimNextQueued(30_000);
+  await harness.gitOperationRepo.transition(enqueued.id, 'AWAITING_CONFLICT');
+  await harness.gitOperationRepo.createConflict({ operationId: enqueued.id, path: 'chapters/intro.adoc' });
+  harness.conflictStageStore.seedSnapshot(enqueued.id, { preOpHead: PRE_OP_HEAD, branch: CURRENT_BRANCH });
+  return enqueued.id;
+}
+
 /** Enqueues a PULL operation, claims and runs it to SUCCEEDED, and seeds its retained snapshot. */
 async function seedSucceededPull(harness: Harness): Promise<GitOperationId> {
   const enqueued = await harness.gitOperationRepo.enqueue({
@@ -172,7 +194,7 @@ describe('UndoPullUseCase', () => {
   test('case A: an AWAITING_CONFLICT pull is restored to its snapshot, reverted, and ABORTED', async () => {
     const harness = await buildHarness();
     const operationId = await seedAwaitingConflictPull(harness);
-    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, changes: REVERT_CHANGES });
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, branch: CURRENT_BRANCH, changes: REVERT_CHANGES });
 
     const result = await harness.useCase.execute(undoInput());
 
@@ -190,6 +212,72 @@ describe('UndoPullUseCase', () => {
 
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
     expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
+  });
+
+  test('case A: an AWAITING_CONFLICT branch switch is restored to its pre-switch snapshot, reverted, and ABORTED', async () => {
+    const harness = await buildHarness();
+    const operationId = await seedAwaitingConflictSwitch(harness);
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, branch: CURRENT_BRANCH, changes: REVERT_CHANGES });
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result).toEqual({ success: true, value: { operationId, headCommit: PRE_OP_HEAD } });
+
+    // Restored via the same snapshot-keyed reset a conflicted pull uses — the use case's body is
+    // kind-agnostic, so a switch's `preOpHead` (its pre-switch source-branch tip) is honored exactly
+    // like a pull's.
+    expect(harness.commandRunner.restoreToSnapshotCalls).toEqual([
+      { projectId: PROJECT_ID, input: { operationId } },
+    ]);
+    expect(harness.reconciler.apply).toHaveBeenCalledWith(PROJECT_ID, REVERT_CHANGES);
+
+    const operation = await harness.gitOperationRepo.findById(operationId);
+    expect(operation?.kind).toBe('BRANCH_SWITCH');
+    expect(operation?.state).toBe('ABORTED');
+    expect(await harness.gitOperationRepo.listConflicts(operationId)).toHaveLength(0);
+    expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(operationId);
+
+    const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
+    expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
+  });
+
+  test('case A: undoing a conflicted branch switch walks currentBranch back to the restored source branch', async () => {
+    // The conflicted switch already advanced the link to the TARGET branch, so the row starts on it;
+    // undoing it must return currentBranch to the SOURCE branch the restore checked back out.
+    const harness = await buildHarness({ currentBranch: 'feature-x' });
+    await seedAwaitingConflictSwitch(harness);
+    // The restore returns HEAD to the source branch (the switch was main -> feature-x).
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, {
+      headCommit: PRE_OP_HEAD,
+      branch: CURRENT_BRANCH,
+      changes: REVERT_CHANGES,
+    });
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result.success).toBe(true);
+    const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    expect(saved?.currentBranch).toBe(CURRENT_BRANCH);
+    // The corrected branch is what behind/ahead is recomputed against, not the target it was on.
+    expect(harness.commandRunner.behindAheadCalls).toContainEqual({ projectId: PROJECT_ID, branch: CURRENT_BRANCH });
+  });
+
+  test('case A: undoing a conflicted pull leaves currentBranch unchanged', async () => {
+    // A pull abort restores the SAME branch (its restore reports the already-current branch), so the
+    // currentBranch walk-back is a no-op and must never disturb the pull path.
+    const harness = await buildHarness();
+    await seedAwaitingConflictPull(harness);
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, {
+      headCommit: PRE_OP_HEAD,
+      branch: CURRENT_BRANCH,
+      changes: REVERT_CHANGES,
+    });
+
+    const result = await harness.useCase.execute(undoInput());
+
+    expect(result.success).toBe(true);
+    const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
+    expect(saved?.currentBranch).toBe(CURRENT_BRANCH);
   });
 
   test('case A: a restore failure reverts to AWAITING_CONFLICT and lands nothing', async () => {
@@ -211,7 +299,7 @@ describe('UndoPullUseCase', () => {
   test('case A: a reconciler failure reverts to AWAITING_CONFLICT, tree already safe, snapshot retained', async () => {
     const harness = await buildHarness();
     const operationId = await seedAwaitingConflictPull(harness);
-    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, changes: REVERT_CHANGES });
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, branch: CURRENT_BRANCH, changes: REVERT_CHANGES });
     harness.reconciler.apply.mockResolvedValue({ success: false, error: new GitCommandFailedError('revert failed') });
 
     const result = await harness.useCase.execute(undoInput());
@@ -226,7 +314,7 @@ describe('UndoPullUseCase', () => {
   test('case B: a SUCCEEDED clean pull with a retained snapshot is restored, reverted, and its snapshot cleared', async () => {
     const harness = await buildHarness();
     const operationId = await seedSucceededPull(harness);
-    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, changes: REVERT_CHANGES });
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, branch: CURRENT_BRANCH, changes: REVERT_CHANGES });
 
     const result = await harness.useCase.execute(undoInput());
 
@@ -266,7 +354,7 @@ describe('UndoPullUseCase', () => {
   test('case B: a reconciler failure leaves the retained snapshot in place for a retry', async () => {
     const harness = await buildHarness();
     const operationId = await seedSucceededPull(harness);
-    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, changes: REVERT_CHANGES });
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, branch: CURRENT_BRANCH, changes: REVERT_CHANGES });
     harness.reconciler.apply.mockResolvedValue({ success: false, error: new GitCommandFailedError('revert failed') });
 
     const result = await harness.useCase.execute(undoInput());
@@ -368,7 +456,7 @@ describe('UndoPullUseCase', () => {
   test('a failed behind/ahead recompute keeps the repository row on its prior sync status', async () => {
     const harness = await buildHarness({ syncStatus: 'BEHIND' });
     await seedSucceededPull(harness);
-    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, changes: REVERT_CHANGES });
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, branch: CURRENT_BRANCH, changes: REVERT_CHANGES });
     harness.commandRunner.seedBehindAheadFailure(PROJECT_ID, new GitCommandFailedError('rev-list failed'));
 
     const result = await harness.useCase.execute(undoInput());
