@@ -211,6 +211,18 @@ export const DEMO_FILES: readonly DemoFileSpec[] = [
     yjsStateId: 'fd9753fe-242f-4754-821e-ca2dd3d1190c',
   },
   {
+    id: 'b80721ce-30d6-4174-a179-4e1311f90206',
+    parentId: CHAPTERS_FOLDER_ID,
+    name: '06-git-sync.adoc',
+    path: '/chapters/06-git-sync.adoc',
+    source: 'chapters/06-git-sync.adoc',
+    mimeType: 'text/asciidoc',
+    kind: 'text',
+    documentId: 'c643f52f-4153-44c3-b9b1-af75c223a8d0',
+    contentId: 'cd3bcddf-efc2-4879-b99a-8f06ebcbb46b',
+    yjsStateId: '9eb98316-43d4-46f6-a2a1-afdff87543d5',
+  },
+  {
     id: 'c887483f-32d2-4534-b518-a04d42fe0cd6',
     parentId: THEME_FOLDER_ID,
     name: 'showcase-theme.yml',

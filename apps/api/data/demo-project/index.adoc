@@ -46,3 +46,5 @@ include::chapters/03-structure-and-includes.adoc[]
 include::chapters/04-collaborating.adoc[]
 
 include::chapters/05-exporting-and-themes.adoc[]
+
+include::chapters/06-git-sync.adoc[]

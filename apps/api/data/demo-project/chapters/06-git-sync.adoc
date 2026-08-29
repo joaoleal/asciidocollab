@@ -1,0 +1,116 @@
+<<<
+
+[#git]
+== Working with Git
+
+Real-time editing keeps your team in sync inside {product-name}. When you also
+want your project in a Git repository — for backup, release history, or to share
+it with people who work outside the app — {product-name} connects a project to a
+remote and lets you commit, pull, and push without leaving the editor.
+
+NOTE: Git actions need the *editor* role. Because this tour is read-only (you are
+a <<roles,viewer>>), the sync controls are visible but disabled here. In a project
+of your own you drive them all from the toolbar above the editor.
+
+[#git-connect]
+=== Connecting a project to a remote
+
+There are three ways to link {product-name} and a remote repository, all reached
+from the Git menu:
+
+Connect:: Attach an *existing* remote to the project you already have. Your
+current files stay as they are and become the working copy of that repository.
+Import:: Pull an existing remote into a *brand-new* project — a one-step way to
+start editing a repository you already keep elsewhere.
+Initialize:: Publish your current project to a *new, empty* remote you have just
+created on the provider. {product-name} makes the first commit and pushes it for
+you.
+
+[#git-providers]
+=== Providers and access tokens
+
+{product-name} works with the three major hosts:
+
+* *GitHub*
+* *GitLab*
+* *Bitbucket*
+
+You authorize {product-name} with an *access token* that you create on the
+provider. The connect dialog links straight to each provider's official guide so
+you can generate the right kind of credential (each opens in a new tab):
+
+* GitHub — https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens[personal access token^]
+* GitLab — https://docs.gitlab.com/user/profile/personal_access_tokens/[personal access token^]
+* Bitbucket — https://support.atlassian.com/bitbucket-cloud/docs/create-an-api-token/[API token^]
+
+TIP: If your {product-name} administrator has enabled *guided OAuth* for a
+provider, a *Connect with…* button appears in the Connect dialog and you can
+approve access on the provider instead of pasting a token. It is off unless the
+deployment sets it up, so if you do not see the button, use the access token above.
+
+[#git-sync]
+=== Everyday sync
+
+Once a project is connected, the toolbar becomes your control panel:
+
+Commit:: Bundle your latest edits into a commit with a message. This is your
+save-point in the repository's history.
+Pull:: Bring down changes teammates have pushed to the remote.
+Push:: Send your commits up to the remote so others can pull them.
+
+The toolbar always shows how far you have diverged from the remote — an
+*ahead/behind* count that tells you how many commits you have to push and how many
+are waiting to be pulled. In the file tree, each file wears a small *status badge*
+so you can see at a glance what has been added, modified, or is still uncommitted.
+
+[#git-branches]
+=== Branches
+
+The branch switcher in the toolbar shows the branch you are on and lets you move
+between branches — or *create a new one* — without touching a command line. Switch
+branches to review a colleague's work, or start a branch to draft a change in
+isolation before you merge it back.
+
+[#git-history]
+=== History and blame
+
+Two views help you understand how the document got to its current state:
+
+History:: Browse the project's commits over time — who changed what, and when.
+Blame:: A per-file toggle that annotates every line in the editor gutter with the
+author of its most recent change, so you can see the story behind a single
+paragraph inline as you read.
+
+[#git-conflicts]
+=== Resolving merge conflicts
+
+Most sync is uneventful. Only two actions can ever *conflict* — a *pull* and a
+*branch switch* — because both replay remote changes on top of your own. When that
+happens, {product-name} pauses the project in a *conflict state*: editing is held
+until the conflict is settled, so nothing is lost.
+
+You resolve the conflict one file at a time, choosing for each:
+
+Ours:: Keep your version of the file.
+Theirs:: Take the incoming version from the remote (or the branch you switched to).
+A hand-merged version:: Edit the file yourself to combine both sides exactly how
+you want.
+
+When every file has a resolution, you *complete the merge* and the project returns
+to normal editing.
+
+[IMPORTANT]
+====
+A pull can also be *undone*. If you would rather not deal with the incoming
+changes right now — conflict or not — abort the pull and {product-name} restores
+your project to *exactly* the state it was in beforehand, as if the pull had never
+happened.
+====
+
+=== That's the tour
+
+You now know how to write in AsciiDoc, collaborate in real time, export a polished
+PDF, and keep it all in a Git repository. Jump back to <<welcome,the welcome
+chapter>> to recap the map — or better yet: create your own project, connect it to
+a remote, invite a teammate, and start writing together. Welcome aboard
+{product-name}.

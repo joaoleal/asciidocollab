@@ -3,9 +3,8 @@
 [#exporting]
 == Exporting and themes
 
-The last stop on the tour: turning your live document into a polished PDF, and
-the two rendering features that make {product-name} feel alive — syntax
-highlighting and live math.
+Turning your live document into a polished PDF, and the two rendering features
+that make {product-name} feel alive — syntax highlighting and live math.
 
 [#pdf-export]
 === In-browser PDF export
@@ -144,6 +143,5 @@ main file  ->  include tree  ->  cross-file intelligence
 
 === Where to go next
 
-That is the tour. To recap the map, jump back to
-<<welcome,the welcome chapter>>, or better yet: create your own project, invite
-a teammate, and start writing together. Welcome aboard {product-name}.
+Your document is written, collaborated on, and exported. One chapter remains:
+putting it under version control. Continue to <<git,working with Git>>.

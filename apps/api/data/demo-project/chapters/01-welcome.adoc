@@ -64,6 +64,9 @@ editing, create your own project and paste in snippets you like from here.
 
 | <<exporting,Exporting & Themes>>
 | PDF export, render configuration, code callouts, and live math.
+
+| <<git,Working with Git>>
+| Connecting a remote, everyday sync, branches, history, and merge conflicts.
 |===
 
 Ready? Let's start with the language. Continue to
