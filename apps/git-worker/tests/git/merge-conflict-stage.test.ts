@@ -93,6 +93,65 @@ async function setupDeleteModifyConflict(projectId: string): Promise<{ storageRo
   return { storageRoot, cwd };
 }
 
+/**
+ * Builds a project whose local `main` is an ancestor of `refs/remotes/origin/main` ("theirs"), which
+ * is ahead by one commit adding `remote.adoc` — a clean, non-conflicting merge target. Setup uses
+ * plain `git`, never the code under test.
+ */
+async function setupCleanlyMergeableRemote(projectId: string): Promise<{ storageRoot: string; cwd: string }> {
+  const storageRoot = await createTemporaryStorageRootWithProject(projectId);
+  const cwd = path.join(storageRoot, projectId);
+
+  await writeFile(path.join(cwd, 'base.adoc'), 'base\n');
+  await commitAll(cwd, 'base');
+
+  await execFile('git', ['checkout', '-q', '-b', 'incoming'], { cwd });
+  await writeFile(path.join(cwd, 'remote.adoc'), 'remote\n');
+  await commitAll(cwd, 'theirs adds remote.adoc');
+  const theirsCommit = await readReference(cwd, 'HEAD');
+  await execFile('git', ['update-ref', 'refs/remotes/origin/main', theirsCommit], { cwd });
+  await execFile('git', ['checkout', '-q', 'main'], { cwd });
+  await execFile('git', ['branch', '-q', '-D', 'incoming'], { cwd });
+
+  return { storageRoot, cwd };
+}
+
+describe('RealGitCommandRunner.merge (never-lose-work backup ref)', () => {
+  it('pins the pull’s flush commit under refs/adc/undo/<operationId> as the snapshot wipCommit', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440310');
+    const { storageRoot, cwd } = await setupCleanlyMergeableRemote(projectId.value);
+    const store = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, store);
+
+    // A pull carrying a live edit flush-commits it before merging; that flush commit is the pull's
+    // moved work and must be ref-pinned like a branch switch's shelved edits.
+    const result = await runner.merge(projectId, {
+      branch: 'main',
+      flush: [{ path: 'live.adoc', content: 'live edit\n' }],
+      operationId: OPERATION_ID,
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected the merge to succeed');
+    expect(result.value.status).toBe('merged');
+
+    // The backup ref resolves to a commit whose `live.adoc` holds the flushed edit — recoverable
+    // from git with zero editor dependence — and it is reachable from the post-merge HEAD.
+    const backupRef = `refs/adc/undo/${OPERATION_ID.value}`;
+    const wipCommit = await readReference(cwd, backupRef);
+    expect(wipCommit).toMatch(/^[0-9a-f]{40}$/);
+    const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:live.adoc`], { cwd });
+    expect(preserved).toBe('live edit\n');
+    await expect(execFile('git', ['merge-base', '--is-ancestor', wipCommit, 'HEAD'], { cwd })).resolves.toBeDefined();
+
+    // The snapshot records that same commit as its `wipCommit` handle, alongside the pre-op head.
+    const snapshot = await store.readSnapshot(OPERATION_ID);
+    expect(snapshot.success).toBe(true);
+    if (!snapshot.success || snapshot.value === null) throw new Error('expected a recorded snapshot');
+    expect(snapshot.value.wipCommit).toBe(wipCommit);
+  });
+});
+
 describe('RealGitCommandRunner.merge (modify/delete conflict capture)', () => {
   it('captures a modify/delete conflict with the deleted "ours" side as null, without hard-failing', async () => {
     const projectId = ProjectId.create('550e8400-e29b-41d4-a716-446655440301');

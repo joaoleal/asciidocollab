@@ -23,6 +23,47 @@ describe('FilesystemConflictStageStore', () => {
     expect(await store.readSnapshot(OPERATION_A)).toEqual({ success: true, value: snapshot });
   });
 
+  it('round-trips a snapshot carrying a wipCommit (the never-lose-work backup handle)', async () => {
+    const { store } = await createStore();
+    const snapshot = { preOpHead: 'a'.repeat(40), branch: 'main', wipCommit: 'b'.repeat(40) };
+
+    const written = await store.writeSnapshot(OPERATION_A, snapshot);
+    expect(written).toEqual({ success: true, value: undefined });
+
+    expect(await store.readSnapshot(OPERATION_A)).toEqual({ success: true, value: snapshot });
+  });
+
+  it('still deserializes an older snapshot written with no wipCommit field', async () => {
+    // Snapshots recorded before the backup-ref field existed carry only preOpHead/branch. They must
+    // remain valid, deserializing with wipCommit simply undefined — never rejected.
+    const { root, store } = await createStore();
+    await mkdir(path.join(root, OPERATION_A.value), { recursive: true });
+    await writeFile(
+      path.join(root, OPERATION_A.value, 'snapshot.json'),
+      JSON.stringify({ preOpHead: 'a'.repeat(40), branch: 'main' }),
+      'utf8',
+    );
+
+    expect(await store.readSnapshot(OPERATION_A)).toEqual({
+      success: true,
+      value: { preOpHead: 'a'.repeat(40), branch: 'main' },
+    });
+  });
+
+  it('rejects a snapshot whose wipCommit is present but not a string', async () => {
+    const { root, store } = await createStore();
+    await mkdir(path.join(root, OPERATION_A.value), { recursive: true });
+    await writeFile(
+      path.join(root, OPERATION_A.value, 'snapshot.json'),
+      JSON.stringify({ preOpHead: 'a'.repeat(40), branch: 'main', wipCommit: 42 }),
+      'utf8',
+    );
+
+    const read = await store.readSnapshot(OPERATION_A);
+
+    expect(read.success).toBe(false);
+  });
+
   it('returns null reading a snapshot for an operation with none recorded', async () => {
     const { store } = await createStore();
 

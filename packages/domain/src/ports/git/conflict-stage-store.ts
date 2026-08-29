@@ -23,6 +23,16 @@ export interface ConflictUndoSnapshot {
   readonly preOpHead: string;
   /** The branch the operation ran on. */
   readonly branch: string;
+  /**
+   * The commit that durably captures the uncommitted/live edits the operation MOVED — the branch
+   * switch's shelved edits, or the pull's flush commit — pinned in git by the backup ref
+   * `refs/adc/undo/<operationId>` so the moved work survives `git gc`/`git clean` and the
+   * awaiting-conflict wait with zero dependence on any editor still holding it.
+   *
+   * OPTIONAL, and absent when the operation moved nothing (an empty flush) — and older snapshots
+   * recorded before this field existed deserialize with it undefined, unchanged.
+   */
+  readonly wipCommit?: string;
 }
 
 /**

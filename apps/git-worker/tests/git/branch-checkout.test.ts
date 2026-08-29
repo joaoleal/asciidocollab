@@ -227,15 +227,15 @@ describe('RealGitCommandRunner.checkout', () => {
     if (result.value.status !== 'conflicted') throw new Error('expected conflicted');
     expect(result.value.conflicts).toEqual([{ path: 'base.adoc', isBinary: false }]);
 
-    // The switch landed on the target branch and the tree is clean (the shelved edit was dropped;
-    // the live editors still hold it for the later conflict-resolution flow).
+    // The switch landed on the target branch and the tree is clean. The shelved edit is NOT lost:
+    // it was pinned under the backup ref BEFORE the now-redundant stash stack entry was dropped.
     expect(await currentBranch(cwd)).toBe('feature');
     const { stdout: status } = await execFile('git', ['status', '--porcelain'], { cwd });
     expect(status.trim()).toBe('');
     expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('feature version\n');
 
-    // The three-way stages were captured BEFORE the reset/drop. A stash-pop conflict is modeled by
-    // git as a merge of the stash INTO the already-checked-out target branch, so "ours" is the
+    // The three-way stages were captured BEFORE the reset/pin/drop. A stash-pop conflict is modeled
+    // by git as a merge of the stash INTO the already-checked-out target branch, so "ours" is the
     // target branch's content and "theirs" is the stashed (carried) local edit.
     expect(await conflictStageStore.readStages(OPERATION_ID, 'base.adoc')).toEqual({
       success: true,
@@ -247,10 +247,66 @@ describe('RealGitCommandRunner.checkout', () => {
       },
     });
 
-    // Every switch leaves an undo target, captured before any flush/stash/checkout ran.
+    // The moved local edit is durably preserved in git under `refs/adc/undo/<operationId>`: the ref
+    // resolves to a commit whose `base.adoc` still holds the carried edit, recoverable with zero
+    // dependence on any editor still being open.
+    const backupRef = `refs/adc/undo/${OPERATION_ID.value}`;
+    const wipCommit = await readReference(cwd, backupRef);
+    expect(wipCommit).toMatch(/^[0-9a-f]{40}$/);
+    const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:base.adoc`], { cwd });
+    expect(preserved).toBe('local version\n');
+
+    // The stash stack entry was dropped only AFTER the pin — no lingering stash, no lost work.
+    const { stdout: stashList } = await execFile('git', ['stash', 'list'], { cwd });
+    expect(stashList.trim()).toBe('');
+
+    // Every switch leaves an undo target, captured before any flush/stash/checkout ran, now carrying
+    // the pinned `wipCommit` so a later undo/recovery has the handle to the moved work.
     expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
       success: true,
-      value: { preOpHead: preSwitchHead, branch: 'feature' },
+      value: { preOpHead: preSwitchHead, branch: 'feature', wipCommit },
+    });
+  });
+
+  it('pins a clean switch’s carried edits under the backup ref, never losing the moved work', async () => {
+    const projectId = ProjectId.create('550e8400-e29b-41d4-a716-44665544009b');
+    const { storageRoot, cwd } = await setupProjectOnMain(projectId.value, async (tree) => {
+      await writeFile(path.join(tree, 'base.adoc'), 'base\n');
+    });
+    await addLocalBranch(cwd, 'feature', async (tree) => {
+      await writeFile(path.join(tree, 'feature.adoc'), 'feature only\n');
+    });
+    const preSwitchHead = await readReference(cwd, 'HEAD');
+
+    const conflictStageStore = await createTemporaryConflictStageStore();
+    const runner = new RealGitCommandRunner(storageRoot, [], undefined, conflictStageStore);
+    // The carried edit does NOT collide with the target branch, so the switch lands cleanly — yet the
+    // moved work must still be ref-pinned, closing the quiet clean-switch loss.
+    const result = await runner.checkout(projectId, {
+      branch: 'feature',
+      flush: [{ path: 'live.adoc', content: 'live edit\n' }],
+      stashLocal: true,
+      operationId: OPERATION_ID,
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('expected success');
+    if (result.value.status !== 'switched') throw new Error('expected switched');
+    expect(await currentBranch(cwd)).toBe('feature');
+    expect(await readFile(path.join(cwd, 'live.adoc'), 'utf8')).toBe('live edit\n');
+
+    // The carried edit is durably pinned under `refs/adc/undo/<operationId>`, recoverable from git
+    // independent of any editor.
+    const backupRef = `refs/adc/undo/${OPERATION_ID.value}`;
+    const wipCommit = await readReference(cwd, backupRef);
+    expect(wipCommit).toMatch(/^[0-9a-f]{40}$/);
+    const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:live.adoc`], { cwd });
+    expect(preserved).toBe('live edit\n');
+
+    // The snapshot records the pinned commit as its `wipCommit` handle.
+    expect(await conflictStageStore.readSnapshot(OPERATION_ID)).toEqual({
+      success: true,
+      value: { preOpHead: preSwitchHead, branch: 'feature', wipCommit },
     });
   });
 

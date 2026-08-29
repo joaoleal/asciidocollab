@@ -328,6 +328,11 @@ export class MergeConflictOps {
    * @param operationId - The operation this snapshot belongs to.
    * @param preOpHead - The local `HEAD` captured before the flush commit / any working-tree change.
    * @param branch - The branch the operation is running on.
+   * @param wipCommit - The commit pinning the operation's MOVED uncommitted/live edits (the backup
+   *   ref `refs/adc/undo/<operationId>` points at it), or omitted when the operation moved nothing.
+   *   Recorded on a SECOND call, once the moved work exists and has been pinned — the initial
+   *   pre-mutation call (the irreversibility guard) has no `wipCommit` yet, and overwriting the
+   *   snapshot with it later is exactly the port's documented overwrite behavior.
    * @returns Success (a no-op) when no store is configured, or once recorded; a
    *   `GitCommandFailedError` when the store's write fails.
    */
@@ -335,14 +340,80 @@ export class MergeConflictOps {
     operationId: GitOperationId,
     preOpHead: string,
     branch: string,
+    wipCommit?: string,
   ): Promise<Result<void, GitCommandFailedError>> {
     if (!this.conflictStageStore) return { success: true, value: undefined };
 
-    const written = await this.conflictStageStore.writeSnapshot(operationId, { preOpHead, branch });
+    const written = await this.conflictStageStore.writeSnapshot(operationId, {
+      preOpHead,
+      branch,
+      ...(wipCommit !== undefined ? { wipCommit } : {}),
+    });
     if (!written.success) {
       return { success: false, error: new GitCommandFailedError('The pre-operation snapshot could not be recorded.') };
     }
     return { success: true, value: undefined };
+  }
+
+  /**
+   * Points the never-lose-work backup ref `refs/adc/undo/<operationId>` at `commit`, making the
+   * commit reachable so `git gc`/`git clean` can never collect the moved edits it captures while the
+   * project waits for the user to act. `commit` is a code-resolved SHA (never user input); the ref
+   * name lives in the private `refs/adc/` namespace this feature owns. Returns a result rather than
+   * throwing so every caller can choose its own failure posture — see {@link pinWorkInProgress} for
+   * the stash-resolution variant and the ordering the conflicted-switch path depends on.
+   *
+   * @param cwd - The project's working tree.
+   * @param operationId - The operation whose backup ref to write.
+   * @param commit - The commit SHA to pin.
+   * @returns Success once the ref is written; a `GitCommandFailedError` if `git update-ref` fails.
+   */
+  private async pinBackupRef(
+    cwd: string,
+    operationId: GitOperationId,
+    commit: string,
+  ): Promise<Result<void, GitCommandFailedError>> {
+    try {
+      await runGitCommand(cwd, {
+        command: 'update-ref',
+        positionals: [`refs/adc/undo/${operationId.value}`, commit],
+      });
+      return { success: true, value: undefined };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The moved local edits could not be preserved.') };
+    }
+  }
+
+  /**
+   * Resolves the shelved edits still on top of the stash stack (`stash@{0}`) to their stash commit
+   * SHA and pins that commit under the backup ref via {@link pinBackupRef} — the never-lose-work
+   * artifact for a CONFLICTED branch switch, whose moved edits live in a stash rather than a flush
+   * commit. Called AFTER the conflicted pop (which leaves `stash@{0}` in place) and BEFORE the stack
+   * entry is dropped, so a pin failure can keep the entry rather than lose the work. The clean-switch
+   * path cannot use this — its successful `git stash pop` already consumed `stash@{0}` — so it
+   * resolves the SHA before popping and pins it with {@link pinBackupRef} directly.
+   *
+   * @param cwd - The project's working tree.
+   * @param operationId - The operation whose backup ref to write.
+   * @returns The pinned stash commit SHA on success; a `GitCommandFailedError` when `stash@{0}` is
+   *   absent/unresolvable or the ref write fails.
+   */
+  private async pinWorkInProgress(
+    cwd: string,
+    operationId: GitOperationId,
+  ): Promise<Result<string, GitCommandFailedError>> {
+    try {
+      const stashRevResult = await runGitCommand(cwd, { command: 'rev-parse', positionals: ['stash@{0}'] });
+      const stashCommit = readRevParseAnswer(stashRevResult.stdout);
+      if (stashCommit.length === 0) {
+        return { success: false, error: new GitCommandFailedError('The moved local edits could not be preserved.') };
+      }
+      const pinned = await this.pinBackupRef(cwd, operationId, stashCommit);
+      if (!pinned.success) return pinned;
+      return { success: true, value: stashCommit };
+    } catch {
+      return { success: false, error: new GitCommandFailedError('The moved local edits could not be preserved.') };
+    }
   }
 
   /**
@@ -460,7 +531,8 @@ export class MergeConflictOps {
         await runGitCommand(cwd, { command: 'add', positionals: [entry.path] });
       }
 
-      if (await hasStagedChanges(cwd)) {
+      const flushed = await hasStagedChanges(cwd);
+      if (flushed) {
         await runGitCommand(cwd, {
           command: 'commit',
           flags: ['-m', FLUSH_COMMIT_MESSAGE],
@@ -470,6 +542,20 @@ export class MergeConflictOps {
 
       const preMergeHeadResult = await runGitCommand(cwd, { command: 'rev-parse', flags: ['HEAD'] });
       const preMergeHead = readRevParseAnswer(preMergeHeadResult.stdout);
+
+      // When live edits were flushed, the flush commit (`preMergeHead`, the post-flush pre-merge
+      // HEAD) is pull's moved work. Pin it under the backup ref so it is ref-pinned exactly like a
+      // switch's shelved edits — gc-safe and recoverable with zero editor dependence — and record
+      // it as the snapshot's `wipCommit`. Best-effort by design: the flush commit is already
+      // reachable from HEAD here, so nothing is lost if the pin fails; this mirrors the
+      // swallow-on-failure posture the file uses for its other convenience-ref writes, and a failure
+      // never tears down the merge.
+      if (flushed) {
+        const pinned = await this.pinBackupRef(cwd, input.operationId, preMergeHead);
+        if (pinned.success) {
+          await this.writeUndoSnapshot(input.operationId, preOpHead, input.branch, preMergeHead);
+        }
+      }
 
       const remoteReference = `refs/remotes/origin/${input.branch}`;
       try {
@@ -541,13 +627,15 @@ export class MergeConflictOps {
    *    there are none the exit was a genuine failure; if there are, every conflicting path's
    *    three-way stages are captured via {@link MergeConflictOps.captureConflictStages} — the
    *    unmerged index entries still exist at this point — BEFORE the working tree is restored to a
-   *    clean checkout of the target branch (`git reset --hard`) and the now-unneeded stash is dropped
-   *    (both run in a `finally`, so a capture failure can never leave the stash undropped), leaving a
-   *    defined, clean tree exactly as {@link MergeConflictOps.merge}'s `--abort` does. The live edits
-   *    are not lost: they remain live in each collaborator's editor, which the later
-   *    conflict-resolution flow reconciles against the reported paths. The `conflicted` outcome is
-   *    returned — UNLESS the capture itself failed, in which case a `GitCommandFailedError` is
-   *    returned instead, after the reset/drop have already restored a clean tree.
+   *    clean checkout of the target branch (`git reset --hard`), leaving a defined, clean tree exactly
+   *    as {@link MergeConflictOps.merge}'s `--abort` does. The shelved edits are NOT lost: before the
+   *    stash stack entry is dropped they are pinned to a durable backup ref
+   *    (`refs/adc/undo/<operationId>`, via {@link MergeConflictOps.pinWorkInProgress}) so they survive
+   *    `git gc`/`git clean` and never depend on any editor still holding them — the drop runs ONLY
+   *    once that pin succeeds. If the pin fails the stack entry is deliberately kept (nothing is
+   *    dropped) and the operation fails, so the work is always recoverable. The `conflicted` outcome
+   *    is returned — UNLESS the capture (or the pin) itself failed, in which case a
+   *    `GitCommandFailedError` is returned instead, after the reset has restored a clean tree.
    * 7. On a clean switch, `git add -A` stages the re-applied edits (so a flushed edit to a file absent
    *    from the target branch is captured as an addition), and `changes` is the delta from
    *    `preSwitchHead` to the post-switch working tree ({@link computeMergeChanges} with no second
@@ -599,7 +687,13 @@ export class MergeConflictOps {
 
       await runGitCommand(cwd, { command: 'checkout', positionals: [input.branch] });
 
+      // The stash commit capturing the shelved edits, resolved while `stash@{0}` still exists —
+      // BEFORE the pop below either consumes it (clean) or leaves it in place (conflicted). It is the
+      // branch switch's never-lose-work artifact, pinned under the backup ref on whichever path runs.
+      let stashCommit: string | undefined;
       if (stashed) {
+        const stashRevResult = await runGitCommand(cwd, { command: 'rev-parse', positionals: ['stash@{0}'] });
+        stashCommit = readRevParseAnswer(stashRevResult.stdout);
         try {
           await runGitCommand(cwd, { command: 'stash', flags: ['pop'] });
         } catch (error) {
@@ -611,21 +705,56 @@ export class MergeConflictOps {
             throw error;
           }
 
-          // Capture every conflicting path's three-way stages BEFORE the reset/drop — both run in
-          // a `finally` so a capture failure can never leave the stash undropped or the tree dirty.
+          // Capture every conflicting path's three-way stages BEFORE the reset/pin/drop — all run in
+          // a `finally` so a capture failure can never leave the tree dirty or the stash mishandled.
           let captured: Result<void, GitCommandFailedError> = { success: true, value: undefined };
+          // The pin's outcome is read AFTER the `finally`: it decides both the drop (below) and
+          // whether this operation can safely report a conflict at all.
+          let wipPin: Result<string, GitCommandFailedError> = {
+            success: false,
+            error: new GitCommandFailedError('The moved local edits could not be preserved.'),
+          };
           try {
             captured = await this.captureConflictStages(cwd, input.operationId, conflicts);
           } finally {
-            // Restore a clean checkout of the target branch and drop the shelved edits, exactly as
-            // `merge --abort` leaves a clean tree. The edits are not lost: they stay live in each
-            // collaborator's editor, which the later conflict-resolution flow reconciles.
+            // Restore a clean checkout of the target branch (`reset --hard` leaves the same defined,
+            // clean tree `merge --abort` does). It does NOT touch the stash stack, so `stash@{0}`
+            // still resolves for the pin below.
             await runGitCommand(cwd, { command: 'reset', flags: ['--hard'] });
-            await runGitCommand(cwd, { command: 'stash', flags: ['drop'] });
+
+            // Never `stash drop` the shelved edits outright — that is the historic data-loss site.
+            // Instead PIN them first (resolve `stash@{0}` and point the backup ref at it), and drop
+            // the stack entry ONLY once the object is ref-pinned. Ordering is load-bearing: pin
+            // succeeds → drop the now-redundant stack entry; pin fails → keep the stack entry so the
+            // moved work is never lost, and let the operation fail below through the same failure
+            // path a capture failure uses. The edits survive with zero editor dependence either way.
+            wipPin = await this.pinWorkInProgress(cwd, input.operationId);
+            if (wipPin.success) {
+              await runGitCommand(cwd, { command: 'stash', flags: ['drop'] });
+            }
           }
           if (!captured.success) return captured;
+          if (!wipPin.success) return wipPin;
+
+          // Record the pinned commit as the snapshot's `wipCommit` so a later undo/recovery has the
+          // handle. Best-effort: the edits are already ref-pinned above, so a snapshot re-write
+          // failure never loses them and must not fail the (correctly conflicted) operation.
+          await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch, wipPin.value);
 
           return { success: true, value: { status: 'conflicted', conflicts } };
+        }
+      }
+
+      // A clean pop re-applied the shelved edits into the target working tree (they are also returned
+      // in the change-set below, so the domain persists them). Pin the stash commit under the backup
+      // ref as well, so the moved work is durably recoverable from git independent of any editor —
+      // symmetric with the pull and conflicted-switch paths, and closing the quiet clean-switch loss.
+      // Best-effort: the edits are already applied and reported, so a failed pin never loses them and
+      // must not fail a clean switch.
+      if (stashCommit !== undefined) {
+        const pinned = await this.pinBackupRef(cwd, input.operationId, stashCommit);
+        if (pinned.success) {
+          await this.writeUndoSnapshot(input.operationId, preSwitchHead, input.branch, stashCommit);
         }
       }
 
