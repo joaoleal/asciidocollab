@@ -26,6 +26,7 @@ import { navigateTo } from '@/lib/navigate';
 import { GIT_PROVIDERS } from '@asciidocollab/shared';
 import type { GitOperationState, GitOperationStatusDto, GitProvider } from '@asciidocollab/shared';
 import { ProviderIcon } from './provider-icon';
+import { TokenDocLink } from './token-doc-link';
 import {
   describeConnectFailure,
   describeInitializeStartFailure,
@@ -142,6 +143,7 @@ function RepositoryConnectionFields({ mode, form, pending }: RepositoryConnectio
           autoComplete="off"
           disabled={pending}
         />
+        <TokenDocLink provider={form.provider} />
       </div>
 
       <div className="space-y-2">

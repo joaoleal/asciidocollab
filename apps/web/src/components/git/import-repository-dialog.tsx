@@ -13,6 +13,7 @@ import { ApiError } from '@/lib/api/transport';
 import { GIT_PROVIDERS } from '@asciidocollab/shared';
 import type { GitOperationState, GitOperationStatusDto, GitProvider } from '@asciidocollab/shared';
 import { ProviderIcon } from './provider-icon';
+import { TokenDocLink } from './token-doc-link';
 
 /** How often the operation status is re-read while an import is queued or running. */
 const POLL_INTERVAL_MS = 1500;
@@ -262,6 +263,7 @@ function ImportRepositoryForm({ onOpenChange }: ImportRepositoryFormProperties) 
               autoComplete="off"
               disabled={pending}
             />
+            <TokenDocLink provider={provider} />
           </div>
 
           <div className="space-y-2">
