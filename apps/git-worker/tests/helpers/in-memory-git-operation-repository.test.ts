@@ -43,3 +43,31 @@ describe('InMemoryGitOperationRepository transition heartbeat parity', () => {
     expect(result.success && result.value.heartbeatAt).toEqual(claimed?.heartbeatAt);
   });
 });
+
+describe('InMemoryGitOperationRepository findMostRecentByKind(s)/findRecentByKinds newest-first tiebreak', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('breaks a same-createdAt tie by id descending, not insertion order (matching the Prisma adapter)', async () => {
+    jest.useFakeTimers({ now: new Date('2026-01-01T00:00:00.000Z') });
+    const repository = new InMemoryGitOperationRepository();
+    // The clock never advances between these two enqueues, so both operations share the exact same
+    // createdAt — the tie must break by id descending (PrismaGitOperationRepository's `id desc`
+    // secondary sort), never by insertion order, or this fake and the real adapter reading identical
+    // rows could disagree on which one is "the most recent".
+    const first = await repository.enqueue({ projectId, kind: 'PULL', triggeredByUserId: user });
+    await repository.claimNextQueued(30_000);
+    await repository.transition(first.id, 'SUCCEEDED'); // terminal, so the project can enqueue a second op
+    const second = await repository.enqueue({ projectId, kind: 'BRANCH_SWITCH', triggeredByUserId: user });
+    expect(first.createdAt).toEqual(second.createdAt); // sanity: genuinely tied
+
+    const expectedWinner = first.id.value > second.id.value ? first : second;
+
+    const mostRecent = await repository.findMostRecentByKinds(projectId, ['PULL', 'BRANCH_SWITCH']);
+    expect(mostRecent?.id.value).toBe(expectedWinner.id.value);
+
+    const recent = await repository.findRecentByKinds(projectId, ['PULL', 'BRANCH_SWITCH'], 10);
+    expect(recent[0]?.id.value).toBe(expectedWinner.id.value);
+  });
+});

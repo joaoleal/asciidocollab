@@ -21,9 +21,22 @@ export type FailingStoreOperation = 'writeSnapshot' | 'writeStages' | 'readSnaps
  * a failure no amount of real-git setup can provoke.
  */
 export class FailingConflictStageStore implements ConflictStageStore {
+  /** How many times the designated `failing` operation has been invoked so far. */
+  private occurrences = 0;
+
+  /**
+   * @param delegate - The real store every non-failing call is forwarded to.
+   * @param failing - The one operation this store refuses to perform.
+   * @param failFromOccurrence - Which invocation of `failing` starts refusing (1-based). Defaults to
+   *   1, so the very first call already fails — what a test that does not care about ordering wants.
+   *   A higher value lets a test single out a LATER call of the same operation: `merge`/`checkout`
+   *   call `writeSnapshot` twice (the pre-mutation base snapshot, then the upgrade naming the pinned
+   *   `wipCommit`), and only the second one exercises the post-pin failure path.
+   */
   constructor(
     private readonly delegate: FilesystemConflictStageStore,
     private readonly failing: FailingStoreOperation,
+    private readonly failFromOccurrence = 1,
   ) {}
 
   /**
@@ -31,11 +44,28 @@ export class FailingConflictStageStore implements ConflictStageStore {
    * rooted at a fresh temp directory (never inside a project working tree).
    *
    * @param failing - The operation to fail.
+   * @param failFromOccurrence - Which invocation of `failing` starts refusing (see the constructor).
    * @returns The store.
    */
-  static async create(failing: FailingStoreOperation): Promise<FailingConflictStageStore> {
+  static async create(
+    failing: FailingStoreOperation,
+    failFromOccurrence = 1,
+  ): Promise<FailingConflictStageStore> {
     const root = await mkdtemp(path.join(tmpdir(), 'git-worker-test-failing-conflict-store-'));
-    return new FailingConflictStageStore(new FilesystemConflictStageStore(root), failing);
+    return new FailingConflictStageStore(new FilesystemConflictStageStore(root), failing, failFromOccurrence);
+  }
+
+  /**
+   * Whether THIS call should be refused: only the designated `failing` operation is counted, and it
+   * starts refusing once its invocation count reaches `failFromOccurrence`.
+   *
+   * @param operation - The operation being invoked.
+   * @returns True when the call must fail instead of reaching the delegate.
+   */
+  private refuses(operation: FailingStoreOperation): boolean {
+    if (this.failing !== operation) return false;
+    this.occurrences += 1;
+    return this.occurrences >= this.failFromOccurrence;
   }
 
   private unavailable(): { success: false; error: GitCommandFailedError } {
@@ -46,7 +76,7 @@ export class FailingConflictStageStore implements ConflictStageStore {
     operationId: GitOperationId,
     snapshot: ConflictUndoSnapshot,
   ): Promise<Result<void, GitCommandFailedError>> {
-    if (this.failing === 'writeSnapshot') return this.unavailable();
+    if (this.refuses('writeSnapshot')) return this.unavailable();
     return this.delegate.writeSnapshot(operationId, snapshot);
   }
 
@@ -55,7 +85,7 @@ export class FailingConflictStageStore implements ConflictStageStore {
     filePath: string,
     stages: ConflictStages,
   ): Promise<Result<void, GitCommandFailedError>> {
-    if (this.failing === 'writeStages') return this.unavailable();
+    if (this.refuses('writeStages')) return this.unavailable();
     return this.delegate.writeStages(operationId, filePath, stages);
   }
 
@@ -84,7 +114,7 @@ export class FailingConflictStageStore implements ConflictStageStore {
   async readSnapshot(
     operationId: GitOperationId,
   ): Promise<Result<ConflictUndoSnapshot | null, GitCommandFailedError>> {
-    if (this.failing === 'readSnapshot') return this.unavailable();
+    if (this.refuses('readSnapshot')) return this.unavailable();
     return this.delegate.readSnapshot(operationId);
   }
 

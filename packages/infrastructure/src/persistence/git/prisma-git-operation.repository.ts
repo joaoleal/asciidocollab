@@ -362,7 +362,7 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
   async findMostRecentByKind(projectId: ProjectId, kind: GitOperationKind): Promise<GitOperation | null> {
     const record = await this.prisma.gitOperation.findFirst({
       where: { projectId: projectId.value, kind },
-      orderBy: { createdAt: 'desc' },
+      orderBy: RECENT_FIRST_ORDER,
     });
     return record ? toDomainGitOperation(record) : null;
   }
@@ -374,9 +374,23 @@ export class PrismaGitOperationRepository implements GitOperationRepository {
   ): Promise<GitOperation | null> {
     const record = await this.prisma.gitOperation.findFirst({
       where: { projectId: projectId.value, kind: { in: [...kinds] } },
-      orderBy: { createdAt: 'desc' },
+      orderBy: RECENT_FIRST_ORDER,
     });
     return record ? toDomainGitOperation(record) : null;
+  }
+
+  /** Reads back a project's most-recent operations whose kind is any of `kinds`, newest first, capped at `limit`. */
+  async findRecentByKinds(
+    projectId: ProjectId,
+    kinds: readonly GitOperationKind[],
+    limit: number,
+  ): Promise<GitOperation[]> {
+    const records = await this.prisma.gitOperation.findMany({
+      where: { projectId: projectId.value, kind: { in: [...kinds] } },
+      orderBy: RECENT_FIRST_ORDER,
+      take: limit,
+    });
+    return records.map(toDomainGitOperation);
   }
 
   /** Records a new, unresolved conflict for an operation. */
@@ -443,6 +457,18 @@ const ALL_GIT_OPERATION_STATES: readonly GitOperationState[] = [
   ...ACTIVE_GIT_OPERATION_STATES,
   ...TERMINAL_GIT_OPERATION_STATES,
 ];
+
+/**
+ * The newest-first ordering every "most recent" read (`findMostRecentByKind`/`findMostRecentByKinds`/
+ * `findRecentByKinds`) uses. `createdAt desc` alone leaves same-millisecond ties resolved by whatever
+ * order Postgres happens to return, which makes the undo keep-selection (whichever op the sweeper /
+ * undo picks as "the most recent") NONDETERMINISTIC across otherwise-identical rows. `id desc` is a
+ * STABLE secondary sort that fixes one winner per tie, so production keep-selection is deterministic
+ * and matches the in-memory fakes' own deterministic newest-first contract (they break a same-time
+ * tie by `id` descending too, NOT by insertion order — the same `createdAt desc, id desc` contract
+ * both sides now implement). `id` is the row's UUID primary key — always present, always unique.
+ */
+const RECENT_FIRST_ORDER: Prisma.GitOperationOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
 
 /** Every `GitOperationState` from which `GIT_OPERATION_LEGAL_TRANSITIONS` allows a legal move to `toState`. */
 function legalSourceStatesFor(toState: GitOperationTransitionTarget): GitOperationState[] {

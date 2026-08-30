@@ -68,6 +68,7 @@ import { FilesystemConflictStageStore } from './git/filesystem-conflict-stage-st
 import { ensureCleanWorkingTree, resolveWorkingTreePath } from './git/working-tree.js';
 import { createGitWorkerLoop, type GitWorkerLoop } from './worker-loop.js';
 import { createRemoteRefreshScheduler, type RemoteRefreshScheduler } from './remote-refresh-scheduler.js';
+import { createUndoReferenceSweeper } from './undo-reference-sweeper.js';
 import { createImportHandler } from './dispatch/import-handler.js';
 import { createInitializeHandler } from './dispatch/initialize-handler.js';
 import { createPushHandler } from './dispatch/push-handler.js';
@@ -623,6 +624,16 @@ export async function compositionRoot() {
   // handler above runs the actual refs-only refresh when the run loop claims the operation, which is
   // what serializes the background fetch against user pull/push/switch through the same single-flight
   // queue (no separate lock). Egress stays enforced by the use case's own fetch path.
+  // Belt-and-braces backstop to the inline prune each content op runs: sweeps any orphaned
+  // `refs/adc/undo/*` a crash left behind, keeping exactly one retained undo point per project. Runs
+  // per connected repo alongside the FETCH enqueue below (skipping any repo with an active op).
+  const undoReferenceSweeper = createUndoReferenceSweeper({
+    storageRoot,
+    gitOperationRepository,
+    conflictStageStore,
+    logger,
+  });
+
   const remoteRefreshScheduler: RemoteRefreshScheduler = createRemoteRefreshScheduler({
     gitRepositoryRepository,
     gitOperationRepository,
@@ -630,6 +641,7 @@ export async function compositionRoot() {
     intervalMs: config.get('backgroundRefreshIntervalMs'),
     enabled: config.get('backgroundRefreshEnabled'),
     maxConcurrency: config.get('backgroundRefreshMaxConcurrency'),
+    undoRefSweeper: undoReferenceSweeper,
   });
 
   let running = false;

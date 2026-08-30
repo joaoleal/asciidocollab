@@ -2,6 +2,7 @@ import { UserId } from '../../value-objects/ids/user-id';
 import { ProjectId } from '../../value-objects/ids/project-id';
 import { GitOperationId } from '../../value-objects/ids/git-operation-id';
 import { GitOperationKind } from '../../types/git-operation-kind';
+import { GitOperation } from '../../entities/git-operation';
 import { GitRepository } from '../../entities/git-repository';
 import { GitMutationPort, GitReadPort } from '../../ports/git/git-command-runner';
 import { GitOperationRepository } from '../../ports/git/git-operation-repository';
@@ -57,6 +58,15 @@ export interface UndoPullResult {
  * clean-succeeded path below instead, where it is refused as nothing to undo.
  */
 const UNDOABLE_AWAITING_CONFLICT_KINDS: readonly GitOperationKind[] = ['PULL', 'BRANCH_SWITCH'];
+
+/**
+ * How many of the project's most-recent content ops Case B scans to find the one to undo — the
+ * newest that SUCCEEDED and still has a retained snapshot. Matches the undo-ref sweeper's own
+ * keep-selection lookback (`KEEP_LOOKBACK`), so undo reaches exactly the undo point the sweeper
+ * preserves: a later FAILED pull/switch (whose orphaned snapshot the failure path cleaned up, or
+ * which never recorded one) is scanned PAST rather than hiding an earlier valid undo point.
+ */
+const UNDO_LOOKBACK = 10;
 
 /**
  * Undoes a project's most recent conflicted pull/switch, or its most recent cleanly-succeeded
@@ -135,7 +145,7 @@ export class UndoPullUseCase {
       activeOperation.state === 'AWAITING_CONFLICT' &&
       UNDOABLE_AWAITING_CONFLICT_KINDS.includes(activeOperation.kind)
     ) {
-      return this.undoAwaitingConflict(input, activeOperation.id);
+      return this.undoAwaitingConflict(input, activeOperation.id, activeOperation.kind);
     }
 
     // No AWAITING_CONFLICT pull/switch to undo directly: acquire the single-flight guard so this
@@ -160,6 +170,7 @@ export class UndoPullUseCase {
   private async undoAwaitingConflict(
     input: UndoPullInput,
     operationId: GitOperationId,
+    kind: GitOperationKind,
   ): Promise<Result<UndoPullResult, DomainError>> {
     const gitRepository = await this.gitRepositoryRepo.findByProjectId(input.projectId);
     if (gitRepository === null) {
@@ -192,17 +203,23 @@ export class UndoPullUseCase {
     await this.conflictStageStore.clear(operationId);
     await this.gitOperationRepo.transition(operationId, 'ABORTED');
 
-    await this.audit(input, operationId, 'awaiting_conflict', reverted.value.anomalies);
+    await this.audit(input, operationId, 'awaiting_conflict', kind, reverted.value.anomalies);
 
     return { success: true, value: { operationId, headCommit: restored.value.headCommit } };
   }
 
   /**
-   * Case B: no operation is currently active for the project. Finds the most recent cleanly-undoable
-   * content operation — a `PULL` or a `BRANCH_SWITCH` ({@link UNDOABLE_AWAITING_CONFLICT_KINDS}, which
-   * excludes `IMPORT`, in whatever state it currently holds, but it must be terminal here since
-   * nothing active exists) — and, only if it `SUCCEEDED` and still has a retained snapshot, restores
-   * to it. The operation itself is left exactly as it was (already terminal); no new operation row is
+   * Case B: no operation is currently active for the project. SCANS the project's recent undoable
+   * content operations — `PULL`/`BRANCH_SWITCH` ({@link UNDOABLE_AWAITING_CONFLICT_KINDS}, excluding
+   * `IMPORT`), newest-first over a bounded {@link UNDO_LOOKBACK} — and restores to the NEWEST that
+   * `SUCCEEDED` AND still has a retained snapshot. Scanning past non-`SUCCEEDED` ops is load-bearing:
+   * a later FAILED pull/switch must NOT hide an earlier valid undo point, and inspecting only the
+   * single most-recent op (as this once did) let exactly that happen. This is the SAME selection the
+   * undo-ref sweeper's keep-scan makes, so undo reaches exactly the undo point the sweeper preserves.
+   * A snapshot READ FAILURE on a `SUCCEEDED` candidate is SURFACED (not swallowed as "absent"), so an
+   * unreadable blob store is reported rather than silently downgraded to "nothing to undo".
+   *
+   * The chosen operation itself is left exactly as it was (already terminal); no new operation row is
    * created. Like Case A, `restoreToSnapshot` reports the branch `HEAD` ends on, and this walks the
    * link's `currentBranch` back to it (a no-op for a pull, the source branch for a clean switch)
    * BEFORE `refreshRowAfterUndo`, so the behind/ahead recompute runs against the corrected branch.
@@ -213,17 +230,26 @@ export class UndoPullUseCase {
       return { success: false, error: new RepositoryNotConnectedError() };
     }
 
-    const operation = await this.gitOperationRepo.findMostRecentByKinds(
+    const recentOperations = await this.gitOperationRepo.findRecentByKinds(
       input.projectId,
       UNDOABLE_AWAITING_CONFLICT_KINDS,
+      UNDO_LOOKBACK,
     );
-    if (!operation || operation.state !== 'SUCCEEDED') {
-      return { success: false, error: new NothingToUndoError() };
-    }
 
-    const snapshot = await this.conflictStageStore.readSnapshot(operation.id);
-    if (!snapshot.success) return snapshot;
-    if (snapshot.value === null) {
+    // The newest op that SUCCEEDED and still has a retained snapshot. Non-SUCCEEDED ops are scanned
+    // past (a failed pull/switch is no undo point), matching the sweeper's keep-selection exactly. A
+    // read FAILURE surfaces immediately; a CONFIRMED-absent snapshot (already cleared) skips to older.
+    let operation: GitOperation | null = null;
+    for (const candidate of recentOperations) {
+      if (candidate.state !== 'SUCCEEDED') continue;
+      const snapshot = await this.conflictStageStore.readSnapshot(candidate.id);
+      if (!snapshot.success) return snapshot;
+      if (snapshot.value !== null) {
+        operation = candidate;
+        break;
+      }
+    }
+    if (operation === null) {
       return { success: false, error: new NothingToUndoError() };
     }
 
@@ -242,7 +268,7 @@ export class UndoPullUseCase {
     await this.refreshRowAfterUndo(restoredRepository, input.projectId);
     await this.conflictStageStore.clear(operation.id);
 
-    await this.audit(input, operation.id, 'succeeded_pull', reverted.value.anomalies);
+    await this.audit(input, operation.id, 'succeeded_pull', operation.kind, reverted.value.anomalies);
 
     return { success: true, value: { operationId: operation.id, headCommit: restored.value.headCommit } };
   }
@@ -251,6 +277,7 @@ export class UndoPullUseCase {
     input: UndoPullInput,
     operationId: GitOperationId,
     undoCase: string,
+    kind: GitOperationKind,
     anomalies: readonly GitReconcileAnomaly[],
   ): Promise<void> {
     await recordAuditSuccess(
@@ -261,9 +288,12 @@ export class UndoPullUseCase {
         action: AUDIT_GIT_PULL_UNDONE,
         resourceType: 'GitOperation',
         resourceId: operationId.value,
-        // Fold any reconciler drift into the undo's audit: reverting content onto a folder-occupied
+        // `undoCase` alone can't tell a reverted pull from a reverted switch (both cases undo either
+        // kind — see UNDOABLE_AWAITING_CONFLICT_KINDS above), and this action is shared by both rather
+        // than split per-kind, so the undone operation's own `kind` rides along in the metadata to keep
+        // the trail accurate. Fold any reconciler drift in too: reverting content onto a folder-occupied
         // path drops it too, and the user (no log access) must be able to see which paths.
-        metadata: { case: undoCase, ...anomalyAuditMetadata(anomalies) },
+        metadata: { case: undoCase, kind, ...anomalyAuditMetadata(anomalies) },
         context: input.context,
       },
       this.logger,

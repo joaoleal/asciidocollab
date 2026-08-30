@@ -3,6 +3,7 @@ import type {
   GitRepository,
   GitRepositoryRepository,
 } from '@asciidocollab/domain';
+import type { UndoReferenceSweeper } from './undo-reference-sweeper.js';
 
 /**
  * The minimal structured-logging surface the scheduler writes to — a structural subset of pino's
@@ -46,7 +47,29 @@ export interface RemoteRefreshSchedulerDeps {
    * enqueue work so a large connected-repository table cannot make a sweep run continuously. Must be >= 1.
    */
   maxConcurrency: number;
+  /**
+   * Optional belt-and-braces sweeper of orphaned `refs/adc/undo/*` undo points. Unlike the `FETCH`
+   * enqueue (every cycle), the sweep runs only every {@link UNDO_SWEEP_EVERY_CYCLES}th cycle — and
+   * deliberately NOT on the very first (startup) pass: the inline prune `MergeConflictOps` runs on
+   * every content op already keeps stragglers rare, so spawning a `for-each-ref` subprocess per
+   * connected repo every cycle (or on worker startup, competing with every other startup task) is
+   * wasted work. Omitted in tests exercising only the enqueue behavior; supplied by the composition
+   * root in production. Its own failures are self-contained (see {@link UndoReferenceSweeper.sweep}), and it
+   * never blocks or fails the enqueue.
+   */
+  undoRefSweeper?: UndoReferenceSweeper;
 }
+
+/**
+ * How often the undo-ref sweep runs, measured in refresh cycles: once every N cycles, starting a few
+ * cycles in rather than on the very first (startup) one — see `sweepCycle`'s initial value — NOT every
+ * cycle like the `FETCH` refresh. The inline prune makes an orphaned undo
+ * ref rare, so the belt-and-braces sweep only has to reclaim the occasional straggler a mid-op crash
+ * left behind — running it a tenth as often keeps that backstop while dropping the per-repo
+ * `for-each-ref` subprocess off the hot path. Tuned independently of `intervalMs`, so at the
+ * production refresh interval the sweep still lands often enough to bound straggler lifetime.
+ */
+const UNDO_SWEEP_EVERY_CYCLES = 10;
 
 /** A periodic background remote-refresh scheduler. Its lifecycle mirrors the git-worker run loop's. */
 export interface RemoteRefreshScheduler {
@@ -103,6 +126,15 @@ export function createRemoteRefreshScheduler(deps: RemoteRefreshSchedulerDeps): 
   let running = false;
   let iteration: Promise<void> = Promise.resolve();
   let wake: (() => void) | null = null;
+  // Counts refresh cycles so the undo-ref sweep can run only every UNDO_SWEEP_EVERY_CYCLES-th one,
+  // while the FETCH refresh keeps running every cycle. Starts at 1, not 0: the check below fires when
+  // this counter is a multiple of UNDO_SWEEP_EVERY_CYCLES, and starting at 0 would fire on the very
+  // FIRST sweep — a `for-each-ref` subprocess per connected repo on worker startup, competing with
+  // every other startup task for no reason (the inline prune already keeps stragglers rare; there is
+  // nothing urgent for the backstop to catch that early). Starting at 1 defers that first sweep to the
+  // UNDO_SWEEP_EVERY_CYCLES-th pass instead, while leaving the steady-state cadence (every
+  // UNDO_SWEEP_EVERY_CYCLES-th cycle thereafter) unchanged.
+  let sweepCycle = 1;
 
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
@@ -145,6 +177,15 @@ export function createRemoteRefreshScheduler(deps: RemoteRefreshSchedulerDeps): 
   async function sweep(): Promise<void> {
     const repositories = await deps.gitRepositoryRepository.findAllConnected();
 
+    // Decide ONCE per cycle whether this pass also runs the undo-ref sweep — every
+    // UNDO_SWEEP_EVERY_CYCLES-th cycle, starting a few cycles in rather than on the very first
+    // (startup) pass (see `sweepCycle`'s initial value), not every cycle. The FETCH enqueue below is
+    // unaffected and still runs every cycle. Computed here (before the workers fan out) so every repo
+    // in one pass makes the same decision, then the counter advances for the next pass.
+    const undoReferenceSweeper =
+      deps.undoRefSweeper && sweepCycle % UNDO_SWEEP_EVERY_CYCLES === 0 ? deps.undoRefSweeper : undefined;
+    sweepCycle += 1;
+
     // Bounded worker pool: at most `maxConcurrency` `enqueueRefresh` calls are ever in flight at
     // once. Each worker pulls the next repository off a shared cursor until the list is exhausted.
     // `index = nextIndex++` is a single event-loop step (no `await` between read and increment), so
@@ -158,6 +199,16 @@ export function createRemoteRefreshScheduler(deps: RemoteRefreshSchedulerDeps): 
         nextIndex += 1;
         if (index >= repositories.length) return;
         const repository = repositories[index];
+        // Belt-and-braces: on a sweep cycle, prune any orphaned undo ref this repo accumulated (a
+        // crash between a content op's snapshot write and its inline prune). Runs BEFORE the enqueue
+        // below on purpose: the enqueue creates a QUEUED FETCH, and the sweeper's own skip counts any
+        // active operation — including that FETCH — so sweeping first is what lets a quiescent repo
+        // actually be swept this pass, while a genuinely in-flight user op still trips the skip.
+        // Self-contained and best-effort: its own failures are caught inside `sweep` and never
+        // disturb the enqueue.
+        if (undoReferenceSweeper) {
+          await undoReferenceSweeper.sweep(repository);
+        }
         try {
           await enqueueRefresh(repository);
         } catch (error) {

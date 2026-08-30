@@ -76,7 +76,9 @@ export class CompleteMergeUseCase {
    * @param gitRepositoryRepo - Loads the project's repository link and writes it back once completed.
    * @param gitOperationRepo - Locates the awaiting operation, its conflicts, and drives its transitions.
    * @param commandRunner - Re-runs the merge (for a `PULL`) and takes the resolving commit.
-   * @param conflictStageStore - Reads each resolved file's bytes (for a `BRANCH_SWITCH`) and is cleared on completion.
+   * @param conflictStageStore - Reads each resolved file's bytes (for a `BRANCH_SWITCH`). Its
+   *   pre-operation undo snapshot is deliberately NOT cleared on completion, so the completed
+   *   resolution stays undoable; a later content op's prune/sweep removes it.
    * @param reconciler - Lands the completed change-set into the project's docs/live editors.
    * @param logger - Optional sink for best-effort audit-write failures.
    */
@@ -157,7 +159,13 @@ export class CompleteMergeUseCase {
     await (operation.kind === 'PULL' ? this.refreshRowForPull(gitRepository, changesResult.value.headCommit) : this.refreshRowForSwitch(gitRepository));
 
     await this.gitOperationRepo.clearConflicts(operation.id);
-    await this.conflictStageStore.clear(operation.id);
+    // The pre-operation undo snapshot and its backup ref are DELIBERATELY retained here, not cleared:
+    // a completed conflict resolution stays undoable (via `UndoPullUseCase`'s clean-succeeded Case B,
+    // which finds this now-`SUCCEEDED` op and restores to its snapshot). It is the NEXT content op's
+    // inline prune (`MergeConflictOps.pruneOtherBackupRefs`) — with the belt-and-braces undo-ref
+    // sweep as backstop — that eventually removes this point, keeping exactly one retained undo point
+    // per project. The GitConflict rows above are still cleared: they are this operation's resolved
+    // conflict records, not the reusable undo snapshot.
     // Persist the same reconcile-drift summary a clean pull records on its SUCCEEDED row, built from
     // this landing's anomalies, so the polling user is warned that a pulled change was dropped —
     // exactly as the non-conflict pull path does. Null (a clean landing) leaves `driftSummary` unset.

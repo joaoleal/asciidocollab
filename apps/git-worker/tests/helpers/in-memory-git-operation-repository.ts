@@ -228,7 +228,7 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return (
       [...this.operations.values()]
         .filter((op) => op.projectId.value === projectId.value && op.kind === kind)
-        .toSorted((a, b) => this.sequenceOf(b) - this.sequenceOf(a))[0] ?? null
+        .toSorted((a, b) => this.byNewestFirst(a, b))[0] ?? null
     );
   }
 
@@ -239,8 +239,19 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
     return (
       [...this.operations.values()]
         .filter((op) => op.projectId.value === projectId.value && kinds.includes(op.kind))
-        .toSorted((a, b) => this.sequenceOf(b) - this.sequenceOf(a))[0] ?? null
+        .toSorted((a, b) => this.byNewestFirst(a, b))[0] ?? null
     );
+  }
+
+  async findRecentByKinds(
+    projectId: ProjectId,
+    kinds: readonly GitOperationKind[],
+    limit: number,
+  ): Promise<GitOperation[]> {
+    return [...this.operations.values()]
+      .filter((op) => op.projectId.value === projectId.value && kinds.includes(op.kind))
+      .toSorted((a, b) => this.byNewestFirst(a, b))
+      .slice(0, limit);
   }
 
   private oldestFirst(predicate: (op: GitOperation) => boolean): GitOperation | undefined {
@@ -282,5 +293,19 @@ export class InMemoryGitOperationRepository implements GitOperationRepository {
 
   private sequenceOf(operation: GitOperation): number {
     return this.insertionOrder.get(operation.id.value) ?? Number.MAX_SAFE_INTEGER;
+  }
+
+  /**
+   * Orders two operations newest-first for the "most recent"/"recent" reads, matching the Prisma
+   * adapter's `createdAt desc, id desc` EXACTLY: `createdAt` decides, and a same-timestamp tie falls
+   * back to `id` descending — not insertion order — so a fake and the real adapter reading the same
+   * rows always agree on which one wins a tie. `id` is a UUID string; a plain `>`/`<` comparison over
+   * it is a stable, deterministic total order, matching the adapter's `id desc` secondary sort.
+   */
+  private byNewestFirst(a: GitOperation, b: GitOperation): number {
+    const byCreatedAt = b.createdAt.getTime() - a.createdAt.getTime();
+    if (byCreatedAt !== 0) return byCreatedAt;
+    if (a.id.value === b.id.value) return 0;
+    return a.id.value > b.id.value ? -1 : 1;
   }
 }

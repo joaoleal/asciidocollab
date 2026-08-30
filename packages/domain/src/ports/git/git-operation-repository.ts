@@ -212,6 +212,25 @@ export interface GitOperationRepository {
   ): Promise<GitOperation | null>;
 
   /**
+   * Reads back a project's most-recently created operations whose kind is one of `kinds`, newest
+   * first, capped at `limit`. The list-valued companion to {@link findMostRecentByKinds} (same
+   * filter and ordering, more than one row): used where a caller must scan past the single newest
+   * match — the undo-ref sweep walks recent content ops to find the newest one that still has a
+   * retained undo snapshot, skipping any that failed before recording one.
+   *
+   * @param projectId - The project to search.
+   * @param kinds - The operation kinds to match; an operation qualifies if its kind is any of them.
+   * @param limit - The maximum number of operations to return; must be >= 1.
+   * @returns The matching operations, most-recently-created first, at most `limit` of them; empty
+   *   when none exists.
+   */
+  findRecentByKinds(
+    projectId: ProjectId,
+    kinds: readonly GitOperationKind[],
+    limit: number,
+  ): Promise<GitOperation[]>;
+
+  /**
    * Records a new conflicting file discovered during an operation.
    *
    * @param input - The conflict to record.

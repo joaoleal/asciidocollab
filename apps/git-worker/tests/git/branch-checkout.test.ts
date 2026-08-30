@@ -250,8 +250,8 @@ describe('RealGitCommandRunner.checkout', () => {
     // The moved local edit is durably preserved in git under `refs/adc/undo/<operationId>`: the ref
     // resolves to a commit whose `base.adoc` still holds the carried edit, recoverable with zero
     // dependence on any editor still being open.
-    const backupRef = `refs/adc/undo/${OPERATION_ID.value}`;
-    const wipCommit = await readReference(cwd, backupRef);
+    const backupReference = `refs/adc/undo/${OPERATION_ID.value}`;
+    const wipCommit = await readReference(cwd, backupReference);
     expect(wipCommit).toMatch(/^[0-9a-f]{40}$/);
     const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:base.adoc`], { cwd });
     expect(preserved).toBe('local version\n');
@@ -298,8 +298,8 @@ describe('RealGitCommandRunner.checkout', () => {
 
     // The carried edit is durably pinned under `refs/adc/undo/<operationId>`, recoverable from git
     // independent of any editor.
-    const backupRef = `refs/adc/undo/${OPERATION_ID.value}`;
-    const wipCommit = await readReference(cwd, backupRef);
+    const backupReference = `refs/adc/undo/${OPERATION_ID.value}`;
+    const wipCommit = await readReference(cwd, backupReference);
     expect(wipCommit).toMatch(/^[0-9a-f]{40}$/);
     const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:live.adoc`], { cwd });
     expect(preserved).toBe('live edit\n');
@@ -458,8 +458,8 @@ describe('RealGitCommandRunner.restoreToSnapshot', () => {
     // (c) the working-tree content matches the source branch.
     expect(await readFile(path.join(cwd, 'base.adoc'), 'utf8')).toBe('base\n');
     // (d) the moved edit discarded by the force-checkout is still recoverable from the backup ref.
-    const backupRef = `refs/adc/undo/${OPERATION_ID.value}`;
-    const wipCommit = await readReference(cwd, backupRef);
+    const backupReference = `refs/adc/undo/${OPERATION_ID.value}`;
+    const wipCommit = await readReference(cwd, backupReference);
     expect(wipCommit).toMatch(/^[0-9a-f]{40}$/);
     const { stdout: preserved } = await execFile('git', ['show', `${wipCommit}:base.adoc`], { cwd });
     expect(preserved).toBe('local version\n');

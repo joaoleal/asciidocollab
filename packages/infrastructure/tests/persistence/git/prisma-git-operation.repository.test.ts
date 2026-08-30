@@ -67,6 +67,20 @@ describe('PrismaGitOperationRepository', () => {
     return { project, owner };
   }
 
+  /**
+   * Enqueues an operation of `kind` for `project` and drives it straight to SUCCEEDED so the
+   * project's single active slot is free for the next one — the partial-unique index rejects a
+   * second active operation otherwise. A short wait between calls keeps `createdAt` strictly
+   * ordered so "most recent" is deterministic.
+   */
+  async function seedSucceeded(project: Project, owner: User, kind: 'PULL' | 'BRANCH_SWITCH' | 'PUSH') {
+    const enqueued = await repo.enqueue({ projectId: project.id, kind, triggeredByUserId: owner.id });
+    await repo.claimNextQueued(30_000);
+    await repo.transition(enqueued.id, 'SUCCEEDED');
+    await wait(5);
+    return enqueued;
+  }
+
   describe('enqueue + claimNextQueued', () => {
     it('claims queued operations in first-in-first-out order', async () => {
       const { project: projectA, owner } = await setupProjectAndUser();
@@ -504,20 +518,6 @@ describe('PrismaGitOperationRepository', () => {
   });
 
   describe('findMostRecentByKinds', () => {
-    /**
-     * Enqueues an operation of `kind` for `project` and drives it straight to SUCCEEDED so the
-     * project's single active slot is free for the next one — the partial-unique index rejects a
-     * second active operation otherwise. A short wait between calls keeps `createdAt` strictly
-     * ordered so "most recent" is deterministic.
-     */
-    async function seedSucceeded(project: Project, owner: User, kind: 'PULL' | 'BRANCH_SWITCH' | 'PUSH') {
-      const enqueued = await repo.enqueue({ projectId: project.id, kind, triggeredByUserId: owner.id });
-      await repo.claimNextQueued(30_000);
-      await repo.transition(enqueued.id, 'SUCCEEDED');
-      await wait(5);
-      return enqueued;
-    }
-
     it('returns the most recently created operation whose kind is in the set, across kinds', async () => {
       const { project, owner } = await setupProjectAndUser();
       await seedSucceeded(project, owner, 'PULL');
@@ -558,6 +558,37 @@ describe('PrismaGitOperationRepository', () => {
       await seedSucceeded(project, owner, 'PUSH');
 
       expect(await repo.findMostRecentByKinds(project.id, ['PULL', 'BRANCH_SWITCH'])).toBeNull();
+    });
+
+    it('breaks a same-createdAt tie deterministically by id (stable secondary sort), not by row order', async () => {
+      const { project, owner } = await setupProjectAndUser();
+      // Two terminal PULLs sharing the EXACT same createdAt — the partial-unique index only guards
+      // ACTIVE rows, so both SUCCEEDED rows coexist. `createdAt desc` alone would leave the winner to
+      // whatever order Postgres returns; the `id desc` secondary sort pins it to the greater id every
+      // run, which is what makes the undo keep-selection deterministic (and agree with the fakes).
+      const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+      const lowerId = '00000000-0000-4000-8000-000000000001';
+      const higherId = 'ffffffff-0000-4000-8000-000000000002';
+      for (const id of [lowerId, higherId]) {
+        await client.gitOperation.create({
+          data: {
+            id,
+            projectId: project.id.value,
+            kind: 'PULL',
+            state: 'SUCCEEDED',
+            triggeredByUserId: owner.id.value,
+            createdAt: sameInstant,
+          },
+        });
+      }
+
+      const found = await repo.findMostRecentByKinds(project.id, ['PULL', 'BRANCH_SWITCH']);
+      expect(found?.id.value).toBe(higherId);
+
+      // The full listing is ordered by the same stable key, so a same-instant pair is always
+      // [higher-id, lower-id] — never a nondeterministic pairing.
+      const recent = await repo.findRecentByKinds(project.id, ['PULL', 'BRANCH_SWITCH'], 10);
+      expect(recent.map((op) => op.id.value)).toEqual([higherId, lowerId]);
     });
   });
 });

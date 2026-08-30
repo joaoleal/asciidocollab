@@ -219,6 +219,9 @@ describe('CompleteMergeUseCase', () => {
   test('a fully-resolved PULL re-runs the merge with every resolution, reconciles, and succeeds', async () => {
     const harness = await buildHarness();
     harness.commandRunner.seedResolveMerge(PROJECT_ID, RESOLVED_OUTCOME);
+    // A pre-operation undo snapshot was recorded when the conflicted pull ran. Completing must RETAIN
+    // it (Phase 4 retention), so the completed resolution stays undoable via undo's clean-succeeded case.
+    harness.conflictStageStore.seedSnapshot(harness.operationId, { preOpHead: 'pre-op-head-commit', branch: CURRENT_BRANCH });
 
     const result = await harness.useCase.execute(completeInput());
 
@@ -242,7 +245,11 @@ describe('CompleteMergeUseCase', () => {
     const operation = await harness.gitOperationRepo.findById(harness.operationId);
     expect(operation?.state).toBe('SUCCEEDED');
     expect(await harness.gitOperationRepo.listConflicts(harness.operationId)).toHaveLength(0);
-    expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(harness.operationId);
+    // The undo snapshot is DELIBERATELY retained on success — never cleared — so the completed
+    // resolution remains undoable (a later content op's prune/sweep removes it, keeping one per project).
+    expect(harness.conflictStageStore.clearedOperationIds).not.toContainEqual(harness.operationId);
+    const retainedSnapshot = await harness.conflictStageStore.readSnapshot(harness.operationId);
+    expect(retainedSnapshot).toEqual({ success: true, value: { preOpHead: 'pre-op-head-commit', branch: CURRENT_BRANCH } });
 
     const saved = await harness.gitRepositoryRepo.findByProjectId(PROJECT_ID);
     // The resolving merge commit is a local commit the remote lacks, so the branch is AHEAD — not

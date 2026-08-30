@@ -7,6 +7,7 @@ import {
   type GitSyncStatus,
 } from '@asciidocollab/domain';
 import { createRemoteRefreshScheduler } from '../src/remote-refresh-scheduler.js';
+import type { UndoReferenceSweeper } from '../src/undo-reference-sweeper.js';
 import { InMemoryGitRepositoryRepository } from './helpers/in-memory-git-repository-repository.js';
 import { InMemoryGitOperationRepository } from './helpers/in-memory-git-operation-repository.js';
 
@@ -66,8 +67,70 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs 
   }
 }
 
+/**
+ * A stand-in {@link UndoReferenceSweeper} that records the repos it is asked to sweep. It mirrors the real
+ * sweeper's own active-operation skip (consulting the same operation repository) so a repo is only
+ * counted as actually SWEPT when it is quiescent at call time. That lets a test prove both that the
+ * scheduler invokes the sweeper per repo AND that the invocation lands while the repo is still
+ * quiescent — i.e. BEFORE this pass's own FETCH is enqueued — which is exactly what the ordering fix
+ * restores; a genuinely active user op still trips the skip.
+ */
+class RecordingSweeper implements UndoReferenceSweeper {
+  /** Every repo the scheduler asked to sweep, whether or not it was quiescent. */
+  readonly seen: string[] = [];
+  /** Only the repos that were quiescent at sweep time — the ones the real sweeper would actually reclaim. */
+  readonly swept: string[] = [];
+
+  constructor(private readonly gitOperationRepository: InMemoryGitOperationRepository) {}
+
+  async sweep(repository: GitRepository): Promise<void> {
+    this.seen.push(repository.projectId.value);
+    const active = await this.gitOperationRepository.findActiveOperation(repository.projectId);
+    if (active !== null) return;
+    this.swept.push(repository.projectId.value);
+  }
+}
+
+/**
+ * Installs a drain on `gitOperationRepository.enqueue`: immediately after a `FETCH` the scheduler
+ * enqueues is recorded, claims and completes it — UNLESS `sweeper` already swept that project THIS
+ * pass, in which case that pass's `FETCH` is left standing for the caller to observe. Mimics a live
+ * git-worker run loop, which this harness (the scheduler alone) has none of: without draining, the
+ * very first `FETCH` the scheduler ever enqueues for a repo would sit `QUEUED` forever, and that repo
+ * would never again look quiescent to a sweep landing on a LATER cycle — masking the very behavior
+ * (the sweep now runs a few cycles in, not on the startup pass — see `remote-refresh-scheduler.ts`'s
+ * `sweepCycle`) these tests exist to prove. Runs entirely within the SAME `enqueue` call the scheduler
+ * itself awaits, not a separate timer, so there is no race against the sweeper's own check.
+ *
+ * Only ever targets the `FETCH` this call itself just created: `claimNextQueued` is a repository-wide
+ * FIFO claim, so if another project has an OLDER `QUEUED` operation of its own, that call would claim
+ * it instead — a mismatch this guards against by checking the claimed id before completing anything.
+ * Callers with a second, deliberately-busy project must keep that project's operation off `QUEUED`
+ * (e.g. claim it to `RUNNING` up front) so it can never be the one this drain's claim picks up.
+ */
+function drainFetchesUntilSwept(gitOperationRepository: InMemoryGitOperationRepository, sweeper: RecordingSweeper): void {
+  const originalEnqueue = gitOperationRepository.enqueue.bind(gitOperationRepository);
+  gitOperationRepository.enqueue = async (input) => {
+    const operation = await originalEnqueue(input);
+    if (operation.kind === 'FETCH' && !sweeper.swept.includes(input.projectId.value)) {
+      const claimed = await gitOperationRepository.claimNextQueued(60_000);
+      if (claimed?.id.value === operation.id.value) {
+        await gitOperationRepository.transition(claimed.id, 'SUCCEEDED');
+      }
+    }
+    return operation;
+  };
+}
+
 /** Builds a scheduler wired to real in-memory fakes. */
-function buildScheduler(overrides: { enabled?: boolean; intervalMs?: number; maxConcurrency?: number } = {}) {
+function buildScheduler(
+  overrides: {
+    enabled?: boolean;
+    intervalMs?: number;
+    maxConcurrency?: number;
+    makeUndoReferenceSweeper?: (gitOperationRepository: InMemoryGitOperationRepository) => UndoReferenceSweeper;
+  } = {},
+) {
   const gitRepositoryRepository = new InMemoryGitRepositoryRepository();
   const gitOperationRepository = new InMemoryGitOperationRepository();
   const logger = new CapturingLogger();
@@ -79,6 +142,7 @@ function buildScheduler(overrides: { enabled?: boolean; intervalMs?: number; max
     intervalMs: overrides.intervalMs ?? 10,
     enabled: overrides.enabled ?? true,
     maxConcurrency: overrides.maxConcurrency ?? 8,
+    undoRefSweeper: overrides.makeUndoReferenceSweeper?.(gitOperationRepository),
   });
 
   /** Registers a connected repo. */
@@ -280,6 +344,98 @@ describe('remote-refresh scheduler', () => {
     // PULL remains the project's sole active operation, and no FETCH was ever recorded.
     expect(await activeKind(harness.gitOperationRepository, repo.projectId)).toBe('PULL');
     expect(await harness.gitOperationRepository.findMostRecentByKind(repo.projectId, 'FETCH')).toBeNull();
+  });
+
+  it('invokes the undo-ref sweeper for a connected repository, before this pass enqueues its FETCH', async () => {
+    let sweeper!: RecordingSweeper;
+    const harness = buildScheduler({ makeUndoReferenceSweeper: (ops) => (sweeper = new RecordingSweeper(ops)) });
+    const repo = makeRepo();
+    await harness.connect(repo);
+    // The sweep no longer runs on the very first (startup) pass — see remote-refresh-scheduler.ts's
+    // sweepCycle — so several ordinary FETCH-enqueuing passes happen first. Drain each one (as a real
+    // run loop would) so the repo is still quiescent once the sweep-eligible pass lands.
+    drainFetchesUntilSwept(harness.gitOperationRepository, sweeper);
+
+    harness.scheduler.start();
+    try {
+      // The repo is counted as SWEPT only if it was quiescent when the sweeper ran — which holds only
+      // because the sweep runs BEFORE this pass's own FETCH enqueue. Under the old ordering the FETCH
+      // would already be active and the sweep would (wrongly) skip, so this would never become true.
+      await waitUntil(() => sweeper.swept.includes(repo.projectId.value));
+    } finally {
+      await harness.scheduler.stop();
+    }
+
+    expect(sweeper.seen).toContain(repo.projectId.value);
+    expect(sweeper.swept).toContain(repo.projectId.value);
+    // And the FETCH the pass creates is still enqueued for that repo — sweeping first did not skip it.
+    expect(await activeKind(harness.gitOperationRepository, repo.projectId)).toBe('FETCH');
+  });
+
+  it('runs the undo-ref sweep only periodically, not on every refresh cycle', async () => {
+    let sweeper!: RecordingSweeper;
+    // A short interval so many cycles elapse quickly. An orphan repo (no connecting user) never gets
+    // an active FETCH enqueued, so it is offered to the sweeper on every SWEEP cycle and warns on
+    // every cycle — letting us compare "cycles that ran" (warn lines) against "cycles that swept"
+    // (sweeper.seen) without a stray FETCH masking later sweep offers.
+    const harness = buildScheduler({
+      intervalMs: 2,
+      makeUndoReferenceSweeper: (ops) => (sweeper = new RecordingSweeper(ops)),
+    });
+    const orphan = makeRepo(null);
+    await harness.connect(orphan);
+
+    harness.scheduler.start();
+    try {
+      // Wait until well over one sweep period of cycles have run (each cycle logs one "no connecting
+      // user" warn for the orphan).
+      await waitUntil(
+        () => harness.logger.lines.filter((line) => line.message.includes('no connecting user')).length >= 12,
+      );
+    } finally {
+      await harness.scheduler.stop();
+    }
+
+    const cyclesRun = harness.logger.lines.filter((line) => line.message.includes('no connecting user')).length;
+    // The sweep IS invoked (belt-and-braces still runs)...
+    expect(sweeper.seen.length).toBeGreaterThanOrEqual(1);
+    // ...but strictly fewer times than the number of cycles — proving it is gated, not per-cycle.
+    expect(sweeper.seen.length).toBeLessThan(cyclesRun);
+  });
+
+  it('does not sweep a repository that already has an active user operation', async () => {
+    let sweeper!: RecordingSweeper;
+    const harness = buildScheduler({ makeUndoReferenceSweeper: (ops) => (sweeper = new RecordingSweeper(ops)) });
+    const busy = makeRepo();
+    const idle = makeRepo();
+    await harness.connect(busy);
+    await harness.connect(idle);
+    // A user PULL owns the busy repo's single-flight slot before any sweep runs. Claimed straight to
+    // RUNNING (rather than left QUEUED) so it can never be the operation drainFetchesUntilSwept's own
+    // claimNextQueued call picks up below — that call is a repository-wide FIFO claim, and busy's PULL
+    // would otherwise be its oldest QUEUED candidate. RUNNING is still "active" either way, so this is
+    // exactly as good a stand-in for "a user pull/push/switch in flight" as QUEUED was.
+    await harness.gitOperationRepository.enqueue({ projectId: busy.projectId, kind: 'PULL', triggeredByUserId: USER });
+    await harness.gitOperationRepository.claimNextQueued(60_000);
+    // The sweep no longer runs on the very first (startup) pass — see remote-refresh-scheduler.ts's
+    // sweepCycle — so several ordinary FETCH-enqueuing passes happen for idle first. Drain each one
+    // (as a real run loop would) so idle is still quiescent once the sweep-eligible pass lands.
+    drainFetchesUntilSwept(harness.gitOperationRepository, sweeper);
+
+    harness.scheduler.start();
+    try {
+      await waitUntil(() => sweeper.swept.includes(idle.projectId.value));
+      // Give the busy repo ample room to (wrongly) be swept before asserting it never was.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    } finally {
+      await harness.scheduler.stop();
+    }
+
+    // The busy repo was offered to the sweeper but skipped (its active PULL trips the sweeper's own
+    // skip); the idle repo was actually swept.
+    expect(sweeper.seen).toContain(busy.projectId.value);
+    expect(sweeper.swept).not.toContain(busy.projectId.value);
+    expect(sweeper.swept).toContain(idle.projectId.value);
   });
 
   it('does nothing when disabled, but still starts and stops cleanly', async () => {

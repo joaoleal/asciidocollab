@@ -204,6 +204,31 @@ async function seedSucceededSwitch(harness: Harness): Promise<GitOperationId> {
   return enqueued.id;
 }
 
+/**
+ * Enqueues a BRANCH_SWITCH, claims it, and drives it to FAILED — a later content op that failed
+ * (recording no retained undo point). Terminal, so it never registers as the project's active op.
+ */
+async function seedFailedSwitch(harness: Harness): Promise<GitOperationId> {
+  const enqueued = await harness.gitOperationRepo.enqueue({
+    projectId: PROJECT_ID,
+    kind: 'BRANCH_SWITCH',
+    triggeredByUserId: ACTOR_ID,
+    branch: 'feature-x',
+  });
+  await harness.gitOperationRepo.claimNextQueued(30_000);
+  await harness.gitOperationRepo.transition(enqueued.id, 'FAILED', { errorCode: 'boom' });
+  return enqueued.id;
+}
+
+/**
+ * Waits past a millisecond boundary so two operations seeded around it are guaranteed to differ on
+ * `createdAt` — the in-memory repo timestamps each with the wall clock, and the newest-first scan
+ * would otherwise tie on `createdAt` and fall back to the unrelated `id` order.
+ */
+async function waitPastAMillisecond(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
 function undoInput() {
   return { actorId: ACTOR_ID, projectId: PROJECT_ID };
 }
@@ -229,7 +254,11 @@ describe('UndoPullUseCase', () => {
     expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(operationId);
 
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
+    const undoAudit = audits.find((entry) => entry.action === AUDIT_GIT_PULL_UNDONE);
+    expect(undoAudit).toBeDefined();
+    // The undone operation's own kind rides along in the metadata — this action is shared by both a
+    // reverted pull and a reverted switch, so the trail must say which one it was.
+    expect(undoAudit?.metadata.kind).toBe('PULL');
   });
 
   test('case A: an AWAITING_CONFLICT branch switch is restored to its pre-switch snapshot, reverted, and ABORTED', async () => {
@@ -256,7 +285,9 @@ describe('UndoPullUseCase', () => {
     expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(operationId);
 
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
+    const undoAudit = audits.find((entry) => entry.action === AUDIT_GIT_PULL_UNDONE);
+    expect(undoAudit).toBeDefined();
+    expect(undoAudit?.metadata.kind).toBe('BRANCH_SWITCH');
   });
 
   test('case A: undoing a conflicted branch switch walks currentBranch back to the restored source branch', async () => {
@@ -345,7 +376,9 @@ describe('UndoPullUseCase', () => {
     expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(operationId);
 
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
+    const undoAudit = audits.find((entry) => entry.action === AUDIT_GIT_PULL_UNDONE);
+    expect(undoAudit).toBeDefined();
+    expect(undoAudit?.metadata.kind).toBe('PULL');
   });
 
   test('case B: a SUCCEEDED clean branch switch is restored to its snapshot and walks currentBranch back to the source branch', async () => {
@@ -381,7 +414,29 @@ describe('UndoPullUseCase', () => {
     expect(harness.commandRunner.behindAheadCalls).toContainEqual({ projectId: PROJECT_ID, branch: CURRENT_BRANCH });
 
     const audits = await harness.auditRepo.findByProjectId(PROJECT_ID);
-    expect(audits.some((entry) => entry.action === AUDIT_GIT_PULL_UNDONE)).toBe(true);
+    const undoAudit = audits.find((entry) => entry.action === AUDIT_GIT_PULL_UNDONE);
+    expect(undoAudit).toBeDefined();
+    expect(undoAudit?.metadata.kind).toBe('BRANCH_SWITCH');
+  });
+
+  test('case B: a SUCCEEDED pull followed by a FAILED switch still undoes the pull (scans past the failed op)', async () => {
+    const harness = await buildHarness();
+    const pullOperationId = await seedSucceededPull(harness);
+    await waitPastAMillisecond(); // the failed switch must be unambiguously the NEWER content op
+    await seedFailedSwitch(harness);
+    harness.commandRunner.seedRestoreToSnapshot(PROJECT_ID, { headCommit: PRE_OP_HEAD, branch: CURRENT_BRANCH, changes: REVERT_CHANGES });
+
+    const result = await harness.useCase.execute(undoInput());
+
+    // The most-recent content op is the FAILED switch, but it hides no undo point: Case B scans past
+    // it to the earlier SUCCEEDED pull that still has a retained snapshot, and undoes THAT — rather
+    // than inspecting only the newest op and refusing as nothing to undo.
+    expect(result).toEqual({ success: true, value: { operationId: pullOperationId, headCommit: PRE_OP_HEAD } });
+    expect(harness.commandRunner.restoreToSnapshotCalls).toEqual([
+      { projectId: PROJECT_ID, input: { operationId: pullOperationId } },
+    ]);
+    expect(harness.reconciler.apply).toHaveBeenCalledWith(PROJECT_ID, REVERT_CHANGES);
+    expect(harness.conflictStageStore.clearedOperationIds).toContainEqual(pullOperationId);
   });
 
   test('case B: no snapshot anywhere refuses with NothingToUndoError', async () => {
