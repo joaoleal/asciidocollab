@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
-import { GitOperation, GitOperationId } from '@asciidocollab/domain';
+import { GitOperation, GitOperationId, GitOperationInProgressError } from '@asciidocollab/domain';
 import type { EnqueueGitOperationInput } from '@asciidocollab/domain';
 import { gitPushRoutes } from '../../../../src/routes/projects/git/push';
 import { errorHandler } from '../../../../src/plugins/error-handler';
@@ -17,14 +17,23 @@ const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
 interface HarnessOptions {
   /** The caller's role on `PROJECT_ID`, or null for "not a member". */
   role?: string | null;
+  /**
+   * Makes the enqueue mock behave like the real `GitOperation_one_active_per_project` partial-unique
+   * index: the first enqueue succeeds, and every later one throws `GitOperationInProgressError` the
+   * way the Prisma repository converts that index's P2002 violation.
+   */
+  singleActiveOperation?: boolean;
 }
 
 function buildHarness(options: HarnessOptions = {}) {
-  const { role = 'editor' } = options;
+  const { role = 'editor', singleActiveOperation = false } = options;
   const enqueuedOperations: EnqueueGitOperationInput[] = [];
   const auditSave = jest.fn();
 
   const enqueue = jest.fn(async (input: EnqueueGitOperationInput) => {
+    if (singleActiveOperation && enqueuedOperations.length > 0) {
+      throw new GitOperationInProgressError();
+    }
     enqueuedOperations.push(input);
     return new GitOperation(
       GitOperationId.create(randomUUID()),
@@ -80,6 +89,23 @@ describe('POST /projects/:projectId/git/push', () => {
       triggeredByUserId: expect.objectContaining({ value: ACTOR_ID }),
       branch: null,
     });
+
+    await app.close();
+  });
+
+  it('answers 409 git_operation_in_progress — not 500 — for a second push while one is already active', async () => {
+    const { build } = buildHarness({ singleActiveOperation: true });
+    const app = await build();
+
+    const first = await push(app, PROJECT_ID);
+    const second = await push(app, PROJECT_ID);
+
+    expect(first.statusCode).toBe(202);
+    // `enqueue` signals this refusal by throwing, and `DomainError` carries no `statusCode`, so an
+    // uncaught throw reaches the global error handler as an opaque 500 INTERNAL_ERROR. It must
+    // instead come back as the same 409 every synchronous git route sends for this refusal.
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toMatchObject({ error: { code: 'git_operation_in_progress' } });
 
     await app.close();
   });

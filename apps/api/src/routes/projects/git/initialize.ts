@@ -11,6 +11,7 @@ import {
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireOwnerRole } from '../../../lib/git-write-lock';
 import { sendGitErrorResponse } from '../../../lib/git-error-response';
+import { enqueueGitOperation } from '../../../lib/git-enqueue';
 
 /** Body accepted by `POST /projects/:projectId/git/initialize`. */
 interface GitInitializeBody {
@@ -151,15 +152,23 @@ export async function gitInitializeRoutes(app: FastifyInstance): Promise<void> {
         // Enqueue the actual init/commit/push. The git-worker claims this operation later,
         // decrypts the credential, and runs `InitializeRepositoryUseCase` against the rows written
         // above.
-        const operation = await request.server.repos.gitOperation.enqueue({
+        //
+        // Routed through `enqueueGitOperation` so the single-active-operation refusal comes back as
+        // a typed Result rather than a throw: the broad catch below reports every throw as a 500,
+        // which would turn "another operation is already running for this project" into an opaque
+        // internal error instead of the 409 the shared git-error table already defines for it.
+        const enqueued = await enqueueGitOperation(request, {
           projectId,
           kind: 'INITIALIZE',
           triggeredByUserId: actorId,
           branch: branch ?? null,
         });
+        if (!enqueued.success) {
+          return sendGitErrorResponse(reply, enqueued.error.name);
+        }
 
         return reply.status(202).send({
-          operationId: operation.id.value,
+          operationId: enqueued.value.id.value,
           projectId: projectId.value,
         });
       } catch (error) {

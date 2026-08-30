@@ -3,6 +3,7 @@ import { ProjectId, UserId } from '@asciidocollab/domain';
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireEditorRole } from '../../../lib/git-write-lock';
 import { sendGitErrorResponse } from '../../../lib/git-error-response';
+import { enqueueGitOperation } from '../../../lib/git-enqueue';
 
 /**
  * Registers `POST /projects/:projectId/git/push` — starts pushing the project's committed history to
@@ -19,6 +20,11 @@ import { sendGitErrorResponse } from '../../../lib/git-error-response';
  * Requires EDITOR tier or above; the gate runs BEFORE the enqueue. This is the only synchronous
  * authorization outcome this route produces — the worker's own editor self-gate, and any 401 (bad
  * credential)/non-fast-forward remote refusal, both surface later through the operation's state.
+ *
+ * The enqueue itself can still refuse synchronously: a project may only have one active operation
+ * at a time, so pushing while another operation is already queued or running answers
+ * `409 git_operation_in_progress` — the same code, from the same shared error table, that the
+ * synchronous git routes answer for that refusal.
  *
  * @param app - The Fastify instance the endpoint is registered on.
  */
@@ -52,15 +58,18 @@ export async function gitPushRoutes(app: FastifyInstance): Promise<void> {
         return sendGitErrorResponse(reply, editorCheck.error.name);
       }
 
-      const operation = await request.server.repos.gitOperation.enqueue({
+      const enqueued = await enqueueGitOperation(request, {
         projectId,
         kind: 'PUSH',
         triggeredByUserId: actorId,
         branch: null,
       });
+      if (!enqueued.success) {
+        return sendGitErrorResponse(reply, enqueued.error.name);
+      }
 
       return reply.status(202).send({
-        operationId: operation.id.value,
+        operationId: enqueued.value.id.value,
         projectId: projectId.value,
       });
     },

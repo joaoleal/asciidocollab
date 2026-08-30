@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { GitWorkerTransportError } from '@asciidocollab/infrastructure';
-import { getAuthenticatedUserId } from '../../plugins/require-auth';
 import { isGitOAuthProviderName } from '../../config/schema-git';
 import { exchangeCodeForToken } from '../../lib/git-oauth';
 import { readOAuthState } from '../../lib/git-oauth-state';
@@ -36,15 +35,35 @@ function redirectSuccess(reply: FastifyReply, frontendUrl: string, projectId: st
  * outside the encrypted credential store. NOT project-scoped in its path: the target project lives
  * inside the (encrypted, authenticated) `state` parameter, not the URL.
  *
+ * PUBLIC — deliberately registered outside `requireAuth`, and the only git route that is. The
+ * provider's redirect back here is a cross-site top-level navigation, and the session cookie is
+ * issued `SameSite=Strict`, which a browser withholds on exactly that kind of request. Behind
+ * `requireAuth` the callback could therefore never run at all: the user landed on a raw `401` JSON
+ * page and every guided OAuth connect died at the last step. The fix keeps the cookie Strict for
+ * every other route and authenticates this one from the `state` blob instead.
+ *
+ * That is sound because `state` is not a hint, it is the credential: AES-256-GCM encrypted and
+ * authenticated under the dedicated `git.oauth.stateEncryptionKey`, so only this server can mint one
+ * and any tampering fails to decrypt at all. It carries the `actorId` the start step had already
+ * OWNER-gated, it expires after `OAUTH_STATE_TTL_MS`, and the PKCE verifier sealed inside it is
+ * useless to anyone who did not receive the matching `code` from the provider. Authorization is not
+ * taken on trust from the blob either — `ConnectRepositoryUseCase`, reached through the worker's
+ * `connect` RPC below, re-checks that `state.actorId` is still the project's OWNER before it writes
+ * anything, so a replayed state whose actor has since lost that role is refused at redemption time.
+ *
  * Every step below fails closed with a generic redirect, in this order: `state` must decrypt and
  * parse (an unreadable/tampered/malformed `state` is indistinguishable from an expired one to the
- * caller — both just bounce to the generic failure page); it must not be expired; the
- * authenticated caller must be the same user who started the attempt (`state.actorId` — the CSRF
- * bind); the code exchange against the provider's token endpoint must succeed; and finally
- * `ConnectRepositoryUseCase` (reached the same way the PAT connect route reaches it — the
- * git-worker's `connect` RPC — never forked or reimplemented) must accept the connection. Nothing
- * about *why* a given attempt failed is ever put in the redirect URL, a log line, or a response
- * body: not the code, the verifier, the client secret, the access token, or the underlying error.
+ * caller — both just bounce to the generic failure page); it must not be expired; the provider named
+ * in the URL must be the one the attempt was started for; the code exchange against the provider's
+ * token endpoint must succeed; and finally `ConnectRepositoryUseCase` (reached the same way the PAT
+ * connect route reaches it — the git-worker's `connect` RPC — never forked or reimplemented) must
+ * accept the connection. Nothing about *why* a given attempt failed is ever put in the redirect URL,
+ * a log line, or a response body: not the code, the verifier, the client secret, the access token,
+ * or the underlying error.
+ *
+ * Rate-limited on the shared git budget because it is reachable unauthenticated — an unreadable
+ * `state` is rejected before any outbound call, so the cost of a bogus request is one failed
+ * decryption, but the endpoint should not be an unmetered way to reach it.
  *
  * @param app - The Fastify instance the endpoint is registered on.
  */
@@ -52,6 +71,12 @@ export async function gitOAuthCallbackRoutes(app: FastifyInstance): Promise<void
   app.get<{ Params: { provider: string }; Querystring: GitOAuthCallbackQuery }>(
     '/api/git/oauth/:provider/callback',
     {
+      config: {
+        rateLimit: {
+          max: app.config.git.rateLimitMax,
+          timeWindow: app.config.git.rateLimitWindow,
+        },
+      },
       schema: {
         params: {
           type: 'object',
@@ -70,7 +95,6 @@ export async function gitOAuthCallbackRoutes(app: FastifyInstance): Promise<void
     },
     async (request, reply) => {
       const frontendUrl = app.config.api.frontendUrl;
-      const actorId = getAuthenticatedUserId(request);
 
       const { provider } = request.params;
       if (!isGitOAuthProviderName(provider)) {
@@ -89,14 +113,10 @@ export async function gitOAuthCallbackRoutes(app: FastifyInstance): Promise<void
       }
       const oauthState = stateResult.value;
 
-      // CSRF bind: the session redeeming this state must be the one that minted it. Checked before
-      // anything else that would need the state's contents, so a mismatched caller can never trigger
-      // a token exchange or a connect attempt for a project they didn't start this flow from.
-      if (oauthState.actorId !== actorId) {
-        request.log.warn({ reason: 'actor_mismatch' }, 'git oauth callback rejected');
-        return redirectProjectFailure(reply, frontendUrl, oauthState.projectId);
-      }
-
+      // The actor is whoever the start step sealed into this state — there is no session cookie to
+      // cross-check it against here (see the route docs), and inventing one would only re-break the
+      // flow. The binding that matters is downstream: the `connect` call below runs as this actor
+      // and is OWNER-gated against the project again before anything is written.
       if (oauthState.provider !== provider) {
         request.log.warn({ reason: 'provider_mismatch' }, 'git oauth callback rejected');
         return redirectProjectFailure(reply, frontendUrl, oauthState.projectId);

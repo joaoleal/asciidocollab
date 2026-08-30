@@ -106,15 +106,18 @@ function parseOAuthState(value: unknown): OAuthState | null {
  * Decrypts and validates a `state` value from an OAuth callback request. Fails closed: any
  * decryption failure (wrong key, tampered ciphertext, garbage input), JSON-parse failure, or
  * shape mismatch is reported as `'invalid'`; a structurally-valid state whose `issuedAt` is older
- * than {@link OAUTH_STATE_TTL_MS} is reported as `'expired'`. Callers still owe their own
- * actorId-binding (CSRF) check on top of this — this function only proves the blob is one this
- * server minted, not that the caller redeeming it is the one who started the attempt.
+ * than {@link OAUTH_STATE_TTL_MS} is reported as `'expired'`. What a success proves is exactly one
+ * thing: the blob is one this server minted, under this key, recently. It says nothing about who is
+ * redeeming it — the callback route cannot cross-check that against a session (the provider's
+ * redirect is a cross-site navigation the SameSite=Strict session cookie is withheld from), so the
+ * `actorId` carried here is authorization input, and the use case it is handed to re-checks that
+ * actor's role on the project before writing anything.
  *
  * Single-use is NOT enforced here (nor anywhere in this stateless design): nothing records that a
  * given `state` was already redeemed, so a captured, still-fresh `state` could in principle be
- * replayed within the TTL window. The TTL, the actorId/CSRF binding callers must still apply, and the
- * PKCE code verifier (useless to a replayer who never received the matching `code`) are this
- * design's accepted mitigations — see the report's stateless single-use caveat for the full
+ * replayed within the TTL window. The TTL, the OWNER re-check the redeeming use case runs on the
+ * carried `actorId`, and the PKCE code verifier (useless to a replayer who never received the
+ * matching `code`) are this design's accepted mitigations — see the report's single-use caveat for the full
  * reasoning; enforcing true single-use would require a server-side store, which this design
  * deliberately avoids (no new DB table/migration for OAuth state).
  *

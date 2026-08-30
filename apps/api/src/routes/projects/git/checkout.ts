@@ -8,6 +8,7 @@ import {
   sendGitWorkerUnavailableResponse,
   type GitErrorResponseBody,
 } from '../../../lib/git-error-response';
+import { enqueueGitOperation } from '../../../lib/git-enqueue';
 
 /** Body accepted by `POST /projects/:projectId/git/checkout`. */
 interface GitCheckoutBody {
@@ -42,6 +43,10 @@ interface GitCheckoutBody {
  * 2. **Open files.** As with pull: if editors currently have documents open anywhere in the
  *    project and the caller has not passed `confirmAffectsOpenFiles: true`, this route answers
  *    `409` instead of enqueuing.
+ *
+ * 3. **Another operation already active.** A project may only have one active operation at a time,
+ *    so switching while one is queued or running answers `409 git_operation_in_progress` — the same
+ *    code, from the same shared error table, that the synchronous git routes answer for it.
  *
  * Any other refusal (a missing repository, a genuine merge conflict, a command failure) surfaces
  * later through the operation's state, not synchronously from this route.
@@ -130,15 +135,18 @@ export async function gitCheckoutRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const operation = await request.server.repos.gitOperation.enqueue({
+      const enqueued = await enqueueGitOperation(request, {
         projectId,
         kind: 'BRANCH_SWITCH',
         triggeredByUserId: actorId,
         branch: request.body.name,
       });
+      if (!enqueued.success) {
+        return sendGitErrorResponse(reply, enqueued.error.name);
+      }
 
       return reply.status(202).send({
-        operationId: operation.id.value,
+        operationId: enqueued.value.id.value,
         projectId: projectId.value,
       });
     },

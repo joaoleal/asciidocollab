@@ -1,7 +1,15 @@
 import { randomUUID } from 'crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
-import { GitOperation, GitOperationId, GitRepository, GitRepositoryId, ProjectId, UserId } from '@asciidocollab/domain';
+import {
+  GitOperation,
+  GitOperationId,
+  GitOperationInProgressError,
+  GitRepository,
+  GitRepositoryId,
+  ProjectId,
+  UserId,
+} from '@asciidocollab/domain';
 import type { EnqueueGitOperationInput } from '@asciidocollab/domain';
 import { gitInitializeRoutes } from '../../../../src/routes/projects/git/initialize';
 import { errorHandler } from '../../../../src/plugins/error-handler';
@@ -306,6 +314,21 @@ describe('POST /projects/:projectId/git/initialize', () => {
     const response = await initialize(app, PROJECT_ID);
 
     expect(response.statusCode).toBe(500);
+
+    await app.close();
+  });
+
+  it('answers 409 git_operation_in_progress when another operation is already active for the project', async () => {
+    // The enqueue sits inside this route's broad catch-all, which reports every throw as a 500 —
+    // so the single-active-operation refusal has to be recognised before it gets there, or it
+    // reaches the caller as an opaque internal error instead of the 409 the shared table defines.
+    const { build } = buildHarness({ enqueueError: new GitOperationInProgressError() });
+    const app = await build();
+
+    const response = await initialize(app, PROJECT_ID);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: { code: 'git_operation_in_progress' } });
 
     await app.close();
   });

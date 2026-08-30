@@ -102,6 +102,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(verifyEmailRoute);
   await app.register(openRegistrationStatusRoute);
 
+  // The guided-OAuth callback is PUBLIC by necessity, not by oversight: the provider bounces the
+  // browser back here as a cross-site top-level navigation, which a SameSite=Strict session cookie
+  // is withheld from — behind `requireAuth` the callback answered 401 and could never complete.
+  // It authenticates from its own encrypted, authenticated, expiring `state` blob instead, and the
+  // connect it performs is OWNER-re-checked downstream. See the route's own docs.
+  await app.register(gitOAuthCallbackRoutes);
+
   // Protected routes — require authentication
   await app.register(async function protectedRoutes(scopedApp: FastifyInstance) {
     scopedApp.addHook('preHandler', requireAuth);
@@ -153,7 +160,6 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await innerApp.register(gitPreviewPushRoutes);
       await innerApp.register(cloneRoutes);
       await innerApp.register(gitImportRoutes);
-      await innerApp.register(gitOAuthCallbackRoutes);
       await innerApp.register(gitOAuthProvidersRoutes);
       await innerApp.register(dictionaryRoutes);
       await innerApp.register(ignoredLintsRoutes);

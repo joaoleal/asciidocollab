@@ -3,6 +3,7 @@ import { ProjectId, UserId } from '@asciidocollab/domain';
 import { getAuthenticatedUserId } from '../../../plugins/require-auth';
 import { requireEditorRole } from '../../../lib/git-write-lock';
 import { sendGitErrorResponse, type GitErrorResponseBody } from '../../../lib/git-error-response';
+import { enqueueGitOperation } from '../../../lib/git-enqueue';
 
 /**
  * Registers `POST /projects/:projectId/git/pull` — starts pulling the project's remote history into
@@ -25,7 +26,12 @@ import { sendGitErrorResponse, type GitErrorResponseBody } from '../../../lib/gi
  * its own user has open, and enumerating every other collaborator's affected files is a separate,
  * later safety concern.
  *
- * These two gates are the only synchronous refusals this route produces — any other refusal (a
+ * A third synchronous refusal comes from the enqueue itself: a project may only have one active
+ * operation at a time, so pulling while another operation is already queued or running answers
+ * `409 git_operation_in_progress` — the same code, from the same shared error table, that the
+ * synchronous git routes answer for that refusal.
+ *
+ * These three gates are the only synchronous refusals this route produces — any other refusal (a
  * missing repository, a merge conflict, a credential failure) surfaces later through the
  * operation's state.
  *
@@ -78,15 +84,18 @@ export async function gitPullRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const operation = await request.server.repos.gitOperation.enqueue({
+      const enqueued = await enqueueGitOperation(request, {
         projectId,
         kind: 'PULL',
         triggeredByUserId: actorId,
         branch: null,
       });
+      if (!enqueued.success) {
+        return sendGitErrorResponse(reply, enqueued.error.name);
+      }
 
       return reply.status(202).send({
-        operationId: operation.id.value,
+        operationId: enqueued.value.id.value,
         projectId: projectId.value,
       });
     },

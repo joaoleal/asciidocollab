@@ -15,11 +15,9 @@ const mockExchangeCodeForToken = gitOauth.exchangeCodeForToken as jest.MockedFun
   typeof gitOauth.exchangeCodeForToken
 >;
 
-jest.mock('../../../src/plugins/require-auth', () => ({
-  requireAuth: jest.fn((_request: unknown, _reply: unknown, done: () => void) => done()),
-  getAuthenticatedUserId: jest.fn(() => ACTOR_ID),
-}));
-
+// Deliberately NO require-auth mock: this route is public (the provider's redirect is a cross-site
+// navigation the SameSite=Strict session cookie is withheld from), so every case below runs with no
+// session at all and would fail if the handler ever reached for one.
 const ACTOR_ID = '550e8400-e29b-41d4-a716-446655440001';
 const FOREIGN_ACTOR_ID = '550e8400-e29b-41d4-a716-446655440099';
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440002';
@@ -82,6 +80,8 @@ function buildHarness(options: HarnessOptions = {}) {
   app.decorate('config', {
     api: { frontendUrl: FRONTEND_URL },
     git: {
+      rateLimitMax: 30,
+      rateLimitWindow: 60_000,
       oauth: {
         stateEncryptionKey: STATE_KEY,
         github: githubConfig,
@@ -256,21 +256,37 @@ describe('GET /api/git/oauth/:provider/callback', () => {
     await app.close();
   });
 
-  it('redirects to the project failure page for a foreign actor (CSRF mismatch), and never calls connect or exchanges the code', async () => {
+  it('completes with no session cookie at all — the state blob is the credential, not the session', async () => {
     const { build, connect } = buildHarness();
     const app = await build();
-    // Minted by/for ACTOR_ID, but the authenticated caller in this test's mocked require-auth is
-    // also ACTOR_ID — so mint it for a DIFFERENT actor to simulate the mismatch instead.
+    const state = mintValidState();
+
+    // The provider's redirect is a cross-site top-level navigation, so a SameSite=Strict session
+    // cookie is withheld from it. Nothing here injects or mocks a session; a handler that still
+    // demanded one would answer 401 rather than run.
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/git/oauth/github/callback?${new URLSearchParams({ code: AUTH_CODE, state }).toString()}`,
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(
+      `${FRONTEND_URL}/dashboard/projects/${PROJECT_ID}/settings?gitOAuth=connected`,
+    );
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR_ID }));
+
+    await app.close();
+  });
+
+  it('connects as the actor sealed into the state, never as some ambient caller', async () => {
+    const { build, connect } = buildHarness();
+    const app = await build();
     const state = mintValidState({ actorId: FOREIGN_ACTOR_ID });
 
     const response = await callback(app, 'github', { code: AUTH_CODE, state });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe(
-      `${FRONTEND_URL}/dashboard/projects/${PROJECT_ID}/settings?gitOAuth=failed`,
-    );
-    expect(connect).not.toHaveBeenCalled();
-    expect(mockExchangeCodeForToken).not.toHaveBeenCalled();
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({ actorId: FOREIGN_ACTOR_ID }));
 
     await app.close();
   });
