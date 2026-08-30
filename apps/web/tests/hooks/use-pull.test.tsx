@@ -152,6 +152,27 @@ describe('usePull polling outcomes', () => {
     expect(onSucceeded).not.toHaveBeenCalled();
   });
 
+  // A paused pull deliberately never fires `onSucceeded`, but SOMETHING has to tell the caller to
+  // re-read the git status: the pause is the moment `syncStatus` becomes `CONFLICTED`, which gates
+  // the toolbar's only "Resolve conflicts" entry point. Without this callback the paused message and
+  // the button offering to act on it disagreed until a page reload.
+  test('AWAITING_CONFLICT fires onPaused (and never onSucceeded) so the caller can re-read the git status', async () => {
+    const onSucceeded = jest.fn();
+    const onPaused = jest.fn();
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'PULL', state: 'AWAITING_CONFLICT', progress: 50, errorCode: null, driftSummary: null });
+    const { result } = renderHook(() => usePull('proj1', onSucceeded, onPaused));
+
+    await act(async () => {
+      result.current.start();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(onPaused).toHaveBeenCalledTimes(1));
+    expect(onSucceeded).not.toHaveBeenCalled();
+    expect(result.current.message?.tone).toBe('neutral');
+  });
+
   test('SUCCEEDED stops polling and triggers the refetch callback', async () => {
     const onSucceeded = jest.fn();
     const { result } = renderHook(() => usePull('proj1', onSucceeded));

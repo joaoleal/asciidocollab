@@ -143,6 +143,71 @@ describe('useConflicts loading', () => {
   });
 });
 
+// `useProjectGit` mounts this hook unconditionally, so the list has to load when the PANEL opens,
+// not once at mount: the editor usually mounts against a healthy repository (`getConflicts` 404s and
+// the list settles empty) long before the pull that pauses on conflicts even starts. Loading only at
+// mount left a panel opened after that pull showing "No conflicting files." with Complete disabled.
+describe('useConflicts enabled gating', () => {
+  it('does not fetch while disabled, and does not sit in loading either', async () => {
+    mockGetConflicts.mockResolvedValue(LIST);
+    const { result } = renderHook(() => useConflicts('proj1', jest.fn(), { enabled: false }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(mockGetConflicts).not.toHaveBeenCalled();
+    expect(result.current.files).toEqual([]);
+    expect(result.current.operationId).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
+  it('loads the current conflict list once enabled — the panel opened after a pull paused', async () => {
+    mockGetConflicts.mockResolvedValue(LIST);
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useConflicts('proj1', jest.fn(), { enabled: open }),
+      { initialProps: { open: false } },
+    );
+    expect(mockGetConflicts).not.toHaveBeenCalled();
+
+    rerender({ open: true });
+
+    await waitFor(() => expect(result.current.files).toEqual(LIST.files));
+    expect(mockGetConflicts).toHaveBeenCalledWith('proj1');
+    expect(result.current.operationId).toBe('op1');
+    expect(result.current.allResolved).toBe(false);
+  });
+
+  it('reloads on a re-open rather than showing the previous open\'s list', async () => {
+    mockGetConflicts.mockResolvedValue(LIST);
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useConflicts('proj1', jest.fn(), { enabled: open }),
+      { initialProps: { open: true } },
+    );
+    await waitFor(() => expect(result.current.files).toEqual(LIST.files));
+
+    rerender({ open: false });
+
+    const NEWER: ConflictListDto = {
+      operationId: 'op2',
+      files: [{ path: 'c.adoc', isBinary: false, resolved: false }],
+    };
+    mockGetConflicts.mockResolvedValue(NEWER);
+    rerender({ open: true });
+
+    await waitFor(() => expect(result.current.files).toEqual(NEWER.files));
+    expect(result.current.operationId).toBe('op2');
+  });
+
+  it('defaults to enabled when no options are passed', async () => {
+    mockGetConflicts.mockResolvedValue(LIST);
+    const { result } = renderHook(() => useConflicts('proj1', jest.fn()));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(mockGetConflicts).toHaveBeenCalledWith('proj1');
+    expect(result.current.files).toEqual(LIST.files);
+  });
+});
+
 describe('useConflicts resolve', () => {
   it('resolves a file then refetches, flipping allResolved once every file is resolved', async () => {
     mockGetConflicts.mockResolvedValueOnce(LIST);
@@ -427,5 +492,131 @@ describe('useConflicts undo', () => {
       tone: 'error',
       text: 'There is no paused pull to undo.',
     });
+  });
+
+  it('an op ending ABORTED (undo-pull Case A) is a success — panel cleared, refetch called, no error toast', async () => {
+    mockGetConflicts.mockResolvedValue({ operationId: 'op1', files: [] });
+    const onResolvedAndCleared = jest.fn();
+    const { result } = renderHook(() => useConflicts('proj1', onResolvedAndCleared));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Abandoning a paused pull leaves its op terminally ABORTED — that IS the successful undo, and its
+    // `driftSummary` (if any) is the abandoned pull's, not the undo's own. The hook must treat this as
+    // success: clear the panel and refresh, surfacing NEITHER an "aborted" error NOR a false drift
+    // banner from that summary.
+    mockUndoPull.mockResolvedValue({ operationId: 'undo-op' });
+    mockGetGitOperation.mockResolvedValue({
+      id: 'undo-op',
+      kind: 'UNDO_PULL',
+      state: 'ABORTED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 1,
+        anomalies: [{ path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false }],
+      },
+    });
+
+    act(() => {
+      result.current.undo();
+    });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    await waitFor(() => expect(result.current.completing).toBe(false));
+    expect(onResolvedAndCleared).toHaveBeenCalled();
+    // No error toast, and no drift banner conjured from the abandoned pull's summary.
+    expect(result.current.message).toBeNull();
+  });
+
+  it('SUCCEEDED with no drift summary sets no message (no recovery-handle noise)', async () => {
+    mockGetConflicts.mockResolvedValue({ operationId: 'op1', files: [] });
+    const onResolvedAndCleared = jest.fn();
+    const { result } = renderHook(() => useConflicts('proj1', onResolvedAndCleared));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    mockUndoPull.mockResolvedValue({ operationId: 'undo-op' });
+    mockGetGitOperation.mockResolvedValue({
+      id: 'undo-op',
+      kind: 'UNDO_PULL',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: null,
+    });
+
+    act(() => {
+      result.current.undo();
+    });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    await waitFor(() => expect(result.current.completing).toBe(false));
+    expect(onResolvedAndCleared).toHaveBeenCalled();
+    expect(result.current.message).toBeNull();
+  });
+});
+
+describe('useConflicts pendingAction hygiene', () => {
+  it('does not leak a settled round’s wording into the next round’s drift message', async () => {
+    mockGetConflicts.mockResolvedValue({ operationId: 'op1', files: [] });
+    const onResolvedAndCleared = jest.fn();
+    const { result } = renderHook(() => useConflicts('proj1', onResolvedAndCleared));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Round 1: undo() settles via AWAITING_CONFLICT (paused again) — a non-terminal settle that, were
+    // `pendingAction` never reset, would leave it stuck at 'undo' with nothing else to clear it.
+    mockUndoPull.mockResolvedValue({ operationId: 'undo-op' });
+    mockGetGitOperation.mockResolvedValueOnce({
+      id: 'undo-op',
+      kind: 'UNDO_PULL',
+      state: 'AWAITING_CONFLICT',
+      progress: 50,
+      errorCode: null,
+      driftSummary: null,
+    });
+
+    act(() => {
+      result.current.undo();
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await waitFor(() => expect(result.current.completing).toBe(false));
+    expect(result.current.message).toEqual({ tone: 'neutral', text: 'Paused again — conflicts need resolving.' });
+
+    // Round 2: complete() succeeds with drift. A leaked 'undo' would wrongly render the undo's
+    // no-recovery wording instead of complete's retry wording.
+    mockCompletePull.mockResolvedValue({ operationId: 'complete-op' });
+    mockGetGitOperation.mockResolvedValueOnce({
+      id: 'complete-op',
+      kind: 'RESOLVE',
+      state: 'SUCCEEDED',
+      progress: 100,
+      errorCode: null,
+      driftSummary: {
+        total: 1,
+        droppedCount: 1,
+        anomalies: [{ path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false }],
+      },
+    });
+
+    act(() => {
+      result.current.complete();
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await waitFor(() => expect(result.current.completing).toBe(false));
+
+    expect(result.current.message?.text).toContain('Conflicts resolved');
+    expect(result.current.message?.text).toContain('try the operation again');
+    expect(result.current.message?.text).not.toContain('Undo applied');
+    expect(result.current.message?.text).not.toContain("recorded in the project's activity history");
   });
 });

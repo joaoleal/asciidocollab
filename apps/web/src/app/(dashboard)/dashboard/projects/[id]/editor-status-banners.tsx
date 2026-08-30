@@ -53,9 +53,12 @@ export function EditorStatusBanners({ git, pipeline }: EditorStatusBannersProper
       )}
 
       {/* Undo outcome: the status bar's transient "✓ Pulled — Undo" / "✓ Switched to <branch> —
-          Undo" affordance clicked and refused. A `nothing_to_undo` refusal clears the affordance
-          quietly instead of landing here — see `useProjectGit`'s `undoLast`. */}
-      {undoMessage && (
+          Undo" affordance clicked and settled into a refusal — the only outcome shown here, always a
+          destructive alert. The undo route reverts synchronously, so a cleanly-succeeded undo simply
+          clears the affordance and surfaces nothing (its returned op carries the ORIGINAL pull's
+          drift, not the undo's own — see `useProjectGit`'s `undoLast`), and a `nothing_to_undo`
+          refusal clears quietly too. */}
+      {undoMessage && undoMessage.tone === 'error' && (
         <div role="alert" className="shrink-0 border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {undoMessage.text}
         </div>

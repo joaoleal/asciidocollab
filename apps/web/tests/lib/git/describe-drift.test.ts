@@ -168,4 +168,40 @@ describe('describeDrift', () => {
     expect(message).toContain('try the operation again to recover it');
     expect(message).not.toContain('pull again');
   });
+
+  it('gives an undo an honest drift message that promises no recovery and surfaces no operation id', () => {
+    const summary: GitDriftSummaryDto = {
+      total: 1,
+      droppedCount: 1,
+      anomalies: [{ path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false }],
+    };
+    const message = describeDrift(summary, 'Undo applied', { undo: true });
+    // States the drop plainly and points at the project's activity history (which the editor can
+    // see) — never a "preserved"/"restore" promise, never an operation id or backup-ref name, and
+    // never the obstruction-clearing retry a genuine retry gets.
+    expect(message).toMatch(/^Undo applied, but/);
+    expect(message).toContain('docs');
+    expect(message).toContain("recorded in the project's activity history");
+    expect(message).not.toMatch(/preserved|restore/i);
+    expect(message).not.toContain('operation');
+    expect(message).not.toContain('administrator');
+    expect(message).not.toContain('Remove or rename');
+    expect(message).not.toMatch(/refs\/adc/);
+  });
+
+  it('keeps the honest undo message singular or plural but still promises no recovery', () => {
+    const summary: GitDriftSummaryDto = {
+      total: 2,
+      droppedCount: 2,
+      anomalies: [
+        { path: 'docs', kind: 'content_dropped_folder_occupies_path', applied: false },
+        { path: 'assets', kind: 'content_dropped_folder_occupies_path', applied: false },
+      ],
+    };
+    const message = describeDrift(summary, 'Undo applied', { undo: true });
+    expect(message).toContain('2 changes could not be applied');
+    expect(message).toContain("recorded in the project's activity history");
+    expect(message).not.toMatch(/preserved|restore/i);
+    expect(message).not.toContain('operation');
+  });
 });

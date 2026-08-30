@@ -29,9 +29,14 @@ export interface UndoableGitAction {
   label: string;
 }
 
-/** An undo attempt's settled failure to show the user — shaped like `PullMessage`/`PushMessage`. */
+/** An undo attempt's settled outcome to show the user — shaped like `PullMessage`/`PushMessage`. */
 export interface UndoMessage {
-  /** Always an error tone — a successful undo simply clears the affordance, with nothing to show. */
+  /**
+   * An `error` tone (a refused undo) renders as a destructive alert. A cleanly-succeeded undo shows
+   * nothing: the undo route runs the revert synchronously server-side, and its returned operation
+   * carries the ORIGINAL pull's drift — never the undo's own — so there is nothing honest to surface
+   * from it (see `undoLast`).
+   */
   tone: 'error';
   /** The message text. */
   text: string;
@@ -133,12 +138,27 @@ export function useProjectGit({ projectId, canEdit }: UseProjectGitOptions) {
     pushClearReference.current();
   }, [refetchGitTreeStatus, refetchGitStatus, refetchBehindAhead]);
 
+  // A pull or branch switch that PAUSES in `AWAITING_CONFLICT` never reaches a success callback, yet
+  // that pause is exactly when the project's `syncStatus` becomes `CONFLICTED` — the flag the
+  // toolbar's only "Resolve conflicts" entry point is gated on. `useGitStatus` never polls, so
+  // without re-reading it here the paused banner and activity indicator would announce the pause
+  // while the button to act on it never rendered, and only a page reload would surface it. It
+  // refreshes the same read models a landed pull does (the working tree really did change: the
+  // conflicting files are now marked) but deliberately does NOT dismiss a lingering push error the
+  // way `handlePullSucceeded` does — a paused pull has applied nothing, so whatever that push warned
+  // about may still hold.
+  const handleOperationPaused = useCallback(() => {
+    refetchGitTreeStatus();
+    refetchGitStatus();
+    void refetchBehindAhead();
+  }, [refetchGitTreeStatus, refetchGitStatus, refetchBehindAhead]);
+
   const handlePullSucceededWithUndo = useCallback(() => {
     handlePullSucceeded();
     setUndoMessage(null);
     setUndoable({ kind: 'pull', label: 'Pulled' });
   }, [handlePullSucceeded]);
-  const pullInternal = usePull(projectId, handlePullSucceededWithUndo);
+  const pullInternal = usePull(projectId, handlePullSucceededWithUndo, handleOperationPaused);
   // Wraps the two entry points that actually START a pull — `start()`, and the confirm dialog's
   // `handleConfirmed()`, which is the one the status bar's normal Pull entry goes through in
   // practice (it always opens the preview/confirm dialog first; `PullConfirmForm` calls `startPull`
@@ -207,7 +227,7 @@ export function useProjectGit({ projectId, canEdit }: UseProjectGitOptions) {
     setUndoMessage(null);
     setUndoable({ kind: 'branch-switch', label: target ? `Switched to ${target}` : 'Switched branch' });
   }, [handlePullSucceeded]);
-  const branchesInternal = useBranches(projectId, handleBranchSwitchSucceeded);
+  const branchesInternal = useBranches(projectId, handleBranchSwitchSucceeded, handleOperationPaused);
   // Clears the affordance the MOMENT a switch is attempted — before the two possible synchronous
   // confirm-needed refusals could even fire — since it is `switchBranch` itself that reaches
   // `AWAITING_CONFLICT`, not `handleConfirmed`'s later retry. See the `undoable` comment above.
@@ -250,34 +270,47 @@ export function useProjectGit({ projectId, canEdit }: UseProjectGitOptions) {
     // so offering "Undo" for it — or for whatever it superseded — would only fail. See `undoLast`.
     setUndoable(null);
   }, [handlePullSucceeded]);
-  const conflicts = useConflicts(projectId, handleConflictsResolved);
+  // Gated on the panel's own open state, exactly like `HistoryPanel` gates `useGitHistory`: mounted
+  // here unconditionally, it must not fetch until the panel is actually shown — and it must reload
+  // on every re-open, since the editor usually mounts against a healthy repository (`getConflicts`
+  // 404s, the list settles empty) long before the pull that pauses on conflicts even starts.
+  const conflicts = useConflicts(projectId, handleConflictsResolved, { enabled: conflictPanelOpen });
 
   // Undoes the last clean pull/switch via the SAME route the conflict panel's Undo uses
   // (`POST .../git/undo-pull`) — that route already covers both "abandon a paused pull/switch" AND
   // "revert the most recently SUCCEEDED pull/switch when nothing is currently paused", so this is
-  // just the missing entry point for the second case. Synchronous like the route itself (no operation
-  // to poll): on success it refetches the same read models a pull does and clears the affordance; a
-  // `nothing_to_undo` refusal (someone else already undid it, or it was otherwise superseded)
-  // clears the affordance quietly rather than surfacing an error, since there is nothing actionable
-  // left to tell the user — any other refusal surfaces as a minimal message instead, via the
-  // undo-specific {@link describeUndoFailure}.
+  // just the missing entry point for the second case. The route is SYNCHRONOUS: it awaits the whole
+  // revert server-side and only returns once it has landed, so a 2xx response means the working tree
+  // is already reverted — refresh the read models and clear the affordance directly, with no polling.
+  // The returned operation's `driftSummary` is deliberately NOT read: on the clean-success case the
+  // route returns the ORIGINAL pull's op (still SUCCEEDED, carrying the PULL's drift, which the undo
+  // never rewrote), so surfacing it here would misattribute the pull's dropped change to the undo —
+  // and the undo's own drift is never on that row to show anyway. A refusal settles in the `catch`: a
+  // `nothing_to_undo` refusal (someone else already undid it, or it was otherwise superseded) clears
+  // the affordance quietly rather than surfacing an error, since there is nothing actionable left to
+  // tell the user; any other refusal surfaces as a minimal message via the undo-specific
+  // {@link describeUndoFailure} and KEEPS the affordance so the still-un-reverted op can be retried.
   const undoLast = useCallback(() => {
     if (!undoable) return;
     setUndoPending(true);
     setUndoMessage(null);
     undoPull(projectId)
       .then(() => {
+        // The revert already ran and landed server-side (a 2xx means it is applied): refresh the same
+        // read models a pull does and clear the affordance. The returned op's `driftSummary` is the
+        // ORIGINAL pull's, not the undo's own (see above), so nothing is surfaced from it.
         handlePullSucceeded();
         setUndoable(null);
+        setUndoPending(false);
       })
       .catch((caughtError: unknown) => {
+        setUndoPending(false);
         if (caughtError instanceof ApiError && caughtError.code === 'nothing_to_undo') {
           setUndoable(null);
           return;
         }
         setUndoMessage({ tone: 'error', text: describeUndoFailure(caughtError) });
-      })
-      .finally(() => setUndoPending(false));
+      });
   }, [undoable, projectId, handlePullSucceeded]);
 
   // History panel: read-only, so it needs no permission gate beyond having a connected repository

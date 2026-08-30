@@ -59,8 +59,13 @@ export interface UsePull {
  * @param onSucceeded - Called once a pull operation reaches `SUCCEEDED` — the caller refetches git
  * status/behind-ahead (and tree-status, if it tracks one) from here rather than this hook reaching
  * into those directly.
+ * @param onPaused - Called once a pull operation halts in `AWAITING_CONFLICT` instead of succeeding.
+ * That pause is the moment the project's sync status becomes `CONFLICTED`, so the caller refetches
+ * the same read models from here — otherwise nothing would ever re-read them (this hook's own poll
+ * has stopped, and `onSucceeded` never fires for a paused pull) and the conflict-resolution entry
+ * point that status gates would stay hidden while the paused message claims otherwise.
  */
-export function usePull(projectId: string, onSucceeded: () => void): UsePull {
+export function usePull(projectId: string, onSucceeded: () => void, onPaused?: () => void): UsePull {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [operationId, setOperationId] = useState<string | null>(null);
@@ -114,6 +119,7 @@ export function usePull(projectId: string, onSucceeded: () => void): UsePull {
           setOperationId(null);
           setPending(false);
           setMessage({ tone: 'neutral', text: 'Pull paused — conflicts need resolving.' });
+          onPaused?.();
           return;
         }
         if (isGitOperationTerminal(status.state)) {
@@ -143,7 +149,7 @@ export function usePull(projectId: string, onSucceeded: () => void): UsePull {
       active = false;
       clearInterval(timer);
     };
-  }, [operationId, projectId, onSucceeded]);
+  }, [operationId, projectId, onSucceeded, onPaused]);
 
   return { confirmOpen, closeConfirm, handleConfirmed, pending, message, start, openPreview };
 }

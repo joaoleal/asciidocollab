@@ -302,6 +302,23 @@ describe('useBranches polling outcomes', () => {
     expect(onSucceeded).not.toHaveBeenCalled();
   });
 
+  // A paused switch deliberately never fires `onSucceeded`, but SOMETHING has to tell the caller to
+  // re-read the git status: the pause is the moment `syncStatus` becomes `CONFLICTED`, which gates
+  // the toolbar's only "Resolve conflicts" entry point. Mirrors `usePull`'s own `onPaused` test.
+  test('AWAITING_CONFLICT fires onPaused (and never onSucceeded) so the caller can re-read the git status', async () => {
+    const onSucceeded = jest.fn();
+    const onPaused = jest.fn();
+    mockGetGitOperation.mockResolvedValue({ id: 'op1', kind: 'BRANCH_SWITCH', state: 'AWAITING_CONFLICT', progress: 50, errorCode: null, driftSummary: null });
+    const { result } = renderHook(() => useBranches('proj1', onSucceeded, onPaused));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await startSwitch(result);
+
+    await waitFor(() => expect(onPaused).toHaveBeenCalledTimes(1));
+    expect(onSucceeded).not.toHaveBeenCalled();
+    expect(result.current.switchMessage?.tone).toBe('neutral');
+  });
+
   test('SUCCEEDED stops polling, refetches the list, and calls onSucceeded', async () => {
     const onSucceeded = jest.fn();
     const { result } = renderHook(() => useBranches('proj1', onSucceeded));

@@ -23,13 +23,19 @@ function summarisePaths(paths: string[]): string {
  *
  * @param summary - The operation's drift summary, or null/undefined when it carried none.
  * @param leadIn - The calling flow's opening clause, e.g. `'Pull applied'` or `'Branch switch applied'`.
- * @param retryHint - The calling flow's recovery action, e.g. `'pull again'` or `'switch to that
- * branch again'` — a branch switch or conflict completion cannot be recovered by pulling again.
+ * @param recovery - How the dropped content gets recovered. Either the calling flow's retry action
+ * as a string, e.g. `'pull again'` or `'switch to that branch again'` (a branch switch or conflict
+ * completion cannot be recovered by pulling again) — worded as "clear the obstruction, then
+ * <retry>"; or `{ undo: true }` for an undo, which has NO retry that recovers what it dropped
+ * (re-running it only replays the same drop). The undo case makes no recovery promise: it states
+ * plainly that the drop happened and is recorded in the project's activity history — the only honest
+ * wording, since the undo already cleared its own snapshot and the transient backup ref is not
+ * something a regular editor could act on anyway.
  */
 export function describeDrift(
   summary: GitDriftSummaryDto | null | undefined,
   leadIn: string,
-  retryHint: string,
+  recovery: string | { undo: true },
 ): string | null {
   if (!summary || summary.total === 0) return null;
 
@@ -54,20 +60,37 @@ export function describeDrift(
     droppedFilePaths.length > 0,
     droppedBinaryOpenDocumentPaths.length > 0,
   ].filter(Boolean).length;
-  let obstruction: string;
-  let recovery: string;
-  if (kindsPresent > 1) {
-    obstruction = 'that path is occupied or a document is open in the editor';
-    recovery = 'Resolve the obstruction';
-  } else if (droppedFilePaths.length > 0) {
-    obstruction = 'a file occupies a parent path segment';
-    recovery = 'Remove or rename that file';
-  } else if (droppedBinaryOpenDocumentPaths.length > 0) {
-    obstruction = 'a document is open in the editor at that path';
-    recovery = 'Close the document';
-  } else {
-    obstruction = 'a folder occupies that path';
-    recovery = 'Remove or rename the folder';
-  }
-  return `${leadIn}, but ${droppedPaths.length} ${noun} could not be applied because ${obstruction} and ${verb} dropped: ${summarisePaths(droppedPaths)}. ${recovery}, then ${retryHint} to recover ${pronoun}.`;
+  // Classify the obstruction ONCE, into a single discriminant, so the obstruction wording (needed on
+  // every path) and — only on the retry path — its paired clearing instruction are both keyed off the
+  // same classification and can never drift apart by being derived twice. The undo path's recovery
+  // clause is a fixed string, so its clearing instruction is never looked up: `clearAction` is
+  // computed inside the string branch below and NOT on the `{ undo: true }` recovery path.
+  let obstructionKind: 'multiple' | 'file' | 'openDocument' | 'folder';
+  if (kindsPresent > 1) obstructionKind = 'multiple';
+  else if (droppedFilePaths.length > 0) obstructionKind = 'file';
+  else if (droppedBinaryOpenDocumentPaths.length > 0) obstructionKind = 'openDocument';
+  else obstructionKind = 'folder';
+  const obstruction: string = {
+    multiple: 'that path is occupied or a document is open in the editor',
+    file: 'a file occupies a parent path segment',
+    openDocument: 'a document is open in the editor at that path',
+    folder: 'a folder occupies that path',
+  }[obstructionKind];
+  // A retry can genuinely re-apply the drop once the obstruction is cleared, so that case names the
+  // obstruction and how to clear it — the clearing instruction is looked up ONLY here, on this path.
+  // An undo has no such retry — running it again only replays the same drop — and makes NO recovery
+  // promise: it says plainly that the drop is recorded in the project's activity history, which the
+  // editor can see, rather than pointing at a preserved version or an operation it cannot act on.
+  const recoveryClause =
+    typeof recovery === 'string'
+      ? `${
+          {
+            multiple: 'Resolve the obstruction',
+            file: 'Remove or rename that file',
+            openDocument: 'Close the document',
+            folder: 'Remove or rename the folder',
+          }[obstructionKind]
+        }, then ${recovery} to recover ${pronoun}.`
+      : `This is recorded in the project's activity history.`;
+  return `${leadIn}, but ${droppedPaths.length} ${noun} could not be applied because ${obstruction} and ${verb} dropped: ${summarisePaths(droppedPaths)}. ${recoveryClause}`;
 }

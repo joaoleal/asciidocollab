@@ -99,8 +99,14 @@ const NOT_CONNECTED_STATUSES: ReadonlySet<number> = new Set([404]);
  * this hook's own list refetch — the caller refetches the same cross-cutting git read models a
  * pull does (tree status, git status, behind-ahead), since a branch switch changes the working
  * tree exactly like a pull does.
+ * @param onPaused - Called once a switch operation halts in `AWAITING_CONFLICT` instead of
+ * succeeding. That pause is the moment the project's sync status becomes `CONFLICTED`, so the caller
+ * refetches the same read models from here — otherwise nothing would ever re-read them (this hook's
+ * own poll has stopped, and `onSucceeded` never fires for a paused switch) and the conflict-
+ * resolution entry point that status gates would stay hidden while the paused message claims
+ * otherwise. Mirrors `usePull`'s callback of the same name.
  */
-export function useBranches(projectId: string, onSucceeded: () => void): UseBranches {
+export function useBranches(projectId: string, onSucceeded: () => void, onPaused?: () => void): UseBranches {
   const [current, setCurrent] = useState<string | null>(null);
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -225,6 +231,7 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
           setOperationId(null);
           setSwitchPending(false);
           setSwitchMessage({ tone: 'neutral', text: 'Branch switch paused — conflicts need resolving.' });
+          onPaused?.();
           return;
         }
         if (isGitOperationTerminal(status.state)) {
@@ -259,7 +266,7 @@ export function useBranches(projectId: string, onSucceeded: () => void): UseBran
       active = false;
       clearInterval(timer);
     };
-  }, [operationId, projectId, onSucceeded, refetch]);
+  }, [operationId, projectId, onSucceeded, onPaused, refetch]);
 
   return {
     current,
