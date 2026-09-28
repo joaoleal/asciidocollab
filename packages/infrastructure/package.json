@@ -17,8 +17,8 @@
     "@fastify/session": "^11.1.2",
     "@prisma/client": "^7.9.1",
     "argon2": "^0.45.1",
-    "fastify": "^5.11.2",
-    "nodemailer": "^9.0.5",
+    "fastify": "^5.12.1",
+    "nodemailer": "^10.0.2",
     "pino": "^10.3.1",
     "re2": "^1.26.1"
   },
