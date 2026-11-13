@@ -51,7 +51,7 @@ GEM
     date (3.5.1)
     forwardable (1.4.0)
     hashery (2.1.2)
-    json (2.21.1)
+    json (2.21.2)
     latex-decode (0.4.2)
     logger (1.7.0)
     matrix (0.4.3)
